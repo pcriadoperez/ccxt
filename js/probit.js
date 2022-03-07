@@ -57,6 +57,8 @@ module.exports = class probit extends Exchange {
                 'fetchPositions': false,
                 'fetchPositionsRisk': false,
                 'fetchPremiumIndexOHLCV': false,
+                'fetchTradingFee': false,
+                'fetchTradingFees': false,
                 'fetchTicker': true,
                 'fetchTickers': true,
                 'fetchTime': true,
@@ -135,7 +137,7 @@ module.exports = class probit extends Exchange {
             },
             'fees': {
                 'trading': {
-                    'tierBased': false,
+                    'tierBased': true,
                     'percentage': true,
                     'maker': this.parseNumber ('0.002'),
                     'taker': this.parseNumber ('0.002'),
