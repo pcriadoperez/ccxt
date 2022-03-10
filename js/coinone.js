@@ -58,6 +58,8 @@ module.exports = class coinone extends Exchange {
                 'fetchTicker': true,
                 'fetchTickers': true,
                 'fetchTrades': true,
+                'fetchTradingFee': false,
+                'fetchTradingFees': true,
                 'reduceMargin': false,
                 'setLeverage': false,
                 'setMarginMode': false,
@@ -437,6 +439,73 @@ module.exports = class coinone extends Exchange {
         //
         const completeOrders = this.safeValue (response, 'completeOrders', []);
         return this.parseTrades (completeOrders, market, since, limit);
+    }
+
+    async fetchTradingFees (params = {}) {
+        await this.loadMarkets ();
+        const response = await this.privatePostAccountUserInfo (params);
+        //
+        //    {
+        //        "result": "success",
+        //        "errorCode": "0",
+        //        "userInfo": {
+        //            "virtualAccountInfo": {
+        //                "depositor": "John",
+        //                "accountNumber": "0123456789",
+        //                "bankName": "bankName"
+        //            },
+        //            "mobileInfo": {
+        //                "userName": "John",
+        //                "phoneNumber": "0123456789",
+        //                "phoneCorp": "1",
+        //                "isAuthenticated": "true"
+        //            },
+        //            "bankInfo": {
+        //                "depositor": "John",
+        //                "bankCode": "20",
+        //                "accountNumber": "0123456789",
+        //                "isAuthenticated": "true"
+        //            },
+        //            "emailInfo": {
+        //                "isAuthenticated": "true",
+        //                "email": "john@coinone.com"
+        //            },
+        //            "securityLevel": "4",
+        //            "feeRate": {
+        //                "btc": {
+        //                    "maker": "0.001",
+        //                    "taker": "0.001"
+        //                },
+        //                "bch": {
+        //                    "maker": "0.001",
+        //                    "taker": "0.001"
+        //                },
+        //                "eth": {
+        //                    "maker": "0.001",
+        //                    "taker": "0.001"
+        //                }
+        //            }
+        //        }
+        //    }
+        //
+        const userInfo = this.safeValue (response, 'userInfo', {});
+        const feeRate = this.safeValue (userInfo, 'feeRate', {});
+        const result = {};
+        for (let i = 0; i < this.symbols.length; i++) {
+            const symbol = this.symbols[i];
+            const market = this.market (symbol);
+            const quote = market['quote'];
+            const currency = this.currency (quote);
+            const fee = this.safeValue (feeRate, currency['id'], {});
+            result[symbol] = {
+                'info': fee,
+                'symbol': symbol,
+                'maker': this.safeNumber (fee, 'maker'),
+                'taker': this.safeNumber (fee, 'taker'),
+                'percentage': true,
+            };
+        }
+        return result;
     }
 
     async createOrder (symbol, type, side, amount, price = undefined, params = {}) {
