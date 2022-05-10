@@ -1299,7 +1299,6 @@ class Exchange {
         $this->commonCurrencies = array(
             'XBT' => 'BTC',
             'BCC' => 'BCH',
-            'DRK' => 'DASH',
             'BCHABC' => 'BCH',
             'BCHSV' => 'BSV',
         );

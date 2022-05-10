@@ -216,7 +216,6 @@ module.exports = class Exchange {
             'commonCurrencies': { // gets extended/overwritten in subclasses
                 'XBT': 'BTC',
                 'BCC': 'BCH',
-                'DRK': 'DASH',
                 'BCHABC': 'BCH',
                 'BCHSV': 'BSV',
             },
@@ -789,7 +788,7 @@ module.exports = class Exchange {
             const allCurrencies = baseCurrencies.concat (quoteCurrencies)
             const groupedCurrencies = groupBy (allCurrencies, 'code')
             const currencies = Object.keys (groupedCurrencies).map ((code) =>
-                groupedCurrencies[code].reduce ((previous, current) => // eslint-disable-line implicit-arrow-linebreak
+                groupedCurrenciFes[code].reduce ((previous, current) => // eslint-disable-line implicit-arrow-linebreak
                     ((previous.precision > current.precision) ? previous : current), groupedCurrencies[code][0])) // eslint-disable-line implicit-arrow-linebreak
             const sortedCurrencies = sortBy (flatten (currencies), 'code')
             this.currencies = deepExtend (this.currencies, indexBy (sortedCurrencies, 'code'))
