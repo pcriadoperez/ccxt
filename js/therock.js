@@ -21,10 +21,11 @@ module.exports = class therock extends Exchange {
             'has': {
                 'CORS': undefined,
                 'spot': true,
-                'margin': undefined, // has but unimplemented
+                'margin': undefined, // API exists to fetch positions but no endpoint to create orders through exchange UI or API
                 'swap': false,
                 'future': false,
                 'option': false,
+                'addMargin': false,
                 'cancelOrder': true,
                 'createOrder': true,
                 'fetchBalance': true,
@@ -46,6 +47,8 @@ module.exports = class therock extends Exchange {
                 'fetchOrder': true,
                 'fetchOrderBook': true,
                 'fetchOrders': true,
+                'fetchPostion': undefined,
+                'fetchPositions': false,
                 'fetchPositionMode': false,
                 'fetchPremiumIndexOHLCV': false,
                 'fetchTicker': true,
@@ -59,6 +62,10 @@ module.exports = class therock extends Exchange {
                 'fetchWithdrawals': true,
                 'transfer': false,
                 'withdraw': true,
+                'reduceMargin': false,
+                'repayMargin': false,
+                'setMarginMode': false,
+                'setMargin': false,
             },
             'urls': {
                 'logo': 'https://user-images.githubusercontent.com/1294454/27766869-75057fa2-5ee9-11e7-9a6f-13e641fa4707.jpg',
@@ -97,6 +104,8 @@ module.exports = class therock extends Exchange {
                         'funds/{fund_id}/position_balances': 1,
                         'funds/{fund_id}/positions': 1,
                         'funds/{fund_id}/positions/{id}': 1,
+                        'funds/{fund_id}/main_positions': 1,
+                        'funds/{fund_id}/main_positions/{order_id}': 1,
                         'transactions': 1,
                         'transactions/{id}': 1,
                         'withdraw_limits/{id}': 1,
@@ -105,10 +114,12 @@ module.exports = class therock extends Exchange {
                     'post': {
                         'atms/withdraw': 1,
                         'funds/{fund_id}/orders': 1,
+                        'funds/{fund_id}/main_positions/{order_id}/transfer_balance': 1,
                     },
                     'delete': {
                         'funds/{fund_id}/orders/{id}': 1,
                         'funds/{fund_id}/orders/remove_all': 1,
+                        'funds/{fund_id}/main_positions/{order_id}': 1,
                     },
                 },
             },
