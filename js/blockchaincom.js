@@ -327,26 +327,28 @@ module.exports = class blockchaincom extends Exchange {
          * @returns {dict} an [order book structure]{@link https://docs.ccxt.com/en/latest/manual.html#order-book-structure}
          */
         await this.loadMarkets ();
+        const market = this.market (symbol);
         const request = {
-            'symbol': this.marketId (symbol),
+            'symbol': market['id'],
         };
         if (limit !== undefined) {
             request['depth'] = limit;
         }
         const response = await this.publicGetL3Symbol (this.extend (request, params));
-        return this.parseOrderBook (response, symbol, undefined, 'bids', 'asks', 'px', 'qty');
+        return this.parseOrderBook (response, market['symbol'], undefined, 'bids', 'asks', 'px', 'qty');
     }
 
     async fetchL2OrderBook (symbol, limit = undefined, params = {}) {
         await this.loadMarkets ();
+        const market = this.market (symbol);
         const request = {
-            'symbol': this.marketId (symbol),
+            'symbol': market['id'],
         };
         if (limit !== undefined) {
             request['depth'] = limit;
         }
         const response = await this.publicGetL2Symbol (this.extend (request, params));
-        return this.parseOrderBook (response, symbol, undefined, 'bids', 'asks', 'px', 'qty');
+        return this.parseOrderBook (response, market['symbol'], undefined, 'bids', 'asks', 'px', 'qty');
     }
 
     parseTicker (ticker, market = undefined) {
@@ -898,10 +900,11 @@ module.exports = class blockchaincom extends Exchange {
         return result;
     }
 
-    async fetchWithdrawalWhitelistByCurrency (currency, params = {}) {
+    async fetchWithdrawalWhitelistByCurrency (code, params = {}) {
         await this.loadMarkets ();
+        const currency = this.currency (code);
         const request = {
-            'currency': this.currencyId (currency),
+            'currency': currency['id'],
         };
         const response = await this.privateGetWhitelistCurrency (this.extend (request, params));
         const result = [];

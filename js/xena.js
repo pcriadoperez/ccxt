@@ -567,8 +567,9 @@ module.exports = class xena extends Exchange {
          * @returns {dict} A dictionary of [order book structures]{@link https://docs.ccxt.com/en/latest/manual.html#order-book-structure} indexed by market symbols
          */
         await this.loadMarkets ();
+        const market = this.market (symbol);
         const request = {
-            'symbol': this.marketId (symbol),
+            'symbol': market['id'],
         };
         if (limit !== undefined) {
             request['depth'] = limit;
@@ -605,7 +606,7 @@ module.exports = class xena extends Exchange {
         if (lastUpdateTime !== undefined) {
             timestamp = parseInt (lastUpdateTime / 1000000);
         }
-        return this.parseOrderBook (mdEntriesByType, symbol, timestamp, '0', '1', 'mdEntryPx', 'mdEntrySize');
+        return this.parseOrderBook (mdEntriesByType, market['symbol'], timestamp, '0', '1', 'mdEntryPx', 'mdEntrySize');
     }
 
     async fetchAccounts (params = {}) {
@@ -1435,8 +1436,8 @@ module.exports = class xena extends Exchange {
         const accountId = await this.getAccountId (params);
         const request = {
             'accountId': accountId,
-            // 'from': this.iso8601 (since) * 1000000,
-            // 'to': this.iso8601 (this.milliseconds ()) * 1000000, // max range is 7 days
+            // 'from': since * 1000000,
+            // 'to': this.milliseconds () * 1000000, // max range is 7 days
             // 'symbol': market['id'],
             // 'limit': 100,
         };
@@ -1446,7 +1447,7 @@ module.exports = class xena extends Exchange {
             request['symbol'] = market['id'];
         }
         if (since !== undefined) {
-            request['from'] = this.iso8601 (since) * 1000000;
+            request['from'] = since * 1000000;
         }
         if (limit !== undefined) {
             request['limit'] = limit;

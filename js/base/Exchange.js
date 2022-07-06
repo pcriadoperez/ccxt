@@ -49,8 +49,8 @@ module.exports = class Exchange {
             'pro': false, // if it is integrated with CCXT Pro for WebSocket support
             'alias': false, // whether this exchange is an alias to another exchange
             'has': {
-                'publicAPI': true,
-                'privateAPI': true,
+                'publicAPI': undefined,
+                'privateAPI': undefined,
                 'CORS': undefined,
                 'spot': undefined,
                 'margin': undefined,
@@ -59,12 +59,12 @@ module.exports = class Exchange {
                 'option': undefined,
                 'addMargin': undefined,
                 'cancelAllOrders': undefined,
-                'cancelOrder': true,
+                'cancelOrder': undefined,
                 'cancelOrders': undefined,
                 'createDepositAddress': undefined,
-                'createLimitOrder': true,
-                'createMarketOrder': true,
-                'createOrder': true,
+                'createLimitOrder': undefined,
+                'createMarketOrder': undefined,
+                'createOrder': undefined,
                 'createPostOnlyOrder': undefined,
                 'createReduceOnlyOrder': undefined,
                 'createStopOrder': undefined,
@@ -72,7 +72,7 @@ module.exports = class Exchange {
                 'createStopMarketOrder': undefined,
                 'editOrder': 'emulated',
                 'fetchAccounts': undefined,
-                'fetchBalance': true,
+                'fetchBalance': undefined,
                 'fetchBidsAsks': undefined,
                 'fetchBorrowInterest': undefined,
                 'fetchBorrowRate': undefined,
@@ -95,19 +95,22 @@ module.exports = class Exchange {
                 'fetchFundingRateHistory': undefined,
                 'fetchFundingRates': undefined,
                 'fetchIndexOHLCV': undefined,
-                'fetchL2OrderBook': true,
+                'fetchL1OrderBooks': undefined,
+                'fetchL2OrderBook': undefined,
+                'fetchL3OrderBook': undefined,
+                'fetchLastPrices': undefined,
                 'fetchLedger': undefined,
                 'fetchLedgerEntry': undefined,
                 'fetchLeverageTiers': undefined,
                 'fetchMarketLeverageTiers': undefined,
-                'fetchMarkets': true,
+                'fetchMarkets': undefined,
                 'fetchMarkOHLCV': undefined,
                 'fetchMyTrades': undefined,
                 'fetchOHLCV': 'emulated',
                 'fetchOpenOrder': undefined,
                 'fetchOpenOrders': undefined,
                 'fetchOrder': undefined,
-                'fetchOrderBook': true,
+                'fetchOrderBook': undefined,
                 'fetchOrderBooks': undefined,
                 'fetchOrders': undefined,
                 'fetchOrderTrades': undefined,
@@ -117,10 +120,10 @@ module.exports = class Exchange {
                 'fetchPositionsRisk': undefined,
                 'fetchPremiumIndexOHLCV': undefined,
                 'fetchStatus': 'emulated',
-                'fetchTicker': true,
+                'fetchTicker': undefined,
                 'fetchTickers': undefined,
                 'fetchTime': undefined,
-                'fetchTrades': true,
+                'fetchTrades': undefined,
                 'fetchTradingFee': undefined,
                 'fetchTradingFees': undefined,
                 'fetchTradingLimits': undefined,
@@ -128,7 +131,6 @@ module.exports = class Exchange {
                 'fetchTransfers': undefined,
                 'fetchWithdrawal': undefined,
                 'fetchWithdrawals': undefined,
-                'loadMarkets': true,
                 'reduceMargin': undefined,
                 'setLeverage': undefined,
                 'setMargin': undefined,
@@ -933,13 +935,13 @@ module.exports = class Exchange {
             let total = this.safeString (balance[code], 'total');
             let free = this.safeString (balance[code], 'free');
             let used = this.safeString (balance[code], 'used');
-            if (total === undefined) {
+            if ((total === undefined) && (free !== undefined) && (used !== undefined)) {
                 total = Precise.stringAdd (free, used);
             }
-            if (free === undefined) {
+            if ((free === undefined) && (total !== undefined) && (used !== undefined)) {
                 free = Precise.stringSub (total, used);
             }
-            if (used === undefined) {
+            if ((used === undefined) && (total !== undefined) && (free !== undefined)) {
                 used = Precise.stringSub (total, free);
             }
             balance[code]['free'] = this.parseNumber (free);
@@ -1734,9 +1736,9 @@ module.exports = class Exchange {
 
     parseLedger (data, currency = undefined, since = undefined, limit = undefined, params = {}) {
         let result = [];
-        const array = this.toArray (data);
-        for (let i = 0; i < array.length; i++) {
-            const itemOrItems = this.parseLedgerEntry (array[i], currency);
+        const arrayData = this.toArray (data);
+        for (let i = 0; i < arrayData.length; i++) {
+            const itemOrItems = this.parseLedgerEntry (arrayData[i], currency);
             if (Array.isArray (itemOrItems)) {
                 for (let j = 0; j < itemOrItems.length; j++) {
                     result.push (this.extend (itemOrItems[j], params));

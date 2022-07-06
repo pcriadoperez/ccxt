@@ -110,7 +110,6 @@ class coinflex(Exchange):
                 'fetchTransfers': True,
                 'fetchWithdrawal': True,
                 'fetchWithdrawals': True,
-                'loadMarkets': True,
                 'privateAPI': True,
                 'publicAPI': True,
                 'reduceMargin': None,
@@ -1579,8 +1578,8 @@ class coinflex(Exchange):
         """
         self.load_markets()
         positions = self.fetch_positions(None, params)
-        array = self.filter_by_symbol(positions, symbol)
-        return self.safe_value(array, 0)  # exchange doesn't seem to have hedge mode, so the array will contain only one position per symbol
+        symbolPositions = self.filter_by_symbol(positions, symbol)
+        return self.safe_value(symbolPositions, 0)  # exchange doesn't seem to have hedge mode, so the array will contain only one position per symbol
 
     def fetch_positions(self, symbols=None, params={}):
         """

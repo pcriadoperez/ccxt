@@ -4,7 +4,7 @@
 
 # -----------------------------------------------------------------------------
 
-__version__ = '1.89.19'
+__version__ = '1.90.27'
 
 # -----------------------------------------------------------------------------
 
@@ -240,8 +240,8 @@ class Exchange(object):
 
     # API method metainfo
     has = {
-        'publicAPI': True,
-        'privateAPI': True,
+        'publicAPI': None,
+        'privateAPI': None,
         'CORS': None,
         'spot': None,
         'margin': None,
@@ -250,12 +250,12 @@ class Exchange(object):
         'option': None,
         'addMargin': None,
         'cancelAllOrders': None,
-        'cancelOrder': True,
+        'cancelOrder': None,
         'cancelOrders': None,
         'createDepositAddress': None,
-        'createLimitOrder': True,
-        'createMarketOrder': True,
-        'createOrder': True,
+        'createLimitOrder': None,
+        'createMarketOrder': None,
+        'createOrder': None,
         'createPostOnlyOrder': None,
         'createReduceOnlyOrder': None,
         'createStopOrder': None,
@@ -263,7 +263,7 @@ class Exchange(object):
         'createStopMarketOrder': None,
         'editOrder': 'emulated',
         'fetchAccounts': None,
-        'fetchBalance': True,
+        'fetchBalance': None,
         'fetchBidsAsks': None,
         'fetchBorrowInterest': None,
         'fetchBorrowRate': None,
@@ -286,19 +286,22 @@ class Exchange(object):
         'fetchFundingRateHistory': None,
         'fetchFundingRates': None,
         'fetchIndexOHLCV': None,
-        'fetchL2OrderBook': True,
+        'fetchL1OrderBooks': None,
+        'fetchL2OrderBook': None,
+        'fetchL3OrderBook': None,
+        'fetchLastPrices': None,
         'fetchLedger': None,
         'fetchLedgerEntry': None,
         'fetchLeverageTiers': None,
         'fetchMarketLeverageTiers': None,
-        'fetchMarkets': True,
+        'fetchMarkets': None,
         'fetchMarkOHLCV': None,
         'fetchMyTrades': None,
         'fetchOHLCV': 'emulated',
         'fetchOpenOrder': None,
         'fetchOpenOrders': None,
         'fetchOrder': None,
-        'fetchOrderBook': True,
+        'fetchOrderBook': None,
         'fetchOrderBooks': None,
         'fetchOrders': None,
         'fetchOrderTrades': None,
@@ -308,10 +311,10 @@ class Exchange(object):
         'fetchPositionsRisk': None,
         'fetchPremiumIndexOHLCV': None,
         'fetchStatus': 'emulated',
-        'fetchTicker': True,
+        'fetchTicker': None,
         'fetchTickers': None,
         'fetchTime': None,
-        'fetchTrades': True,
+        'fetchTrades': None,
         'fetchTradingFee': None,
         'fetchTradingFees': None,
         'fetchTradingLimits': None,
@@ -319,7 +322,6 @@ class Exchange(object):
         'fetchTransfers': None,
         'fetchWithdrawal': None,
         'fetchWithdrawals': None,
-        'loadMarkets': True,
         'reduceMargin': None,
         'setLeverage': None,
         'setMargin': None,
@@ -1894,11 +1896,11 @@ class Exchange(object):
             total = self.safe_string(balance[code], 'total')
             free = self.safe_string(balance[code], 'free')
             used = self.safe_string(balance[code], 'used')
-            if total is None:
+            if (total is None) and (free is not None) and (used is not None):
                 total = Precise.string_add(free, used)
-            if free is None:
+            if (free is None) and (total is not None) and (used is not None):
                 free = Precise.string_sub(total, used)
-            if used is None:
+            if (used is None) and (total is not None) and (free is not None):
                 used = Precise.string_sub(total, free)
             balance[code]['free'] = self.parse_number(free)
             balance[code]['used'] = self.parse_number(used)
@@ -2559,9 +2561,9 @@ class Exchange(object):
 
     def parse_ledger(self, data, currency=None, since=None, limit=None, params={}):
         result = []
-        array = self.to_array(data)
-        for i in range(0, len(array)):
-            itemOrItems = self.parse_ledger_entry(array[i], currency)
+        arrayData = self.to_array(data)
+        for i in range(0, len(arrayData)):
+            itemOrItems = self.parse_ledger_entry(arrayData[i], currency)
             if isinstance(itemOrItems, list):
                 for j in range(0, len(itemOrItems)):
                     result.append(self.extend(itemOrItems[j], params))
