@@ -2538,7 +2538,7 @@ class gate(Exchange):
         timestamp = self.safe_timestamp_2(trade, 'time', 'create_time')
         timestamp = self.safe_integer(trade, 'create_time_ms', timestamp)
         marketId = self.safe_string_2(trade, 'currency_pair', 'contract')
-        symbol = self.safe_symbol(marketId, market)
+        market = self.safe_market(marketId, market)
         amountString = self.safe_string_2(trade, 'amount', 'size')
         priceString = self.safe_string(trade, 'price')
         contractSide = 'sell' if Precise.string_lt(amountString, '0') else 'buy'
@@ -2549,17 +2549,21 @@ class gate(Exchange):
         gtFee = self.safe_string(trade, 'gt_fee')
         pointFee = self.safe_string(trade, 'point_fee')
         fees = []
-        if feeAmount and feeAmount != '0':
+        if feeAmount is not None and not Precise.string_eq(feeAmount, '0'):
+            feeCurrencyId = self.safe_string(trade, 'fee_currency')
+            feeCurrencyCode = self.safe_currency_code(feeCurrencyId)
+            if feeCurrencyCode is None:
+                feeCurrencyCode = self.safe_string(market, 'settle')
             fees.append({
                 'cost': feeAmount,
-                'currency': self.safe_string(trade, 'fee_currency'),
+                'currency': feeCurrencyCode,
             })
-        if gtFee and gtFee != '0':
+        if gtFee is not None and not Precise.string_eq(gtFee, '0'):
             fees.append({
                 'cost': gtFee,
                 'currency': 'GT',
             })
-        if pointFee and pointFee != '0':
+        if pointFee is not None and not Precise.string_eq(pointFee, '0'):
             fees.append({
                 'cost': pointFee,
                 'currency': 'POINT',
@@ -2570,7 +2574,7 @@ class gate(Exchange):
             'id': id,
             'timestamp': timestamp,
             'datetime': self.iso8601(timestamp),
-            'symbol': symbol,
+            'symbol': market['symbol'],
             'order': orderId,
             'type': None,
             'side': side,
@@ -4129,13 +4133,15 @@ class gate(Exchange):
     async def repay_margin(self, code, amount, symbol=None, params={}):
         """
         repay borrowed margin and interest
+        see https://www.gate.io/docs/apiv4/en/#repay-cross-margin-loan
+        see https://www.gate.io/docs/apiv4/en/#repay-a-loan
         :param str code: unified currency code of the currency to repay
         :param float amount: the amount to repay
         :param str|None symbol: unified market symbol, required for isolated margin
         :param dict params: extra parameters specific to the gate api endpoint
         :param str params['mode']: 'all' or 'partial' payment mode, extra parameter required for isolated margin
         :param str params['id']: '34267567' loan id, extra parameter required for isolated margin
-        :returns [dict]: a dictionary of a [margin loan structure]
+        :returns dict: a `margin loan structure <https://docs.ccxt.com/en/latest/manual.html#margin-loan-structure>`
         """
         await self.load_markets()
         currency = self.currency(code)
@@ -4209,12 +4215,14 @@ class gate(Exchange):
     async def borrow_margin(self, code, amount, symbol=None, params={}):
         """
         create a loan to borrow margin
+        see https://www.gate.io/docs/apiv4/en/#create-a-cross-margin-borrow-loan
+        see https://www.gate.io/docs/apiv4/en/#lend-or-borrow
         :param str code: unified currency code of the currency to borrow
         :param float amount: the amount to borrow
         :param str|None symbol: unified market symbol, required for isolated margin
         :param dict params: extra parameters specific to the gate api endpoint
         :param str params['rate']: '0.0002' or '0.002' extra parameter required for isolated margin
-        :returns [dict]: a dictionary of a [margin loan structure]
+        :returns dict: a `margin loan structure <https://docs.ccxt.com/en/latest/manual.html#margin-loan-structure>`
         """
         await self.load_markets()
         currency = self.currency(code)

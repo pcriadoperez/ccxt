@@ -4,7 +4,7 @@
 
 # -----------------------------------------------------------------------------
 
-__version__ = '1.90.27'
+__version__ = '1.90.39'
 
 # -----------------------------------------------------------------------------
 
@@ -287,7 +287,7 @@ class Exchange(object):
         'fetchFundingRates': None,
         'fetchIndexOHLCV': None,
         'fetchL1OrderBooks': None,
-        'fetchL2OrderBook': None,
+        'fetchL2OrderBook': True,
         'fetchL3OrderBook': None,
         'fetchLastPrices': None,
         'fetchLedger': None,

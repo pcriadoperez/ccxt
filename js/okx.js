@@ -2005,7 +2005,6 @@ module.exports = class okx extends Exchange {
         };
         const spot = market['spot'];
         const contract = market['contract'];
-        const margin = market['margin'];
         const triggerPrice = this.safeValueN (params, [ 'triggerPrice', 'stopPrice', 'triggerPx' ]);
         const timeInForce = this.safeString (params, 'timeInForce', 'GTC');
         const takeProfitPrice = this.safeValue2 (params, 'takeProfitPrice', 'tpTriggerPx');
@@ -2016,7 +2015,17 @@ module.exports = class okx extends Exchange {
         const slTriggerPxType = this.safeString (params, 'slTriggerPxType', 'last');
         const clientOrderId = this.safeString2 (params, 'clOrdId', 'clientOrderId');
         const defaultMarginMode = this.safeString2 (this.options, 'defaultMarginMode', 'marginMode', 'cross');
-        const marginMode = this.safeString2 (params, 'marginMode', 'tdMode', defaultMarginMode); // cross or isolated, tdMode not ommited so as to be extended into the request
+        let marginMode = this.safeString2 (params, 'marginMode', 'tdMode'); // cross or isolated, tdMode not ommited so as to be extended into the request
+        let margin = false;
+        if ((marginMode !== undefined) && (marginMode !== 'cash')) {
+            margin = true;
+        } else {
+            marginMode = defaultMarginMode;
+            margin = this.safeValue (params, 'margin', false);
+        }
+        if (margin === true && !market['margin']) {
+            throw new NotSupported (this.id + ' does not support margin trading for ' + symbol + 'market');
+        }
         if (spot) {
             if (margin) {
                 const defaultCurrency = (side === 'buy') ? market['quote'] : market['base'];
@@ -2030,7 +2039,7 @@ module.exports = class okx extends Exchange {
         }
         const isMarketOrder = type === 'market';
         const postOnly = this.isPostOnly (isMarketOrder, type === 'post_only', params);
-        params = this.omit (params, [ 'currency', 'ccy', 'marginMode', 'timeInForce', 'stopPrice', 'triggerPrice', 'clientOrderId', 'stopLossPrice', 'takeProfitPrice', 'slOrdPx', 'tpOrdPx' ]);
+        params = this.omit (params, [ 'currency', 'ccy', 'marginMode', 'timeInForce', 'stopPrice', 'triggerPrice', 'clientOrderId', 'stopLossPrice', 'takeProfitPrice', 'slOrdPx', 'tpOrdPx', 'margin' ]);
         const ioc = (timeInForce === 'IOC') || (type === 'ioc');
         const fok = (timeInForce === 'FOK') || (type === 'fok');
         const trigger = (triggerPrice !== undefined) || (type === 'trigger');
@@ -5260,11 +5269,12 @@ module.exports = class okx extends Exchange {
          * @method
          * @name okx#borrowMargin
          * @description create a loan to borrow margin
+         * @see https://www.okx.com/docs-v5/en/#rest-api-account-vip-loans-borrow-and-repay
          * @param {str} code unified currency code of the currency to borrow
          * @param {float} amount the amount to borrow
          * @param {str|undefined} symbol not used by okx.borrowMargin ()
          * @param {dict} params extra parameters specific to the okx api endpoint
-         * @returns {[dict]} a dictionary of a [margin loan structure]
+         * @returns {dict} a [margin loan structure]{@link https://docs.ccxt.com/en/latest/manual.html#margin-loan-structure}
          */
         await this.loadMarkets ();
         const currency = this.currency (code);
@@ -5304,11 +5314,12 @@ module.exports = class okx extends Exchange {
          * @method
          * @name okx#repayMargin
          * @description repay borrowed margin and interest
+         * @see https://www.okx.com/docs-v5/en/#rest-api-account-vip-loans-borrow-and-repay
          * @param {str} code unified currency code of the currency to repay
          * @param {float} amount the amount to repay
          * @param {str|undefined} symbol not used by okx.repayMargin ()
          * @param {dict} params extra parameters specific to the okx api endpoint
-         * @returns {[dict]} a dictionary of a [margin loan structure]
+         * @returns {dict} a [margin loan structure]{@link https://docs.ccxt.com/en/latest/manual.html#margin-loan-structure}
          */
         await this.loadMarkets ();
         const currency = this.currency (code);

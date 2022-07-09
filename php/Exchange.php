@@ -36,7 +36,7 @@ use Elliptic\EdDSA;
 use BN\BN;
 use Exception;
 
-$version = '1.90.27';
+$version = '1.90.39';
 
 // rounding mode
 const TRUNCATE = 0;
@@ -55,7 +55,7 @@ const PAD_WITH_ZERO = 1;
 
 class Exchange {
 
-    const VERSION = '1.90.27';
+    const VERSION = '1.90.39';
 
     private static $base58_alphabet = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
     private static $base58_encoder = null;
@@ -1314,7 +1314,7 @@ class Exchange {
             'fetchFundingRates' => null,
             'fetchIndexOHLCV' => null,
             'fetchL1OrderBooks' => null,
-            'fetchL2OrderBook' => null,
+            'fetchL2OrderBook' => true,
             'fetchL3OrderBook' => null,
             'fetchLastPrices' => null,
             'fetchLedger' => null,
