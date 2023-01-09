@@ -67,7 +67,7 @@ module.exports = class bybit extends bybitRest {
             },
             'options': {
                 'watchTicker': {
-                    'name': 'tickers', // 'tickers' for 24hr statistical ticker or 'bookticker' for Best bid price and best ask price
+                    'name': 'tickers', // 'tickers' for 24hr statistical ticker or 'bookticker' for best bid price and best ask price
                 },
                 'spot': {
                     'timeframes': {
