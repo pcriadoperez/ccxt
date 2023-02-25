@@ -1039,6 +1039,7 @@ module.exports = class bitget extends bitgetRest {
         //    }
         //
         const data = this.safeValue (message, 'data', []);
+        this.balance['info'] = data;
         for (let i = 0; i < data.length; i++) {
             const rawBalance = data[i];
             const currencyId = this.safeString2 (rawBalance, 'coinName', 'marginCoin');
