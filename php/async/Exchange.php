@@ -49,6 +49,7 @@ class Exchange extends \ccxt\Exchange {
     public $reloadingMarkets = null;
     public $tokenBucket;
     public $throttler;
+    public $ws_connections_throttle;
 
     public $streaming = array(
         'keepAlive' => 30000,
@@ -65,6 +66,9 @@ class Exchange extends \ccxt\Exchange {
         parent::__construct($options);
         $this->set_request_browser();
         $this->throttler = new Throttler($this->tokenBucket);
+        $ws_options = $this->safe_value($this->options, 'ws', array());
+        $ws_connections_config = $this->calculate_ws_token_bucket($ws_options);
+        $this->ws_connections_throttle = new Throttler($ws_connections_config);
     }
 
     public function set_request_browser($connector_options = array()) {
@@ -291,6 +295,40 @@ class Exchange extends \ccxt\Exchange {
     // ########################################################################
 
     // METHODS BELOW THIS LINE ARE TRANSPILED FROM JAVASCRIPT TO PYTHON AND PHP
+
+    public function calculate_ws_token_bucket($wsOptions, ?string $url = null, string $tokenKey = 'connections') {
+        $rateLimits = $this->safe_value($wsOptions, 'rateLimits', array());
+        $specificRateLimit = $this->safe_value($rateLimits, $tokenKey, array());
+        $rateLimit = $this->safe_number($specificRateLimit, 'rateLimit');
+        if ($rateLimits === null || $rateLimit === null) {
+            return $this->tokenBucket; // default to the rest bucket
+        }
+        $cost = 1;
+        $rateLimitsKeys = is_array($rateLimits) ? array_keys($rateLimits) : array();
+        if ($url !== null) {
+            for ($i = 0; $i < count($rateLimitsKeys); $i++) {
+                $rateLimitKey = $rateLimitsKeys[$i];
+                if (str_starts_with($url, $rateLimitKey)) {
+                    $value = $this->safe_value($rateLimits, $rateLimitKey);
+                    $urlCost = $this->safe_integer($value, $tokenKey);
+                    if ($urlCost !== null) {
+                        $cost = $urlCost;
+                        break;
+                    }
+                }
+            }
+        }
+        $refillRate = ($rateLimit !== null) ? (1 / $rateLimit) : PHP_INT_MAX;
+        $tokenBucket = $this->safe_value($rateLimits, 'tokenBucket', array());
+        $config = array_merge(array(
+            'delay' => 0.001,
+            'capacity' => 1,
+            'cost' => $cost,
+            'maxCapacity' => 100000,
+            'refillRate' => $refillRate,
+        ), $tokenBucket);
+        return $config;
+    }
 
     public function check_proxy_settings($url, $method, $headers, $body) {
         $proxyUrl = ($this->proxyUrl !== null) ? $this->proxyUrl : $this->proxy_url;

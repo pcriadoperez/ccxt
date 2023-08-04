@@ -57,8 +57,7 @@ class Client {
     public $log = null;
     public $heartbeat = null;
     public $cost = 1;
-    public $messages_throttler;
-    public $connections_throttler;
+    public $messages_throttle;
     public $rateLimits;
     public $throttle;
 

@@ -34,8 +34,7 @@ class Client(object):
     gunzip = False
     inflate = False
     throttle = None
-    connections_throttler = None
-    messages_throttler = None
+    messages_throttle = None
     connecting = False
     asyncio_loop = None
     ping_looper = None

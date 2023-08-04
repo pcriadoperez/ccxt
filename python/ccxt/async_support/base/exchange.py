@@ -76,12 +76,20 @@ class Exchange(BaseExchange):
         self.cafile = config.get('cafile', certifi.where())
         super(Exchange, self).__init__(config)
         self.throttle = None
+        self.ws_connections_throttle = None
         self.init_rest_rate_limiter()
+        self.init_ws_connections_throttle()
         self.markets_loading = None
         self.reloading_markets = False
 
     def init_rest_rate_limiter(self):
         self.throttle = Throttler(self.tokenBucket, self.asyncio_loop)
+
+    def init_ws_connections_throttle(self):
+        ws_options = self.safe_value(self.options, 'ws', {})
+        ws_connections_config = self.calculate_ws_token_bucket(ws_options)
+        ws_connections_config['maxCapacity'] = 30000
+        self.ws_connections_throttle = Throttler(ws_connections_config, self.asyncio_loop)
 
     def get_event_loop(self):
         return self.asyncio_loop
@@ -355,14 +363,12 @@ class Exchange(BaseExchange):
             on_connected = self.on_connected
             # decide client type here: aiohttp ws / websockets / signalr / socketio
             ws_options = self.safe_value(self.options, 'ws', {})
-            ws_connections_config = self.calculate_ws_token_bucket(ws_options, url)
             ws_messages_config = self.calculate_ws_token_bucket(ws_options, url, 'messages')
             options = self.extend(self.streaming, {
                 'log': getattr(self, 'log'),
                 'ping': getattr(self, 'ping', None),
                 'verbose': self.verbose,
-                'connections_throttler': Throttler(ws_connections_config, self.asyncio_loop),
-                'messages_throttler': Throttler(ws_messages_config, self.asyncio_loop),
+                'messages_throttle': Throttler(ws_messages_config, self.asyncio_loop),
                 'asyncio_loop': self.asyncio_loop,
             }, ws_options)
             self.clients[url] = FastClient(url, on_message, on_error, on_close, on_connected, options)
@@ -377,7 +383,7 @@ class Exchange(BaseExchange):
             raise NotSupported(self.id + '.handle_message() not implemented yet')
         return {}
 
-    def watch(self, url, message_hash, message=None, subscribe_hash=None, subscription=None):
+    def watch(self, url, message_hash, message=None, subscribe_hash=None, subscription=None, message_cost=1):
         backoff_delay = 0
         client = self.client(url)
         if subscribe_hash is None and message_hash in client.futures:
@@ -396,7 +402,11 @@ class Exchange(BaseExchange):
         else:
             async def connect():
                 if self.enableRateLimit:
-                    client.messages_throttler()
+                    wsOptions = self.safe_value (self.options, 'ws', {})
+                    rateLimits = self.safe_value (wsOptions, 'rateLimits', {})
+                    urlRateLimit = self.safe_value (rateLimits, client.url, {})
+                    cost = self.safe_number (urlRateLimit, 'connections', 1)
+                    await self.ws_connections_throttle(cost)
                 return await client.connect(self.session, backoff_delay)
             connected = asyncio.ensure_future(connect())
 
@@ -405,7 +415,7 @@ class Exchange(BaseExchange):
             if message:
                 async def send_message():
                     if self.enableRateLimit:
-                        await client.messages_throttler()
+                        await client.messages_throttle(message_cost)
                     try:
                         await client.send(message)
                     except ConnectionError as e:
@@ -529,26 +539,23 @@ class Exchange(BaseExchange):
 
     # METHODS BELOW THIS LINE ARE TRANSPILED FROM JAVASCRIPT TO PYTHON AND PHP
 
-    def calculate_ws_token_bucket(self, wsOptions, url, tokenKey='connections'):
-        rateLimits = self.safe_value(wsOptions, 'rateLimits')
-        rateLimit = self.safe_number(rateLimits, 'rateLimit')
+    def calculate_ws_token_bucket(self, wsOptions, url: Optional[str] = None, tokenKey: str = 'connections'):
+        rateLimits = self.safe_value(wsOptions, 'rateLimits', {})
+        specificRateLimit = self.safe_value(rateLimits, tokenKey, {})
+        rateLimit = self.safe_number(specificRateLimit, 'rateLimit')
         if rateLimits is None or rateLimit is None:
             return self.tokenBucket  # default to the rest bucket
-        cost = None
+        cost = 1
         rateLimitsKeys = list(rateLimits.keys())
-        for i in range(0, len(rateLimitsKeys)):
-            rateLimitKey = rateLimitsKeys[i]
-            if url.startswith(rateLimitKey):
-                value = self.safe_value(rateLimits, rateLimitKey)
-                cost = self.safe_integer(value, tokenKey)
-        if cost is None:
-            # try default
-            defaultConfig = self.safe_value(rateLimits, 'default')
-            if defaultConfig is not None:
-                cost = self.safe_integer(defaultConfig, tokenKey)
-            if cost is None:
-                # default not found
-                return self.tokenBucket
+        if url is not None:
+            for i in range(0, len(rateLimitsKeys)):
+                rateLimitKey = rateLimitsKeys[i]
+                if url.startswith(rateLimitKey):
+                    value = self.safe_value(rateLimits, rateLimitKey)
+                    urlCost = self.safe_integer(value, tokenKey)
+                    if urlCost is not None:
+                        cost = urlCost
+                        break
         refillRate = (1 / rateLimit) if (rateLimit is not None) else float('inf')
         tokenBucket = self.safe_value(rateLimits, 'tokenBucket', {})
         config = self.extend({

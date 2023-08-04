@@ -53,14 +53,12 @@ trait ClientTrait {
             $on_close = array($this, 'on_close');
             $on_connected = array($this, 'on_connected');
             $ws_options = $this->safe_value($this->options, 'ws', array());
-            $ws_connections_config = $this->calculate_ws_token_bucket($ws_options, $url);
             $ws_messages_config = $this->calculate_ws_token_bucket($ws_options, $url, 'messages');
             $options = array_replace_recursive(array(
                 'log' => array($this, 'log'),
                 'verbose' => $this->verbose,
                 'throttle' => new Throttler($this->tokenBucket),
-                'connections_throttler' => new Throttler($ws_connections_config),
-                'messages_throttler' => new Throttler($ws_messages_config),
+                'messages_throttle' => new Throttler($ws_messages_config),
             ), $this->streaming, $ws_options);
             $this->clients[$url] = new Client($url, $on_message, $on_error, $on_close, $on_connected, $options);
         }
@@ -102,7 +100,11 @@ trait ClientTrait {
         // $connected = $client->connect($backoff_delay);
         $connected = null;
         if ($this->enableRateLimit) {
-            $connected = call_user_func($client->connections_throttler)->then(function ($result) use ($client, $backoff_delay) {
+            $wsOptions = $this->safe_value($this->options, 'ws', array());
+            $rateLimits = $this->safe_value($wsOptions, 'rateLimits', array());
+            $urlRateLimit = $this->safe_value($rateLimits, $client->url, array());
+            $cost = $this->safe_number($urlRateLimit, 'connections', 1);
+            $connected = call_user_func($this->ws_connections_throttle, $cost)->then(function ($result) use ($client, $backoff_delay) {
                 return $client->connect($backoff_delay);
             });
         } else{
@@ -118,7 +120,7 @@ trait ClientTrait {
                             // add cost here |
                             //               |
                             //               V
-                            \call_user_func($client->messages_throttler, $message_cost)->then(function ($result) use ($client, $message) {
+                            \call_user_func($client->messages_throttle, $message_cost)->then(function ($result) use ($client, $message) {
                                 Async\await($client->send($message));
                             });
                         } else {

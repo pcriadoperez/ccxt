@@ -274,6 +274,7 @@ export default class Exchange {
     rateLimit: number = undefined; // milliseconds
     tokenBucket = undefined
     throttler = undefined
+    wsConnectionsThrottler = undefined
     enableRateLimit: boolean = undefined;
 
     httpExceptions = undefined
@@ -730,12 +731,12 @@ export default class Exchange {
         }
         // init the request rate limiter
         this.initRestRateLimiter ()
+        this.initWsConnectionRateLimiter ()
         // init predefined markets if any
         if (this.markets) {
             this.setMarkets (this.markets)
         }
         this.newUpdates = ((this.options as any).newUpdates !== undefined) ? (this.options as any).newUpdates : true;
-
         this.afterConstruct ();
     }
 
@@ -797,6 +798,12 @@ export default class Exchange {
             refillRate: (this.rateLimit > 0) ? 1 / this.rateLimit : Number.MAX_VALUE,
         }, this.tokenBucket);
         this.throttler = new Throttler (this.tokenBucket);
+    }
+
+    initWsConnectionRateLimiter () {
+        const wsOptions = this.safeValue (this.options, 'ws', {});
+        const wsConnectionsTokenConfig = this.calculateWsTokenBucket (wsOptions);
+        this.wsConnectionsThrottler = new Throttler (wsConnectionsTokenConfig);
     }
 
     throttle (cost = undefined) {
@@ -1158,13 +1165,11 @@ export default class Exchange {
             const onConnected = this.onConnected.bind (this);
             // decide client type here: ws / signalr / socketio
             const wsOptions = this.safeValue (this.options, 'ws', {});
-            const wsConnectionsTokenConfig = this.calculateWsTokenBucket (wsOptions, url);
             const wsMessagesTokenConfig = this.calculateWsTokenBucket (wsOptions, url, 'messages');
             const options = this.deepExtend (this.streaming, {
                 'log': this.log ? this.log.bind (this) : this.log,
                 'ping': (this as any).ping ? (this as any).ping.bind (this) : (this as any).ping,
                 'verbose': this.verbose,
-                'connectionsThrottler': new Throttler (wsConnectionsTokenConfig),
                 'messagesThrottler': new Throttler (wsMessagesTokenConfig),
                 // add support for proxies
                 'options': {
@@ -1224,8 +1229,11 @@ export default class Exchange {
         //  a proper exception class instance
         let connected = undefined;
         if (this.enableRateLimit && !client.startedConnecting) {
-            // const connectionCost = this.safeValue (this.options, 'ws', {}).connectionCost;
-            connected = client.connectionsThrottler.throttle ().then (() => client.connect (backoffDelay));
+            const wsOptions = this.safeValue (this.options, 'ws', {});
+            const rateLimits = this.safeValue (wsOptions, 'rateLimits', {});
+            const urlRateLimit = this.safeValue (rateLimits, client['url'], {});
+            const cost = this.safeNumber (urlRateLimit, 'connections', 1);
+            connected = this.wsConnectionsThrottler.throttle (cost).then (() => client.connect (backoffDelay));
         } else {
             connected = client.connect (backoffDelay);
         }
@@ -1391,23 +1399,25 @@ export default class Exchange {
     // ------------------------------------------------------------------------
     // METHODS BELOW THIS LINE ARE TRANSPILED FROM JAVASCRIPT TO PYTHON AND PHP
 
-    calculateWsTokenBucket (wsOptions, url, tokenKey = 'connections') {
-        const rateLimits = this.safeValue (wsOptions, 'rateLimits');
-        const specificRateLimit = this.safeValue (rateLimits, tokenKey);
+    calculateWsTokenBucket (wsOptions, url: string = undefined, tokenKey: string = 'connections') {
+        const rateLimits = this.safeValue (wsOptions, 'rateLimits', {});
+        const specificRateLimit = this.safeValue (rateLimits, tokenKey, {});
         const rateLimit = this.safeNumber (specificRateLimit, 'rateLimit');
         if (rateLimits === undefined || rateLimit === undefined) {
             return this.tokenBucket; // default to the rest bucket
         }
         let cost = 1;
         const rateLimitsKeys = Object.keys (rateLimits);
-        for (let i = 0; i < rateLimitsKeys.length; i++) {
-            const rateLimitKey = rateLimitsKeys[i];
-            if (url.startsWith (rateLimitKey)) {
-                const value = this.safeValue (rateLimits, rateLimitKey);
-                const urlCost = this.safeInteger (value, tokenKey);
-                if (urlCost !== undefined) {
-                    cost = urlCost;
-                    break;
+        if (url !== undefined) {
+            for (let i = 0; i < rateLimitsKeys.length; i++) {
+                const rateLimitKey = rateLimitsKeys[i];
+                if (url.startsWith (rateLimitKey)) {
+                    const value = this.safeValue (rateLimits, rateLimitKey);
+                    const urlCost = this.safeInteger (value, tokenKey);
+                    if (urlCost !== undefined) {
+                        cost = urlCost;
+                        break;
+                    }
                 }
             }
         }
