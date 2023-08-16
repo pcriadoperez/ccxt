@@ -114,11 +114,10 @@ export default class bittrex extends bittrexRest {
     async sendRequestToAuthenticate (negotiation, expired = false, params = {}) {
         const url = this.getSignalRUrl (negotiation);
         const client = this.client (url);
-        const messageHash = 'authenticate';
-        let future = this.safeValue (client.subscriptions, messageHash);
-        if ((future === undefined) || expired) {
-            future = client.future (messageHash);
-            client.subscriptions[messageHash] = future;
+        const messageHash = 'authenticated';
+        const future = client.future (messageHash);
+        const authenticated = this.safeValue (client.subscriptions, messageHash);
+        if ((authenticated === undefined) || expired) {
             const requestId = this.requestId ().toString ();
             const request = this.makeRequestToAuthenticate (requestId);
             const subscription = {
@@ -127,9 +126,9 @@ export default class bittrex extends bittrexRest {
                 'negotiation': negotiation,
                 'method': this.handleAuthenticate,
             };
-            this.spawn (this.watch, url, messageHash, request, requestId, subscription);
+            this.watch (url, messageHash, request, requestId, subscription);
         }
-        return await future;
+        return future;
     }
 
     async sendAuthenticatedRequestToSubscribe (authentication, messageHash, params = {}) {
@@ -143,7 +142,9 @@ export default class bittrex extends bittrexRest {
         if (requestId in client.subscriptions) {
             delete client.subscriptions[requestId];
         }
-        client.resolve (subscription, 'authenticate');
+        const messageHash = 'authenticated';
+        const future = this.safeValue (client.futures, messageHash);
+        future.resolve (true);
     }
 
     async handleAuthenticationExpiringHelper () {
