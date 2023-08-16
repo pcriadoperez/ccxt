@@ -1234,9 +1234,9 @@ export default class cex extends cexRest {
                     'timestamp': nonce,
                 },
             };
-            await this.watch (url, messageHash, this.extend (request, params), messageHash);
+            this.watch (url, messageHash, this.extend (request, params), messageHash);
         }
-        return await future;
+        return future;
     }
 }
 
