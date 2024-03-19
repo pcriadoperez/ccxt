@@ -1404,6 +1404,10 @@ export default class Exchange {
         this.clients = this.clients || {};
         if (!this.clients[url]) {
             const onMessage = this.handleMessage.bind (this);
+            const onMessageWithStream = (client, message)=> {
+                this.streamProduce ('raw', message);
+                return onMessage (client, message);
+            };
             const onError = this.onError.bind (this);
             const onClose = this.onClose.bind (this);
             const onConnected = this.onConnected.bind (this);
@@ -1426,7 +1430,12 @@ export default class Exchange {
                     'agent': finalAgent,
                 }
             }, wsOptions);
-            this.clients[url] = new WsClient (url, onMessage, onError, onClose, onConnected, options);
+            this.clients[url] = new WsClient (url, onMessageWithStream, onError, onClose, onConnected, options);
+            const originalResolve = this.clients[url].resolve;
+            this.clients[url].resolve = (result, messageHash) => {
+                this.streamProduceHook (result, messageHash);
+                return originalResolve (result, messageHash);
+            };
         }
         return this.clients[url];
     }
@@ -1780,6 +1789,25 @@ export default class Exchange {
 
     // ------------------------------------------------------------------------
     // METHODS BELOW THIS LINE ARE TRANSPILED FROM JAVASCRIPT TO PYTHON AND PHP
+
+    streamProduceHook (result, messageHash) {
+        const parts = messageHash.split (':');
+        const targetName = parts[0];
+        const targetNameLower = targetName.toLowerCase ();
+        if (targetNameLower.indexOf ('orderbook') >= 0) {
+            this.streamProduce ('orderbooks', result);
+        } else if (targetNameLower.indexOf ('ticker') >= 0) {
+            this.streamProduce ('tickers', result);
+        } else if (targetNameLower.indexOf ('order') >= 0) {
+            this.streamProduce ('orders', result);
+        } else if (targetNameLower.indexOf ('position') >= 0) {
+            this.streamProduce ('positions', result);
+        } else if (targetNameLower.indexOf ('mytrade') >= 0) {
+            this.streamProduce ('myTrades', result);
+        } else if (targetNameLower.indexOf ('trade') >= 0) {
+            this.streamProduce ('trades', result);
+        }
+    }
 
     setupStream () {
         const stream = this.stream;
