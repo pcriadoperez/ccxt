@@ -1,0 +1,46 @@
+{
+  "name": "electron",
+  "version": "1.0.0",
+  "description": "An electron app that runs ccxt",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron-forge start",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "package": "electron-forge package",
+    "make": "electron-forge make"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@electron-forge/cli": "^7.5.0",
+    "@electron-forge/maker-deb": "^7.5.0",
+    "@electron-forge/maker-rpm": "^7.5.0",
+    "@electron-forge/maker-squirrel": "^7.5.0",
+    "@electron-forge/maker-zip": "^7.5.0",
+    "@electron-forge/plugin-auto-unpack-natives": "^7.5.0",
+    "@electron-forge/plugin-fuses": "^7.5.0",
+    "@electron/fuses": "^1.8.0",
+    "electron": "^33.0.1"
+  },
+  "dependencies": {
+    "ccxt": "^4.4.20",
+    "electron-squirrel-startup": "^1.0.1"
+  },
+  "build": {
+    "appId": "com.ccxt.binancetickerapp",
+    "productName": "CCXT - Binance Ticker App",
+    "copyright": "Copyright © 2024 ccxt",
+    "files": [
+      "dist/**/*",
+      "index.js",
+      "preload.js",
+      "renderer.js",
+      "index.html",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis"
+    }
+  }
+}
