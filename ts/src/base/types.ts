@@ -635,7 +635,7 @@ interface BaseConstructorArgs {
     userAgent?: string;
     userAgents?: Dict;
     timeout?: number;
-    markets?: Dict;
+    markets?: Dict; // Pre-loaded markets to avoid fetching from API, useful for sharing between instances
     currencies?: Dict;
     hostname?: string
     urls?: Dict;

@@ -245,6 +245,7 @@ export default class Exchange {
 
     validateServerSsl: boolean = true
     validateClientSsl: boolean = false
+    marketsProvidedOnConstruction: boolean = false
 
     timeout: Int      = 10000 // milliseconds
     verbose: boolean  = false
@@ -557,6 +558,8 @@ export default class Exchange {
         this.myLiquidations = {}
         this.myTrades     = undefined
         this.positions    = undefined
+        // flag to track if markets were provided during construction
+        this.marketsProvidedOnConstruction = false
         // web3 and cryptography flags
         this.requiresWeb3 = false
         this.requiresEddsa = false
@@ -593,6 +596,11 @@ export default class Exchange {
             } else {
                 this[property] = value
             }
+        }
+        
+        // track if markets were provided during construction to optimize loadMarkets
+        if (userConfig.markets && Object.keys(userConfig.markets).length > 0) {
+            this.marketsProvidedOnConstruction = true
         }
         // http client options
         const agentOptions = {
@@ -1009,6 +1017,11 @@ export default class Exchange {
             }
             return this.markets
         }
+        // If markets were provided during construction and this is not a reload,
+        // avoid fetching markets from the API
+        if (!reload && this.marketsProvidedOnConstruction) {
+            return this.markets
+        }
         let currencies = undefined
         // only call if exchange API provides endpoint (true), thus avoid emulated versions ('emulated')
         if (this.has['fetchCurrencies'] === true) {
@@ -1031,6 +1044,32 @@ export default class Exchange {
             })
         }
         return this.marketsLoading
+    }
+
+    /**
+     * Sets markets after instantiation, useful for sharing markets between multiple exchange instances
+     * @param {object} markets - Dictionary of markets indexed by symbol
+     * @param {object} currencies - Optional dictionary of currencies
+     * @returns {object} The processed markets
+     * @example
+     * // Share markets between exchange instances to save memory
+     * const exchange1 = new binance({ apiKey: 'key1', secret: 'secret1' })
+     * await exchange1.loadMarkets()
+     * const exchange2 = new binance({ 
+     *   apiKey: 'key2', 
+     *   secret: 'secret2',
+     *   markets: exchange1.markets  // Share markets to avoid fetching again
+     * })
+     * // Or set markets after instantiation:
+     * const exchange3 = new binance({ apiKey: 'key3', secret: 'secret3' })
+     * exchange3.setProvidedMarkets(exchange1.markets)
+     */
+    setProvidedMarkets (markets: Dictionary<Market>, currencies?: Dictionary<Currency>): Dictionary<Market> {
+        if (!markets || Object.keys(markets).length === 0) {
+            throw new ArgumentsRequired('setProvidedMarkets() requires a non-empty markets dictionary')
+        }
+        this.marketsProvidedOnConstruction = true
+        return this.setMarkets(markets, currencies)
     }
 
     async fetchCurrencies (params = {}): Promise<Currencies> {
