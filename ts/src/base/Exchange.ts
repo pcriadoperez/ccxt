@@ -20,6 +20,7 @@ const {
     , unCamelCase
     , precisionFromString
     , Throttler
+    , CustomThrottler
     , capitalize
     , now
     , decimalToPrecision
@@ -332,7 +333,7 @@ export default class Exchange {
     };
     rateLimit: Num = undefined; // milliseconds
     tokenBucket = undefined
-    throttler = undefined
+    throttler: Throttler | CustomThrottler = undefined
     enableRateLimit: boolean = undefined;
 
     httpExceptions = undefined
@@ -661,7 +662,12 @@ export default class Exchange {
     }
 
     initThrottler () {
-        this.throttler = new Throttler (this.tokenBucket);
+        // If a custom throttler is provided in the config, use it
+        if (this.options && this.options.customThrottler) {
+            this.throttler = this.options.customThrottler;
+        } else {
+            this.throttler = new Throttler (this.tokenBucket);
+        }
     }
 
     defineRestApiEndpoint (methodName, uppercaseMethod, lowercaseMethod, camelcaseMethod, path, paths, config = {}) {

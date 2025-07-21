@@ -5,6 +5,11 @@
 import { now, sleep } from './time.js';
 /*  ------------------------------------------------------------------------ */
 
+// Custom throttler interface
+export interface CustomThrottler {
+    throttle(cost?: number): Promise<void>;
+}
+
 class Throttler {
     constructor (config) {
         this.config = {
@@ -64,6 +69,7 @@ class Throttler {
 
 export {
     Throttler,
+    CustomThrottler,
 };
 
 // ----------------------------------------

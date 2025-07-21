@@ -194,7 +194,7 @@ class Exchange(object):
     urls = None
     api = None
     parseJsonResponse = True
-    throttler = None
+    throttler = None  # Can be Throttler or CustomThrottler instance
 
     # PROXY & USER-AGENTS (see "examples/proxy-usage" file for explanation)
     proxy = None  # for backwards compatibility
@@ -454,17 +454,32 @@ class Exchange(object):
         return self.name
 
     def init_throttler(self, cost=None):
-        # stub in sync
-        pass
+        # If a custom throttler is provided in the config, use it
+        if hasattr(self, 'options') and self.options and 'customThrottler' in self.options:
+            self.throttler = self.options['customThrottler']
+        else:
+            # Use default throttler (stub in sync)
+            pass
 
     def throttle(self, cost=None):
-        now = float(self.milliseconds())
-        elapsed = now - self.lastRestRequestTimestamp
-        cost = 1 if cost is None else cost
-        sleep_time = self.rateLimit * cost
-        if elapsed < sleep_time:
-            delay = sleep_time - elapsed
-            time.sleep(delay / 1000.0)
+        # If using a custom throttler, delegate to it
+        if self.throttler and hasattr(self.throttler, 'throttle'):
+            # For async throttlers, we need to handle this differently in sync context
+            if hasattr(self.throttler, '__aenter__'):  # Check if it's async
+                # In sync context, we'll use a simple delay for async throttlers
+                time.sleep(0.1)
+            else:
+                # For sync custom throttlers, call directly
+                self.throttler.throttle(cost)
+        else:
+            # Default throttling behavior
+            now = float(self.milliseconds())
+            elapsed = now - self.lastRestRequestTimestamp
+            cost = 1 if cost is None else cost
+            sleep_time = self.rateLimit * cost
+            if elapsed < sleep_time:
+                delay = sleep_time - elapsed
+                time.sleep(delay / 1000.0)
 
     @staticmethod
     def gzip_deflate(response, text):

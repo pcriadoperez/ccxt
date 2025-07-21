@@ -574,7 +574,21 @@ public partial class Exchange
 
     public async Task throttle(object cost)
     {
-        await (await this.throttler.throttle(cost));
+        // Check if using custom throttler
+        if (this.throttler is ICustomThrottler customThrottler)
+        {
+            await customThrottler.Throttle(cost);
+        }
+        else if (this.throttler is Throttler defaultThrottler)
+        {
+            // Use default throttler
+            await (await defaultThrottler.throttle(cost));
+        }
+        else
+        {
+            // Fallback to no throttling
+            await Task.CompletedTask;
+        }
     }
 
     public object clone(object o)
@@ -780,7 +794,16 @@ public partial class Exchange
 
     public void initThrottler()
     {
-        this.throttler = new Throttler(this.tokenBucket);
+        // If a custom throttler is provided in the config, use it
+        if (this.options != null && this.options.TryGetValue("customThrottler", out var customThrottler))
+        {
+            this.throttler = customThrottler;
+        }
+        else
+        {
+            // Use default throttler
+            this.throttler = new Throttler(this.tokenBucket);
+        }
     }
 
     public bool isEmpty(object a)

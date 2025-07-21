@@ -640,6 +640,7 @@ interface BaseConstructorArgs {
     hostname?: string
     urls?: Dict;
     headers?: Dict;
+    customThrottler?: any; // Custom throttler implementation
 }
 
 export type ConstructorArgs = Partial<BaseConstructorArgs> & {

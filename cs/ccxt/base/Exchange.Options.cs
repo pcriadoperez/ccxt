@@ -134,7 +134,7 @@ public partial class Exchange
     public dict httpExceptions { get; set; } = new dict();
 
     public dict tokenBucket { get; set; } = new dict();
-    public Throttler throttler { get; set; }
+    public object throttler { get; set; } // Can be Throttler or ICustomThrottler instance
 
     public object proxyUrl { get; set; } = null;
     public object proxy_url { get; set; } = null;

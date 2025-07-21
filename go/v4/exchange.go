@@ -47,7 +47,7 @@ type Exchange struct {
 	MAX_VALUE           float64
 	RateLimit           float64
 	TokenBucket         map[string]interface{}
-	Throttler           Throttler
+	Throttler           interface{} // Can be Throttler or CustomThrottler instance
 	NewUpdates          bool
 	Alias               bool
 	Verbose             bool
@@ -243,6 +243,14 @@ func (this *Exchange) WarmUpCache() {
 }
 
 func (this *Exchange) InitThrottler() {
+	// If a custom throttler is provided in the config, use it
+	if this.Options != nil {
+		if customThrottler, exists := this.Options["customThrottler"]; exists {
+			this.Throttler = customThrottler
+			return
+		}
+	}
+	// Use default throttler
 	this.Throttler = NewThrottler(this.TokenBucket)
 }
 
@@ -291,12 +299,44 @@ func (this *Exchange) LoadMarkets(params ...interface{}) <-chan interface{} {
 }
 
 func (this *Exchange) Throttle(cost interface{}) <-chan interface{} {
-	// to do
 	ch := make(chan interface{})
 	go func() {
 		defer close(ch)
-		task := <-this.Throttler.Throttle(cost)
-		ch <- task
+		
+		// Check if using custom throttler
+		if customThrottler, ok := this.Throttler.(CustomThrottler); ok {
+			// Convert cost to float64
+			var costFloat float64
+			if cost != nil {
+				switch v := cost.(type) {
+				case float64:
+					costFloat = v
+				case int:
+					costFloat = float64(v)
+				case int64:
+					costFloat = float64(v)
+				default:
+					costFloat = 1.0
+				}
+			} else {
+				costFloat = 1.0
+			}
+			
+			// Use custom throttler
+			err := customThrottler.Throttle(context.Background(), costFloat)
+			if err != nil {
+				ch <- err
+				return
+			}
+			ch <- nil
+		} else if defaultThrottler, ok := this.Throttler.(*Throttler); ok {
+			// Use default throttler
+			task := <-defaultThrottler.Throttle(cost)
+			ch <- task
+		} else {
+			// Fallback to no throttling
+			ch <- nil
+		}
 	}()
 	return ch
 }
