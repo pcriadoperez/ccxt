@@ -3,7 +3,6 @@
 
 import Exchange from './abstract/binance.js';
 import { ExchangeError, ArgumentsRequired, OperationFailed, OperationRejected, InsufficientFunds, OrderNotFound, InvalidOrder, DDoSProtection, InvalidNonce, AuthenticationError, RateLimitExceeded, PermissionDenied, NotSupported, BadRequest, BadSymbol, AccountSuspended, OrderImmediatelyFillable, OnMaintenance, BadResponse, RequestTimeout, OrderNotFillable, MarginModeAlreadySet, MarketClosed } from './base/errors.js';
-import { MultiThrottler, ThrottleRule } from './base/functions/multi-throttle.js';
 import { Precise } from './base/Precise.js';
 import type { TransferEntry, Int, OrderSide, Balances, OrderType, Trade, OHLCV, Order, FundingRateHistory, OpenInterest, Liquidation, OrderRequest, Str, Transaction, Ticker, OrderBook, Tickers, Market, Greeks, Strings, Currency, MarketInterface, MarginMode, MarginModes, Leverage, Leverages, Num, Option, MarginModification, TradingFeeInterface, Currencies, TradingFees, Conversion, CrossBorrowRate, IsolatedBorrowRates, IsolatedBorrowRate, Dict, LeverageTier, LeverageTiers, int, LedgerEntry, FundingRate, FundingRates, DepositAddress, LongShortRatio, BorrowInterest, Position } from './base/types.js';
 import { TRUNCATE, TICK_SIZE } from './base/functions/number.js';
@@ -2695,27 +2694,31 @@ export default class binance extends Exchange {
         });
     }
 
-    multiThrottler: MultiThrottler = undefined;
-
-    initThrottler () {
-        // Initialize multi-rule throttler if rateLimits are defined
-        const rateLimits = this.safeValue(this.describe(), 'rateLimits');
-        if (rateLimits !== undefined && rateLimits.length > 0) {
-            const rules = rateLimits.map(limit => 
-                new ThrottleRule(
-                    limit.id,
-                    limit.capacity,
-                    limit.refillRate,
-                    limit.capacity, // Start with full capacity
-                    limit.intervalType,
-                    limit.intervalNum
-                )
-            );
-            this.multiThrottler = new MultiThrottler(rules);
+    updateRateLimitsFromHeaders (headers) {
+        // Override base implementation with Binance-specific header patterns
+        if (this.throttler && this.throttler.setTokens) {
+            // Update REQUEST_WEIGHT from X-MBX-USED-WEIGHT-* headers
+            const weightHeader = this.safeString(headers, 'x-mbx-used-weight-1m');
+            if (weightHeader !== undefined) {
+                const rule = this.throttler.getRule('REQUEST_WEIGHT');
+                if (rule) {
+                    const usedWeight = parseInt(weightHeader);
+                    const remainingWeight = rule.capacity - usedWeight;
+                    this.throttler.setTokens('REQUEST_WEIGHT', Math.max(0, remainingWeight));
+                }
+            }
+            
+            // Update ORDERS from X-MBX-ORDER-COUNT-* headers  
+            const orderHeader = this.safeString(headers, 'x-mbx-order-count-10s');
+            if (orderHeader !== undefined) {
+                const rule = this.throttler.getRule('ORDERS');
+                if (rule) {
+                    const usedOrders = parseInt(orderHeader);
+                    const remainingOrders = rule.capacity - usedOrders;
+                    this.throttler.setTokens('ORDERS', Math.max(0, remainingOrders));
+                }
+            }
         }
-        
-        // Keep backward compatibility with single throttler
-        super.initThrottler();
     }
 
     isInverse (type: string, subType: Str = undefined): boolean {
@@ -12094,181 +12097,7 @@ export default class binance extends Exchange {
         return undefined;
     }
 
-    calculateRateLimiterCost (api, method, path, params, config = {}) {
-        // Multi-rule throttling support
-        if (this.multiThrottler !== undefined) {
-            const result = {};
-            let hasMultiRuleCosts = false;
-            
-            // Handle multi-rule cost specifications
-            for (const [ruleId, ruleConfig] of Object.entries(config)) {
-                if (ruleId === 'cost') continue; // Skip legacy cost property
-                
-                hasMultiRuleCosts = true;
-                
-                if (typeof ruleConfig === 'number') {
-                    // Simple numeric cost
-                    result[ruleId] = ruleConfig;
-                } else if (typeof ruleConfig === 'object' && ruleConfig !== null) {
-                    // Complex cost calculation
-                    if (('noCoin' in ruleConfig) && !('coin' in params)) {
-                        result[ruleId] = ruleConfig['noCoin'];
-                    } else if (('noSymbol' in ruleConfig) && !('symbol' in params)) {
-                        result[ruleId] = ruleConfig['noSymbol'];
-                    } else if (('noPoolId' in ruleConfig) && !('poolId' in params)) {
-                        result[ruleId] = ruleConfig['noPoolId'];
-                    } else if (('byLimit' in ruleConfig) && ('limit' in params)) {
-                        const limit = params['limit'];
-                        const byLimit = ruleConfig['byLimit'] as any;
-                        for (let i = 0; i < byLimit.length; i++) {
-                            const entry = byLimit[i];
-                            if (limit <= entry[0]) {
-                                result[ruleId] = entry[1];
-                                break;
-                            }
-                        }
-                    } else {
-                        result[ruleId] = this.safeValue(ruleConfig, 'default', 1);
-                    }
-                }
-            }
-            
-            // If no multi-rule costs found, use legacy behavior with backward compatibility
-            if (!hasMultiRuleCosts) {
-                const legacyCost = this.calculateLegacyRateLimiterCost(api, method, path, params, config);
-                
-                // Convert legacy single cost to multi-rule format
-                result['RAW_REQUESTS'] = 1;
-                result['REQUEST_WEIGHT'] = legacyCost;
-                
-                // Add ORDERS cost for order-related endpoints
-                if (this.isOrderEndpoint(path)) {
-                    result['ORDERS'] = 1;
-                }
-            } else {
-                // Ensure we always have at least RAW_REQUESTS cost
-                if (!('RAW_REQUESTS' in result)) {
-                    result['RAW_REQUESTS'] = 1;
-                }
-                
-                // If no REQUEST_WEIGHT specified, use legacy calculation as fallback
-                if (!('REQUEST_WEIGHT' in result)) {
-                    const legacyCost = this.calculateLegacyRateLimiterCost(api, method, path, params, config);
-                    result['REQUEST_WEIGHT'] = legacyCost;
-                }
-            }
-            
-            return result;
-        }
-        
-        // Fallback to legacy single-rule behavior
-        return this.calculateLegacyRateLimiterCost(api, method, path, params, config);
-    }
 
-    calculateLegacyRateLimiterCost (api, method, path, params, config = {}) {
-        if (('noCoin' in config) && !('coin' in params)) {
-            return config['noCoin'];
-        } else if (('noSymbol' in config) && !('symbol' in params)) {
-            return config['noSymbol'];
-        } else if (('noPoolId' in config) && !('poolId' in params)) {
-            return config['noPoolId'];
-        } else if (('byLimit' in config) && ('limit' in params)) {
-            const limit = params['limit'];
-            const byLimit = config['byLimit'] as any;
-            for (let i = 0; i < byLimit.length; i++) {
-                const entry = byLimit[i];
-                if (limit <= entry[0]) {
-                    return entry[1];
-                }
-            }
-        }
-        return this.safeValue (config, 'cost', 1);
-    }
-
-    isOrderEndpoint (path) {
-        // Check if endpoint is order-related (should consume ORDERS limit)
-        const orderPaths = [
-            'order', 'batchOrders', 'allOpenOrders', 'orderList',
-            'margin/order', 'margin/orderList', 'margin/allOpenOrders',
-            'um/order', 'um/conditional/order', 'um/allOpenOrders',
-            'cm/order', 'cm/conditional/order', 'cm/allOpenOrders'
-        ];
-        return orderPaths.some(orderPath => path.indexOf(orderPath) >= 0);
-    }
-
-    async throttle (cost = undefined) {
-        if (this.enableRateLimit && this.multiThrottler) {
-            if (typeof cost === 'number') {
-                // Legacy single cost - convert to multi-rule format
-                await this.multiThrottler.throttle({
-                    'RAW_REQUESTS': 1,
-                    'REQUEST_WEIGHT': cost
-                });
-            } else if (typeof cost === 'object' && cost !== null) {
-                // Multi-rule cost object
-                await this.multiThrottler.throttle(cost);
-            } else {
-                // Default cost
-                await this.multiThrottler.throttle({
-                    'RAW_REQUESTS': 1,
-                    'REQUEST_WEIGHT': 1
-                });
-            }
-        }
-        
-        // Keep backward compatibility with single throttler
-        return super.throttle(typeof cost === 'object' ? cost['REQUEST_WEIGHT'] || 1 : cost);
-    }
-
-    getRateLimitStatus () {
-        if (this.multiThrottler !== undefined) {
-            return this.multiThrottler.getStatus();
-        }
-        
-        // Fallback to legacy behavior if available
-        return super.getRateLimitStatus?.() || {};
-    }
-
-    updateRateLimitsFromHeaders (headers) {
-        if (this.multiThrottler === undefined) return;
-        
-        // Update REQUEST_WEIGHT from X-MBX-USED-WEIGHT-* headers
-        const weightHeader = this.safeString(headers, 'x-mbx-used-weight-1m');
-        if (weightHeader !== undefined) {
-            const usedWeight = parseInt(weightHeader);
-            const remainingWeight = 1200 - usedWeight; // Standard Binance limit
-            this.multiThrottler.setTokens('REQUEST_WEIGHT', Math.max(0, remainingWeight));
-        }
-        
-        // Update ORDERS from X-MBX-ORDER-COUNT-* headers  
-        const orderHeader = this.safeString(headers, 'x-mbx-order-count-10s');
-        if (orderHeader !== undefined) {
-            const usedOrders = parseInt(orderHeader);
-            const remainingOrders = 100 - usedOrders; // Standard Binance limit
-            this.multiThrottler.setTokens('ORDERS', Math.max(0, remainingOrders));
-        }
-    }
-
-    async request (path, api = 'public', method = 'GET', params = {}, headers = undefined, body = undefined, config = {}) {
-        // Calculate and apply rate limiting costs
-        if (this.enableRateLimit) {
-            const costs = this.calculateRateLimiterCost(api, method, path, params, config);
-            await this.throttle(costs);
-        }
-        
-        const response = await this.fetch2 (path, api, method, params, headers, body, config);
-        
-        // Update rate limits from response headers if multi-throttler is available
-        if (response && response.headers && this.multiThrottler !== undefined) {
-            this.updateRateLimitsFromHeaders(response.headers);
-        }
-        
-        // a workaround for {"code":-2015,"msg":"Invalid API-key, IP, or permissions for action."}
-        if (api === 'private') {
-            this.options['hasAlreadyAuthenticatedSuccessfully'] = true;
-        }
-        return response;
-    }
 
     async modifyMarginHelper (symbol: string, amount, addOrReduce, params = {}) {
         // used to modify isolated positions

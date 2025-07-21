@@ -661,7 +661,24 @@ export default class Exchange {
     }
 
     initThrottler () {
-        this.throttler = new Throttler (this.tokenBucket);
+        // Initialize with multi-rule throttling if rateLimits are defined
+        const rateLimits = this.safeValue(this.describe(), 'rateLimits');
+        if (rateLimits !== undefined && rateLimits.length > 0) {
+            // Convert rateLimits configuration to ThrottleRule format
+            const rules = rateLimits.map(limit => ({
+                id: limit.id,
+                capacity: limit.capacity,
+                refillRate: limit.refillRate,
+                tokens: limit.capacity, // Start with full capacity
+                intervalType: limit.intervalType,
+                intervalNum: limit.intervalNum,
+                description: limit.description
+            }));
+            this.throttler = new Throttler(rules);
+        } else {
+            // Legacy single-rule throttler
+            this.throttler = new Throttler(this.tokenBucket);
+        }
     }
 
     defineRestApiEndpoint (methodName, uppercaseMethod, lowercaseMethod, camelcaseMethod, path, paths, config = {}) {
@@ -4781,7 +4798,14 @@ export default class Exchange {
         [ retryDelay, params ] = this.handleOptionAndParams (params, path, 'maxRetriesOnFailureDelay', 0);
         for (let i = 0; i < retries + 1; i++) {
             try {
-                return await this.fetch (request['url'], request['method'], request['headers'], request['body']);
+                const response = await this.fetch (request['url'], request['method'], request['headers'], request['body']);
+                
+                // Update rate limits from response headers if multi-throttler is available
+                if (response && response.headers && this.throttler && this.throttler.isMultiRule()) {
+                    this.updateRateLimitsFromHeaders(response.headers);
+                }
+                
+                return response;
             } catch (e) {
                 if (e instanceof OperationFailed) {
                     if (i < retries) {
@@ -5327,7 +5351,110 @@ export default class Exchange {
     }
 
     calculateRateLimiterCost (api, method, path, params, config = {}) {
-        return this.safeValue (config, 'cost', 1);
+        // Multi-rule throttling support
+        if (this.throttler && this.throttler.isMultiRule()) {
+            const result = {};
+            let hasMultiRuleCosts = false;
+            
+            // Handle multi-rule cost specifications
+            for (const [ruleId, ruleConfig] of Object.entries(config)) {
+                if (ruleId === 'cost') continue; // Skip legacy cost property
+                
+                hasMultiRuleCosts = true;
+                
+                if (typeof ruleConfig === 'number') {
+                    // Simple numeric cost
+                    result[ruleId] = ruleConfig;
+                } else if (typeof ruleConfig === 'object' && ruleConfig !== null) {
+                    // Complex cost calculation
+                    if (('noCoin' in ruleConfig) && !('coin' in params)) {
+                        result[ruleId] = ruleConfig['noCoin'];
+                    } else if (('noSymbol' in ruleConfig) && !('symbol' in params)) {
+                        result[ruleId] = ruleConfig['noSymbol'];
+                    } else if (('noPoolId' in ruleConfig) && !('poolId' in params)) {
+                        result[ruleId] = ruleConfig['noPoolId'];
+                    } else if (('byLimit' in ruleConfig) && ('limit' in params)) {
+                        const limit = params['limit'];
+                        const byLimit = ruleConfig['byLimit'] as any;
+                        for (let i = 0; i < byLimit.length; i++) {
+                            const entry = byLimit[i];
+                            if (limit <= entry[0]) {
+                                result[ruleId] = entry[1];
+                                break;
+                            }
+                        }
+                    } else {
+                        result[ruleId] = this.safeValue(ruleConfig, 'default', 1);
+                    }
+                }
+            }
+            
+            // If no multi-rule costs found, apply default multi-rule conversion
+            if (!hasMultiRuleCosts) {
+                const legacyCost = this.safeValue(config, 'cost', 1);
+                
+                // Default rule mapping for exchanges that don't specify custom rules
+                result['RAW_REQUESTS'] = 1;
+                result['REQUEST_WEIGHT'] = legacyCost;
+                
+                // Add ORDERS cost for order-related endpoints
+                if (this.isOrderEndpoint(path)) {
+                    result['ORDERS'] = 1;
+                }
+            }
+            
+            return result;
+        }
+        
+        // Fallback to legacy single-rule behavior
+        return this.safeValue(config, 'cost', 1);
+    }
+
+    isOrderEndpoint (path) {
+        // Check if endpoint is order-related (should consume ORDERS limit)
+        const orderPaths = [
+            'order', 'batchOrders', 'allOpenOrders', 'orderList',
+            'margin/order', 'margin/orderList', 'margin/allOpenOrders',
+            'um/order', 'um/conditional/order', 'um/allOpenOrders',
+            'cm/order', 'cm/conditional/order', 'cm/allOpenOrders'
+        ];
+        return orderPaths.some(orderPath => path.indexOf(orderPath) >= 0);
+    }
+
+    getRateLimitStatus () {
+        if (this.throttler && this.throttler.getStatus) {
+            return this.throttler.getStatus();
+        }
+        return {};
+    }
+
+    updateRateLimitsFromHeaders (headers) {
+        // Base implementation - exchanges can override this
+        // Example implementation for common patterns
+        if (this.throttler && this.throttler.setTokens) {
+            // Look for common rate limit headers and update accordingly
+            const patterns = [
+                { header: 'x-ratelimit-remaining', rule: 'REQUEST_WEIGHT' },
+                { header: 'x-mbx-used-weight-1m', rule: 'REQUEST_WEIGHT', transform: (used, capacity) => capacity - used },
+                { header: 'x-mbx-order-count-10s', rule: 'ORDERS', transform: (used, capacity) => capacity - used }
+            ];
+            
+            for (const pattern of patterns) {
+                const headerValue = this.safeString(headers, pattern.header);
+                if (headerValue !== undefined) {
+                    const rule = this.throttler.getRule(pattern.rule);
+                    if (rule) {
+                        let tokens;
+                        if (pattern.transform) {
+                            tokens = pattern.transform(parseInt(headerValue), rule.capacity);
+                        } else {
+                            tokens = parseInt(headerValue);
+                        }
+                        this.throttler.setTokens(pattern.rule, Math.max(0, tokens));
+                    }
+                }
+            }
+        }
     }
 
     async fetchTicker (symbol: string, params = {}): Promise<Ticker> {
