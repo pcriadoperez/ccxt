@@ -7,6 +7,7 @@ import ccxt from '../../../../ccxt.js';
 import testCamelCase from './test.camelcase.js';
 import testUnCamelCase from './test.uncamelcase.js';
 import testThrottle from './test.throttle.js';
+import testThrottleMultiRule from './test.throttle.multirule.js';
 import testCalculateFee from './test.calculateFee.js';
 import testAggregate from './test.aggregate.js';
 import testSafeBalance from './test.safeBalance.js';
@@ -20,6 +21,7 @@ function testLanguageSpecific () {
     testCamelCase ();
     testUnCamelCase ();
     testThrottle ();
+    testThrottleMultiRule ();
     testCalculateFee ();
     testAggregate ();
     testSafeBalance ();
