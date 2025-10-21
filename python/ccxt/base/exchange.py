@@ -93,6 +93,7 @@ import gzip
 import hashlib
 import hmac
 import io
+import threading
 
 # load orjson if available, otherwise default to json
 orjson = None
@@ -403,6 +404,10 @@ class Exchange(object):
 
         self.origin = self.uuid()
         self.userAgent = default_user_agent()
+
+        # Thread safety: RLock for throttle mechanism to prevent race conditions
+        # when multiple threads share the same exchange instance
+        self._throttle_lock = threading.RLock()
 
         settings = self.deep_extend(self.describe(), config)
 
@@ -4437,9 +4442,14 @@ class Exchange(object):
 
     def fetch2(self, path, api: Any = 'public', method='GET', params={}, headers: Any = None, body: Any = None, config={}):
         if self.enableRateLimit:
-            cost = self.calculate_rate_limiter_cost(api, method, path, params, config)
-            self.throttle(cost)
-        self.lastRestRequestTimestamp = self.milliseconds()
+            # Thread-safe throttling: acquire lock before reading/updating lastRestRequestTimestamp
+            # This prevents race conditions when multiple threads share the same exchange instance
+            with self._throttle_lock:
+                cost = self.calculate_rate_limiter_cost(api, method, path, params, config)
+                self.throttle(cost)
+                self.lastRestRequestTimestamp = self.milliseconds()
+        else:
+            self.lastRestRequestTimestamp = self.milliseconds()
         request = self.sign(path, api, method, params, headers, body)
         self.last_request_headers = request['headers']
         self.last_request_body = request['body']
