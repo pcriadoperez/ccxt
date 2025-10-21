@@ -3024,7 +3024,7 @@ const delay = 2000 // milliseconds = seconds * 1000
 #### **C#**
 ```csharp
 var delay = 2000; // milliseconds = seconds * 1000
-foreach (var symbol in exchange.Markets.Keys)
+foreach (var symbol in exchange.markets.Keys)
 {
     var orderBook = await exchange.FetchOrderBook(symbol);
     Console.WriteLine(orderBook);
@@ -3180,11 +3180,11 @@ console.log(exchange.id, 'market price', { bid, ask, spread })
 
 #### **C#**
 ```csharp
-var orderbook = await exchange.FetchOrderBook(exchange.Symbols[0]);
-var bid = orderbook.Bids.Count > 0 ? orderbook.Bids[0][0] : null;
-var ask = orderbook.Asks.Count > 0 ? orderbook.Asks[0][0] : null;
+var orderbook = await exchange.FetchOrderBook(exchange.symbols[0]);
+var bid = orderbook.bids.Count > 0 ? orderbook.bids[0][0] : null;
+var ask = orderbook.asks.Count > 0 ? orderbook.asks[0][0] : null;
 var spread = (bid != null && ask != null) ? ask - bid : null;
-Console.WriteLine($"{exchange.Id} market price: bid={bid}, ask={ask}, spread={spread}");
+Console.WriteLine($"{exchange.id} market price: bid={bid}, ask={ask}, spread={spread}");
 ```
 
 #### **Go**
@@ -3351,7 +3351,7 @@ if (exchange.has['fetchTicker']) {
 if (exchange.Has["fetchTicker"])
 {
     Console.WriteLine(await exchange.FetchTicker("BTC/USD")); // ticker for BTC/USD
-    var symbols = exchange.Markets.Keys.ToList();
+    var symbols = exchange.markets.Keys.ToList();
     var random = new Random().Next(symbols.Count);
     Console.WriteLine(await exchange.FetchTicker(symbols[random])); // ticker for a random symbol
 }
@@ -3558,7 +3558,7 @@ if (exchange.has.fetchOHLCV) {
 ```csharp
 if (exchange.Has["fetchOHLCV"])
 {
-    foreach (var symbol in exchange.Markets.Keys)
+    foreach (var symbol in exchange.markets.Keys)
     {
         await Task.Delay((int)exchange.RateLimit); // milliseconds
         var ohlcv = await exchange.FetchOHLCV(symbol, "1h");
@@ -3850,7 +3850,7 @@ if (exchange.has['fetchTrades']) {
 ```csharp
 if (exchange.Has["fetchTrades"])
 {
-    foreach (var symbol in exchange.Markets.Keys)
+    foreach (var symbol in exchange.markets.Keys)
     {
         await Task.Delay((int)exchange.RateLimit);
         var trades = await exchange.FetchTrades(symbol);
@@ -8324,17 +8324,17 @@ try
 }
 catch (NetworkError e)
 {
-    Console.WriteLine($"{exchange.Id} FetchTicker failed due to a network error: {e.Message}");
+    Console.WriteLine($"{exchange.id} FetchTicker failed due to a network error: {e.Message}");
     // retry or whatever
 }
 catch (ExchangeError e)
 {
-    Console.WriteLine($"{exchange.Id} FetchTicker failed due to exchange error: {e.Message}");
+    Console.WriteLine($"{exchange.id} FetchTicker failed due to exchange error: {e.Message}");
     // retry or whatever
 }
 catch (Exception e)
 {
-    Console.WriteLine($"{exchange.Id} FetchTicker failed with: {e.Message}");
+    Console.WriteLine($"{exchange.id} FetchTicker failed with: {e.Message}");
     // retry or whatever
 }
 ```
