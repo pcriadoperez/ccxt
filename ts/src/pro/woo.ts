@@ -861,7 +861,12 @@ export default class woo extends wooRest {
         //         "maker": false
         //     }
         //
-        const orderId = this.safeString (order, 'orderId');
+        let orderId = this.safeString (order, 'orderId');
+        // Handle algo orders - use algoOrderId if present
+        const algoOrderId = this.safeString (order, 'algoOrderId');
+        if (algoOrderId !== undefined) {
+            orderId = algoOrderId;
+        }
         const marketId = this.safeString (order, 'symbol');
         market = this.market (marketId);
         const symbol = market['symbol'];
@@ -885,10 +890,23 @@ export default class woo extends wooRest {
         if (amount >= totalExecQuantity) {
             remaining -= totalExecQuantity;
         }
-        const rawStatus = this.safeString (order, 'status');
+        let rawStatus = this.safeString (order, 'status');
+        // Handle algo orders - use algoStatus if present
+        const algoStatus = this.safeString (order, 'algoStatus');
+        if (algoStatus !== undefined) {
+            rawStatus = algoStatus;
+        }
         const status = this.parseOrderStatus (rawStatus);
         const trades = undefined;
         const clientOrderId = this.safeString (order, 'clientOrderId');
+        // Handle trigger orders - parse triggerPrice for both stopPrice and triggerPrice
+        let stopPrice = undefined;
+        let triggerPrice = undefined;
+        const triggerPriceValue = this.safeNumber (order, 'triggerPrice');
+        if (triggerPriceValue !== undefined) {
+            stopPrice = triggerPriceValue;
+            triggerPrice = triggerPriceValue;
+        }
         return this.safeOrder ({
             'info': order,
             'symbol': symbol,
@@ -902,8 +920,8 @@ export default class woo extends wooRest {
             'postOnly': undefined,
             'side': side,
             'price': price,
-            'stopPrice': undefined,
-            'triggerPrice': undefined,
+            'stopPrice': stopPrice,
+            'triggerPrice': triggerPrice,
             'amount': amount,
             'cost': undefined,
             'average': avgPrice,
