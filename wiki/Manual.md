@@ -204,6 +204,25 @@ print (ccxt.exchanges)
 include 'ccxt.php';
 var_dump (\ccxt\Exchange::$exchanges);
 ```
+#### **TypeScript**
+```typescript
+import ccxt from 'ccxt';
+console.log(ccxt.exchanges);
+```
+#### **C#**
+```csharp
+using ccxt;
+var exchanges = Exchange.Exchanges;
+Console.WriteLine(String.Join(", ", exchanges));
+```
+#### **Go**
+```go
+import "ccxt/go/ccxt"
+import "fmt"
+
+exchanges := ccxt.Exchanges
+fmt.Println(exchanges)
+```
 <!-- tabs:end -->
 
 An exchange can be instantiated like shown in the examples below:
@@ -266,6 +285,53 @@ $exchange = new $exchange_class(array(
     'apiKey' => 'YOUR_API_KEY',
     'secret' => 'YOUR_SECRET',
 ));
+```
+#### **TypeScript**
+```typescript
+import ccxt from 'ccxt';
+const exchange = new ccxt.okcoin(); // default id
+const okcoin1 = new ccxt.okcoin({ id: 'okcoin1' });
+const okcoin2 = new ccxt.okcoin({ id: 'okcoin2' });
+const id = 'btcchina';
+const btcchina = new ccxt[id]();
+
+// from variable id
+const exchangeId = 'binance';
+const exchangeClass = ccxt[exchangeId];
+const exchange = new exchangeClass({
+    apiKey: 'YOUR_API_KEY',
+    secret: 'YOUR_SECRET',
+});
+```
+#### **C#**
+```csharp
+using ccxt;
+
+var exchange = new Binance(); // instantiate exchange
+var kraken1 = new Kraken();
+kraken1.id = "kraken1";
+var kraken2 = new Kraken();
+kraken2.id = "kraken2";
+
+// with API credentials
+var exchangeId = "binance";
+var exchange = new Binance();
+exchange.apiKey = "YOUR_API_KEY";
+exchange.secret = "YOUR_SECRET";
+```
+#### **Go**
+```go
+import "ccxt/go/ccxt"
+
+exchange := ccxt.NewBinance(nil) // default instantiation
+kraken1 := ccxt.NewKraken(&ccxt.ExchangeConfig{Id: "kraken1"})
+kraken2 := ccxt.NewKraken(&ccxt.ExchangeConfig{Id: "kraken2"})
+
+// with API credentials
+exchange := ccxt.NewBinance(&ccxt.ExchangeConfig{
+    ApiKey: "YOUR_API_KEY",
+    Secret: "YOUR_SECRET",
+})
 ```
 <!-- tabs:end -->
 
@@ -418,6 +484,53 @@ $exchange = new $exchange_class(array(
 ));
 $exchange->options['adjustForTimeDifference'] = false;
 ```
+
+#### **TypeScript**
+```typescript
+const exchange = new ccxt.binance({
+    rateLimit: 10000, // unified exchange property
+    headers: {
+        'YOUR_CUSTOM_HTTP_HEADER': 'YOUR_CUSTOM_VALUE',
+    },
+    options: {
+        adjustForTimeDifference: true, // exchange-specific option
+    }
+});
+exchange.options['adjustForTimeDifference'] = false;
+```
+
+#### **C#**
+```csharp
+var exchange = new Binance(new Dictionary<string, object>
+{
+    { "rateLimit", 10000 }, // unified exchange property
+    { "headers", new Dictionary<string, object>
+        {
+            { "YOUR_CUSTOM_HTTP_HEADER", "YOUR_CUSTOM_VALUE" }
+        }
+    },
+    { "options", new Dictionary<string, object>
+        {
+            { "adjustForTimeDifference", true } // exchange-specific option
+        }
+    }
+});
+exchange.options["adjustForTimeDifference"] = false;
+```
+
+#### **Go**
+```go
+exchange := ccxt.NewBinance(&ccxt.ExchangeConfig{
+    RateLimit: 10000, // unified exchange property
+    Headers: map[string]interface{}{
+        "YOUR_CUSTOM_HTTP_HEADER": "YOUR_CUSTOM_VALUE",
+    },
+    Options: map[string]interface{}{
+        "adjustForTimeDifference": true, // exchange-specific option
+    },
+})
+exchange.Options["adjustForTimeDifference"] = false
+```
 <!-- tabs:end -->
 
 ### Overriding Exchange Methods
@@ -454,6 +567,40 @@ $ex->add_method('fetch_ticker', function($symbol, $params = []) {
 var_dump($ex->call_method('fetch_ticker', ['BTC/USDT']));
 ```
 
+#### **TypeScript**
+```typescript
+const ex = new ccxt.binance();
+ex.fetch_ticker = function (symbol: string, params = {}) {
+    // your codes go here
+};
+console.log(ex.fetch_ticker('BTC/USDT'));
+```
+
+#### **C#**
+```csharp
+// Note: C# method overriding is done via inheritance
+var ex = new Binance();
+// Override via custom class:
+// public class CustomBinance : Binance {
+//     public override async Task<Ticker> FetchTicker(string symbol, Dictionary<string, object> parameters = null) {
+//         // your code here
+//     }
+// }
+```
+
+#### **Go**
+```go
+// Note: Go method overriding requires embedding and custom implementation
+ex := ccxt.NewBinance(nil)
+// Override via custom struct:
+// type CustomBinance struct {
+//     *ccxt.Binance
+// }
+// func (c *CustomBinance) FetchTicker(symbol string, params map[string]interface{}) (interface{}, error) {
+//     // your code here
+// }
+```
+
 <!-- tabs:end -->
 
 
@@ -482,6 +629,24 @@ exchange.set_sandbox_mode(True)  # enable sandbox mode
 ```php
 $exchange = new \ccxt\binance($config);
 $exchange->set_sandbox_mode(true); // enable sandbox mode
+```
+
+#### **TypeScript**
+```typescript
+const exchange = new ccxt.binance(config);
+exchange.setSandboxMode(true); // enable sandbox mode
+```
+
+#### **C#**
+```csharp
+var exchange = new Binance();
+exchange.setSandboxMode(true); // enable sandbox mode
+```
+
+#### **Go**
+```go
+exchange := ccxt.NewBinance(&config)
+exchange.SetSandboxMode(true) // enable sandbox mode
 ```
 
 <!-- tabs:end -->
@@ -723,6 +888,43 @@ $exchange = new \ccxt\bitfinex (array (
 // or switch the built-in rate-limiter on or off later after instantiation
 $exchange->enableRateLimit = true; // enable
 $exchange->enableRateLimit = false; // disable
+```
+
+#### **TypeScript**
+```typescript
+// enable built-in rate limiting upon instantiation of the exchange
+const exchange = new ccxt.bitfinex({
+    // enableRateLimit: true, // enabled by default
+});
+
+// or switch the built-in rate-limiter on or off later after instantiation
+exchange.enableRateLimit = true; // enable
+exchange.enableRateLimit = false; // disable
+```
+
+#### **C#**
+```csharp
+// enable built-in rate limiting upon instantiation of the exchange
+var exchange = new Bitfinex(new Dictionary<string, object>
+{
+    // { "enableRateLimit", true }, // enabled by default
+});
+
+// or switch the built-in rate-limiter on or off later after instantiation
+exchange.enableRateLimit = true; // enable
+exchange.enableRateLimit = false; // disable
+```
+
+#### **Go**
+```go
+// enable built-in rate limiting upon instantiation of the exchange
+exchange := ccxt.NewBitfinex(&ccxt.ExchangeConfig{
+    // EnableRateLimit: true, // enabled by default
+})
+
+// or switch the built-in rate-limiter on or off later after instantiation
+exchange.EnableRateLimit = true // enable
+exchange.EnableRateLimit = false // disable
 ```
 
 <!-- tabs:end -->
@@ -1102,6 +1304,21 @@ def decimal_to_precision(n, rounding_mode=ROUND, precision=None, counting_mode=D
 function decimalToPrecision ($x, $roundingMode = ROUND, $numPrecisionDigits = null, $countingMode = DECIMAL_PLACES, $paddingMode = NO_PADDING)
 ```
 
+#### **TypeScript**
+```typescript
+function decimalToPrecision(x: string | number, roundingMode: number, numPrecisionDigits?: number, countingMode = DECIMAL_PLACES, paddingMode = NO_PADDING): string
+```
+
+#### **C#**
+```csharp
+string DecimalToPrecision(object x, int roundingMode = ROUND, int? numPrecisionDigits = null, int countingMode = DECIMAL_PLACES, int paddingMode = NO_PADDING)
+```
+
+#### **Go**
+```go
+func (exchange *Exchange) DecimalToPrecision(x interface{}, roundingMode int, numPrecisionDigits *int, countingMode int, paddingMode int) string
+```
+
 <!-- tabs:end -->
 
 For examples of how to use the `decimalToPrecision` to format strings and floats, please, see the following files:
@@ -1136,6 +1353,27 @@ function amount_to_precision($symbol, $amount)
 function price_to_precision($symbol, $price)
 function cost_to_precision($symbol, $cost)
 function currency_to_precision($code, $amount)
+```
+#### **TypeScript**
+```typescript
+function amountToPrecision(symbol: string, amount: number): string
+function priceToPrecision(symbol: string, price: number): string
+function costToPrecision(symbol: string, cost: number): string
+function currencyToPrecision(code: string, amount: number): string
+```
+#### **C#**
+```csharp
+string AmountToPrecision(string symbol, object amount)
+string PriceToPrecision(string symbol, object price)
+string CostToPrecision(string symbol, object cost)
+string CurrencyToPrecision(string code, object amount)
+```
+#### **Go**
+```go
+func (exchange *Exchange) AmountToPrecision(symbol string, amount interface{}) string
+func (exchange *Exchange) PriceToPrecision(symbol string, price interface{}) string
+func (exchange *Exchange) CostToPrecision(symbol string, cost interface{}) string
+func (exchange *Exchange) CurrencyToPrecision(code string, amount interface{}) string
 ```
 <!-- tabs:end -->
 
@@ -1179,6 +1417,39 @@ $price = 87654.321; // price in quote currency USDT
 $formatted_amount = $exchange->amount_to_precision($symbol, $amount);
 $formatted_price = $exchange->price_to_precision($symbol, $price);
 echo $formatted_amount, " ", $formatted_price, "\n";
+```
+
+#### **TypeScript**
+```typescript
+await exchange.loadMarkets();
+const symbol = 'BTC/USDT';
+const amount = 1.2345678; // amount in base currency BTC
+const price = 87654.321; // price in quote currency USDT
+const formattedAmount = exchange.amountToPrecision(symbol, amount);
+const formattedPrice = exchange.priceToPrecision(symbol, price);
+console.log(formattedAmount, formattedPrice);
+```
+
+#### **C#**
+```csharp
+await exchange.LoadMarkets();
+var symbol = "BTC/USDT";
+var amount = 1.2345678; // amount in base currency BTC
+var price = 87654.321; // price in quote currency USDT
+var formattedAmount = exchange.AmountToPrecision(symbol, amount);
+var formattedPrice = exchange.PriceToPrecision(symbol, price);
+Console.WriteLine(formattedAmount + " " + formattedPrice);
+```
+
+#### **Go**
+```go
+<-exchange.LoadMarkets()
+symbol := "BTC/USDT"
+amount := 1.2345678 // amount in base currency BTC
+price := 87654.321  // price in quote currency USDT
+formattedAmount := exchange.AmountToPrecision(symbol, amount)
+formattedPrice := exchange.PriceToPrecision(symbol, price)
+fmt.Println(formattedAmount, formattedPrice)
 ```
 <!-- tabs:end -->
 
@@ -1242,6 +1513,29 @@ $exchange = '\\ccxt\\' . $id;
 $huobipro = new $exchange();
 $markets = $huobipro->load_markets();
 var_dump($huobipro->id, $markets);
+```
+
+#### **TypeScript**
+```typescript
+(async () => {
+    const kraken = new ccxt.kraken();
+    const markets = await kraken.loadMarkets();
+    console.log(kraken.id, markets);
+})();
+```
+
+#### **C#**
+```csharp
+var exchange = new Kraken();
+var markets = await exchange.LoadMarkets();
+Console.WriteLine(exchange.id + " " + markets);
+```
+
+#### **Go**
+```go
+exchange := ccxt.NewKraken(nil)
+markets := <-exchange.LoadMarkets()
+fmt.Println(exchange.Id, markets)
 ```
 
 <!-- tabs:end -->
@@ -1351,6 +1645,87 @@ $okcoin->markets_by_id['btc_usd'][0];              // id → market (get market 
 
 $okcoin->markets['BTC/USD']['id'];              // symbol → id (get id by symbol)
 $okcoin->markets_by_id['btc_usd'][0]['symbol']; // id → symbol (get symbol by id)
+```
+
+#### **TypeScript**
+```typescript
+(async () => {
+    console.log(await exchange.loadMarkets());
+
+    const btcusd1 = exchange.markets['BTC/USD'];     // get market structure by symbol
+    const btcusd2 = exchange.market('BTC/USD');      // same result in a slightly different way
+
+    const btcusdId = exchange.marketId('BTC/USD');   // get market id by symbol
+
+    const symbols = exchange.symbols;                // get an array of symbols
+    const symbols2 = Object.keys(exchange.markets);  // same as previous line
+
+    console.log(exchange.id, symbols);               // print all symbols
+
+    const currencies = exchange.currencies;          // a dictionary of currencies
+
+    const bitfinex = new ccxt.bitfinex();
+    await bitfinex.loadMarkets();
+
+    bitfinex.markets['BTC/USD'];                     // symbol → market (get market by symbol)
+    bitfinex.markets_by_id['XRPBTC'][0];             // id → market (get market by id)
+
+    bitfinex.markets['BTC/USD']['id'];               // symbol → id (get id by symbol)
+    bitfinex.markets_by_id['XRPBTC'][0]['symbol'];   // id → symbol (get symbol by id)
+})();
+```
+
+#### **C#**
+```csharp
+await exchange.LoadMarkets();
+
+var btcusd1 = exchange.markets["BTC/USD"];     // get market structure by symbol
+var btcusd2 = exchange.Market("BTC/USD");      // same result in a slightly different way
+
+var btcusdId = exchange.MarketId("BTC/USD");   // get market id by symbol
+
+var symbols = exchange.symbols;                // get a list of symbols
+var symbols2 = exchange.markets.Keys;          // same as previous line
+
+Console.WriteLine(exchange.id + " " + String.Join(", ", symbols)); // print all symbols
+
+var currencies = exchange.currencies;          // a dictionary of currencies
+
+var bitfinex = new Bitfinex();
+await bitfinex.LoadMarkets();
+
+bitfinex.markets["BTC/USD"];                   // symbol → market (get market by symbol)
+bitfinex.markets_by_id["XRPBTC"][0];           // id → market (get market by id)
+
+bitfinex.markets["BTC/USD"].id;                // symbol → id (get id by symbol)
+bitfinex.markets_by_id["XRPBTC"][0].symbol;    // id → symbol (get symbol by id)
+```
+
+#### **Go**
+```go
+markets := <-exchange.LoadMarkets()
+fmt.Println(markets)
+
+btcusd1 := exchange.Markets["BTC/USD"]     // get market structure by symbol
+btcusd2 := exchange.GetMarket("BTC/USD")   // same result in a slightly different way
+
+btcusdId := exchange.MarketId("BTC/USD")   // get market id by symbol
+
+symbols := exchange.Symbols                // get a slice of symbols
+symbols2 := exchange.GetSymbols()          // same as previous line
+
+fmt.Println(exchange.Id, symbols)          // print all symbols
+
+currencies := exchange.Currencies          // a map of currencies
+
+bitfinex := ccxt.NewBitfinex(nil)
+<-bitfinex.LoadMarkets()
+
+bitfinex.Markets["BTC/USD"]                // symbol → market (get market by symbol)
+bitfinex.MarketsById["XRPBTC"][0]          // id → market (get market by id)
+
+bitfinex.Markets["BTC/USD"].Id             // symbol → id (get id by symbol)
+bitfinex.MarketsById["XRPBTC"][0].Symbol   // id → symbol (get symbol by id)
 ```
 
 <!-- tabs:end -->
@@ -1578,6 +1953,44 @@ $reloadedMarkets = $bitfinex->load_markets(true); // force HTTP reload = true
 var_dump($bitfinex->markets['XRP/BTC']);
 ```
 
+#### **TypeScript**
+```typescript
+(async () => {
+    const kraken = new ccxt.kraken({ verbose: true }); // log HTTP requests
+    await kraken.loadMarkets(); // request markets
+    console.log(kraken.id, kraken.markets);    // output a full list of all loaded markets
+    console.log(Object.keys(kraken.markets)); // output a short list of market symbols
+    console.log(kraken.markets['BTC/USD']);    // output single market details
+    await kraken.loadMarkets(); // return a locally cached version, no reload
+    const reloadedMarkets = await kraken.loadMarkets(true); // force HTTP reload = true
+    console.log(reloadedMarkets['ETH/BTC']);
+})();
+```
+
+#### **C#**
+```csharp
+var kraken = new Kraken(new Dictionary<string, object> { { "verbose", true } }); // log HTTP requests
+await kraken.LoadMarkets(); // request markets
+Console.WriteLine(kraken.id + " " + kraken.markets);    // output a full list of all loaded markets
+Console.WriteLine(String.Join(", ", kraken.markets.Keys)); // output a short list of market symbols
+Console.WriteLine(kraken.markets["BTC/USD"]);    // output single market details
+await kraken.LoadMarkets(); // return a locally cached version, no reload
+var reloadedMarkets = await kraken.LoadMarkets(true); // force HTTP reload = true
+Console.WriteLine(reloadedMarkets["ETH/BTC"]);
+```
+
+#### **Go**
+```go
+kraken := ccxt.NewKraken(&ccxt.ExchangeConfig{Verbose: true}) // log HTTP requests
+<-kraken.LoadMarkets() // request markets
+fmt.Println(kraken.Id, kraken.Markets)    // output a full list of all loaded markets
+fmt.Println(kraken.Symbols) // output a short list of market symbols
+fmt.Println(kraken.Markets["BTC/USD"])    // output single market details
+<-kraken.LoadMarkets() // return a locally cached version, no reload
+reloadedMarkets := <-kraken.LoadMarkets(ccxt.WithLoadMarketsReload(true)) // force HTTP reload = true
+fmt.Println(reloadedMarkets["ETH/BTC"])
+```
+
 <!-- tabs:end -->
 
 # Implicit API
@@ -1725,6 +2138,48 @@ while (true) {
 ```
 
 See further examples in the `examples/php` directory; look for filenames that include the `async` word. Also, make sure you have installed the required dependencies using `composer require recoil/recoil clue/buzz-react react/event-loop recoil/react react/http`. Lastly, [this article](https://sergeyzhuk.me/2018/10/26/from-promise-to-coroutines/) provides a good introduction to the methods used here. While syntactically the change is simple (i.e., just using a `yield` keyword before relevant methods), concurrency has significant implications for the overall design of your code.
+
+#### **TypeScript**
+
+In TypeScript, like JavaScript, all methods are asynchronous and return Promises. TypeScript provides type safety on top of the async/await syntax.
+
+```typescript
+// TypeScript
+
+(async () => {
+    const kraken = new ccxt.kraken();
+    const pairs = await kraken.publicGetSymbolsDetails();
+    const marketIds = Object.keys(pairs['result']);
+    const marketId = marketIds[0];
+    const ticker = await kraken.publicGetTicker({ pair: marketId });
+    console.log(kraken.id, marketId, ticker);
+})();
+```
+
+#### **C#**
+
+In C#, all async methods return `Task` or `Task<T>` objects and should be awaited using the `await` keyword.
+
+```csharp
+// C#
+
+var kraken = new Kraken();
+var ticker = await kraken.FetchTicker("ETH/BTC");
+Console.WriteLine(ticker);
+```
+
+#### **Go**
+
+In Go, CCXT uses channels for asynchronous operations. Most methods return a channel that will receive the result.
+
+```go
+// Go
+
+exchange := ccxt.NewKraken(nil)
+tickerChan := exchange.FetchTicker("ETH/BTC", nil)
+ticker := <-tickerChan // receive from channel
+fmt.Println(ticker)
+```
 
 <!-- tabs:end -->
 
@@ -1888,6 +2343,44 @@ $params = array (
 $result = $exchange->fetch_order_book ($symbol, $length, $params);
 ```
 
+#### **TypeScript**
+```typescript
+(async () => {
+
+    const params = {
+        'foo': 'bar',      // exchange-specific overrides in unified queries
+        'Hello': 'World!', // see their docs for more details on parameter names
+    }
+
+    // the overrides go into the last argument to the unified call ↓ HERE
+    const result = await exchange.fetchOrderBook(symbol, length, params)
+})()
+```
+
+#### **C#**
+```csharp
+var params = new Dictionary<string, object>
+{
+    { "foo", "bar" },      // exchange-specific overrides in unified queries
+    { "Hello", "World!" }, // see their docs for more details on parameter names
+};
+
+// overrides go into the last argument to the unified call ↓ HERE
+var result = await exchange.FetchOrderBook(symbol, length, params);
+```
+
+#### **Go**
+```go
+params := map[string]interface{}{
+    "foo":   "bar",      // exchange-specific overrides in unified queries
+    "Hello": "World!",   // see their docs for more details on parameter names
+}
+
+// overrides go into the last argument to the unified call ↓ HERE
+resultChan := exchange.FetchOrderBook(symbol, length, params)
+result := <-resultChan
+```
+
 <!-- tabs:end -->
 
 ## Pagination
@@ -2036,6 +2529,77 @@ if ($exchange->has['fetchMyTrades']) {
 }
 ```
 
+#### **TypeScript**
+```typescript
+if (exchange.has['fetchTrades']) {
+    let since = exchange.milliseconds() - 86400000 // -1 day from now
+    // alternatively, fetch from a certain starting datetime
+    // let since = exchange.parse8601('2018-01-01T00:00:00Z')
+    let allTrades = []
+    while (since < exchange.milliseconds()) {
+        const symbol = undefined // change for your symbol
+        const limit = 20 // change for your limit
+        const trades = await exchange.fetchTrades(symbol, since, limit)
+        if (trades.length) {
+            since = trades[trades.length - 1]['timestamp'] + 1
+            allTrades = allTrades.concat(trades)
+        } else {
+            break
+        }
+    }
+}
+```
+
+#### **C#**
+```csharp
+if (exchange.Has["fetchOrders"])
+{
+    var since = exchange.Milliseconds() - 86400000; // -1 day from now
+    // alternatively, fetch from a certain starting datetime
+    // var since = exchange.Parse8601("2018-01-01T00:00:00Z");
+    var allOrders = new List<object>();
+    while (since < exchange.Milliseconds())
+    {
+        string symbol = null; // change for your symbol
+        int? limit = 20; // change for your limit
+        var orders = await exchange.FetchOrders(symbol, since, limit);
+        if (orders.Count > 0)
+        {
+            since = (long)((Dictionary<string, object>)orders[orders.Count - 1])["timestamp"] + 1;
+            allOrders.AddRange(orders);
+        }
+        else
+        {
+            break;
+        }
+    }
+}
+```
+
+#### **Go**
+```go
+if exchange.Has["fetchTrades"] {
+    since := exchange.Milliseconds() - 86400000 // -1 day from now
+    // alternatively, fetch from a certain starting datetime
+    // since := exchange.Parse8601("2018-01-01T00:00:00Z")
+    allTrades := []interface{}{}
+    for since < exchange.Milliseconds() {
+        var symbol *string = nil // change for your symbol
+        limit := 20 // change for your limit
+        tradesChan := exchange.FetchTrades(symbol, since, limit, nil)
+        trades := <-tradesChan
+        if len(trades.([]interface{})) > 0 {
+            tradeList := trades.([]interface{})
+            lastTrade := tradeList[len(tradeList)-1].(map[string]interface{})
+            since = int64(lastTrade["timestamp"].(float64)) + 1
+            allTrades = append(allTrades, tradeList...)
+        } else {
+            break
+        }
+    }
+}
+```
+
 <!-- tabs:end -->
 
 ### id-based Pagination
@@ -2105,6 +2669,84 @@ if ($exchange->has['fetchMyTrades']) {
             $all_trades = array_merge ($all_trades, $trades);
         } else {
             break;
+        }
+    }
+}
+```
+
+#### **TypeScript**
+```typescript
+if (exchange.has['fetchTrades']) {
+    let from_id = 'abc123' // all ids are strings
+    let allTrades = []
+    while (true) {
+        const symbol = undefined // change for your symbol
+        const since = undefined
+        const limit = 20 // change for your limit
+        const params = {
+            'from_id': from_id, // exchange-specific non-unified parameter name
+        }
+        const trades = await exchange.fetchTrades(symbol, since, limit, params)
+        if (trades.length) {
+            from_id = trades[trades.length - 1]['id']
+            allTrades.push(trades)
+        } else {
+            break
+        }
+    }
+}
+```
+
+#### **C#**
+```csharp
+if (exchange.Has["fetchOrders"])
+{
+    var fromId = "abc123"; // all ids are strings
+    var allOrders = new List<object>();
+    while (true)
+    {
+        string symbol = null; // change for your symbol
+        long? since = null;
+        int? limit = 20; // change for your limit
+        var parameters = new Dictionary<string, object>
+        {
+            { "from_id", fromId } // exchange-specific non-unified parameter name
+        };
+        var orders = await exchange.FetchOrders(symbol, since, limit, parameters);
+        if (orders.Count > 0)
+        {
+            fromId = ((Dictionary<string, object>)orders[orders.Count - 1])["id"].ToString();
+            allOrders.AddRange(orders);
+        }
+        else
+        {
+            break;
+        }
+    }
+}
+```
+
+#### **Go**
+```go
+if exchange.Has["fetchTrades"] {
+    fromId := "abc123" // all ids are strings
+    allTrades := []interface{}{}
+    for {
+        var symbol *string = nil // change for your symbol
+        var since *int64 = nil
+        limit := 20 // change for your limit
+        params := map[string]interface{}{
+            "from_id": fromId, // exchange-specific non-unified parameter name
+        }
+        tradesChan := exchange.FetchTrades(symbol, since, limit, params)
+        trades := <-tradesChan
+        if len(trades.([]interface{})) > 0 {
+            tradeList := trades.([]interface{})
+            lastTrade := tradeList[len(tradeList)-1].(map[string]interface{})
+            fromId = lastTrade["id"].(string)
+            allTrades = append(allTrades, tradeList...)
+        } else {
+            break
         }
     }
 }
@@ -2190,6 +2832,87 @@ if ($exchange->has['fetchMyTrades']) {
             $all_trades = array_merge ($all_trades, $trades);
         } else {
             break;
+        }
+    }
+}
+```
+
+#### **TypeScript**
+```typescript
+if (exchange.has['fetchTrades']) {
+    let page = 0  // exchange-specific type and value
+    let allTrades = []
+    while (true) {
+        const symbol = undefined // change for your symbol
+        const since = undefined
+        const limit = 20 // change for your limit
+        const params = {
+            'page': page, // exchange-specific non-unified parameter name
+        }
+        const trades = await exchange.fetchTrades(symbol, since, limit, params)
+        if (trades.length) {
+            // not thread-safu and exchange-specific !
+            const lastJsonResponse = exchange.parseJson(exchange.last_http_response)
+            page = lastJsonResponse['cursor']
+            allTrades.push(trades)
+        } else {
+            break
+        }
+    }
+}
+```
+
+#### **C#**
+```csharp
+if (exchange.Has["fetchOrders"])
+{
+    var cursor = 0; // exchange-specific type and value
+    var allOrders = new List<object>();
+    while (true)
+    {
+        string symbol = null; // change for your symbol
+        long? since = null;
+        int? limit = 20; // change for your limit
+        var parameters = new Dictionary<string, object>
+        {
+            { "cursor", cursor } // exchange-specific non-unified parameter name
+        };
+        var orders = await exchange.FetchOrders(symbol, since, limit, parameters);
+        if (orders.Count > 0)
+        {
+            // not thread-safu and exchange-specific !
+            cursor = exchange.LastResponseHeaders["CB-AFTER"];
+            allOrders.AddRange(orders);
+        }
+        else
+        {
+            break;
+        }
+    }
+}
+```
+
+#### **Go**
+```go
+if exchange.Has["fetchTrades"] {
+    start := "0" // exchange-specific type and value
+    allTrades := []interface{}{}
+    for {
+        var symbol *string = nil // change for your symbol
+        var since *int64 = nil
+        limit := 20 // change for your limit
+        params := map[string]interface{}{
+            "start": start, // exchange-specific non-unified parameter name
+        }
+        tradesChan := exchange.FetchTrades(symbol, since, limit, params)
+        trades := <-tradesChan
+        if len(trades.([]interface{})) > 0 {
+            // not thread-safu and exchange-specific !
+            lastJsonResponse := exchange.ParseJson(exchange.LastHttpResponse)
+            start = lastJsonResponse.(map[string]interface{})["next"].(string)
+            allTrades = append(allTrades, trades.([]interface{})...)
+        } else {
+            break
         }
     }
 }
@@ -2284,6 +3007,41 @@ $delay = 2000000; // microseconds = seconds * 1000000
 foreach ($exchange->markets as $symbol => $market) {
     var_dump ($exchange->fetch_order_book ($symbol));
     usleep ($delay); // rate limit
+}
+```
+
+#### **TypeScript**
+```typescript
+const delay = 2000 // milliseconds = seconds * 1000
+(async () => {
+    for (const symbol in exchange.markets) {
+        console.log(await exchange.fetchOrderBook(symbol))
+        await new Promise(resolve => setTimeout(resolve, delay)) // rate limit
+    }
+})()
+```
+
+#### **C#**
+```csharp
+var delay = 2000; // milliseconds = seconds * 1000
+foreach (var symbol in exchange.Markets.Keys)
+{
+    var orderBook = await exchange.FetchOrderBook(symbol);
+    Console.WriteLine(orderBook);
+    await Task.Delay(delay); // rate limit
+}
+```
+
+#### **Go**
+```go
+import "time"
+
+delay := 2 * time.Second
+for symbol := range exchange.Markets {
+    orderBookChan := exchange.FetchOrderBook(symbol, nil, nil)
+    orderBook := <-orderBookChan
+    fmt.Println(orderBook)
+    time.Sleep(delay) // rate limit
 }
 ```
 
@@ -2410,6 +3168,43 @@ $spread = ($bid && $ask) ? $ask - $bid : null;
 $result = array ('bid' => $bid, 'ask' => $ask, 'spread' => $spread);
 var_dump ($exchange->id, 'market price', $result);
 ```
+
+#### **TypeScript**
+```typescript
+const orderbook = await exchange.fetchOrderBook(exchange.symbols[0])
+const bid = orderbook.bids.length ? orderbook.bids[0][0] : undefined
+const ask = orderbook.asks.length ? orderbook.asks[0][0] : undefined
+const spread = (bid && ask) ? ask - bid : undefined
+console.log(exchange.id, 'market price', { bid, ask, spread })
+```
+
+#### **C#**
+```csharp
+var orderbook = await exchange.FetchOrderBook(exchange.Symbols[0]);
+var bid = orderbook.Bids.Count > 0 ? orderbook.Bids[0][0] : null;
+var ask = orderbook.Asks.Count > 0 ? orderbook.Asks[0][0] : null;
+var spread = (bid != null && ask != null) ? ask - bid : null;
+Console.WriteLine($"{exchange.Id} market price: bid={bid}, ask={ask}, spread={spread}");
+```
+
+#### **Go**
+```go
+orderBookChan := exchange.FetchOrderBook(exchange.Symbols[0], nil, nil)
+orderBook := <-orderBookChan
+orderBookMap := orderBook.(map[string]interface{})
+var bid, ask, spread interface{}
+if bids, ok := orderBookMap["bids"].([]interface{}); ok && len(bids) > 0 {
+    bid = bids[0].([]interface{})[0]
+}
+if asks, ok := orderBookMap["asks"].([]interface{}); ok && len(asks) > 0 {
+    ask = asks[0].([]interface{})[0]
+}
+if bid != nil && ask != nil {
+    spread = ask.(float64) - bid.(float64)
+}
+fmt.Println(exchange.Id, "market price", map[string]interface{}{"bid": bid, "ask": ask, "spread": spread})
+```
+
 <!-- tabs:end -->
 
 ## Price Tickers
@@ -2540,6 +3335,48 @@ if ($exchange->has['fetchTicker']) {
     var_dump ($exchange->fetch_ticker ($symbols[$random])); // ticker for a random symbol
 }
 ```
+
+#### **TypeScript**
+```typescript
+if (exchange.has['fetchTicker']) {
+    console.log(await exchange.fetchTicker('BTC/USD')) // ticker for BTC/USD
+    const symbols = Object.keys(exchange.markets)
+    const random = Math.floor(Math.random() * (symbols.length - 1))
+    console.log(await exchange.fetchTicker(symbols[random])) // ticker for a random symbol
+}
+```
+
+#### **C#**
+```csharp
+if (exchange.Has["fetchTicker"])
+{
+    Console.WriteLine(await exchange.FetchTicker("BTC/USD")); // ticker for BTC/USD
+    var symbols = exchange.Markets.Keys.ToList();
+    var random = new Random().Next(symbols.Count);
+    Console.WriteLine(await exchange.FetchTicker(symbols[random])); // ticker for a random symbol
+}
+```
+
+#### **Go**
+```go
+import "math/rand"
+
+if exchange.Has["fetchTicker"] {
+    tickerChan := exchange.FetchTicker("BTC/USD", nil)
+    ticker := <-tickerChan
+    fmt.Println(ticker) // ticker for BTC/USD
+
+    symbols := make([]string, 0, len(exchange.Markets))
+    for symbol := range exchange.Markets {
+        symbols = append(symbols, symbol)
+    }
+    randomIdx := rand.Intn(len(symbols))
+    tickerChan = exchange.FetchTicker(symbols[randomIdx], nil)
+    ticker = <-tickerChan
+    fmt.Println(ticker) // ticker for a random symbol
+}
+```
+
 <!-- tabs:end -->
 
 ### All At Once
@@ -2564,6 +3401,32 @@ if ($exchange->has['fetchTickers']) {
     var_dump ($exchange->fetch_tickers ()); // all tickers indexed by their symbols
 }
 ```
+
+#### **TypeScript**
+```typescript
+if (exchange.has['fetchTickers']) {
+    console.log(await exchange.fetchTickers()) // all tickers indexed by their symbols
+}
+```
+
+#### **C#**
+```csharp
+if (exchange.Has["fetchTickers"])
+{
+    var tickers = await exchange.FetchTickers();
+    Console.WriteLine(tickers); // all tickers indexed by their symbols
+}
+```
+
+#### **Go**
+```go
+if exchange.Has["fetchTickers"] {
+    tickersChan := exchange.FetchTickers(nil, nil)
+    tickers := <-tickersChan
+    fmt.Println(tickers) // all tickers indexed by their symbols
+}
+```
+
 <!-- tabs:end -->
 
 Fetching all tickers requires more traffic than fetching a single ticker. Also, note that some exchanges impose higher rate-limits on subsequent fetches of all tickers (see their docs on corresponding endpoints for details). **The cost of the `fetchTickers()` call in terms of rate limit is often higher than average**. If you only need one ticker, fetching by a particular symbol is faster as well. You probably want to fetch all tickers only if you really need all of them and, most likely, you don't want to fetchTickers more frequently than once in a minute or so.
@@ -2589,6 +3452,33 @@ if ($exchange->has['fetchTickers']) {
     var_dump ($exchange->fetch_tickers (array ('ETH/BTC', 'LTC/BTC'))); // listed tickers indexed by their symbols
 }
 ```
+
+#### **TypeScript**
+```typescript
+if (exchange.has['fetchTickers']) {
+    console.log(await exchange.fetchTickers(['ETH/BTC', 'LTC/BTC'])) // listed tickers indexed by their symbols
+}
+```
+
+#### **C#**
+```csharp
+if (exchange.Has["fetchTickers"])
+{
+    var tickers = await exchange.FetchTickers(new List<string> { "ETH/BTC", "LTC/BTC" });
+    Console.WriteLine(tickers); // listed tickers indexed by their symbols
+}
+```
+
+#### **Go**
+```go
+if exchange.Has["fetchTickers"] {
+    symbols := []string{"ETH/BTC", "LTC/BTC"}
+    tickersChan := exchange.FetchTickers(symbols, nil)
+    tickers := <-tickersChan
+    fmt.Println(tickers) // listed tickers indexed by their symbols
+}
+```
+
 <!-- tabs:end -->
 
 Note that the list of symbols is not required in most cases, but you must add additional logic if you want to handle all possible limitations that might be imposed on the exchanges' side.
@@ -2652,6 +3542,45 @@ if ($exchange->has['fetchOHLCV']) {
     }
 }
 ```
+
+#### **TypeScript**
+```typescript
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+if (exchange.has.fetchOHLCV) {
+    for (const symbol in exchange.markets) {
+        await sleep(exchange.rateLimit) // milliseconds
+        console.log(await exchange.fetchOHLCV(symbol, '1m')) // one minute
+    }
+}
+```
+
+#### **C#**
+```csharp
+if (exchange.Has["fetchOHLCV"])
+{
+    foreach (var symbol in exchange.Markets.Keys)
+    {
+        await Task.Delay((int)exchange.RateLimit); // milliseconds
+        var ohlcv = await exchange.FetchOHLCV(symbol, "1h");
+        Console.WriteLine(ohlcv); // one hour
+    }
+}
+```
+
+#### **Go**
+```go
+import "time"
+
+if exchange.Has["fetchOHLCV"] {
+    for symbol := range exchange.Markets {
+        time.Sleep(time.Duration(exchange.RateLimit) * time.Millisecond)
+        ohlcvChan := exchange.FetchOHLCV(symbol, "1d", nil, nil, nil)
+        ohlcv := <-ohlcvChan
+        fmt.Println(symbol, ohlcv) // one day
+    }
+}
+```
+
 <!-- tabs:end -->
 
 To get the list of available timeframes for your exchange see the `timeframes` property. Note that it is only populated when `has['fetchOHLCV']` is true as well.
@@ -2702,6 +3631,58 @@ async def test():
 
 asyncio.run(test())
 ```
+
+#### **PHP**
+```php
+// Override parseOHLCV to include raw response
+$ex = new \ccxt\async\coinbase();
+$originalParser = [$ex, 'parse_ohlcv'];
+$ex->parse_ohlcv = function($ohlcv, $market = null) use ($originalParser, $ex) {
+    $result = call_user_func($originalParser, $ohlcv, $market);
+    $result['raw'] = $ohlcv;
+    return $result;
+};
+$result = \React\Async\await($ex->fetch_ohlcv('BTC/USDT', '1m'));
+var_dump($result[0]);
+```
+
+#### **TypeScript**
+```typescript
+const ex = new ccxt.coinbase();
+const originalParser = ex.parseOHLCV.bind(ex);
+ex.parseOHLCV = ((ohlcv: any, market: any = undefined) => {
+    return {
+        'result': originalParser(ohlcv, market),
+        'raw': ohlcv,
+    };
+});
+const result = await ex.fetchOHLCV('BTC/USDT', '1m');
+console.log(result[0]);
+```
+
+#### **C#**
+```csharp
+// Note: Method override in C# requires subclassing or reflection
+// This is a simplified example showing the concept
+var ex = new Coinbase();
+// Custom parsing would typically be done by subclassing
+// and overriding the ParseOHLCV method
+var result = await ex.FetchOHLCV("BTC/USDT", "1m");
+Console.WriteLine(result[0]);
+```
+
+#### **Go**
+```go
+// Note: Method override in Go requires custom implementation
+// This is a simplified example showing the concept
+ex := ccxt.NewCoinbase(nil)
+// Custom parsing would typically be done by wrapping the exchange
+// and implementing custom parse logic
+resultChan := ex.FetchOHLCV("BTC/USDT", "1m", nil, nil, nil)
+result := <-resultChan
+fmt.Println(result.([]interface{})[0])
+```
+
 <!-- tabs:end -->
 
 
@@ -2824,30 +3805,74 @@ async fetchTrades (symbol, since = undefined, limit = undefined, params = {})
 For example, if you want to print recent trades for all symbols one by one sequentially (mind the rateLimit!) you would do it like so:
 
 <!-- tabs:start -->
-#### **Typescript**
+#### **Javascript**
 ```javascript
 if (exchange.has['fetchTrades']) {
     let sleep = (ms) => new Promise (resolve => setTimeout (resolve, ms));
     for (symbol in exchange.markets) {
+        await sleep (exchange.rateLimit)
         console.log (await exchange.fetchTrades (symbol))
     }
 }
 ```
+
 #### **Python**
 ```python
 import time
 if exchange.has['fetchTrades']:
     for symbol in exchange.markets:  # ensure you have called loadMarkets() or load_markets() method.
+        time.sleep (exchange.rateLimit / 1000)
         print (symbol, exchange.fetch_trades (symbol))
 ```
+
 #### **PHP**
 ```php
 if ($exchange->has['fetchTrades']) {
     foreach ($exchange->markets as $symbol => $market) {
+        usleep ($exchange->rateLimit * 1000);
         var_dump ($exchange->fetch_trades ($symbol));
     }
 }
 ```
+
+#### **TypeScript**
+```typescript
+if (exchange.has['fetchTrades']) {
+    const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+    for (const symbol in exchange.markets) {
+        await sleep(exchange.rateLimit)
+        console.log(await exchange.fetchTrades(symbol))
+    }
+}
+```
+
+#### **C#**
+```csharp
+if (exchange.Has["fetchTrades"])
+{
+    foreach (var symbol in exchange.Markets.Keys)
+    {
+        await Task.Delay((int)exchange.RateLimit);
+        var trades = await exchange.FetchTrades(symbol);
+        Console.WriteLine(trades);
+    }
+}
+```
+
+#### **Go**
+```go
+import "time"
+
+if exchange.Has["fetchTrades"] {
+    for symbol := range exchange.Markets {
+        time.Sleep(time.Duration(exchange.RateLimit) * time.Millisecond)
+        tradesChan := exchange.FetchTrades(symbol, nil, nil, nil)
+        trades := <-tradesChan
+        fmt.Println(symbol, trades)
+    }
+}
+```
+
 <!-- tabs:end -->
 
 The fetchTrades method shown above returns an ordered list of trades (a flat array, sorted by timestamp in ascending order, oldest trade first, most recent trade last). A list of trades is represented by the [trade structure](#trade-structure).
@@ -3712,6 +4737,33 @@ $exchange = new \ccxt\bittrex ();
 var_dump($exchange->requiredCredentials); // prints required credentials
 $exchange->check_required_credentials(); // throws AuthenticationError
 ```
+
+#### **TypeScript**
+```typescript
+import ccxt from 'ccxt';
+const exchange = new ccxt.binance();
+console.log(exchange.requiredCredentials); // prints required credentials
+exchange.checkRequiredCredentials(); // throws AuthenticationError
+```
+
+#### **C#**
+```csharp
+using ccxt;
+var exchange = new Binance();
+Console.WriteLine(exchange.RequiredCredentials); // prints required credentials
+exchange.CheckRequiredCredentials(); // throws AuthenticationError
+```
+
+#### **Go**
+```go
+exchange := ccxt.NewBinance(nil)
+fmt.Println(exchange.RequiredCredentials) // prints required credentials
+err := exchange.CheckRequiredCredentials() // returns error if credentials missing
+if err != nil {
+    // handle authentication error
+}
+```
+
 <!-- tabs:end -->
 
 #### Configuring API Keys
@@ -3788,6 +4840,79 @@ $exchange = new $exchange_class (array (
     'secret' => 'YOUR_SECRET',
 ));
 ```
+
+#### **TypeScript**
+```typescript
+import ccxt from 'ccxt';
+
+// any time
+const kraken = new ccxt.kraken();
+kraken.apiKey = 'YOUR_KRAKEN_API_KEY';
+kraken.secret = 'YOUR_KRAKEN_SECRET_KEY';
+
+// upon instantiation
+const okcoin = new ccxt.okcoin({
+    apiKey: 'YOUR_OKCOIN_API_KEY',
+    secret: 'YOUR_OKCOIN_SECRET_KEY',
+});
+
+// from variable id
+const exchangeId = 'binance';
+const exchangeClass = ccxt[exchangeId];
+const exchange = new exchangeClass({
+    'apiKey': 'YOUR_API_KEY',
+    'secret': 'YOUR_SECRET',
+});
+```
+
+#### **C#**
+```csharp
+using ccxt;
+
+// any time
+var kraken = new Kraken();
+kraken.ApiKey = "YOUR_KRAKEN_API_KEY";
+kraken.Secret = "YOUR_KRAKEN_SECRET_KEY";
+
+// upon instantiation
+var okcoin = new Okcoin(new Dictionary<string, object>
+{
+    { "apiKey", "YOUR_OKCOIN_API_KEY" },
+    { "secret", "YOUR_OKCOIN_SECRET_KEY" }
+});
+
+// from variable id
+var exchangeId = "binance";
+var exchangeType = Type.GetType($"ccxt.{exchangeId}", true, true);
+var exchange = (Exchange)Activator.CreateInstance(exchangeType, new Dictionary<string, object>
+{
+    { "apiKey", "YOUR_API_KEY" },
+    { "secret", "YOUR_SECRET" }
+});
+```
+
+#### **Go**
+```go
+// any time
+kraken := ccxt.NewKraken(nil)
+kraken.ApiKey = "YOUR_KRAKEN_API_KEY"
+kraken.Secret = "YOUR_KRAKEN_SECRET_KEY"
+
+// upon instantiation
+okcoin := ccxt.NewOkcoin(&ccxt.ExchangeConfig{
+    ApiKey: "YOUR_OKCOIN_API_KEY",
+    Secret: "YOUR_OKCOIN_SECRET_KEY",
+})
+
+// from variable id
+exchangeId := "binance"
+config := &ccxt.ExchangeConfig{
+    ApiKey: "YOUR_API_KEY",
+    Secret: "YOUR_SECRET",
+}
+exchange := ccxt.NewExchange(exchangeId, config)
+```
+
 <!-- tabs:end -->
 
 Note that your private requests will fail with an exception or error if you don't set up your API credentials before you start trading. To avoid character escaping **always write your credentials in single quotes**, not double quotes (`'VERY_GOOD'`, `"VERY_BAD"`).
@@ -4024,6 +5149,27 @@ print (exchange.fetch_balance ())
 ```php
 var_dump ($exchange->fetch_balance ());
 ```
+
+#### **TypeScript**
+```typescript
+(async () => {
+    console.log(await exchange.fetchBalance())
+})()
+```
+
+#### **C#**
+```csharp
+var balance = await exchange.FetchBalance();
+Console.WriteLine(balance);
+```
+
+#### **Go**
+```go
+balanceChan := exchange.FetchBalance(nil)
+balance := <-balanceChan
+fmt.Println(balance)
+```
+
 <!-- tabs:end -->
 
 ## Orders
@@ -4076,6 +5222,28 @@ print(exchange.has)
 $exchange = new \ccxt\bitfinex();
 print_r ($exchange->has); // or var_dump
 ```
+
+#### **TypeScript**
+```typescript
+import ccxt from 'ccxt';
+const id = 'poloniex';
+const exchange = new ccxt[id]();
+console.log(exchange.has);
+```
+
+#### **C#**
+```csharp
+using ccxt;
+var exchange = new Binance();
+Console.WriteLine(exchange.Has);
+```
+
+#### **Go**
+```go
+exchange := ccxt.NewBitfinex(nil)
+fmt.Println(exchange.Has)
+```
+
 <!-- tabs:end -->
 
 A typical structure of the `.has` property usually contains the following flags corresponding to order API methods for querying orders:
@@ -4199,6 +5367,35 @@ if ($exchange->has['fetchOrder']) {
     var_dump($order);
 }
 ```
+
+#### **TypeScript**
+```typescript
+(async () => {
+    if (exchange.has['fetchOrder']) {
+        const order = await exchange.fetchOrder(id);
+        console.log(order);
+    }
+})()
+```
+
+#### **C#**
+```csharp
+if (exchange.Has["fetchOrder"])
+{
+    var order = await exchange.FetchOrder(id);
+    Console.WriteLine(order);
+}
+```
+
+#### **Go**
+```go
+if exchange.Has["fetchOrder"] {
+    orderChan := exchange.FetchOrder(id, nil, nil)
+    order := <-orderChan
+    fmt.Println(order)
+}
+```
+
 <!-- tabs:end -->
 
 #### All Orders
@@ -4444,6 +5641,29 @@ if ($exchange->has['createMarketOrder']) {
     ...
 }
 ```
+
+#### **TypeScript**
+```typescript
+if (exchange.has['createMarketOrder']) {
+    ...
+}
+```
+
+#### **C#**
+```csharp
+if (exchange.Has["createMarketOrder"])
+{
+    ...
+}
+```
+
+#### **Go**
+```go
+if exchange.Has["createMarketOrder"] {
+    ...
+}
+```
+
 <!-- tabs:end -->
 
 #### Market Buys
@@ -5170,6 +6390,36 @@ if ($exchange->has['fetchMyTrades']) {
     $trades = $exchange->fetch_my_trades($symbol, $since, $limit, $params);
 }
 ```
+
+#### **TypeScript**
+```typescript
+// fetchMyTrades (symbol = undefined, since = undefined, limit = undefined, params = {})
+
+if (exchange.has['fetchMyTrades']) {
+    const trades = await exchange.fetchMyTrades(symbol, since, limit, params);
+}
+```
+
+#### **C#**
+```csharp
+// FetchMyTrades (symbol = null, since = null, limit = null, params = {})
+
+if (exchange.Has["fetchMyTrades"])
+{
+    var trades = await exchange.FetchMyTrades(symbol, since, limit, parameters);
+}
+```
+
+#### **Go**
+```go
+// FetchMyTrades (symbol, since, limit, params)
+
+if exchange.Has["fetchMyTrades"] {
+    tradesChan := exchange.FetchMyTrades(symbol, since, limit, params)
+    trades := <-tradesChan
+}
+```
+
 <!-- tabs:end -->
 
 Returns ordered array `[]` of trades (most recent trade last).
@@ -5237,6 +6487,36 @@ if ($exchange->has['fetchOrderTrades']) {
     $trades = $exchange->fetch_order_trades($order_id, $symbol, $since, $limit, $params);
 }
 ```
+
+#### **TypeScript**
+```typescript
+// fetchOrderTrades (id, symbol = undefined, since = undefined, limit = undefined, params = {})
+
+if (exchange.has['fetchOrderTrades']) {
+    const trades = await exchange.fetchOrderTrades(orderId, symbol, since, limit, params);
+}
+```
+
+#### **C#**
+```csharp
+// FetchOrderTrades (id, symbol = null, since = null, limit = null, params = {})
+
+if (exchange.Has["fetchOrderTrades"])
+{
+    var trades = await exchange.FetchOrderTrades(orderId, symbol, since, limit, parameters);
+}
+```
+
+#### **Go**
+```go
+// FetchOrderTrades (id, symbol, since, limit, params)
+
+if exchange.Has["fetchOrderTrades"] {
+    tradesChan := exchange.FetchOrderTrades(orderId, symbol, since, limit, params)
+    trades := <-tradesChan
+}
+```
+
 <!-- tabs:end -->
 
 ## Ledger
@@ -5451,6 +6731,22 @@ withdraw(code, amount, address, tag=None, params={})
 ```php
 withdraw ($code, $amount, $address, $tag = null, $params = array ())
 ```
+
+#### **TypeScript**
+```typescript
+withdraw (code: string, amount: number, address: string, tag = undefined, params = {})
+```
+
+#### **C#**
+```csharp
+Withdraw (code, amount, address, tag = null, params = null)
+```
+
+#### **Go**
+```go
+Withdraw (code, amount, address, tag, params)
+```
+
 <!-- tabs:end -->
 
 Parameters
@@ -5514,6 +6810,22 @@ withdraw(code, amount, address, { 'tag': tag, 'network': 'ETH' })
 ```php
 withdraw ($code, $amount, $address, array( 'tag' => tag, 'network' -> 'ETH' ));
 ```
+
+#### **TypeScript**
+```typescript
+withdraw (code, amount, address, { tag, network: 'ETH' })
+```
+
+#### **C#**
+```csharp
+Withdraw(code, amount, address, new Dictionary<string, object> { { "tag", tag }, { "network", "ETH" } })
+```
+
+#### **Go**
+```go
+Withdraw(code, amount, address, map[string]interface{}{"tag": tag, "network": "ETH"})
+```
+
 <!-- tabs:end -->
 
 The following aliases of `network` allow for withdrawing crypto on multiple chains
@@ -6312,6 +7624,33 @@ $params = {
 }
 $order = $exchange->create_order ('ETH/USDT', 'market', 'buy', 0.1, 1500, $params);
 ```
+
+#### **TypeScript**
+```typescript
+const params = {
+    'marginMode': 'isolated', // or 'cross'
+}
+const order = await exchange.createOrder('ETH/USDT', 'market', 'buy', 0.1, 1500, params)
+```
+
+#### **C#**
+```csharp
+var parameters = new Dictionary<string, object>
+{
+    { "marginMode", "isolated" } // or "cross"
+};
+var order = await exchange.CreateOrder("ETH/USDT", "market", "buy", 0.1, 1500, parameters);
+```
+
+#### **Go**
+```go
+params := map[string]interface{}{
+    "marginMode": "isolated", // or "cross"
+}
+orderChan := exchange.CreateOrder("ETH/USDT", "market", "buy", 0.1, 1500, params)
+order := <-orderChan
+```
+
 <!-- tabs:end -->
 
 ## Fetch Margin Mode
@@ -6865,6 +8204,19 @@ $ex->number = 'strval'; // 'strval' | 'floatval'
 var ex = new ccxt.coinbase();
 ex.number = typeof(String); // typeof(String) | typeof(float)
 ```
+
+#### **TypeScript**
+```typescript
+const ex = new ccxt.coinbase();
+ex.number = String; // String | Number
+```
+
+#### **Go**
+```go
+ex := ccxt.NewCoinbase(nil)
+ex.Number = "string" // "string" | "float"
+```
+
 <!-- tabs:end -->
 
 
@@ -6941,6 +8293,66 @@ try {
     // retry or whatever
 }
 ```
+
+#### **TypeScript**
+```typescript
+// try to call a unified method
+try {
+    const response = await exchange.fetchTicker('ETH/BTC')
+    console.log(response)
+} catch (e) {
+    if (e instanceof ccxt.NetworkError) {
+        console.log(exchange.id, 'fetchTicker failed due to a network error:', e.message)
+        // retry or whatever
+    } else if (e instanceof ccxt.ExchangeError) {
+        console.log(exchange.id, 'fetchTicker failed due to exchange error:', e.message)
+        // retry or whatever
+    } else {
+        console.log(exchange.id, 'fetchTicker failed with:', e.message)
+        // retry or whatever
+    }
+}
+```
+
+#### **C#**
+```csharp
+// try to call a unified method
+try
+{
+    var response = await exchange.FetchTicker("ETH/BTC");
+    Console.WriteLine(response);
+}
+catch (NetworkError e)
+{
+    Console.WriteLine($"{exchange.Id} FetchTicker failed due to a network error: {e.Message}");
+    // retry or whatever
+}
+catch (ExchangeError e)
+{
+    Console.WriteLine($"{exchange.Id} FetchTicker failed due to exchange error: {e.Message}");
+    // retry or whatever
+}
+catch (Exception e)
+{
+    Console.WriteLine($"{exchange.Id} FetchTicker failed with: {e.Message}");
+    // retry or whatever
+}
+```
+
+#### **Go**
+```go
+// try to call a unified method
+tickerChan := exchange.FetchTicker("ETH/BTC", nil)
+ticker, err := <-tickerChan, <-tickerChan // assuming channel returns (result, error)
+if err != nil {
+    // handle error based on type
+    fmt.Printf("%s FetchTicker failed with: %v\n", exchange.Id, err)
+    // retry or whatever
+} else {
+    fmt.Println(ticker)
+}
+```
+
 <!-- tabs:end -->
 
 ## Retry Mechanism
@@ -6978,6 +8390,39 @@ class BaseError (Exception):
 ```php
 class BaseError extends \Exception {}
 ```
+
+#### **TypeScript**
+```typescript
+class BaseError extends Error {
+    constructor () {
+        super ()
+        // a workaround to make `instanceof BaseError` work in ES5
+        this.constructor = BaseError
+        this.__proto__   = BaseError.prototype
+    }
+}
+```
+
+#### **C#**
+```csharp
+public class BaseError : Exception
+{
+    public BaseError() : base() { }
+    public BaseError(string message) : base(message) { }
+}
+```
+
+#### **Go**
+```go
+type BaseError struct {
+    Message string
+}
+
+func (e *BaseError) Error() string {
+    return e.Message
+}
+```
+
 <!-- tabs:end -->
 
 The exception inheritance hierarchy lives in this file: https://github.com/ccxt/ccxt/blob/master/ts/src/base/errorHierarchy.ts , and visually can be outlined like shown below:
