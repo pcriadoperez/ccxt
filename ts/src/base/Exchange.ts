@@ -51,6 +51,7 @@ import init, * as zklink from '../static_dependencies/zklink/zklink-sdk-web.js';
 import * as Starknet from '../static_dependencies/starknet/index.js';
 import Client from './ws/Client.js';
 import { sha256 } from '../static_dependencies/noble-hashes/sha256.js';
+import * as otel from './opentelemetry.js';
 
 const {
     isNode,
@@ -635,6 +636,29 @@ export default class Exchange {
         if (this.safeBool (userConfig, 'sandbox') || this.safeBool (userConfig, 'testnet')) {
             this.setSandboxMode (true);
         }
+        // Initialize OpenTelemetry tracing if configured
+        this.initializeOpenTelemetry ();
+    }
+
+    initializeOpenTelemetry () {
+        // Initialize OpenTelemetry tracing if configured in options
+        const otelConfig = this.safeValue (this.options, 'otel', {});
+        if (otelConfig['enabled']) {
+            otel.initializeTracing ({
+                enabled: this.safeBool (otelConfig, 'enabled', false),
+                endpoint: this.safeString (otelConfig, 'endpoint', ''),
+                insecure: this.safeBool (otelConfig, 'insecure', false),
+                provider: this.safeString (otelConfig, 'provider', 'none') as any,
+                sampleRatio: this.safeFloat (otelConfig, 'sampleRatio', 0.01),
+                service: this.safeString (otelConfig, 'service', 'ccxt'),
+                version: this.safeString (otelConfig, 'version', '4.5.18'),
+            });
+        }
+    }
+
+    async shutdownOpenTelemetry () {
+        // Shutdown OpenTelemetry tracing
+        await otel.shutdownTracing ();
     }
 
     encodeURIComponent (...args) {
@@ -863,6 +887,23 @@ export default class Exchange {
     }
 
     async fetch (url, method = 'GET', headers: any = undefined, body: any = undefined) {
+        // Wrap fetch with OpenTelemetry tracing
+        return await otel.withSpan (
+            `http.${method.toLowerCase()}`,
+            async (span) => {
+                if (span) {
+                    span.setAttributes ({
+                        'http.method': method,
+                        'http.url': url,
+                        'exchange.id': this.id,
+                    });
+                }
+                return await this.fetchInternal (url, method, headers, body);
+            }
+        );
+    }
+
+    async fetchInternal (url, method = 'GET', headers: any = undefined, body: any = undefined) {
         // load node-http(s) modules only on first call
         if (isNode) {
             if (!this.nodeHttpModuleLoaded) {
@@ -967,8 +1008,18 @@ export default class Exchange {
         try {
             const response = await fetchImplementation (url, params);
             clearTimeout (timeout);
+            // Add response status to span
+            otel.addSpanAttributes ({
+                'http.status_code': response.status,
+                'http.status_text': response.statusText,
+            });
             return this.handleRestResponse (response, url, method, headers, body);
         } catch (e) {
+            // Add error information to span
+            otel.addSpanEvent ('error', {
+                'error.message': e.message,
+                'error.type': e.constructor.name,
+            });
             if (e instanceof this.AbortError) {
                 throw new RequestTimeout (this.id + ' ' + method + ' ' + url + ' request timed out (' + this.timeout + ' ms)');
             } else if (e instanceof this.FetchError) {
@@ -3204,6 +3255,16 @@ export default class Exchange {
                 'TRX': { 'TRC20': 'TRX' },
                 'CRO': { 'CRC20': 'CRONOS' },
                 'BRC20': { 'BRC20': 'BTC' },
+            },
+            // OpenTelemetry configuration (similar to SpiceDB)
+            'otel': {
+                'enabled': false,
+                'endpoint': '',
+                'insecure': false,
+                'provider': 'none',
+                'sampleRatio': 0.01,
+                'service': 'ccxt',
+                'version': '4.5.18',
             },
         };
     }
