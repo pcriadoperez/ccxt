@@ -34,6 +34,7 @@ from ccxt.base.decimal_to_precision import DECIMAL_PLACES, TICK_SIZE, NO_PADDING
 from ccxt.base.decimal_to_precision import number_to_string
 from ccxt.base.precise import Precise
 from ccxt.base.types import ConstructorArgs, BalanceAccount, Currency, IndexType, OrderSide, OrderType, Trade, OrderRequest, Market, MarketType, Str, Num, Strings, CancellationRequest, Bool, Order
+from ccxt.base.telemetry import wrap_exchange_methods
 
 # -----------------------------------------------------------------------------
 
@@ -467,6 +468,9 @@ class Exchange(object):
             self.session = Session()
             self.session.trust_env = self.requests_trust_env
         self.logger = self.logger if self.logger else logging.getLogger(__name__)
+
+        # Initialize telemetry
+        wrap_exchange_methods(self)
 
     def __del__(self):
         if self.session:

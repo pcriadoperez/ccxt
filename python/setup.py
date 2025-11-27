@@ -102,6 +102,11 @@ setup(
         'type': [
             'mypy==1.6.1',
         ],
+        'telemetry': [
+            'opentelemetry-api>=1.20.0',
+            'opentelemetry-sdk>=1.20.0',
+            'opentelemetry-exporter-otlp-proto-http>=1.20.0',
+        ],
     },
     project_urls=project_urls,
 )

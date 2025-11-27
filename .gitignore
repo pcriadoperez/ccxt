@@ -43,3 +43,6 @@ obj/
 __debug*
 *.o
 .custom_gitignore
+
+# OpenTelemetry / SigNoz data
+signoz-data/

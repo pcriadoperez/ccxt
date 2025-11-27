@@ -1,0 +1,49 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    send_batch_size: 10000
+    send_batch_max_size: 11000
+    timeout: 10s
+
+  # Attributes processor to add custom attributes
+  attributes/add:
+    actions:
+      - key: deployment.environment
+        value: "development"
+        action: insert
+
+  # Resource detection processor
+  resourcedetection:
+    detectors: [env, system, docker]
+    timeout: 2s
+
+exporters:
+  clickhousetraces:
+    datasource: tcp://clickhouse:9000/?database=signoz_traces
+    docker_multi_node_cluster: false
+    low_cardinal_exception_grouping: false
+
+  # Logging exporter for debugging
+  logging:
+    loglevel: debug
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+  zpages:
+    endpoint: 0.0.0.0:55679
+
+service:
+  extensions: [health_check, zpages]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch, attributes/add, resourcedetection]
+      exporters: [clickhousetraces]
