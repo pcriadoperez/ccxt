@@ -23,6 +23,13 @@ except ImportError:
     TELEMETRY_AVAILABLE = False
     TracerProvider = None
     Tracer = None
+    OTLPSpanExporter = None
+    BatchSpanProcessor = None
+    Resource = None
+    SERVICE_NAME = None
+    Status = None
+    StatusCode = None
+    trace = None
 
 
 # Global variables
