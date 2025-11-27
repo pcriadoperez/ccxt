@@ -32,6 +32,8 @@ services:
       - GODEBUG=netdns=go
       - TELEMETRY_ENABLED=true
       - DEPLOYMENT_TYPE=docker-standalone-amd
+      - SIGNOZ_LOCAL_DB_PATH=/var/lib/signoz/signoz.db
+      - JWT_SECRET=your-super-secret-jwt-key-change-in-production
     restart: on-failure
     depends_on:
       clickhouse:
