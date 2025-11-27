@@ -23,7 +23,6 @@ services:
   query-service:
     image: signoz/query-service:0.39.0
     container_name: signoz-query-service
-    command: ["-config=/root/config/prometheus.yml"]
     ports:
       - "6060:6060"
       - "8080:8080"
