@@ -16,9 +16,10 @@ services:
       - CLICKHOUSE_DB=signoz_traces
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
-      interval: 30s
+      interval: 10s
       timeout: 5s
-      retries: 3
+      retries: 10
+      start_period: 30s
 
   # Query Service - Backend for SigNoz
   query-service:
