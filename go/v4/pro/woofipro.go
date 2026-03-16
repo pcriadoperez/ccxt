@@ -181,7 +181,6 @@ func  (this *WoofiproCore) HandleOrderBook(client interface{}, message interface
     var timestamp interface{} = this.SafeInteger(message, "ts")
     var snapshot interface{} = this.ParseOrderBook(data, symbol, timestamp, "bids", "asks")
     orderbook.(ccxt.OrderBookInterface).Reset(snapshot)
-    this.StreamProduce("orderbooks", orderbook)
     client.(ccxt.ClientInterface).Resolve(orderbook, topic)
 }
 /**
@@ -201,8 +200,8 @@ func  (this *WoofiproCore) WatchTicker(symbol interface{}, optionalArgs ...inter
                     params := ccxt.GetArg(optionalArgs, 0, map[string]interface{} {})
             _ = params
         
-            retRes1678 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes1678)
+            retRes1668 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes1668)
             var name interface{} = "ticker"
             var market interface{} = this.Market(symbol)
             symbol = ccxt.GetValue(market, "symbol")
@@ -213,9 +212,9 @@ func  (this *WoofiproCore) WatchTicker(symbol interface{}, optionalArgs ...inter
             }
             var message interface{} = this.Extend(request, params)
         
-                retRes17715 :=  (<-this.WatchPublic(topic, message))
-                ccxt.PanicOnError(retRes17715)
-                ch <- retRes17715
+                retRes17615 :=  (<-this.WatchPublic(topic, message))
+                ccxt.PanicOnError(retRes17615)
+                ch <- retRes17615
                 return nil
         
             }()
@@ -285,7 +284,6 @@ func  (this *WoofiproCore) HandleTicker(client interface{}, message interface{})
     var ticker interface{} = this.ParseWsTicker(data, market)
     ccxt.AddElementToObject(ticker, "symbol", ccxt.GetValue(market, "symbol"))
     ccxt.AddElementToObject(this.Tickers, ccxt.GetValue(market, "symbol"), ticker)
-    this.StreamProduce("tickers", ticker)
     client.(ccxt.ClientInterface).Resolve(ticker, topic)
     return message
 }
@@ -308,8 +306,8 @@ func  (this *WoofiproCore) WatchTickers(optionalArgs ...interface{}) <- chan int
             params := ccxt.GetArg(optionalArgs, 1, map[string]interface{} {})
             _ = params
         
-            retRes2588 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes2588)
+            retRes2568 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes2568)
             symbols = this.MarketSymbols(symbols)
             var name interface{} = "tickers"
             var topic interface{} = name
@@ -360,7 +358,6 @@ func  (this *WoofiproCore) HandleTickers(client interface{}, message interface{}
         }), market)
         ccxt.AddElementToObject(this.Tickers, ccxt.GetValue(market, "symbol"), ticker)
         ccxt.AppendToArray(&result, ticker)
-        this.StreamProduce("tickers", ticker)
     }
     client.(ccxt.ClientInterface).Resolve(result, topic)
 }
@@ -383,8 +380,8 @@ func  (this *WoofiproCore) WatchBidsAsks(optionalArgs ...interface{}) <- chan in
             params := ccxt.GetArg(optionalArgs, 1, map[string]interface{} {})
             _ = params
         
-            retRes3168 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes3168)
+            retRes3138 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes3138)
             symbols = this.MarketSymbols(symbols)
             var name interface{} = "bbos"
             var topic interface{} = name
@@ -476,8 +473,8 @@ func  (this *WoofiproCore) WatchOHLCV(symbol interface{}, optionalArgs ...interf
             params := ccxt.GetArg(optionalArgs, 3, map[string]interface{} {})
             _ = params
         
-            retRes3878 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes3878)
+            retRes3848 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes3848)
             if ccxt.IsTrue(ccxt.IsTrue(ccxt.IsTrue(ccxt.IsTrue(ccxt.IsTrue(ccxt.IsTrue(ccxt.IsTrue(ccxt.IsTrue((!ccxt.IsEqual(timeframe, "1m"))) && ccxt.IsTrue((!ccxt.IsEqual(timeframe, "5m")))) && ccxt.IsTrue((!ccxt.IsEqual(timeframe, "15m")))) && ccxt.IsTrue((!ccxt.IsEqual(timeframe, "30m")))) && ccxt.IsTrue((!ccxt.IsEqual(timeframe, "1h")))) && ccxt.IsTrue((!ccxt.IsEqual(timeframe, "1d")))) && ccxt.IsTrue((!ccxt.IsEqual(timeframe, "1w")))) && ccxt.IsTrue((!ccxt.IsEqual(timeframe, "1M")))) {
                 panic(ccxt.NotSupported(ccxt.Add(this.Id, " watchOHLCV timeframe argument must be 1m, 5m, 15m, 30m, 1h, 1d, 1w, 1M")))
             }
@@ -539,8 +536,6 @@ func  (this *WoofiproCore) HandleOHLCV(client interface{}, message interface{}) 
     }
     var ohlcvCache interface{} = ccxt.GetValue(ccxt.GetValue(this.Ohlcvs, symbol), timeframe)
     ohlcvCache.(ccxt.Appender).Append(parsed)
-    var ohlcvs interface{} = this.CreateStreamOHLCV(symbol, timeframe, parsed)
-    this.StreamProduce("ohlcvs", ohlcvs)
     client.(ccxt.ClientInterface).Resolve(ohlcvCache, topic)
 }
 /**
@@ -566,8 +561,8 @@ func  (this *WoofiproCore) WatchTrades(symbol interface{}, optionalArgs ...inter
             params := ccxt.GetArg(optionalArgs, 2, map[string]interface{} {})
             _ = params
         
-            retRes4678 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes4678)
+            retRes4628 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes4628)
             var market interface{} = this.Market(symbol)
             symbol = ccxt.GetValue(market, "symbol")
             var topic interface{} = ccxt.Add(ccxt.GetValue(market, "id"), "@trade")
@@ -618,7 +613,6 @@ func  (this *WoofiproCore) HandleTrade(client interface{}, message interface{}) 
     }
     var trades interface{} = ccxt.GetValue(this.Trades, symbol)
     trades.(ccxt.Appender).Append(trade)
-    this.StreamProduce("trades", trade)
     ccxt.AddElementToObject(this.Trades, symbol, trades)
     client.(ccxt.ClientInterface).Resolve(trades, topic)
 }
@@ -756,9 +750,9 @@ func  (this *WoofiproCore) Authenticate(optionalArgs ...interface{}) <- chan int
                 this.Watch(url, messageHash, message, messageHash)
             }
         
-                retRes64215 := <- future.(*ccxt.Future).Await()
-                ccxt.PanicOnError(retRes64215)
-                ch <- retRes64215
+                retRes63615 := <- future.(*ccxt.Future).Await()
+                ccxt.PanicOnError(retRes63615)
+                ch <- retRes63615
                 return nil
         
             }()
@@ -772,8 +766,8 @@ func  (this *WoofiproCore) WatchPrivate(messageHash interface{}, message interfa
                     params := ccxt.GetArg(optionalArgs, 0, map[string]interface{} {})
             _ = params
         
-            retRes6468 := (<-this.Authenticate(params))
-            ccxt.PanicOnError(retRes6468)
+            retRes6408 := (<-this.Authenticate(params))
+            ccxt.PanicOnError(retRes6408)
             var url interface{} = ccxt.Add(ccxt.Add(ccxt.GetValue(ccxt.GetValue(ccxt.GetValue(this.Urls, "api"), "ws"), "private"), "/"), this.AccountId)
             var requestId interface{} = this.RequestId(url)
             var subscribe interface{} = map[string]interface{} {
@@ -781,9 +775,9 @@ func  (this *WoofiproCore) WatchPrivate(messageHash interface{}, message interfa
             }
             var request interface{} = this.Extend(subscribe, message)
         
-                retRes65315 :=  (<-this.Watch(url, messageHash, request, messageHash, subscribe))
-                ccxt.PanicOnError(retRes65315)
-                ch <- retRes65315
+                retRes64715 :=  (<-this.Watch(url, messageHash, request, messageHash, subscribe))
+                ccxt.PanicOnError(retRes64715)
+                ch <- retRes64715
                 return nil
         
             }()
@@ -797,8 +791,8 @@ func  (this *WoofiproCore) WatchPrivateMultiple(messageHashes interface{}, messa
                     params := ccxt.GetArg(optionalArgs, 0, map[string]interface{} {})
             _ = params
         
-            retRes6578 := (<-this.Authenticate(params))
-            ccxt.PanicOnError(retRes6578)
+            retRes6518 := (<-this.Authenticate(params))
+            ccxt.PanicOnError(retRes6518)
             var url interface{} = ccxt.Add(ccxt.Add(ccxt.GetValue(ccxt.GetValue(ccxt.GetValue(this.Urls, "api"), "ws"), "private"), "/"), this.AccountId)
             var requestId interface{} = this.RequestId(url)
             var subscribe interface{} = map[string]interface{} {
@@ -806,9 +800,9 @@ func  (this *WoofiproCore) WatchPrivateMultiple(messageHashes interface{}, messa
             }
             var request interface{} = this.Extend(subscribe, message)
         
-                retRes66415 :=  (<-this.WatchMultiple(url, messageHashes, request, messageHashes, subscribe))
-                ccxt.PanicOnError(retRes66415)
-                ch <- retRes66415
+                retRes65815 :=  (<-this.WatchMultiple(url, messageHashes, request, messageHashes, subscribe))
+                ccxt.PanicOnError(retRes65815)
+                ch <- retRes65815
                 return nil
         
             }()
@@ -841,8 +835,8 @@ func  (this *WoofiproCore) WatchOrders(optionalArgs ...interface{}) <- chan inte
             params := ccxt.GetArg(optionalArgs, 3, map[string]interface{} {})
             _ = params
         
-            retRes6818 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes6818)
+            retRes6758 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes6758)
             var trigger interface{} = this.SafeBool2(params, "stop", "trigger", false)
             var topic interface{} = ccxt.Ternary(ccxt.IsTrue((trigger)), "algoexecutionreport", "executionreport")
             params = this.Omit(params, []interface{}{"stop", "trigger"})
@@ -897,8 +891,8 @@ func  (this *WoofiproCore) WatchMyTrades(optionalArgs ...interface{}) <- chan in
             params := ccxt.GetArg(optionalArgs, 3, map[string]interface{} {})
             _ = params
         
-            retRes7178 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes7178)
+            retRes7118 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes7118)
             var trigger interface{} = this.SafeBool2(params, "stop", "trigger", false)
             var topic interface{} = ccxt.Ternary(ccxt.IsTrue((trigger)), "algoexecutionreport", "executionreport")
             params = this.Omit(params, "stop")
@@ -1124,7 +1118,6 @@ func  (this *WoofiproCore) HandleOrder(client interface{}, message interface{}, 
             ccxt.AddElementToObject(parsed, "datetime", this.SafeString(order, "datetime"))
         }
         cachedOrders.(ccxt.Appender).Append(parsed)
-        this.StreamProduce("orders", parsed)
         client.(ccxt.ClientInterface).Resolve(this.Orders, topic)
         var messageHashSymbol interface{} = ccxt.Add(ccxt.Add(topic, ":"), symbol)
         client.(ccxt.ClientInterface).Resolve(this.Orders, messageHashSymbol)
@@ -1171,7 +1164,6 @@ func  (this *WoofiproCore) HandleMyTrade(client interface{}, message interface{}
         this.MyTrades = trades
     }
     trades.(ccxt.Appender).Append(trade)
-    this.StreamProduce("myTrades", trade)
     client.(ccxt.ClientInterface).Resolve(trades, messageHash)
     var symbolSpecificMessageHash interface{} = ccxt.Add(ccxt.Add(messageHash, ":"), symbol)
     client.(ccxt.ClientInterface).Resolve(trades, symbolSpecificMessageHash)
@@ -1201,8 +1193,8 @@ func  (this *WoofiproCore) WatchPositions(optionalArgs ...interface{}) <- chan i
             params := ccxt.GetArg(optionalArgs, 3, map[string]interface{} {})
             _ = params
         
-            retRes10038 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes10038)
+            retRes9958 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes9958)
             var messageHashes interface{} = []interface{}{}
             symbols = this.MarketSymbols(symbols)
             if !ccxt.IsTrue(this.IsEmpty(symbols)) {
@@ -1274,7 +1266,6 @@ func  (this *WoofiproCore) LoadPositionsSnapshot(client interface{}, messageHash
                 var contracts interface{} = this.SafeString(position, "contracts", "0")
                 if ccxt.IsTrue(ccxt.Precise.StringGt(contracts, "0")) {
                     cache.(ccxt.Appender).Append(position)
-                    this.StreamProduce("positions", position)
                 }
             }
             // don't remove the future from the .futures cache
@@ -1334,7 +1325,6 @@ func  (this *WoofiproCore) HandlePositions(client interface{}, message interface
         var position interface{} = this.ParseWsPosition(rawPosition, market)
         ccxt.AppendToArray(&newPositions, position)
         cache.(ccxt.Appender).Append(position)
-        this.StreamProduce("positions", position)
         var messageHash interface{} = ccxt.Add("positions::", ccxt.GetValue(market, "symbol"))
         client.(ccxt.ClientInterface).Resolve(position, messageHash)
     }
@@ -1430,8 +1420,8 @@ func  (this *WoofiproCore) WatchBalance(optionalArgs ...interface{}) <- chan int
                     params := ccxt.GetArg(optionalArgs, 0, map[string]interface{} {})
             _ = params
         
-            retRes12038 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes12038)
+            retRes11938 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes11938)
             var topic interface{} = "balance"
             var messageHash interface{} = topic
             var request interface{} = map[string]interface{} {
@@ -1440,9 +1430,9 @@ func  (this *WoofiproCore) WatchBalance(optionalArgs ...interface{}) <- chan int
             }
             var message interface{} = this.Extend(request, params)
         
-                retRes121115 :=  (<-this.WatchPrivate(messageHash, message))
-                ccxt.PanicOnError(retRes121115)
-                ch <- retRes121115
+                retRes120115 :=  (<-this.WatchPrivate(messageHash, message))
+                ccxt.PanicOnError(retRes120115)
+                ch <- retRes120115
                 return nil
         
             }()
@@ -1496,7 +1486,6 @@ func  (this *WoofiproCore) HandleBalance(client interface{}, message interface{}
         ccxt.AddElementToObject(this.Balance, code, account)
     }
     this.Balance = this.SafeBalance(this.Balance)
-    this.StreamProduce("balances", this.Balance)
     client.(ccxt.ClientInterface).Resolve(this.Balance, "balance")
 }
 func  (this *WoofiproCore) HandleErrorMessage(client interface{}, message interface{}) interface{}  {
@@ -1528,7 +1517,6 @@ func  (this *WoofiproCore) HandleErrorMessage(client interface{}, message interf
                     ccxt.Remove(client.(ccxt.ClientInterface).GetSubscriptions(), messageHash)
                 }
             } else {
-                this.StreamProduce("errors", nil, error)
                 client.(ccxt.ClientInterface).Reject(error)
             }
             return true
@@ -1552,7 +1540,6 @@ func  (this *WoofiproCore) HandleErrorMessage(client interface{}, message interf
             }
 }
 func  (this *WoofiproCore) HandleMessage(client interface{}, message interface{})  {
-    this.StreamProduce("raw", message)
     if ccxt.IsTrue(this.HandleErrorMessage(client, message)) {
         return
     }

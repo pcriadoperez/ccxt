@@ -446,7 +446,6 @@ export default class coinbase extends coinbaseRest {
                 const symbol = result['symbol'];
                 this.tickers[symbol] = result;
                 newTickers.push(result);
-                this.streamProduce('tickers', result);
                 const messageHash = channel + '::' + symbol;
                 client.resolve(result, messageHash);
                 this.tryResolveUsdc(client, messageHash, result);
@@ -694,9 +693,7 @@ export default class coinbase extends coinbaseRest {
             const currentTrades = this.safeList(currentEvent, 'trades');
             for (let j = 0; j < currentTrades.length; j++) {
                 const item = currentTrades[i];
-                const parsedTrade = this.parseTrade(item);
-                tradesArray.append(parsedTrade);
-                this.streamProduce('trades', parsedTrade);
+                tradesArray.append(this.parseTrade(item));
             }
         }
         client.resolve(tradesArray, messageHash);
@@ -748,7 +745,6 @@ export default class coinbase extends coinbaseRest {
                 if (!(marketId in marketIds)) {
                     marketIds.push(marketId);
                 }
-                this.streamProduce('orders', parsed);
                 cachedOrders.append(parsed);
             }
         }
@@ -876,7 +872,6 @@ export default class coinbase extends coinbaseRest {
             orderbook['timestamp'] = this.parse8601(datetime);
             orderbook['datetime'] = datetime;
             orderbook['symbol'] = symbol;
-            this.streamProduce('orderbooks', orderbook);
             client.resolve(orderbook, messageHash);
             this.tryResolveUsdc(client, messageHash, orderbook);
         }
@@ -945,7 +940,6 @@ export default class coinbase extends coinbaseRest {
         return message;
     }
     handleMessage(client, message) {
-        this.streamProduce('raw', message);
         const channel = this.safeString(message, 'channel');
         const methods = {
             'subscriptions': this.handleSubscriptionStatus,
@@ -958,10 +952,8 @@ export default class coinbase extends coinbaseRest {
         };
         const type = this.safeString(message, 'type');
         if (type === 'error') {
-            const errorMessage = this.safeString(message, 'message', '');
-            const err = new ExchangeError(this.id + errorMessage);
-            this.streamProduce('errors', undefined, err);
-            throw err;
+            const errorMessage = this.safeString(message, 'message');
+            throw new ExchangeError(errorMessage);
         }
         const method = this.safeValue(methods, channel);
         if (method) {

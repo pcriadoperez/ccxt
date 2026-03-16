@@ -146,8 +146,6 @@ class ascendex extends ascendex$1["default"] {
             this.ohlcvs[symbol][timeframe] = stored;
         }
         stored.append(parsed);
-        const ohlcvs = this.createStreamOHLCV(symbol, timeframe, parsed);
-        this.streamProduce('ohlcvs', ohlcvs);
         client.resolve(stored, messageHash);
         return message;
     }
@@ -234,7 +232,6 @@ class ascendex extends ascendex$1["default"] {
         }
         for (let i = 0; i < trades.length; i++) {
             tradesArray.append(trades[i]);
-            this.streamProduce('trades', trades[i]);
         }
         this.trades[symbol] = tradesArray;
         client.resolve(tradesArray, messageHash);
@@ -318,7 +315,6 @@ class ascendex extends ascendex$1["default"] {
             this.handleOrderBookMessage(client, messageItem, orderbook);
         }
         this.orderbooks[symbol] = orderbook;
-        this.streamProduce('orderbooks', orderbook);
         client.resolve(orderbook, messageHash);
     }
     handleOrderBook(client, message) {
@@ -347,7 +343,6 @@ class ascendex extends ascendex$1["default"] {
         }
         else {
             this.handleOrderBookMessage(client, message, orderbook);
-            this.streamProduce('orderbooks', orderbook);
             client.resolve(orderbook, messageHash);
         }
     }
@@ -521,7 +516,6 @@ class ascendex extends ascendex$1["default"] {
             }
         }
         const messageHash = 'balance' + ':' + type;
-        this.streamProduce('balances', this.safeBalance(result));
         client.resolve(this.safeBalance(result), messageHash);
     }
     /**
@@ -618,7 +612,6 @@ class ascendex extends ascendex$1["default"] {
         const orders = this.orders;
         orders.append(order);
         const symbolMessageHash = messageHash + ':' + order['symbol'];
-        this.streamProduce('orders', order);
         client.resolve(orders, symbolMessageHash);
         client.resolve(orders, messageHash);
     }
@@ -761,7 +754,6 @@ class ascendex extends ascendex$1["default"] {
             else {
                 client.reject(e);
             }
-            this.streamProduce('errors', undefined, e);
             return true;
         }
     }
@@ -773,7 +765,6 @@ class ascendex extends ascendex$1["default"] {
         client.resolve(message, messageHash);
     }
     handleMessage(client, message) {
-        this.streamProduce('raw', message);
         if (this.handleErrorMessage(client, message)) {
             return;
         }

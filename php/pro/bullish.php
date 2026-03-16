@@ -191,7 +191,6 @@ class bullish extends \ccxt\async\bullish {
         $tradesArray = $this->trades[$symbol];
         for ($i = 0; $i < count($trades); $i++) {
             $tradesArray->append ($trades[$i]);
-            $this->stream_produce('trades', $trades[$i]);
         }
         $this->trades[$symbol] = $tradesArray;
         $messageHash = 'trades::' . $market['symbol'];
@@ -278,7 +277,6 @@ class bullish extends \ccxt\async\bullish {
             $parsed = $this->parse_ticker($merged, $market);
         }
         $this->tickers[$symbol] = $parsed;
-        $this->stream_produce('tickers', $parsed);
         $messageHash = 'ticker::' . $symbol;
         $client->resolve ($this->tickers[$symbol], $messageHash);
     }
@@ -354,7 +352,6 @@ class bullish extends \ccxt\async\bullish {
         }
         $orderbook->reset ($parsed);
         $this->orderbooks[$symbol] = $orderbook;
-        $this->stream_produce('orderbooks', $orderbook);
         $client->resolve ($orderbook, $messageHash);
     }
 
@@ -475,7 +472,6 @@ class bullish extends \ccxt\async\bullish {
                 $rawOrder = $rawOrders[$i];
                 $parsedOrder = $this->parse_order($rawOrder);
                 $orders->append ($parsedOrder);
-                $this->stream_produce('orders', $parsedOrder);
                 $symbol = $this->safe_string($parsedOrder, 'symbol');
                 $symbols[$symbol] = true;
             }
@@ -584,7 +580,6 @@ class bullish extends \ccxt\async\bullish {
                 $rawTrade = $rawTrades[$i];
                 $parsedTrade = $this->parse_trade($rawTrade);
                 $trades->append ($parsedTrade);
-                $this->stream_produce('myTrades', $parsedTrade);
                 $symbol = $this->safe_string($parsedTrade, 'symbol');
                 $symbols[$symbol] = true;
             }
@@ -688,7 +683,6 @@ class bullish extends \ccxt\async\bullish {
         }
         $messageHash = 'balance';
         $tradingAccountIdHash = '::' . $tradingAccountId;
-        $this->stream_produce('balances', $this->balance[$tradingAccountId]);
         $client->resolve ($this->balance[$tradingAccountId], $messageHash);
         $client->resolve ($this->balance[$tradingAccountId], $messageHash . $tradingAccountIdHash);
     }
@@ -745,7 +739,6 @@ class bullish extends \ccxt\async\bullish {
             $rawPosition = $rawPositions[$i];
             $position = $this->parse_position($rawPosition);
             $positions->append ($position);
-            $this->stream_produce('positions', $position);
             $newPositions[] = $position;
         }
         $messageHashes = $this->find_message_hashes($client, 'positions::');
@@ -781,16 +774,13 @@ class bullish extends \ccxt\async\bullish {
             $errorCodeName = $this->safe_string($data, 'errorCodeName');
             $this->throw_exactly_matched_exception($this->exceptions['exact'], $errorCode, $feedback);
             $this->throw_broadly_matched_exception($this->exceptions['broad'], $errorCodeName, $feedback);
-            $error = new ExchangeError ($feedback); // unknown $message
-            $this->stream_produce('errors', null, $error);
-            throw $error;
+            throw new ExchangeError($feedback); // unknown $message
         } catch (Exception $e) {
             $client->reject ($e);
         }
     }
 
     public function handle_message(Client $client, $message) {
-        $this->stream_produce('raw', $message);
         $dataType = $this->safe_string($message, 'dataType');
         $result = $this->safe_dict($message, 'result');
         if ($result !== null) {

@@ -103,7 +103,6 @@ export default class coincheck extends coincheckRest {
             orderbook.reset(snapshot);
         }
         const messageHash = 'orderbook:' + symbol;
-        this.streamProduce('orderbooks', orderbook);
         client.resolve(orderbook, messageHash);
     }
     /**
@@ -161,7 +160,6 @@ export default class coincheck extends coincheckRest {
             const data = this.safeValue(message, i);
             const trade = this.parseWsTrade(data);
             stored.append(trade);
-            this.streamProduce('trades', trade);
         }
         const messageHash = 'trade:' + symbol;
         client.resolve(stored, messageHash);
@@ -201,7 +199,6 @@ export default class coincheck extends coincheckRest {
         }, market);
     }
     handleMessage(client, message) {
-        this.streamProduce('raw', message);
         const data = this.safeValue(message, 0);
         if (!Array.isArray(data)) {
             this.handleOrderBook(client, message);

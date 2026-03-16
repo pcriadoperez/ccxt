@@ -128,7 +128,6 @@ class bitrue(ccxt.async_support.bitrue):
         balances = self.safe_value(message, 'B', [])
         self.parse_ws_balances(balances)
         messageHash = 'balance'
-        self.stream_produce('balances', self.balance)
         client.resolve(self.balance, messageHash)
 
     def parse_ws_balances(self, balances):
@@ -229,7 +228,6 @@ class bitrue(ccxt.async_support.bitrue):
         orders = self.orders
         orders.append(parsed)
         messageHash = 'orders'
-        self.stream_produce('orders', parsed)
         client.resolve(self.orders, messageHash)
 
     def parse_ws_order(self, order, market=None):
@@ -355,7 +353,6 @@ class bitrue(ccxt.async_support.bitrue):
         snapshot = self.parse_order_book(tick, symbol, timestamp, 'buys', 'asks')
         orderbook.reset(snapshot)
         messageHash = 'orderbook:' + symbol
-        self.stream_produce('orderbooks', orderbook)
         client.resolve(orderbook, messageHash)
 
     def parse_ws_order_type(self, typeId):
@@ -393,7 +390,6 @@ class bitrue(ccxt.async_support.bitrue):
         await client.send(pong)
 
     def handle_message(self, client: Client, message):
-        self.stream_produce('raw', message)
         if 'channel' in message:
             self.handle_order_book(client, message)
         elif 'ping' in message:
@@ -446,7 +442,6 @@ class bitrue(ccxt.async_support.bitrue):
         except Exception as error:
             self.options['listenKey'] = None
             self.options['listenKeyUrl'] = None
-            self.stream_produce('errors', None, error)
             return
         refreshTimeout = self.safe_integer(self.options, 'listenKeyRefreshRate', 1800000)
         self.delay(refreshTimeout, self.keep_alive_listen_key)

@@ -274,7 +274,6 @@ class bydfi(ccxt.async_support.bydfi):
         symbol = ticker['symbol']
         messageHash = 'ticker::' + symbol
         self.tickers[symbol] = ticker
-        self.stream_produce('tickers', ticker)
         client.resolve(self.tickers[symbol], messageHash)
         client.resolve(self.tickers, 'ticker::all')
 
@@ -401,8 +400,6 @@ class bydfi(ccxt.async_support.bydfi):
         ohlcv = self.ohlcvs[symbol][timeframe]
         parsed = self.parse_ws_ohlcv(message)
         ohlcv.append(parsed)
-        ohlcvs = self.create_stream_ohlcv(symbol, timeframe, parsed)
-        self.stream_produce('ohlcvs', ohlcvs)
         messageHash = 'ohlcv::' + symbol + '::' + timeframe
         client.resolve([symbol, timeframe, ohlcv], messageHash)
 
@@ -498,8 +495,8 @@ class bydfi(ccxt.async_support.bydfi):
     def handle_order_book(self, client: Client, message):
         #
         #     {
-        #         "a": [[150000, 15], *],
-        #         "b": [[90450.7, 3615], *],
+        #         "a": [[150000, 15], ...],
+        #         "b": [[90450.7, 3615], ...],
         #         "s": "BTC-USDT",
         #         "e": "depthUpdate",
         #         "E": 1766577624512
@@ -515,7 +512,6 @@ class bydfi(ccxt.async_support.bydfi):
         orderbook.reset(parsed)
         messageHash = 'orderbook::' + symbol
         self.orderbooks[symbol] = orderbook
-        self.stream_produce('orderbooks', orderbook)
         client.resolve(orderbook, messageHash)
 
     async def watch_orders(self, symbol: Str = None, since: Int = None, limit: Int = None, params={}) -> List[Order]:
@@ -606,7 +602,6 @@ class bydfi(ccxt.async_support.bydfi):
         lastUpdateTimestamp = self.safe_integer(message, 'T')
         order['lastUpdateTimestamp'] = lastUpdateTimestamp
         orders.append(order)
-        self.stream_produce('orders', order)
         client.resolve(orders, messageHash)
         client.resolve(orders, symbolMessageHash)
 
@@ -757,7 +752,6 @@ class bydfi(ccxt.async_support.bydfi):
         parsedPosition['timestamp'] = timestamp
         parsedPosition['datetime'] = self.iso8601(timestamp)
         cache.append(parsedPosition)
-        self.stream_produce('positions', parsedPosition)
         client.resolve([parsedPosition], messageHash)
         client.resolve([parsedPosition], symbolMessageHash)
 
@@ -924,7 +918,6 @@ class bydfi(ccxt.async_support.bydfi):
                 result[code] = account
             parsedBalance = self.safe_balance(result)
             self.balance = self.extend(self.balance, parsedBalance)
-            self.stream_produce('balances', self.balance)
             client.resolve(self.balance, messageHash)
 
     def handle_subscription_status(self, client: Client, message):
@@ -974,12 +967,9 @@ class bydfi(ccxt.async_support.bydfi):
         self.throw_exactly_matched_exception(self.exceptions['exact'], msg, feedback)
         self.throw_broadly_matched_exception(self.exceptions['broad'], msg, feedback)
         self.throw_exactly_matched_exception(self.exceptions['exact'], code, feedback)
-        error = ExchangeError(feedback)
-        self.stream_produce('errors', None, error)
-        raise error
+        raise ExchangeError(feedback)
 
     def handle_message(self, client: Client, message):
-        self.stream_produce('raw', message)
         code = self.safe_string(message, 'code')
         if code is not None and (code != '0'):
             self.handle_error_message(client, message)

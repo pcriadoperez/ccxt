@@ -267,8 +267,6 @@ class bitfinex extends \ccxt\async\bitfinex {
             $ohlcv = $ohlcvs[$ohlcvsLength - $i - 1];
             $parsed = $this->parse_ohlcv($ohlcv, $market);
             $stored->append ($parsed);
-            $streamOhlcvs = $this->create_stream_ohlcv($symbol, $timeframe, $parsed);
-            $this->stream_produce('ohlcvs', $streamOhlcvs);
         }
         $client->resolve ($stored, $messageHash);
     }
@@ -386,7 +384,6 @@ class bitfinex extends \ccxt\async\bitfinex {
         $tradesArray = $this->myTrades;
         $tradesArray->append ($trade);
         $this->myTrades = $tradesArray;
-        $this->stream_produce('myTrades', $trade);
         // generic $subscription
         $client->resolve ($tradesArray, $name);
         // specific $subscription
@@ -445,7 +442,6 @@ class bitfinex extends \ccxt\async\bitfinex {
                 $index = $length - $i - 1;
                 $parsed = $this->parse_ws_trade($trades[$index], $market);
                 $stored->append ($parsed);
-                $this->stream_produce('trades', $parsed);
             }
         } else {
             // update
@@ -458,7 +454,6 @@ class bitfinex extends \ccxt\async\bitfinex {
             $trade = $this->safe_value($message, 2, array());
             $parsed = $this->parse_ws_trade($trade, $market);
             $stored->append ($parsed);
-            $this->stream_produce('trades', $trade);
         }
         $client->resolve ($stored, $messageHash);
     }
@@ -592,7 +587,6 @@ class bitfinex extends \ccxt\async\bitfinex {
         $messageHash = $channel . ':' . $marketId;
         $this->tickers[$symbol] = $parsed;
         $client->resolve ($parsed, $messageHash);
-        $this->stream_produce('tickers', $parsed);
     }
 
     public function parse_ws_ticker($ticker, $market = null) {
@@ -736,7 +730,6 @@ class bitfinex extends \ccxt\async\bitfinex {
                     $bookside->storeArray (array( $price, $size, $counter ));
                 }
             }
-            $this->stream_produce('orderbooks', $orderbook);
             $orderbook['symbol'] = $symbol;
             $client->resolve ($orderbook, $messageHash);
         } else {
@@ -762,7 +755,6 @@ class bitfinex extends \ccxt\async\bitfinex {
                 $bookside = $orderbookItem[$side];
                 $bookside->storeArray (array( $this->parse_number($price), $this->parse_number($size), $this->parse_number($counter) ));
             }
-            $this->stream_produce('orderbooks', $orderbook);
             $client->resolve ($orderbook, $messageHash);
         }
     }
@@ -917,7 +909,6 @@ class bitfinex extends \ccxt\async\bitfinex {
         for ($i = 0; $i < count($updatesKeys); $i++) {
             $type = $updatesKeys[$i];
             $messageHash = 'balance:' . $type;
-            $this->stream_produce('balances', $this->balance[$type]);
             $client->resolve ($this->balance[$type], $messageHash);
         }
     }
@@ -1062,7 +1053,6 @@ class bitfinex extends \ccxt\async\bitfinex {
         } else {
             $error = new AuthenticationError ($this->json($message));
             $client->reject ($error, $messageHash);
-            $this->stream_produce('errors', null, $error);
             // allows further authentication attempts
             if (is_array($client->subscriptions) && array_key_exists($messageHash, $client->subscriptions)) {
                 unset($client->subscriptions[$messageHash]);
@@ -1154,12 +1144,10 @@ class bitfinex extends \ccxt\async\bitfinex {
                 $symbol = $parsed['symbol'];
                 $symbolIds[$symbol] = true;
                 $orders->append ($parsed);
-                $this->stream_produce('orders', $parsed);
             }
         } else {
             $parsed = $this->parse_ws_order($data);
             $orders->append ($parsed);
-            $this->stream_produce('orders', $parsed);
             $symbol = $parsed['symbol'];
             $symbolIds[$symbol] = true;
         }
@@ -1272,7 +1260,6 @@ class bitfinex extends \ccxt\async\bitfinex {
     }
 
     public function handle_message(Client $client, $message) {
-        $this->stream_produce('raw', $message);
         $channelId = $this->safe_string($message, 0);
         //
         //     array(

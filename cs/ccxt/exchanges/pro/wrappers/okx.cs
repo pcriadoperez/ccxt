@@ -6,16 +6,6 @@ namespace ccxt.pro;
 public class  Okx: okx { public Okx(object args = null) : base(args) { } }
 public partial class okx
 {
-    public async Task<Dictionary<string, object>> SubscribeMultiple(object access, object channel, List<String> symbols = null, Dictionary<string, object> parameters = null)
-    {
-        var res = await this.subscribeMultiple(access, channel, symbols, parameters);
-        return ((Dictionary<string, object>)res);
-    }
-    public async Task<Dictionary<string, object>> Subscribe(object access, object messageHash, object channel, object symbol, Dictionary<string, object> parameters = null)
-    {
-        var res = await this.subscribe(access, messageHash, channel, symbol, parameters);
-        return ((Dictionary<string, object>)res);
-    }
     /// <summary>
     /// get the list of most recent trades for a particular symbol
     /// </summary>

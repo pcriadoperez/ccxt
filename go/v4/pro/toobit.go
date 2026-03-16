@@ -120,7 +120,6 @@ func  (this *ToobitCore) HandleMessage(client interface{}, message interface{}) 
     //       }
     //     ]
     //
-    this.StreamProduce("raw", message)
     var topic interface{} = this.SafeString(message, "topic")
     if ccxt.IsTrue(this.HandleErrorMessage(client, message)) {
         return
@@ -187,9 +186,9 @@ func  (this *ToobitCore) WatchTrades(symbol interface{}, optionalArgs ...interfa
             params := ccxt.GetArg(optionalArgs, 2, map[string]interface{} {})
             _ = params
         
-                retRes17515 :=  (<-this.WatchTradesForSymbols([]interface{}{symbol}, since, limit, params))
-                ccxt.PanicOnError(retRes17515)
-                ch <- retRes17515
+                retRes17415 :=  (<-this.WatchTradesForSymbols([]interface{}{symbol}, since, limit, params))
+                ccxt.PanicOnError(retRes17415)
+                ch <- retRes17415
                 return nil
         
             }()
@@ -219,8 +218,8 @@ func  (this *ToobitCore) WatchTradesForSymbols(symbols interface{}, optionalArgs
             params := ccxt.GetArg(optionalArgs, 2, map[string]interface{} {})
             _ = params
         
-            retRes1918 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes1918)
+            retRes1908 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes1908)
             symbols = this.MarketSymbols(symbols, nil, false)
             var messageHashes interface{} = []interface{}{}
             var subParams interface{} = []interface{}{}
@@ -291,7 +290,6 @@ func  (this *ToobitCore) HandleTrades(client interface{}, message interface{})  
         var trade interface{} = ccxt.GetValue(parsed, i)
         ccxt.AddElementToObject(trade, "symbol", symbol)
         stored.(ccxt.Appender).Append(trade)
-        this.StreamProduce("trades", trade)
     }
     var messageHash interface{} = ccxt.Add("trade::", symbol)
     client.(ccxt.ClientInterface).Resolve(stored, messageHash)
@@ -360,8 +358,8 @@ func  (this *ToobitCore) WatchOHLCVForSymbols(symbolsAndTimeframes interface{}, 
             params := ccxt.GetArg(optionalArgs, 2, map[string]interface{} {})
             _ = params
         
-            retRes2968 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes2968)
+            retRes2948 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes2948)
             var url interface{} = ccxt.Add(ccxt.GetValue(ccxt.GetValue(ccxt.GetValue(this.Urls, "api"), "ws"), "common"), "/quote/ws/v1")
             var messageHashes interface{} = []interface{}{}
             var timeframes interface{} = this.SafeDict(ccxt.GetValue(this.Options, "ws"), "timeframes", map[string]interface{} {})
@@ -446,8 +444,6 @@ func  (this *ToobitCore) HandleOHLCV(client interface{}, message interface{})  {
     for i := 0; ccxt.IsLessThan(i, ccxt.GetArrayLength(data)); i++ {
         var parsed interface{} = this.ParseWsOHLCV(ccxt.GetValue(data, i), market)
         stored.(ccxt.Appender).Append(parsed)
-        var ohlcvs interface{} = this.CreateStreamOHLCV(symbol, timeframe, parsed)
-        this.StreamProduce("ohlcvs", ohlcvs)
     }
     var messageHash interface{} = ccxt.Add(ccxt.Add(ccxt.Add("ohlcv::", symbol), "::"), timeframe)
     var resolveData interface{} = []interface{}{symbol, timeframe, stored}
@@ -489,8 +485,8 @@ func  (this *ToobitCore) WatchTicker(symbol interface{}, optionalArgs ...interfa
                     params := ccxt.GetArg(optionalArgs, 0, map[string]interface{} {})
             _ = params
         
-            retRes4108 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes4108)
+            retRes4068 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes4068)
             symbol = this.Symbol(symbol)
         
             tickers:= (<-this.WatchTickers([]interface{}{symbol}, params))
@@ -521,8 +517,8 @@ func  (this *ToobitCore) WatchTickers(optionalArgs ...interface{}) <- chan inter
             params := ccxt.GetArg(optionalArgs, 1, map[string]interface{} {})
             _ = params
         
-            retRes4268 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes4268)
+            retRes4228 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes4228)
             symbols = this.MarketSymbols(symbols, nil, false)
             var messageHashes interface{} = []interface{}{}
             var subParams interface{} = []interface{}{}
@@ -601,7 +597,6 @@ func  (this *ToobitCore) HandleTickers(client interface{}, message interface{}) 
         var symbol interface{} = ccxt.GetValue(parsed, "symbol")
         ccxt.AddElementToObject(this.Tickers, symbol, parsed)
         ccxt.AddElementToObject(newTickers, symbol, parsed)
-        this.StreamProduce("tickers", parsed)
         var messageHash interface{} = ccxt.Add("ticker::", symbol)
         client.(ccxt.ClientInterface).Resolve(parsed, messageHash)
     }
@@ -632,9 +627,9 @@ func  (this *ToobitCore) WatchOrderBook(symbol interface{}, optionalArgs ...inte
             params := ccxt.GetArg(optionalArgs, 1, map[string]interface{} {})
             _ = params
         
-                retRes51915 :=  (<-this.WatchOrderBookForSymbols([]interface{}{symbol}, limit, params))
-                ccxt.PanicOnError(retRes51915)
-                ch <- retRes51915
+                retRes51415 :=  (<-this.WatchOrderBookForSymbols([]interface{}{symbol}, limit, params))
+                ccxt.PanicOnError(retRes51415)
+                ch <- retRes51415
                 return nil
         
             }()
@@ -660,8 +655,8 @@ func  (this *ToobitCore) WatchOrderBookForSymbols(symbols interface{}, optionalA
             params := ccxt.GetArg(optionalArgs, 1, map[string]interface{} {})
             _ = params
         
-            retRes5338 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes5338)
+            retRes5288 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes5288)
             symbols = this.MarketSymbols(symbols, nil, false)
             var channel interface{} = nil
             channelparamsVariable := this.HandleOptionAndParams(params, "watchOrderBook", "channel", "depth")
@@ -739,7 +734,6 @@ func  (this *ToobitCore) HandleOrderBook(client interface{}, message interface{}
         this.HandleDeltas(ccxt.GetValue(orderBook, "bids"), bids)
         ccxt.AddElementToObject(orderBook, "timestamp", timestamp)
         ccxt.AddElementToObject(this.Orderbooks, symbol, orderBook)
-        this.StreamProduce("orderbooks", orderBook)
         client.(ccxt.ClientInterface).Resolve(orderBook, messageHash)
     }
 }
@@ -791,7 +785,6 @@ func  (this *ToobitCore) SetOrderBookSnapshot(client interface{}, message interf
         var timestamp interface{} = this.SafeInteger(entry, "t")
         var snapshot interface{} = this.ParseOrderBook(entry, symbol, timestamp, "b", "a")
         orderbook.(ccxt.OrderBookInterface).Reset(snapshot)
-        this.StreamProduce("orderbooks", orderbook)
         client.(ccxt.ClientInterface).Resolve(orderbook, messageHash)
     }
 }
@@ -811,11 +804,11 @@ func  (this *ToobitCore) WatchBalance(optionalArgs ...interface{}) <- chan inter
                     params := ccxt.GetArg(optionalArgs, 0, map[string]interface{} {})
             _ = params
         
-            retRes6728 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes6728)
+            retRes6658 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes6658)
         
-            retRes6738 := (<-this.Authenticate())
-            ccxt.PanicOnError(retRes6738)
+            retRes6668 := (<-this.Authenticate())
+            ccxt.PanicOnError(retRes6668)
             var marketType interface{} = nil
             marketTypeparamsVariable := this.HandleMarketTypeAndParams("watchBalance", nil, params)
             marketType = ccxt.GetValue(marketTypeparamsVariable,0)
@@ -833,9 +826,9 @@ func  (this *ToobitCore) WatchBalance(optionalArgs ...interface{}) <- chan inter
             this.SetBalanceCache(client, marketType, subscriptionHash, params)
             client.(ccxt.ClientInterface).Future(ccxt.Add(typeVar, ":fetchBalanceSnapshot"))
         
-                retRes68815 :=  (<-this.Watch(url, messageHash, params, subscriptionHash))
-                ccxt.PanicOnError(retRes68815)
-                ch <- retRes68815
+                retRes68115 :=  (<-this.Watch(url, messageHash, params, subscriptionHash))
+                ccxt.PanicOnError(retRes68115)
+                ch <- retRes68115
                 return nil
         
             }()
@@ -911,7 +904,6 @@ func  (this *ToobitCore) HandleBalance(client interface{}, message interface{}) 
         ccxt.AddElementToObject(ccxt.GetValue(this.Balance, typeVar), code, account)
     }
     ccxt.AddElementToObject(this.Balance, typeVar, this.SafeBalance(ccxt.GetValue(this.Balance, typeVar)))
-    this.StreamProduce("balances", ccxt.GetValue(this.Balance, typeVar))
     client.(ccxt.ClientInterface).Resolve(ccxt.GetValue(this.Balance, typeVar), ccxt.Add(typeVar, ":balance"))
 }
 func  (this *ToobitCore) LoadBalanceSnapshot(client interface{}, messageHash interface{}, marketType interface{}) <- chan interface{} {
@@ -962,11 +954,11 @@ func  (this *ToobitCore) WatchOrders(optionalArgs ...interface{}) <- chan interf
             params := ccxt.GetArg(optionalArgs, 3, map[string]interface{} {})
             _ = params
         
-            retRes7878 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes7878)
+            retRes7798 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes7798)
         
-            retRes7888 := (<-this.Authenticate())
-            ccxt.PanicOnError(retRes7888)
+            retRes7808 := (<-this.Authenticate())
+            ccxt.PanicOnError(retRes7808)
             var market interface{} = this.MarketOrNull(symbol)
             symbol = this.SafeString(market, "symbol", symbol)
             var messageHash interface{} = "orders"
@@ -1026,7 +1018,6 @@ func  (this *ToobitCore) HandleOrder(client interface{}, message interface{})  {
     var orders interface{} = this.Orders
     var order interface{} = this.ParseWsOrder(message)
     orders.(ccxt.Appender).Append(order)
-    this.StreamProduce("orders", order)
     var messageHash interface{} = "orders"
     client.(ccxt.ClientInterface).Resolve(orders, messageHash)
     messageHash = ccxt.Add("orders:", this.SafeString(order, "symbol"))
@@ -1105,11 +1096,11 @@ func  (this *ToobitCore) WatchMyTrades(optionalArgs ...interface{}) <- chan inte
             params := ccxt.GetArg(optionalArgs, 3, map[string]interface{} {})
             _ = params
         
-            retRes9088 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes9088)
+            retRes8998 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes8998)
         
-            retRes9098 := (<-this.Authenticate())
-            ccxt.PanicOnError(retRes9098)
+            retRes9008 := (<-this.Authenticate())
+            ccxt.PanicOnError(retRes9008)
             var market interface{} = this.MarketOrNull(symbol)
             symbol = this.SafeString(market, "symbol", symbol)
             var messageHash interface{} = "myTrades"
@@ -1154,7 +1145,6 @@ func  (this *ToobitCore) HandleMyTrade(client interface{}, message interface{}) 
     }
     var trade interface{} = this.ParseMyTrade(message)
     myTrades.(ccxt.Appender).Append(trade)
-    this.StreamProduce("myTrades", trade)
     var messageHash interface{} = ccxt.Add("myTrades:", ccxt.GetValue(trade, "symbol"))
     client.(ccxt.ClientInterface).Resolve(myTrades, messageHash)
     messageHash = "myTrades"
@@ -1206,11 +1196,11 @@ func  (this *ToobitCore) WatchPositions(optionalArgs ...interface{}) <- chan int
             params := ccxt.GetArg(optionalArgs, 3, map[string]interface{} {})
             _ = params
         
-            retRes9878 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes9878)
+            retRes9778 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes9778)
         
-            retRes9888 := (<-this.Authenticate())
-            ccxt.PanicOnError(retRes9888)
+            retRes9788 := (<-this.Authenticate())
+            ccxt.PanicOnError(retRes9788)
             var messageHash interface{} = ""
             if !ccxt.IsTrue(this.IsEmpty(symbols)) {
                 symbols = this.MarketSymbols(symbols)
@@ -1219,8 +1209,8 @@ func  (this *ToobitCore) WatchPositions(optionalArgs ...interface{}) <- chan int
             var url interface{} = this.GetUserStreamUrl()
             var client interface{} = this.Client(url)
         
-            retRes9968 := (<-this.Authenticate(url))
-            ccxt.PanicOnError(retRes9968)
+            retRes9868 := (<-this.Authenticate(url))
+            ccxt.PanicOnError(retRes9868)
             this.SetPositionsCache(client, symbols)
             var cache interface{} = this.Positions
             if ccxt.IsTrue(ccxt.IsEqual(cache, nil)) {
@@ -1338,7 +1328,6 @@ func  (this *ToobitCore) HandlePositions(client interface{}, message interface{}
         ccxt.AddElementToObject(position, "datetime", this.Iso8601(timestamp))
         ccxt.AppendToArray(&newPositions, position)
         cache.(ccxt.Appender).Append(position)
-        this.StreamProduce("positions", position)
     }
     var messageHashes interface{} = this.FindMessageHashes(client.(*ccxt.Client), ccxt.Add(accountType, ":positions::"))
     for i := 0; ccxt.IsLessThan(i, ccxt.GetArrayLength(messageHashes)); i++ {
@@ -1437,9 +1426,9 @@ func  (this *ToobitCore) Authenticate(optionalArgs ...interface{}) <- chan inter
                 }
             }
         
-                retRes116515 := <- future.(*ccxt.Future).Await()
-                ccxt.PanicOnError(retRes116515)
-                ch <- retRes116515
+                retRes115415 := <- future.(*ccxt.Future).Await()
+                ccxt.PanicOnError(retRes115415)
+                ch <- retRes115415
                 return nil
         
             }()
@@ -1515,7 +1504,6 @@ func  (this *ToobitCore) HandleErrorMessage(client interface{}, message interfac
         var desc interface{} = this.SafeString(message, "desc")
         var msg interface{} = ccxt.Add(ccxt.Add(ccxt.Add(ccxt.Add(this.Id, " code: "), code), " message: "), desc)
         exception := ccxt.ExchangeError(        msg) // c# fix
-        this.StreamProduce("errors", nil, exception)
         client.(ccxt.ClientInterface).Reject(exception)
         return true
     }

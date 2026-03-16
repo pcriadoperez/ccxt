@@ -210,7 +210,7 @@ class binance extends \ccxt\async\binance {
         return (mb_strpos($client->url, '/stream') > -1) || (mb_strpos($client->url, 'demo-stream') > -1);
     }
 
-    public function stream_id(?string $type, ?string $subscriptionHash, $numSubscriptions = 1) {
+    public function stream(?string $type, ?string $subscriptionHash, $numSubscriptions = 1) {
         $streamBySubscriptionsHash = $this->safe_dict($this->options, 'streamBySubscriptionsHash', $this->create_safe_dictionary());
         $stream = $this->safe_string($streamBySubscriptionsHash, $subscriptionHash);
         if ($stream === null) {
@@ -321,7 +321,7 @@ class binance extends \ccxt\async\binance {
                 $type = 'delivery';
             }
             $numSubscriptions = count($subscriptionHashes);
-            $url = $this->get_ws_url($type, $this->get_future_ws_category('forceOrder')) . '/' . $this->stream_id($type, $streamHash, $numSubscriptions);
+            $url = $this->get_ws_url($type, $this->get_future_ws_category('forceOrder')) . '/' . $this->stream($type, $streamHash, $numSubscriptions);
             $requestId = $this->request_id($url);
             $request = array(
                 'method' => 'SUBSCRIBE',
@@ -390,7 +390,6 @@ class binance extends \ccxt\async\binance {
         }
         $cache = $this->liquidations;
         $cache->append ($liquidation);
-        $this->stream_produce('liquidations', $liquidation);
         $client->resolve (array( $liquidation ), 'liquidations');
         $client->resolve (array( $liquidation ), 'liquidations::' . $symbol);
     }
@@ -608,7 +607,6 @@ class binance extends \ccxt\async\binance {
         }
         $cache->append ($liquidation);
         $this->myLiquidations = $cache;
-        $this->stream_produce('myLiquidations', $liquidation);
         $client->resolve (array( $liquidation ), 'myLiquidations');
         $client->resolve (array( $liquidation ), 'myLiquidations::' . $symbol);
     }
@@ -726,7 +724,7 @@ class binance extends \ccxt\async\binance {
                 $subParams[] = $symbolHash;
             }
             $messageHashesLength = count($messageHashes);
-            $url = $this->get_ws_url($type, $this->get_future_ws_category($name)) . '/' . $this->stream_id($type, $streamHash, $messageHashesLength);
+            $url = $this->get_ws_url($type, $this->get_future_ws_category($name)) . '/' . $this->stream($type, $streamHash, $messageHashesLength);
             $requestId = $this->request_id($url);
             $request = array(
                 'method' => 'SUBSCRIBE',
@@ -789,7 +787,7 @@ class binance extends \ccxt\async\binance {
                 $subParams[] = $symbolHash;
             }
             $messageHashesLength = count($subMessageHashes);
-            $url = $this->get_ws_url($type, $this->get_future_ws_category('depth')) . '/' . $this->stream_id($type, $streamHash, $messageHashesLength);
+            $url = $this->get_ws_url($type, $this->get_future_ws_category('depth')) . '/' . $this->stream($type, $streamHash, $messageHashesLength);
             $requestId = $this->request_id($url);
             $request = array(
                 'method' => 'UNSUBSCRIBE',
@@ -903,7 +901,6 @@ class binance extends \ccxt\async\binance {
         $timestamp = $this->safe_integer($result, 'T');
         $orderbook = $this->parse_order_book($result, null, $timestamp);
         $orderbook['nonce'] = $this->safe_integer_2($result, 'lastUpdateId', 'u');
-        $this->stream_produce('orderbooks', $orderbook);
         $client->resolve ($orderbook, $messageHash);
     }
 
@@ -955,12 +952,10 @@ class binance extends \ccxt\async\binance {
                     }
                 }
                 $this->orderbooks[$symbol] = $orderbook;
-                $this->stream_produce('orderbooks', $orderbook);
                 $client->resolve ($orderbook, $messageHash);
             } catch (Exception $e) {
                 unset($client->subscriptions[$messageHash]);
                 $client->reject ($e, $messageHash);
-                $this->stream_produce('orderbooks', null, $e);
             }
         }) ();
     }
@@ -1050,7 +1045,6 @@ class binance extends \ccxt\async\binance {
                         if ($conditional) {
                             $this->handle_order_book_message($client, $message, $orderbook);
                             if ($nonce < $orderbook['nonce']) {
-                                $this->stream_produce('orderbooks', $orderbook);
                                 $client->resolve ($orderbook, $messageHash);
                             }
                         } else {
@@ -1070,7 +1064,6 @@ class binance extends \ccxt\async\binance {
                         if (($U <= $orderbook['nonce']) || ($pu === $orderbook['nonce'])) {
                             $this->handle_order_book_message($client, $message, $orderbook);
                             if ($nonce <= $orderbook['nonce']) {
-                                $this->stream_produce('orderbooks', $orderbook);
                                 $client->resolve ($orderbook, $messageHash);
                             }
                         } else {
@@ -1086,8 +1079,6 @@ class binance extends \ccxt\async\binance {
                 unset($this->orderbooks[$symbol]);
                 unset($client->subscriptions[$messageHash]);
                 $client->reject ($e, $messageHash);
-                $this->stream_produce('orderbooks', null, $e);
-                $this->stream_produce('orderbooks::' . $symbol, null, $e);
             }
         }
     }
@@ -1189,7 +1180,7 @@ class binance extends \ccxt\async\binance {
             }
             $query = $this->omit($params, 'type');
             $subParamsLength = count($subParams);
-            $url = $this->get_ws_url($type, $this->get_future_ws_category($name)) . '/' . $this->stream_id($type, $streamHash, $subParamsLength);
+            $url = $this->get_ws_url($type, $this->get_future_ws_category($name)) . '/' . $this->stream($type, $streamHash, $subParamsLength);
             $requestId = $this->request_id($url);
             $request = array(
                 'method' => 'SUBSCRIBE',
@@ -1255,7 +1246,7 @@ class binance extends \ccxt\async\binance {
             }
             $query = $this->omit($params, 'type');
             $subParamsLength = count($subParams);
-            $url = $this->get_ws_url($type, $this->get_future_ws_category($name)) . '/' . $this->stream_id($type, $streamHash, $subParamsLength);
+            $url = $this->get_ws_url($type, $this->get_future_ws_category($name)) . '/' . $this->stream($type, $streamHash, $subParamsLength);
             $requestId = $this->request_id($url);
             $request = array(
                 'method' => 'UNSUBSCRIBE',
@@ -1495,7 +1486,6 @@ class binance extends \ccxt\async\binance {
             $tradesArray = new ArrayCache ($limit);
         }
         $tradesArray->append ($trade);
-        $this->stream_produce('trades', $trade);
         $this->trades[$symbol] = $tradesArray;
         $client->resolve ($tradesArray, $messageHash);
     }
@@ -1575,7 +1565,7 @@ class binance extends \ccxt\async\binance {
                 $rawHashes[] = $marketId . '@' . $klineType . '_' . $interval . $utcSuffix;
                 $messageHashes[] = 'ohlcv::' . $market['symbol'] . '::' . $timeframeString;
             }
-            $url = $this->get_ws_url($type, $this->get_future_ws_category($klineType)) . '/' . $this->stream_id($type, 'multipleOHLCV');
+            $url = $this->get_ws_url($type, $this->get_future_ws_category($klineType)) . '/' . $this->stream($type, 'multipleOHLCV');
             $requestId = $this->request_id($url);
             $request = array(
                 'method' => 'SUBSCRIBE',
@@ -1645,7 +1635,7 @@ class binance extends \ccxt\async\binance {
                 $subMessageHashes[] = 'ohlcv::' . $market['symbol'] . '::' . $timeframeString;
                 $messageHashes[] = 'unsubscribe::ohlcv::' . $market['symbol'] . '::' . $timeframeString;
             }
-            $url = $this->get_ws_url($type, $this->get_future_ws_category($klineType)) . '/' . $this->stream_id($type, 'multipleOHLCV');
+            $url = $this->get_ws_url($type, $this->get_future_ws_category($klineType)) . '/' . $this->stream($type, 'multipleOHLCV');
             $requestId = $this->request_id($url);
             $request = array(
                 'method' => 'UNSUBSCRIBE',
@@ -1752,8 +1742,6 @@ class binance extends \ccxt\async\binance {
         }
         $stored->append ($parsed);
         $resolveData = array( $symbol, $unifiedTimeframe, $stored );
-        $ohlcvs = $this->create_stream_ohlcv($symbol, $unifiedTimeframe, $parsed);
-        $this->stream_produce('ohlcvs', $ohlcvs);
         $client->resolve ($resolveData, $messageHash);
     }
 
@@ -2165,7 +2153,7 @@ class binance extends \ccxt\async\binance {
             if ($symbolsDefined) {
                 $streamHash = $channelName . '::' . implode(',', $symbols);
             }
-            $url = $this->get_ws_url($rawMarketType, $this->get_future_ws_category($channelName)) . '/' . $this->stream_id($rawMarketType, $streamHash);
+            $url = $this->get_ws_url($rawMarketType, $this->get_future_ws_category($channelName)) . '/' . $this->stream($rawMarketType, $streamHash);
             $requestId = $this->request_id($url);
             $request = array(
                 'method' => $isUnsubscribe ? 'UNSUBSCRIBE' : 'SUBSCRIBE',
@@ -2442,7 +2430,6 @@ class binance extends \ccxt\async\binance {
                 continue;
             }
             $parsedTicker = $this->parse_ws_ticker($ticker, $marketType);
-            $this->stream_produce('tickers', $parsedTicker);
             $symbol = $parsedTicker['symbol'];
             $newTickers[$symbol] = $parsedTicker;
             if ($isBidAsk) {
@@ -2757,7 +2744,6 @@ class binance extends \ccxt\async\binance {
                 for ($i = 0; $i < count($messageHashes); $i++) {
                     $messageHash = $messageHashes[$i];
                     $client->reject ($error, $messageHash);
-                    $this->stream_produce('errors', null, $error);
                 }
                 $this->options[$type] = $this->extend($options, array(
                     'listenKey' => null,
@@ -2817,7 +2803,6 @@ class binance extends \ccxt\async\binance {
             if (is_array($client->futures) && array_key_exists($messageHash, $client->futures)) {
                 $future = $client->futures[$messageHash];
                 $future->resolve ();
-                $this->stream_produce('balances', $this->balance[$type]);
                 $client->resolve ($this->balance[$type], $type . ':balance');
             }
         }) ();
@@ -2933,7 +2918,6 @@ class binance extends \ccxt\async\binance {
         $messageHash = $this->safe_string($message, 'id');
         $result = $this->safe_dict($message, 'result', array());
         $parsedBalances = $this->parseBalanceCustom ($result);
-        $this->stream_produce('balances', $parsedBalances);
         $client->resolve ($parsedBalances, $messageHash);
     }
 
@@ -3045,7 +3029,6 @@ class binance extends \ccxt\async\binance {
             $parsed = $this->parse_position_risk($result[$i]);
             $entryPrice = $this->safe_string($parsed, 'entryPrice');
             if (($entryPrice !== '0') && ($entryPrice !== '0.0') && ($entryPrice !== '0.00000000')) {
-                $this->stream_produce('positions', $parsed);
                 $positions[] = $parsed;
             }
         }
@@ -3209,7 +3192,6 @@ class binance extends \ccxt\async\binance {
         $this->balance[$accountType]['timestamp'] = $timestamp;
         $this->balance[$accountType]['datetime'] = $this->iso8601($timestamp);
         $this->balance[$accountType] = $this->safe_balance($this->balance[$accountType]);
-        $this->stream_produce('balances', $this->balance[$accountType]);
         $client->resolve ($this->balance[$accountType], $messageHash);
     }
 
@@ -3361,7 +3343,6 @@ class binance extends \ccxt\async\binance {
         $messageHash = $this->safe_string($message, 'id');
         $result = $this->safe_dict($message, 'result', array());
         $order = $this->parse_order($result);
-        $this->stream_produce('orders', $order);
         $client->resolve ($order, $messageHash);
     }
 
@@ -4301,7 +4282,6 @@ class binance extends \ccxt\async\binance {
                 $contracts = $this->safe_number($position, 'contracts', 0);
                 if ($contracts > 0) {
                     $cache->append ($position);
-                    $this->stream_produce('positions', $position);
                 }
             }
             // don't remove the $future from the .futures $cache
@@ -4364,7 +4344,6 @@ class binance extends \ccxt\async\binance {
             $position['datetime'] = $this->iso8601($timestamp);
             $newPositions[] = $position;
             $cache->append ($position);
-            $this->stream_produce('positions', $position);
         }
         $messageHashes = $this->find_message_hashes($client, $accountType . ':$positions::');
         for ($i = 0; $i < count($messageHashes); $i++) {
@@ -4587,9 +4566,6 @@ class binance extends \ccxt\async\binance {
         $messageHash = $this->safe_string($message, 'id');
         $result = $this->safe_list($message, 'result', array());
         $trades = $this->parse_trades($result);
-        for ($i = 0; $i < count($trades); $i++) {
-            $this->stream_produce('myTrades', $trades[$i]);
-        }
         $client->resolve ($trades, $messageHash);
     }
 
@@ -4713,7 +4689,6 @@ class binance extends \ccxt\async\binance {
             }
             $myTrades = $this->myTrades;
             $myTrades->append ($trade);
-            $this->stream_produce('myTrades', $trade);
             $client->resolve ($this->myTrades, $messageHash);
             $messageHashSymbol = $messageHash . ':' . $symbol;
             $client->resolve ($this->myTrades, $messageHashSymbol);
@@ -4751,7 +4726,6 @@ class binance extends \ccxt\async\binance {
             $cachedOrders->append ($parsed);
             $messageHash = 'orders';
             $symbolSpecificMessageHash = 'orders:' . $symbol;
-            $this->stream_produce('orders', $parsed);
             $client->resolve ($cachedOrders, $messageHash);
             $client->resolve ($cachedOrders, $symbolSpecificMessageHash);
         }
@@ -4783,7 +4757,6 @@ class binance extends \ccxt\async\binance {
             $rejected = true;
             // private endpoint uses $id
             $client->reject ($e, $id);
-            $this->stream_produce('errors', null, $error);
             // public endpoint stores messageHash in subscriptions
             $subscriptionKeys = is_array($client->subscriptions) ? array_keys($client->subscriptions) : array();
             for ($i = 0; $i < count($subscriptionKeys); $i++) {
@@ -4792,7 +4765,6 @@ class binance extends \ccxt\async\binance {
                 $subscription = $this->safe_string($client->subscriptions[$subscriptionHash], 'subscription');
                 if ($id === $subscriptionId) {
                     $client->reject ($e, $subscriptionHash);
-                    $this->stream_produce('errors', null, $error);
                     if ($subscription !== null) {
                         unset($client->subscriptions[$subscription]);
                     }
@@ -4801,13 +4773,11 @@ class binance extends \ccxt\async\binance {
         }
         if (!$rejected) {
             $client->reject ($message, $id);
-            $this->stream_produce('errors', null, $error);
         }
         // reset connection if 5xx $error
         $codeString = $this->safe_string($error, 'code');
         if (($codeString !== null) && ($codeString[0] === '5')) {
             $client->reset ($message);
-            $this->stream_produce('errors', null, $message);
         }
     }
 
@@ -4830,7 +4800,6 @@ class binance extends \ccxt\async\binance {
 
     public function handle_message(Client $client, $message) {
         // handle WebSocketAPI
-        $this->stream_produce('raw', $message);
         $eventMsg = $this->safe_dict($message, 'event');
         if ($eventMsg !== null) {
             $message = $eventMsg;

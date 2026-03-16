@@ -6,7 +6,7 @@
 
 //  ---------------------------------------------------------------------------
 import bitstampRest from '../bitstamp.js';
-import { ArgumentsRequired, AuthenticationError, ExchangeError } from '../base/errors.js';
+import { ArgumentsRequired, AuthenticationError } from '../base/errors.js';
 import { ArrayCache, ArrayCacheBySymbolById } from '../base/ws/Cache.js';
 import { Precise } from '../base/Precise.js';
 //  ---------------------------------------------------------------------------
@@ -120,7 +120,6 @@ export default class bitstamp extends bitstampRest {
             return;
         }
         this.handleDelta(storedOrderBook, delta);
-        this.streamProduce('orderbooks', storedOrderBook);
         client.resolve(storedOrderBook, messageHash);
     }
     handleDelta(orderbook, delta) {
@@ -263,7 +262,6 @@ export default class bitstamp extends bitstampRest {
             this.trades[symbol] = tradesArray;
         }
         tradesArray.append(trade);
-        this.streamProduce('trades', trade);
         client.resolve(tradesArray, messageHash);
     }
     /**
@@ -328,7 +326,6 @@ export default class bitstamp extends bitstampRest {
         order['event'] = this.safeString(message, 'event');
         const parsed = this.parseWsOrder(order, market);
         stored.append(parsed);
-        this.streamProduce('orders', parsed);
         client.resolve(this.orders, channel);
     }
     parseWsOrder(order, market = undefined) {
@@ -499,23 +496,14 @@ export default class bitstamp extends bitstampRest {
         // }
         const event = this.safeString(message, 'event');
         if (event === 'bts:error') {
-            try {
-                const feedback = this.id + ' ' + this.json(message);
-                const data = this.safeValue(message, 'data', {});
-                const code = this.safeNumber(data, 'code');
-                const msg = this.safeString(data, 'message');
-                this.throwExactlyMatchedException(this.exceptions['exact'], code, feedback);
-                this.throwBroadlyMatchedException(this.exceptions['broad'], msg, feedback);
-                throw new ExchangeError(feedback);
-            }
-            catch (e) {
-                this.streamProduce('errors', undefined, e);
-            }
+            const feedback = this.id + ' ' + this.json(message);
+            const data = this.safeValue(message, 'data', {});
+            const code = this.safeNumber(data, 'code');
+            this.throwExactlyMatchedException(this.exceptions['exact'], code, feedback);
         }
         return true;
     }
     handleMessage(client, message) {
-        this.streamProduce('raw', message);
         if (!this.handleErrorMessage(client, message)) {
             return;
         }

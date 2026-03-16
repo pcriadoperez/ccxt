@@ -4,7 +4,6 @@ Object.defineProperty(exports, '__esModule', { value: true });
 
 var paradex$1 = require('../paradex.js');
 var Cache = require('../base/ws/Cache.js');
-var errors = require('../base/errors.js');
 
 // ----------------------------------------------------------------------------
 //  ---------------------------------------------------------------------------
@@ -148,7 +147,6 @@ class paradex extends paradex$1["default"] {
             this.trades[symbol] = stored;
         }
         stored.append(parsedTrade);
-        this.streamProduce('trades', parsedTrade);
         client.resolve(stored, messageHash);
         return message;
     }
@@ -238,7 +236,6 @@ class paradex extends paradex$1["default"] {
         snapshot['nonce'] = this.safeInteger(data, 'seq_no');
         orderbook.reset(snapshot);
         const messageHash = this.safeString(params, 'channel');
-        this.streamProduce('orderbooks', orderbook);
         client.resolve(orderbook, messageHash);
     }
     /**
@@ -421,7 +418,6 @@ class paradex extends paradex$1["default"] {
         const messageHash = channel + '.' + symbol;
         const ticker = this.parseTicker(data, market);
         this.tickers[symbol] = ticker;
-        this.streamProduce('tickers', ticker);
         client.resolve(ticker, channel);
         client.resolve(ticker, messageHash);
         return message;
@@ -581,26 +577,18 @@ class paradex extends paradex$1["default"] {
         }
         else {
             const errorCode = this.safeString(error, 'code');
-            try {
-                if (errorCode !== undefined) {
-                    const feedback = this.id + ' ' + this.json(error);
-                    this.throwExactlyMatchedException(this.exceptions['exact'], '-32600', feedback);
-                    const messageString = this.safeValue(error, 'message');
-                    if (messageString !== undefined) {
-                        this.throwBroadlyMatchedException(this.exceptions['broad'], messageString, feedback);
-                    }
-                    throw new errors.ExchangeError(feedback);
+            if (errorCode !== undefined) {
+                const feedback = this.id + ' ' + this.json(error);
+                this.throwExactlyMatchedException(this.exceptions['exact'], '-32600', feedback);
+                const messageString = this.safeValue(error, 'message');
+                if (messageString !== undefined) {
+                    this.throwBroadlyMatchedException(this.exceptions['broad'], messageString, feedback);
                 }
-            }
-            catch (e) {
-                this.streamProduce('errors', undefined, e);
-                client.reject(e);
             }
             return false;
         }
     }
     handleMessage(client, message) {
-        this.streamProduce('raw', message);
         if (!this.handleErrorMessage(client, message)) {
             return;
         }

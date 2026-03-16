@@ -124,7 +124,6 @@ class bithumb extends bithumb$1["default"] {
         const ticker = this.parseWsTicker(content);
         const messageHash = 'ticker:' + symbol;
         this.tickers[symbol] = ticker;
-        this.streamProduce('tickers', ticker);
         client.resolve(this.tickers[symbol], messageHash);
     }
     parseWsTicker(ticker, market = undefined) {
@@ -239,7 +238,6 @@ class bithumb extends bithumb$1["default"] {
         orderbook['timestamp'] = timestamp;
         orderbook['datetime'] = this.iso8601(timestamp);
         const messageHash = 'orderbook' + ':' + symbol;
-        this.streamProduce('orderbooks', orderbook);
         client.resolve(orderbook, messageHash);
     }
     handleDelta(orderbook, delta) {
@@ -324,7 +322,6 @@ class bithumb extends bithumb$1["default"] {
             const parsed = this.parseWsTrade(rawTrade);
             trades.append(parsed);
             const messageHash = 'trade' + ':' + symbol;
-            this.streamProduce('trades', parsed);
             client.resolve(trades, messageHash);
         }
     }
@@ -381,7 +378,6 @@ class bithumb extends bithumb$1["default"] {
         }
         catch (e) {
             client.reject(e);
-            this.streamProduce('errors', undefined, e);
         }
         return true;
     }
@@ -440,7 +436,6 @@ class bithumb extends bithumb$1["default"] {
         this.balance['timestamp'] = timestamp;
         this.balance['datetime'] = this.iso8601(timestamp);
         this.balance = this.safeBalance(this.balance);
-        this.streamProduce('balances', this.balance);
         client.resolve(this.balance, messageHash);
     }
     async authenticate(params = {}) {
@@ -534,7 +529,6 @@ class bithumb extends bithumb$1["default"] {
         }
         const cachedOrders = this.orders;
         cachedOrders.append(parsed);
-        this.streamProduce('orders', parsed);
         client.resolve(cachedOrders, messageHash);
         const symbolSpecificMessageHash = messageHash + ':' + symbol;
         client.resolve(cachedOrders, symbolSpecificMessageHash);
@@ -635,7 +629,6 @@ class bithumb extends bithumb$1["default"] {
         }, market);
     }
     handleMessage(client, message) {
-        this.streamProduce('raw', message);
         if (!this.handleErrorMessage(client, message)) {
             return;
         }

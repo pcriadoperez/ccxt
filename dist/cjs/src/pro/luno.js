@@ -98,7 +98,6 @@ class luno extends luno$1["default"] {
             const rawTrade = rawTrades[i];
             const trade = this.parseTrade(rawTrade, market);
             stored.append(trade);
-            this.streamProduce('trades', trade);
         }
         this.trades[symbol] = stored;
         client.resolve(this.trades[symbol], messageHash);
@@ -212,7 +211,6 @@ class luno extends luno$1["default"] {
         const orderbook = this.orderbooks[symbol];
         const nonce = this.safeInteger(message, 'sequence');
         orderbook['nonce'] = nonce;
-        this.streamProduce('orderbooks', orderbook);
         client.resolve(orderbook, messageHash);
     }
     customParseOrderBook(orderbook, symbol, timestamp = undefined, bidsKey = 'bids', asksKey = 'asks', priceKey = 'price', amountKey = 'volume', countOrIdKey = 2) {
@@ -310,7 +308,6 @@ class luno extends luno$1["default"] {
         }
     }
     handleMessage(client, message) {
-        this.streamProduce('raw', message);
         if (message === '') {
             return;
         }

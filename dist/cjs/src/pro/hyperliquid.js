@@ -301,7 +301,6 @@ class hyperliquid extends hyperliquid$1["default"] {
         const orderbook = this.orderbooks[symbol];
         orderbook.reset(snapshot);
         const messageHash = 'orderbook:' + symbol;
-        this.streamProduce('orderbooks', orderbook);
         client.resolve(orderbook, messageHash);
     }
     /**
@@ -560,7 +559,6 @@ class hyperliquid extends hyperliquid$1["default"] {
             const market = this.safeMarket(marketId, undefined, undefined, 'spot');
             const symbol = market['symbol'];
             const ticker = this.parseWsTicker(assetObject, market);
-            this.streamProduce('tickers', ticker);
             parsedTickers.push(ticker);
             this.tickers[symbol] = ticker;
         }
@@ -575,7 +573,6 @@ class hyperliquid extends hyperliquid$1["default"] {
             const market = this.safeMarket(marketId, undefined, undefined, 'swap');
             const symbol = market['symbol'];
             const ticker = this.parseWsTicker(data, market);
-            this.streamProduce('tickers', ticker);
             this.tickers[symbol] = ticker;
             parsedTickers.push(ticker);
         }
@@ -632,7 +629,6 @@ class hyperliquid extends hyperliquid$1["default"] {
             const parsed = this.parseWsTrade(rawTrade);
             const symbol = parsed['symbol'];
             symbols[symbol] = true;
-            this.streamProduce('myTrades', parsed);
             trades.append(parsed);
         }
         const keys = Object.keys(symbols);
@@ -734,7 +730,6 @@ class hyperliquid extends hyperliquid$1["default"] {
             const data = this.safeDict(entry, i);
             const trade = this.parseWsTrade(data);
             trades.append(trade);
-            this.streamProduce('trades', trade);
         }
         const messageHash = 'trade:' + symbol;
         client.resolve(trades, messageHash);
@@ -897,8 +892,6 @@ class hyperliquid extends hyperliquid$1["default"] {
         const ohlcv = this.ohlcvs[symbol][timeframe];
         const parsed = this.parseOHLCV(data);
         ohlcv.append(parsed);
-        const ohlcvs = this.createStreamOHLCV(symbol, timeframe, parsed);
-        this.streamProduce('ohlcvs', ohlcvs);
         const messageHash = 'candles:' + timeframe + ':' + symbol;
         client.resolve(ohlcv, messageHash);
     }
@@ -1024,7 +1017,6 @@ class hyperliquid extends hyperliquid$1["default"] {
             stored.append(order);
             const symbol = this.safeString(order, 'symbol');
             marketSymbols[symbol] = true;
-            this.streamProduce('orders', order);
         }
         const keys = Object.keys(marketSymbols);
         for (let i = 0; i < keys.length; i++) {
@@ -1068,7 +1060,6 @@ class hyperliquid extends hyperliquid$1["default"] {
         if (channel === 'error') {
             const ret_msg = this.safeString(message, 'data', '');
             const errorMsg = this.id + ' ' + ret_msg;
-            this.streamProduce('errors', undefined, errorMsg);
             client.reject(errorMsg);
             return true;
         }
@@ -1239,7 +1230,6 @@ class hyperliquid extends hyperliquid$1["default"] {
         //     }
         // }
         //
-        this.streamProduce('raw', message);
         if (this.handleErrorMessage(client, message)) {
             return;
         }

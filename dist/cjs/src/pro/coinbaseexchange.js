@@ -399,7 +399,6 @@ class coinbaseexchange extends coinbaseexchange$1["default"] {
                 this.trades[symbol] = tradesArray;
             }
             tradesArray.append(trade);
-            this.streamProduce('trades', trade);
             client.resolve(tradesArray, messageHash);
         }
         return message;
@@ -417,7 +416,6 @@ class coinbaseexchange extends coinbaseexchange$1["default"] {
                 this.myTrades = tradesArray;
             }
             tradesArray.append(trade);
-            this.streamProduce('myTrades', trade);
             client.resolve(tradesArray, messageHash);
         }
         return message;
@@ -617,7 +615,6 @@ class coinbaseexchange extends coinbaseexchange$1["default"] {
             if (previousOrder === undefined) {
                 const parsed = this.parseWsOrder(message);
                 orders.append(parsed);
-                this.streamProduce('orders', parsed);
                 client.resolve(orders, messageHash);
             }
             else {
@@ -682,7 +679,6 @@ class coinbaseexchange extends coinbaseexchange$1["default"] {
                         orders.append(previousOrder);
                         client.resolve(orders, messageHash);
                     }
-                    this.streamProduce('orders', previousOrder);
                 }
             }
         }
@@ -764,7 +760,6 @@ class coinbaseexchange extends coinbaseexchange$1["default"] {
             this.tickers[symbol] = ticker;
             const messageHash = 'ticker:' + symbol;
             const idMessageHash = 'ticker:' + marketId;
-            this.streamProduce('tickers', ticker);
             client.resolve(ticker, messageHash);
             client.resolve(ticker, idMessageHash);
         }
@@ -875,7 +870,6 @@ class coinbaseexchange extends coinbaseexchange$1["default"] {
             orderbook['timestamp'] = undefined;
             orderbook['datetime'] = undefined;
             orderbook['symbol'] = symbol;
-            this.streamProduce('orderbooks', orderbook);
             client.resolve(orderbook, messageHash);
         }
         else if (type === 'l2update') {
@@ -897,7 +891,6 @@ class coinbaseexchange extends coinbaseexchange$1["default"] {
             }
             orderbook['timestamp'] = timestamp;
             orderbook['datetime'] = this.iso8601(timestamp);
-            this.streamProduce('orderbooks', orderbook);
             client.resolve(orderbook, messageHash);
         }
     }
@@ -943,12 +936,10 @@ class coinbaseexchange extends coinbaseexchange$1["default"] {
         }
         catch (error) {
             client.reject(error);
-            this.streamProduce('errors', undefined, error);
             return true;
         }
     }
     handleMessage(client, message) {
-        this.streamProduce('raw', message);
         const type = this.safeString(message, 'type');
         const methods = {
             'snapshot': this.handleOrderBook,

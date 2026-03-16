@@ -30,7 +30,7 @@ declare class testMainClass {
     importFiles(exchange: Exchange): Promise<boolean>;
     loadCredentialsFromEnv(exchange: Exchange): void;
     expandSettings(exchange: Exchange): void;
-    addPadding(msg: string, size: any): string;
+    addPadding(message: string, size: any): string;
     testMethod(methodName: string, exchange: any, args: any[], isPublic: boolean): Promise<boolean>;
     getSkips(exchange: Exchange, methodName: string): any;
     testSafe(methodName: any, exchange: any, args?: any[], isPublic?: boolean): Promise<any>;
@@ -47,7 +47,7 @@ declare class testMainClass {
     checkConstructor(exchange: Exchange): void;
     testReturnResponseHeaders(exchange: Exchange): Promise<boolean>;
     startTest(exchange: any, symbol: any): Promise<boolean>;
-    assertStaticError(cond: boolean, msg: string, calculatedOutput: any, storedOutput: any, key?: any): void;
+    assertStaticError(cond: boolean, message: string, calculatedOutput: any, storedOutput: any, key?: any): void;
     loadMarketsFromFile(id: string): any;
     loadCurrenciesFromFile(id: string): any;
     loadStaticData(folder: string, targetExchange?: Str): {};

@@ -129,7 +129,6 @@ func  (this *LunoCore) HandleTrades(client interface{}, message interface{}, sub
         var rawTrade interface{} = ccxt.GetValue(rawTrades, i)
         var trade interface{} = this.ParseTrade(rawTrade, market)
         stored.(ccxt.Appender).Append(trade)
-        this.StreamProduce("trades", trade)
     }
     ccxt.AddElementToObject(this.Trades, symbol, stored)
     client.(ccxt.ClientInterface).Resolve(ccxt.GetValue(this.Trades, symbol), messageHash)
@@ -185,8 +184,8 @@ func  (this *LunoCore) WatchOrderBook(symbol interface{}, optionalArgs ...interf
             _ = params
             this.CheckRequiredCredentials()
         
-            retRes1528 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes1528)
+            retRes1518 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes1518)
             var market interface{} = this.Market(symbol)
             symbol = ccxt.GetValue(market, "symbol")
             var subscriptionHash interface{} = ccxt.Add("/stream/", ccxt.GetValue(market, "id"))
@@ -262,7 +261,6 @@ func  (this *LunoCore) HandleOrderBook(client interface{}, message interface{}, 
     var orderbook interface{} = ccxt.GetValue(this.Orderbooks, symbol)
     var nonce interface{} = this.SafeInteger(message, "sequence")
     ccxt.AddElementToObject(orderbook, "nonce", nonce)
-    this.StreamProduce("orderbooks", orderbook)
     client.(ccxt.ClientInterface).Resolve(orderbook, messageHash)
 }
 func  (this *LunoCore) CustomParseOrderBook(orderbook interface{}, symbol interface{}, optionalArgs ...interface{}) interface{}  {
@@ -383,7 +381,6 @@ func  (this *LunoCore) HandleDelta(orderbook interface{}, message interface{})  
     }
 }
 func  (this *LunoCore) HandleMessage(client interface{}, message interface{})  {
-    this.StreamProduce("raw", message)
     if ccxt.IsTrue(ccxt.IsEqual(message, "")) {
         return
     }

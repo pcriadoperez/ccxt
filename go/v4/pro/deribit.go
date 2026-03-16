@@ -175,7 +175,6 @@ func  (this *DeribitCore) HandleBalance(client interface{}, message interface{})
     var balance interface{} = this.ParseBalance(data)
     ccxt.AddElementToObject(this.Balance, currencyCode, balance)
     var messageHash interface{} = "balance"
-    this.StreamProduce("balances", this.Balance)
     client.(ccxt.ClientInterface).Resolve(this.Balance, messageHash)
 }
 /**
@@ -196,19 +195,19 @@ func  (this *DeribitCore) WatchTicker(symbol interface{}, optionalArgs ...interf
                     params := ccxt.GetArg(optionalArgs, 0, map[string]interface{} {})
             _ = params
         
-            retRes1768 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes1768)
+            retRes1758 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes1758)
             var market interface{} = this.Market(symbol)
             var url interface{} = ccxt.GetValue(ccxt.GetValue(this.Urls, "api"), "ws")
             var interval interface{} = this.SafeString(params, "interval", "100ms")
             params = this.Omit(params, "interval")
         
-            retRes1818 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes1818)
+            retRes1808 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes1808)
             if ccxt.IsTrue(ccxt.IsEqual(interval, "raw")) {
         
-                retRes18312 := (<-this.Authenticate())
-                ccxt.PanicOnError(retRes18312)
+                retRes18212 := (<-this.Authenticate())
+                ccxt.PanicOnError(retRes18212)
             }
             var channel interface{} = ccxt.Add(ccxt.Add(ccxt.Add("ticker.", ccxt.GetValue(market, "id")), "."), interval)
             var message interface{} = map[string]interface{} {
@@ -221,9 +220,9 @@ func  (this *DeribitCore) WatchTicker(symbol interface{}, optionalArgs ...interf
             }
             var request interface{} = this.DeepExtend(message, params)
         
-                retRes19515 :=  (<-this.Watch(url, channel, request, channel, request))
-                ccxt.PanicOnError(retRes19515)
-                ch <- retRes19515
+                retRes19415 :=  (<-this.Watch(url, channel, request, channel, request))
+                ccxt.PanicOnError(retRes19415)
+                ch <- retRes19415
                 return nil
         
             }()
@@ -249,19 +248,19 @@ func  (this *DeribitCore) WatchTickers(optionalArgs ...interface{}) <- chan inte
             params := ccxt.GetArg(optionalArgs, 1, map[string]interface{} {})
             _ = params
         
-            retRes2098 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes2098)
+            retRes2088 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes2088)
             symbols = this.MarketSymbols(symbols, nil, false)
             var url interface{} = ccxt.GetValue(ccxt.GetValue(this.Urls, "api"), "ws")
             var interval interface{} = this.SafeString(params, "interval", "100ms")
             params = this.Omit(params, "interval")
         
-            retRes2148 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes2148)
+            retRes2138 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes2138)
             if ccxt.IsTrue(ccxt.IsEqual(interval, "raw")) {
         
-                retRes21612 := (<-this.Authenticate())
-                ccxt.PanicOnError(retRes21612)
+                retRes21512 := (<-this.Authenticate())
+                ccxt.PanicOnError(retRes21512)
             }
             var channels interface{} = []interface{}{}
             for i := 0; ccxt.IsLessThan(i, ccxt.GetArrayLength(symbols)); i++ {
@@ -331,7 +330,6 @@ func  (this *DeribitCore) HandleTicker(client interface{}, message interface{}) 
     var ticker interface{} = this.ParseTicker(data)
     var messageHash interface{} = this.SafeString(params, "channel")
     ccxt.AddElementToObject(this.Tickers, symbol, ticker)
-    this.StreamProduce("tickers", ticker)
     client.(ccxt.ClientInterface).Resolve(ticker, messageHash)
 }
 /**
@@ -353,8 +351,8 @@ func  (this *DeribitCore) WatchBidsAsks(optionalArgs ...interface{}) <- chan int
             params := ccxt.GetArg(optionalArgs, 1, map[string]interface{} {})
             _ = params
         
-            retRes2928 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes2928)
+            retRes2908 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes2908)
             symbols = this.MarketSymbols(symbols, nil, false)
             var url interface{} = ccxt.GetValue(ccxt.GetValue(this.Urls, "api"), "ws")
             var channels interface{} = []interface{}{}
@@ -457,9 +455,9 @@ func  (this *DeribitCore) WatchTrades(symbol interface{}, optionalArgs ...interf
             _ = params
             ccxt.AddElementToObject(params, "callerMethodName", "watchTrades")
         
-                retRes37615 :=  (<-this.WatchTradesForSymbols([]interface{}{symbol}, since, limit, params))
-                ccxt.PanicOnError(retRes37615)
-                ch <- retRes37615
+                retRes37415 :=  (<-this.WatchTradesForSymbols([]interface{}{symbol}, since, limit, params))
+                ccxt.PanicOnError(retRes37415)
+                ch <- retRes37415
                 return nil
         
             }()
@@ -493,8 +491,8 @@ func  (this *DeribitCore) WatchTradesForSymbols(symbols interface{}, optionalArg
             params = ccxt.GetValue(intervalparamsVariable,1)
             if ccxt.IsTrue(ccxt.IsEqual(interval, "raw")) {
         
-                retRes39412 := (<-this.Authenticate())
-                ccxt.PanicOnError(retRes39412)
+                retRes39212 := (<-this.Authenticate())
+                ccxt.PanicOnError(retRes39212)
             }
         
             trades:= (<-this.WatchMultipleWrapper("trades", interval, symbols, params))
@@ -550,7 +548,6 @@ func  (this *DeribitCore) HandleTrades(client interface{}, message interface{}) 
         var trade interface{} = ccxt.GetValue(trades, i)
         var parsed interface{} = this.ParseTrade(trade, market)
         stored.(ccxt.Appender).Append(parsed)
-        this.StreamProduce("trades", parsed)
     }
     ccxt.AddElementToObject(this.Trades, symbol, stored)
     var messageHash interface{} = ccxt.Add(ccxt.Add(ccxt.Add("trades|", symbol), "|"), interval)
@@ -582,12 +579,12 @@ func  (this *DeribitCore) WatchMyTrades(optionalArgs ...interface{}) <- chan int
             params := ccxt.GetArg(optionalArgs, 3, map[string]interface{} {})
             _ = params
         
-            retRes4648 := (<-this.Authenticate(params))
-            ccxt.PanicOnError(retRes4648)
+            retRes4618 := (<-this.Authenticate(params))
+            ccxt.PanicOnError(retRes4618)
             if ccxt.IsTrue(!ccxt.IsEqual(symbol, nil)) {
         
-                retRes46612 := (<-this.LoadMarkets())
-                ccxt.PanicOnError(retRes46612)
+                retRes46312 := (<-this.LoadMarkets())
+                ccxt.PanicOnError(retRes46312)
                 symbol = this.Symbol(symbol)
             }
             var url interface{} = ccxt.GetValue(ccxt.GetValue(this.Urls, "api"), "ws")
@@ -655,10 +652,12 @@ func  (this *DeribitCore) HandleMyTrades(client interface{}, message interface{}
         cachedTrades = ccxt.NewArrayCacheBySymbolById(limit)
     }
     var parsed interface{} = this.ParseTrades(trades)
+    var marketIds interface{} = map[string]interface{} {}
     for i := 0; ccxt.IsLessThan(i, ccxt.GetArrayLength(parsed)); i++ {
         var trade interface{} = ccxt.GetValue(parsed, i)
         cachedTrades.(ccxt.Appender).Append(trade)
-        this.StreamProduce("myTrades", trade)
+        var symbol interface{} = ccxt.GetValue(trade, "symbol")
+        ccxt.AddElementToObject(marketIds, symbol, true)
     }
     client.(ccxt.ClientInterface).Resolve(cachedTrades, channel)
 }
@@ -684,9 +683,9 @@ func  (this *DeribitCore) WatchOrderBook(symbol interface{}, optionalArgs ...int
             _ = params
             ccxt.AddElementToObject(params, "callerMethodName", "watchOrderBook")
         
-                retRes54915 :=  (<-this.WatchOrderBookForSymbols([]interface{}{symbol}, limit, params))
-                ccxt.PanicOnError(retRes54915)
-                ch <- retRes54915
+                retRes54815 :=  (<-this.WatchOrderBookForSymbols([]interface{}{symbol}, limit, params))
+                ccxt.PanicOnError(retRes54815)
+                ch <- retRes54815
                 return nil
         
             }()
@@ -717,8 +716,8 @@ func  (this *DeribitCore) WatchOrderBookForSymbols(symbols interface{}, optional
             params = ccxt.GetValue(intervalparamsVariable,1)
             if ccxt.IsTrue(ccxt.IsEqual(interval, "raw")) {
         
-                retRes56612 := (<-this.Authenticate())
-                ccxt.PanicOnError(retRes56612)
+                retRes56512 := (<-this.Authenticate())
+                ccxt.PanicOnError(retRes56512)
             }
             var descriptor interface{} = ""
             var useDepthEndpoint interface{} = nil // for more info, see comment in .options
@@ -827,7 +826,6 @@ func  (this *DeribitCore) HandleOrderBook(client interface{}, message interface{
     ccxt.AddElementToObject(storedOrderBook, "symbol", symbol)
     ccxt.AddElementToObject(this.Orderbooks, symbol, storedOrderBook)
     var messageHash interface{} = ccxt.Add(ccxt.Add(ccxt.Add("book|", symbol), "|"), descriptor)
-    this.StreamProduce("orderbooks", storedOrderBook)
     client.(ccxt.ClientInterface).Resolve(storedOrderBook, messageHash)
 }
 func  (this *DeribitCore) CleanOrderBook(data interface{}) interface{}  {
@@ -884,11 +882,11 @@ func  (this *DeribitCore) WatchOrders(optionalArgs ...interface{}) <- chan inter
             params := ccxt.GetArg(optionalArgs, 3, map[string]interface{} {})
             _ = params
         
-            retRes7118 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes7118)
+            retRes7098 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes7098)
         
-            retRes7128 := (<-this.Authenticate(params))
-            ccxt.PanicOnError(retRes7128)
+            retRes7108 := (<-this.Authenticate(params))
+            ccxt.PanicOnError(retRes7108)
             if ccxt.IsTrue(!ccxt.IsEqual(symbol, nil)) {
                 symbol = this.Symbol(symbol)
             }
@@ -971,7 +969,6 @@ func  (this *DeribitCore) HandleOrders(client interface{}, message interface{}) 
     }
     var cachedOrders interface{} = this.Orders
     for i := 0; ccxt.IsLessThan(i, ccxt.GetArrayLength(orders)); i++ {
-        this.StreamProduce("orders", ccxt.GetValue(orders, i))
         cachedOrders.(ccxt.Appender).Append(ccxt.GetValue(orders, i))
     }
     client.(ccxt.ClientInterface).Resolve(this.Orders, channel)
@@ -1002,8 +999,8 @@ func  (this *DeribitCore) WatchOHLCV(symbol interface{}, optionalArgs ...interfa
             params := ccxt.GetArg(optionalArgs, 3, map[string]interface{} {})
             _ = params
         
-            retRes8088 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes8088)
+            retRes8058 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes8058)
             symbol = this.Symbol(symbol)
         
             ohlcvs:= (<-this.WatchOHLCVForSymbols([]interface{}{[]interface{}{symbol, timeframe}}, since, limit, params))
@@ -1095,8 +1092,6 @@ func  (this *DeribitCore) HandleOHLCV(client interface{}, message interface{})  
     // data contains a single ccxt.OHLCV candle
     var parsed interface{} = this.ParseWsOHLCV(ohlcv, market)
     stored.(ccxt.Appender).Append(parsed)
-    var ohlcvs interface{} = this.CreateStreamOHLCV(symbol, unifiedTimeframe, parsed)
-    this.StreamProduce("ohlcvs", ohlcvs)
     ccxt.AddElementToObject(ccxt.GetValue(this.Ohlcvs, symbol), unifiedTimeframe, stored)
     var resolveData interface{} = []interface{}{symbol, unifiedTimeframe, stored}
     var messageHash interface{} = ccxt.Add(ccxt.Add(ccxt.Add("chart.trades|", symbol), "|"), rawTimeframe)
@@ -1128,8 +1123,8 @@ func  (this *DeribitCore) WatchMultipleWrapper(channelName interface{}, channelD
             params := ccxt.GetArg(optionalArgs, 1, map[string]interface{} {})
             _ = params
         
-            retRes9088 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes9088)
+            retRes9038 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes9038)
             var url interface{} = ccxt.GetValue(ccxt.GetValue(this.Urls, "api"), "ws")
             var rawSubscriptions interface{} = []interface{}{}
             var messageHashes interface{} = []interface{}{}
@@ -1166,9 +1161,9 @@ func  (this *DeribitCore) WatchMultipleWrapper(channelName interface{}, channelD
                 panic(ccxt.ExchangeError(ccxt.Add(this.Id, " requested subscription length over limit, try to reduce symbols amount")))
             }
         
-                retRes94415 :=  (<-this.WatchMultiple(url, messageHashes, extendedRequest, rawSubscriptions))
-                ccxt.PanicOnError(retRes94415)
-                ch <- retRes94415
+                retRes93915 :=  (<-this.WatchMultiple(url, messageHashes, extendedRequest, rawSubscriptions))
+                ccxt.PanicOnError(retRes93915)
+                ch <- retRes93915
                 return nil
         
             }()
@@ -1234,12 +1229,9 @@ func  (this *DeribitCore) HandleMessage(client interface{}, message interface{})
     //         }
     //     }
     //
-    this.StreamProduce("raw", message)
     var error interface{} = this.SafeValue(message, "error")
     if ccxt.IsTrue(!ccxt.IsEqual(error, nil)) {
-        err := ccxt.ExchangeError(ccxt.Add(ccxt.Add(this.Id, " "), this.Json(error)))
-        this.StreamProduce("errors", nil, err)
-        client.(ccxt.ClientInterface).Reject(err)
+        panic(ccxt.ExchangeError(ccxt.Add(ccxt.Add(this.Id, " "), this.Json(error))))
     }
     var params interface{} = this.SafeValue(message, "params")
     var channel interface{} = this.SafeString(params, "channel")
@@ -1264,9 +1256,7 @@ func  (this *DeribitCore) HandleMessage(client interface{}, message interface{})
             ccxt.CallDynamically(handler, client, message)
             return
         }
-        err := ccxt.NotSupported(ccxt.Add(ccxt.Add(this.Id, " no handler found for this message "), this.Json(message)))
-        this.StreamProduce("errors", nil, err)
-        client.(ccxt.ClientInterface).Reject(err)
+        panic(ccxt.NotSupported(ccxt.Add(ccxt.Add(this.Id, " no handler found for this message "), this.Json(message))))
     }
     var result interface{} = this.SafeValue(message, "result", map[string]interface{} {})
     var accessToken interface{} = this.SafeString(result, "access_token")

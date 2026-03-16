@@ -129,7 +129,6 @@ class dydx extends \ccxt\async\dydx {
         for ($i = 0; $i < count($parsedTrades); $i++) {
             $parsed = $parsedTrades[$i];
             $stored->append ($parsed);
-            $this->stream_produce('trades', $parsed);
         }
         $messageHash = 'trade' . ':' . $symbol;
         $client->resolve ($stored, $messageHash);
@@ -255,7 +254,6 @@ class dydx extends \ccxt\async\dydx {
         $orderbook['nonce'] = $this->safe_integer($message, 'message_id');
         $messageHash = 'orderbook:' . $symbol;
         $this->orderbooks[$symbol] = $orderbook;
-        $this->stream_produce('orderbooks', $orderbook);
         $client->resolve ($orderbook, $messageHash);
     }
 
@@ -401,8 +399,6 @@ class dydx extends \ccxt\async\dydx {
             $this->ohlcvs[$symbol][$timeframe] = $stored;
         }
         $stored->append ($parsed);
-        $ohlcvs = $this->create_stream_ohlcv($symbol, $timeframe, $parsed);
-        $this->stream_produce('ohlcvs', $ohlcvs);
         $client->resolve ($stored, $messageHash);
     }
 
@@ -419,14 +415,12 @@ class dydx extends \ccxt\async\dydx {
             $msg = $this->safe_string($message, 'message');
             throw new ExchangeError($this->id . ' ' . $msg);
         } catch (Exception $e) {
-            $this->stream_produce('errors', null, $e);
             $client->reject ($e);
         }
         return true;
     }
 
     public function handle_message(Client $client, $message) {
-        $this->stream_produce('raw', $message);
         $type = $this->safe_string($message, 'type');
         if ($type === 'error') {
             $this->handle_error_message($client, $message);

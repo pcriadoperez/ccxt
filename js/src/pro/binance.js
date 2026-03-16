@@ -205,7 +205,7 @@ export default class binance extends binanceRest {
     isSpotUrl(client) {
         return (client.url.indexOf('/stream') > -1) || (client.url.indexOf('demo-stream') > -1);
     }
-    streamId(type, subscriptionHash, numSubscriptions = 1) {
+    stream(type, subscriptionHash, numSubscriptions = 1) {
         const streamBySubscriptionsHash = this.safeDict(this.options, 'streamBySubscriptionsHash', this.createSafeDictionary());
         let stream = this.safeString(streamBySubscriptionsHash, subscriptionHash);
         if (stream === undefined) {
@@ -310,7 +310,7 @@ export default class binance extends binanceRest {
             type = 'delivery';
         }
         const numSubscriptions = subscriptionHashes.length;
-        const url = this.getWsUrl(type, this.getFutureWsCategory('forceOrder')) + '/' + this.streamId(type, streamHash, numSubscriptions);
+        const url = this.getWsUrl(type, this.getFutureWsCategory('forceOrder')) + '/' + this.stream(type, streamHash, numSubscriptions);
         const requestId = this.requestId(url);
         const request = {
             'method': 'SUBSCRIBE',
@@ -377,7 +377,6 @@ export default class binance extends binanceRest {
         }
         const cache = this.liquidations;
         cache.append(liquidation);
-        this.streamProduce('liquidations', liquidation);
         client.resolve([liquidation], 'liquidations');
         client.resolve([liquidation], 'liquidations::' + symbol);
     }
@@ -590,7 +589,6 @@ export default class binance extends binanceRest {
         }
         cache.append(liquidation);
         this.myLiquidations = cache;
-        this.streamProduce('myLiquidations', liquidation);
         client.resolve([liquidation], 'myLiquidations');
         client.resolve([liquidation], 'myLiquidations::' + symbol);
     }
@@ -703,7 +701,7 @@ export default class binance extends binanceRest {
             subParams.push(symbolHash);
         }
         const messageHashesLength = messageHashes.length;
-        const url = this.getWsUrl(type, this.getFutureWsCategory(name)) + '/' + this.streamId(type, streamHash, messageHashesLength);
+        const url = this.getWsUrl(type, this.getFutureWsCategory(name)) + '/' + this.stream(type, streamHash, messageHashesLength);
         const requestId = this.requestId(url);
         const request = {
             'method': 'SUBSCRIBE',
@@ -763,7 +761,7 @@ export default class binance extends binanceRest {
             subParams.push(symbolHash);
         }
         const messageHashesLength = subMessageHashes.length;
-        const url = this.getWsUrl(type, this.getFutureWsCategory('depth')) + '/' + this.streamId(type, streamHash, messageHashesLength);
+        const url = this.getWsUrl(type, this.getFutureWsCategory('depth')) + '/' + this.stream(type, streamHash, messageHashesLength);
         const requestId = this.requestId(url);
         const request = {
             'method': 'UNSUBSCRIBE',
@@ -869,7 +867,6 @@ export default class binance extends binanceRest {
         const timestamp = this.safeInteger(result, 'T');
         const orderbook = this.parseOrderBook(result, undefined, timestamp);
         orderbook['nonce'] = this.safeInteger2(result, 'lastUpdateId', 'u');
-        this.streamProduce('orderbooks', orderbook);
         client.resolve(orderbook, messageHash);
     }
     async fetchOrderBookSnapshot(client, message, subscription) {
@@ -920,13 +917,11 @@ export default class binance extends binanceRest {
                 }
             }
             this.orderbooks[symbol] = orderbook;
-            this.streamProduce('orderbooks', orderbook);
             client.resolve(orderbook, messageHash);
         }
         catch (e) {
             delete client.subscriptions[messageHash];
             client.reject(e, messageHash);
-            this.streamProduce('orderbooks', undefined, e);
         }
     }
     handleDelta(bookside, delta) {
@@ -1013,7 +1008,6 @@ export default class binance extends binanceRest {
                         if (conditional) {
                             this.handleOrderBookMessage(client, message, orderbook);
                             if (nonce < orderbook['nonce']) {
-                                this.streamProduce('orderbooks', orderbook);
                                 client.resolve(orderbook, messageHash);
                             }
                         }
@@ -1035,7 +1029,6 @@ export default class binance extends binanceRest {
                         if ((U <= orderbook['nonce']) || (pu === orderbook['nonce'])) {
                             this.handleOrderBookMessage(client, message, orderbook);
                             if (nonce <= orderbook['nonce']) {
-                                this.streamProduce('orderbooks', orderbook);
                                 client.resolve(orderbook, messageHash);
                             }
                         }
@@ -1053,8 +1046,6 @@ export default class binance extends binanceRest {
                 delete this.orderbooks[symbol];
                 delete client.subscriptions[messageHash];
                 client.reject(e, messageHash);
-                this.streamProduce('orderbooks', undefined, e);
-                this.streamProduce('orderbooks::' + symbol, undefined, e);
             }
         }
     }
@@ -1151,7 +1142,7 @@ export default class binance extends binanceRest {
         }
         const query = this.omit(params, 'type');
         const subParamsLength = subParams.length;
-        const url = this.getWsUrl(type, this.getFutureWsCategory(name)) + '/' + this.streamId(type, streamHash, subParamsLength);
+        const url = this.getWsUrl(type, this.getFutureWsCategory(name)) + '/' + this.stream(type, streamHash, subParamsLength);
         const requestId = this.requestId(url);
         const request = {
             'method': 'SUBSCRIBE',
@@ -1214,7 +1205,7 @@ export default class binance extends binanceRest {
         }
         const query = this.omit(params, 'type');
         const subParamsLength = subParams.length;
-        const url = this.getWsUrl(type, this.getFutureWsCategory(name)) + '/' + this.streamId(type, streamHash, subParamsLength);
+        const url = this.getWsUrl(type, this.getFutureWsCategory(name)) + '/' + this.stream(type, streamHash, subParamsLength);
         const requestId = this.requestId(url);
         const request = {
             'method': 'UNSUBSCRIBE',
@@ -1445,7 +1436,6 @@ export default class binance extends binanceRest {
             tradesArray = new ArrayCache(limit);
         }
         tradesArray.append(trade);
-        this.streamProduce('trades', trade);
         this.trades[symbol] = tradesArray;
         client.resolve(tradesArray, messageHash);
     }
@@ -1520,7 +1510,7 @@ export default class binance extends binanceRest {
             rawHashes.push(marketId + '@' + klineType + '_' + interval + utcSuffix);
             messageHashes.push('ohlcv::' + market['symbol'] + '::' + timeframeString);
         }
-        const url = this.getWsUrl(type, this.getFutureWsCategory(klineType)) + '/' + this.streamId(type, 'multipleOHLCV');
+        const url = this.getWsUrl(type, this.getFutureWsCategory(klineType)) + '/' + this.stream(type, 'multipleOHLCV');
         const requestId = this.requestId(url);
         const request = {
             'method': 'SUBSCRIBE',
@@ -1587,7 +1577,7 @@ export default class binance extends binanceRest {
             subMessageHashes.push('ohlcv::' + market['symbol'] + '::' + timeframeString);
             messageHashes.push('unsubscribe::ohlcv::' + market['symbol'] + '::' + timeframeString);
         }
-        const url = this.getWsUrl(type, this.getFutureWsCategory(klineType)) + '/' + this.streamId(type, 'multipleOHLCV');
+        const url = this.getWsUrl(type, this.getFutureWsCategory(klineType)) + '/' + this.stream(type, 'multipleOHLCV');
         const requestId = this.requestId(url);
         const request = {
             'method': 'UNSUBSCRIBE',
@@ -1689,8 +1679,6 @@ export default class binance extends binanceRest {
         }
         stored.append(parsed);
         const resolveData = [symbol, unifiedTimeframe, stored];
-        const ohlcvs = this.createStreamOHLCV(symbol, unifiedTimeframe, parsed);
-        this.streamProduce('ohlcvs', ohlcvs);
         client.resolve(resolveData, messageHash);
     }
     /**
@@ -2076,7 +2064,7 @@ export default class binance extends binanceRest {
         if (symbolsDefined) {
             streamHash = channelName + '::' + symbols.join(',');
         }
-        const url = this.getWsUrl(rawMarketType, this.getFutureWsCategory(channelName)) + '/' + this.streamId(rawMarketType, streamHash);
+        const url = this.getWsUrl(rawMarketType, this.getFutureWsCategory(channelName)) + '/' + this.stream(rawMarketType, streamHash);
         const requestId = this.requestId(url);
         const request = {
             'method': isUnsubscribe ? 'UNSUBSCRIBE' : 'SUBSCRIBE',
@@ -2351,7 +2339,6 @@ export default class binance extends binanceRest {
                 continue;
             }
             const parsedTicker = this.parseWsTicker(ticker, marketType);
-            this.streamProduce('tickers', parsedTicker);
             const symbol = parsedTicker['symbol'];
             newTickers[symbol] = parsedTicker;
             if (isBidAsk) {
@@ -2660,7 +2647,6 @@ export default class binance extends binanceRest {
             for (let i = 0; i < messageHashes.length; i++) {
                 const messageHash = messageHashes[i];
                 client.reject(error, messageHash);
-                this.streamProduce('errors', undefined, error);
             }
             this.options[type] = this.extend(options, {
                 'listenKey': undefined,
@@ -2717,7 +2703,6 @@ export default class binance extends binanceRest {
         if (messageHash in client.futures) {
             const future = client.futures[messageHash];
             future.resolve();
-            this.streamProduce('balances', this.balance[type]);
             client.resolve(this.balance[type], type + ':balance');
         }
     }
@@ -2828,7 +2813,6 @@ export default class binance extends binanceRest {
         const messageHash = this.safeString(message, 'id');
         const result = this.safeDict(message, 'result', {});
         const parsedBalances = this.parseBalanceCustom(result);
-        this.streamProduce('balances', parsedBalances);
         client.resolve(parsedBalances, messageHash);
     }
     /**
@@ -2933,7 +2917,6 @@ export default class binance extends binanceRest {
             const parsed = this.parsePositionRisk(result[i]);
             const entryPrice = this.safeString(parsed, 'entryPrice');
             if ((entryPrice !== '0') && (entryPrice !== '0.0') && (entryPrice !== '0.00000000')) {
-                this.streamProduce('positions', parsed);
                 positions.push(parsed);
             }
         }
@@ -3099,7 +3082,6 @@ export default class binance extends binanceRest {
         this.balance[accountType]['timestamp'] = timestamp;
         this.balance[accountType]['datetime'] = this.iso8601(timestamp);
         this.balance[accountType] = this.safeBalance(this.balance[accountType]);
-        this.streamProduce('balances', this.balance[accountType]);
         client.resolve(this.balance[accountType], messageHash);
     }
     getAccountTypeFromSubscriptions(subscriptions) {
@@ -3247,7 +3229,6 @@ export default class binance extends binanceRest {
         const messageHash = this.safeString(message, 'id');
         const result = this.safeDict(message, 'result', {});
         const order = this.parseOrder(result);
-        this.streamProduce('orders', order);
         client.resolve(order, messageHash);
     }
     handleOrdersWs(client, message) {
@@ -4166,7 +4147,6 @@ export default class binance extends binanceRest {
             const contracts = this.safeNumber(position, 'contracts', 0);
             if (contracts > 0) {
                 cache.append(position);
-                this.streamProduce('positions', position);
             }
         }
         // don't remove the future from the .futures cache
@@ -4227,7 +4207,6 @@ export default class binance extends binanceRest {
             position['datetime'] = this.iso8601(timestamp);
             newPositions.push(position);
             cache.append(position);
-            this.streamProduce('positions', position);
         }
         const messageHashes = this.findMessageHashes(client, accountType + ':positions::');
         for (let i = 0; i < messageHashes.length; i++) {
@@ -4443,9 +4422,6 @@ export default class binance extends binanceRest {
         const messageHash = this.safeString(message, 'id');
         const result = this.safeList(message, 'result', []);
         const trades = this.parseTrades(result);
-        for (let i = 0; i < trades.length; i++) {
-            this.streamProduce('myTrades', trades[i]);
-        }
         client.resolve(trades, messageHash);
     }
     /**
@@ -4573,7 +4549,6 @@ export default class binance extends binanceRest {
             }
             const myTrades = this.myTrades;
             myTrades.append(trade);
-            this.streamProduce('myTrades', trade);
             client.resolve(this.myTrades, messageHash);
             const messageHashSymbol = messageHash + ':' + symbol;
             client.resolve(this.myTrades, messageHashSymbol);
@@ -4610,7 +4585,6 @@ export default class binance extends binanceRest {
             cachedOrders.append(parsed);
             const messageHash = 'orders';
             const symbolSpecificMessageHash = 'orders:' + symbol;
-            this.streamProduce('orders', parsed);
             client.resolve(cachedOrders, messageHash);
             client.resolve(cachedOrders, symbolSpecificMessageHash);
         }
@@ -4641,7 +4615,6 @@ export default class binance extends binanceRest {
             rejected = true;
             // private endpoint uses id as messageHash
             client.reject(e, id);
-            this.streamProduce('errors', undefined, error);
             // public endpoint stores messageHash in subscriptions
             const subscriptionKeys = Object.keys(client.subscriptions);
             for (let i = 0; i < subscriptionKeys.length; i++) {
@@ -4650,7 +4623,6 @@ export default class binance extends binanceRest {
                 const subscription = this.safeString(client.subscriptions[subscriptionHash], 'subscription');
                 if (id === subscriptionId) {
                     client.reject(e, subscriptionHash);
-                    this.streamProduce('errors', undefined, error);
                     if (subscription !== undefined) {
                         delete client.subscriptions[subscription];
                     }
@@ -4659,13 +4631,11 @@ export default class binance extends binanceRest {
         }
         if (!rejected) {
             client.reject(message, id);
-            this.streamProduce('errors', undefined, error);
         }
         // reset connection if 5xx error
         const codeString = this.safeString(error, 'code');
         if ((codeString !== undefined) && (codeString[0] === '5')) {
             client.reset(message);
-            this.streamProduce('errors', undefined, message);
         }
     }
     handleEventStreamTerminated(client, message) {
@@ -4686,7 +4656,6 @@ export default class binance extends binanceRest {
     }
     handleMessage(client, message) {
         // handle WebSocketAPI
-        this.streamProduce('raw', message);
         const eventMsg = this.safeDict(message, 'event');
         if (eventMsg !== undefined) {
             message = eventMsg;

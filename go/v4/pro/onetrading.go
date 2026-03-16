@@ -152,7 +152,6 @@ func  (this *OnetradingCore) HandleBalanceSnapshot(client interface{}, message i
     //
     this.Balance = this.ParseBalance(message)
     var messageHash interface{} = "balance"
-    this.StreamProduce("balances", this.Balance)
     client.(ccxt.ClientInterface).Resolve(this.Balance, messageHash)
 }
 /**
@@ -172,8 +171,8 @@ func  (this *OnetradingCore) WatchTicker(symbol interface{}, optionalArgs ...int
                     params := ccxt.GetArg(optionalArgs, 0, map[string]interface{} {})
             _ = params
         
-            retRes1528 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes1528)
+            retRes1518 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes1518)
             var market interface{} = this.Market(symbol)
             symbol = ccxt.GetValue(market, "symbol")
             var subscriptionHash interface{} = "MARKET_TICKER"
@@ -186,9 +185,9 @@ func  (this *OnetradingCore) WatchTicker(symbol interface{}, optionalArgs ...int
         }},
             }
         
-                retRes16615 :=  (<-this.WatchMany(messageHash, request, subscriptionHash, []interface{}{symbol}, params))
-                ccxt.PanicOnError(retRes16615)
-                ch <- retRes16615
+                retRes16515 :=  (<-this.WatchMany(messageHash, request, subscriptionHash, []interface{}{symbol}, params))
+                ccxt.PanicOnError(retRes16515)
+                ch <- retRes16515
                 return nil
         
             }()
@@ -213,8 +212,8 @@ func  (this *OnetradingCore) WatchTickers(optionalArgs ...interface{}) <- chan i
             params := ccxt.GetArg(optionalArgs, 1, map[string]interface{} {})
             _ = params
         
-            retRes1798 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes1798)
+            retRes1788 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes1788)
             symbols = this.MarketSymbols(symbols)
             if ccxt.IsTrue(ccxt.IsEqual(symbols, nil)) {
                 symbols = []interface{}{}
@@ -265,7 +264,6 @@ func  (this *OnetradingCore) HandleTicker(client interface{}, message interface{
         var timestamp interface{} = this.Parse8601(datetime)
         ccxt.AddElementToObject(ccxt.GetValue(this.Tickers, symbol), "timestamp", timestamp)
         ccxt.AddElementToObject(ccxt.GetValue(this.Tickers, symbol), "datetime", this.Iso8601(timestamp))
-        this.StreamProduce("tickers", ccxt.GetValue(this.Tickers, symbol))
         client.(ccxt.ClientInterface).Resolve(ccxt.GetValue(this.Tickers, symbol), ccxt.Add("ticker.", symbol))
     }
     client.(ccxt.ClientInterface).Resolve(this.Tickers, "tickers")
@@ -333,8 +331,8 @@ func  (this *OnetradingCore) WatchMyTrades(optionalArgs ...interface{}) <- chan 
             params := ccxt.GetArg(optionalArgs, 3, map[string]interface{} {})
             _ = params
         
-            retRes2818 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes2818)
+            retRes2798 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes2798)
             var messageHash interface{} = "myTrades"
             if ccxt.IsTrue(!ccxt.IsEqual(symbol, nil)) {
                 var market interface{} = this.Market(symbol)
@@ -342,8 +340,8 @@ func  (this *OnetradingCore) WatchMyTrades(optionalArgs ...interface{}) <- chan 
                 messageHash = ccxt.Add(messageHash, ccxt.Add(":", symbol))
             }
         
-            retRes2888 := (<-this.Authenticate(params))
-            ccxt.PanicOnError(retRes2888)
+            retRes2868 := (<-this.Authenticate(params))
+            ccxt.PanicOnError(retRes2868)
             var url interface{} = ccxt.GetValue(ccxt.GetValue(this.Urls, "api"), "ws")
             var subscribeHash interface{} = "ACCOUNT_HISTORY"
             var bpRemainingQuota interface{} = this.SafeInteger(this.Options, "bp_remaining_quota", 200)
@@ -365,9 +363,9 @@ func  (this *OnetradingCore) WatchMyTrades(optionalArgs ...interface{}) <- chan 
             var numTrades interface{} =     ccxt.GetArrayLength(trades)
             if ccxt.IsTrue(ccxt.IsEqual(numTrades, 0)) {
         
-                    retRes30919 :=  (<-this.WatchMyTrades(symbol, since, limit, params))
-                    ccxt.PanicOnError(retRes30919)
-                    ch <- retRes30919
+                    retRes30719 :=  (<-this.WatchMyTrades(symbol, since, limit, params))
+                    ccxt.PanicOnError(retRes30719)
+                    ch <- retRes30719
                     return nil
             }
         
@@ -397,8 +395,8 @@ func  (this *OnetradingCore) WatchOrderBook(symbol interface{}, optionalArgs ...
             params := ccxt.GetArg(optionalArgs, 1, map[string]interface{} {})
             _ = params
         
-            retRes3258 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes3258)
+            retRes3238 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes3238)
             var market interface{} = this.Market(symbol)
             symbol = ccxt.GetValue(market, "symbol")
             var messageHash interface{} = ccxt.Add("book:", symbol)
@@ -476,7 +474,6 @@ func  (this *OnetradingCore) HandleOrderBook(client interface{}, message interfa
     ccxt.AddElementToObject(orderbook, "timestamp", timestamp)
     ccxt.AddElementToObject(orderbook, "datetime", this.Iso8601(timestamp))
     ccxt.AddElementToObject(this.Orderbooks, symbol, orderbook)
-    this.StreamProduce("orderbooks", orderbook)
     client.(ccxt.ClientInterface).Resolve(orderbook, channel)
 }
 func  (this *OnetradingCore) HandleDelta(orderbook interface{}, delta interface{})  {
@@ -532,8 +529,8 @@ func  (this *OnetradingCore) WatchOrders(optionalArgs ...interface{}) <- chan in
             params := ccxt.GetArg(optionalArgs, 3, map[string]interface{} {})
             _ = params
         
-            retRes4458 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes4458)
+            retRes4428 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes4428)
             var messageHash interface{} = "orders"
             if ccxt.IsTrue(!ccxt.IsEqual(symbol, nil)) {
                 var market interface{} = this.Market(symbol)
@@ -541,8 +538,8 @@ func  (this *OnetradingCore) WatchOrders(optionalArgs ...interface{}) <- chan in
                 messageHash = ccxt.Add(messageHash, ccxt.Add(":", symbol))
             }
         
-            retRes4528 := (<-this.Authenticate(params))
-            ccxt.PanicOnError(retRes4528)
+            retRes4498 := (<-this.Authenticate(params))
+            ccxt.PanicOnError(retRes4498)
             var url interface{} = ccxt.GetValue(ccxt.GetValue(this.Urls, "api"), "ws")
             var subscribeHash interface{} = this.SafeString(params, "channel", "ACCOUNT_HISTORY")
             var bpRemainingQuota interface{} = this.SafeInteger(this.Options, "bp_remaining_quota", 200)
@@ -564,9 +561,9 @@ func  (this *OnetradingCore) WatchOrders(optionalArgs ...interface{}) <- chan in
             var numOrders interface{} =     ccxt.GetArrayLength(orders)
             if ccxt.IsTrue(ccxt.IsEqual(numOrders, 0)) {
         
-                    retRes47319 :=  (<-this.WatchOrders(symbol, since, limit, params))
-                    ccxt.PanicOnError(retRes47319)
-                    ch <- retRes47319
+                    retRes47019 :=  (<-this.WatchOrders(symbol, since, limit, params))
+                    ccxt.PanicOnError(retRes47019)
+                    ch <- retRes47019
                     return nil
             }
         
@@ -628,7 +625,6 @@ func  (this *OnetradingCore) HandleTrading(client interface{}, message interface
     var order interface{} = this.ParseTradingOrder(message)
     var orders interface{} = this.Orders
     orders.(ccxt.Appender).Append(order)
-    this.StreamProduce("orders", order)
     client.(ccxt.ClientInterface).Resolve(this.Orders, ccxt.Add("orders:", ccxt.GetValue(order, "symbol")))
     client.(ccxt.ClientInterface).Resolve(this.Orders, "orders")
 }
@@ -832,14 +828,12 @@ func  (this *OnetradingCore) HandleOrders(client interface{}, message interface{
         var order interface{} = this.ParseOrder(ccxt.GetValue(rawOrders, i))
         var symbol interface{} = this.SafeString(order, "symbol", "")
         orders.(ccxt.Appender).Append(order)
-        this.StreamProduce("orders", order)
         client.(ccxt.ClientInterface).Resolve(this.Orders, ccxt.Add("orders:", symbol))
         var rawTrades interface{} = this.SafeValue(ccxt.GetValue(rawOrders, i), "trades", []interface{}{})
         for ii := 0; ccxt.IsLessThan(ii, ccxt.GetArrayLength(rawTrades)); ii++ {
             var trade interface{} = this.ParseTrade(ccxt.GetValue(rawTrades, ii))
             symbol = this.SafeString(trade, "symbol", symbol)
             this.MyTrades.(ccxt.Appender).Append(trade)
-            this.StreamProduce("myTrades", trade)
             client.(ccxt.ClientInterface).Resolve(this.MyTrades, ccxt.Add("myTrades:", symbol))
         }
     }
@@ -1099,12 +1093,10 @@ func  (this *OnetradingCore) HandleAccountUpdate(client interface{}, message int
             "datetime": datetime,
         }
         orders.(ccxt.Appender).Append(orderObject)
-        this.StreamProduce("orders", orderObject)
     } else {
         var parsed interface{} = this.ParseOrder(update)
         symbol = this.SafeString(parsed, "symbol", "")
         orders.(ccxt.Appender).Append(parsed)
-        this.StreamProduce("orders", parsed)
     }
     client.(ccxt.ClientInterface).Resolve(this.Orders, ccxt.Add("orders:", symbol))
     client.(ccxt.ClientInterface).Resolve(this.Orders, "orders")
@@ -1123,7 +1115,6 @@ func  (this *OnetradingCore) HandleAccountUpdate(client interface{}, message int
         symbol = this.SafeString(parsed, "symbol", "")
         var myTrades interface{} = this.MyTrades
         myTrades.(ccxt.Appender).Append(parsed)
-        this.StreamProduce("myTrades", parsed)
         client.(ccxt.ClientInterface).Resolve(this.MyTrades, ccxt.Add("myTrades:", symbol))
         client.(ccxt.ClientInterface).Resolve(this.MyTrades, "myTrades")
     }
@@ -1179,8 +1170,8 @@ func  (this *OnetradingCore) WatchOHLCV(symbol interface{}, optionalArgs ...inte
             params := ccxt.GetArg(optionalArgs, 3, map[string]interface{} {})
             _ = params
         
-            retRes10738 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes10738)
+            retRes10648 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes10648)
             var market interface{} = this.Market(symbol)
             symbol = ccxt.GetValue(market, "symbol")
             var marketId interface{} = ccxt.GetValue(market, "id")
@@ -1297,8 +1288,6 @@ func  (this *OnetradingCore) HandleOHLCV(client interface{}, message interface{}
     }
     stored.(ccxt.Appender).Append(parsed)
     ccxt.AddElementToObject(ccxt.GetValue(this.Ohlcvs, symbol), timeframe, stored)
-    var ohlcvs interface{} = this.CreateStreamOHLCV(symbol, timeframe, parsed)
-    this.StreamProduce("ohlcvs", ohlcvs)
     client.(ccxt.ClientInterface).Resolve(stored, channel)
 }
 func  (this *OnetradingCore) FindTimeframe(timeframe interface{}, optionalArgs ...interface{}) interface{}  {
@@ -1340,32 +1329,9 @@ func  (this *OnetradingCore) HandleHeartbeat(client interface{}, message interfa
     return message
 }
 func  (this *OnetradingCore) HandleErrorMessage(client interface{}, message interface{}) interface{}  {
-    
-        {
-             func(this *OnetradingCore) (ret_ interface{}) {
-    		    defer func() {
-                    if e := recover(); e != nil {
-                        if e == "break" {
-                            return
-                        }
-                        ret_ = func(this *OnetradingCore) interface{} {
-                            // catch block:
-                                    this.StreamProduce("errors", nil, e)
-            client.(ccxt.ClientInterface).Reject(e)
-                            return nil
-                        }(this)
-                    }
-                }()
-    		    // try block:
-                        panic(ccxt.ExchangeError(ccxt.Add(ccxt.Add(this.Id, " "), this.Json(message))))
-    		    
-    	    }(this)
-        
-            }
-    return true
+    panic(ccxt.ExchangeError(ccxt.Add(ccxt.Add(this.Id, " "), this.Json(message))))
 }
 func  (this *OnetradingCore) HandleMessage(client interface{}, message interface{})  {
-    this.StreamProduce("raw", message)
     var error interface{} = this.SafeValue(message, "error")
     if ccxt.IsTrue(!ccxt.IsEqual(error, nil)) {
         this.HandleErrorMessage(client, message)
@@ -1480,9 +1446,9 @@ func  (this *OnetradingCore) WatchMany(messageHash interface{}, request interfac
             ccxt.AddElementToObject(request, "type", typeVar)
             ccxt.AddElementToObject(ccxt.GetValue(ccxt.GetValue(request, "channels"), 0), "instrument_codes", ccxt.ObjectKeys(subscription))
         
-                retRes136515 :=  (<-this.Watch(url, messageHash, this.DeepExtend(request, params), subscriptionHash, subscription))
-                ccxt.PanicOnError(retRes136515)
-                ch <- retRes136515
+                retRes134715 :=  (<-this.Watch(url, messageHash, this.DeepExtend(request, params), subscriptionHash, subscription))
+                ccxt.PanicOnError(retRes134715)
+                ch <- retRes134715
                 return nil
         
             }()
@@ -1509,9 +1475,9 @@ func  (this *OnetradingCore) Authenticate(optionalArgs ...interface{}) <- chan i
                 this.Watch(url, messageHash, this.Extend(request, params), messageHash)
             }
         
-                retRes138215 := <- future.(*ccxt.Future).Await()
-                ccxt.PanicOnError(retRes138215)
-                ch <- retRes138215
+                retRes136415 := <- future.(*ccxt.Future).Await()
+                ccxt.PanicOnError(retRes136415)
+                ch <- retRes136415
                 return nil
         
             }()

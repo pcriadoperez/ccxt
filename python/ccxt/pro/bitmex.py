@@ -356,7 +356,6 @@ class bitmex(ccxt.async_support.bitmex):
             tickers[symbol] = fullParsedTicker
             self.tickers[symbol] = fullParsedTicker
             messageHash = 'ticker:' + symbol
-            self.stream_produce('tickers', fullParsedTicker)
             client.resolve(fullParsedTicker, messageHash)
             client.resolve(fullParsedTicker, 'alltickers')
         return message
@@ -448,7 +447,6 @@ class bitmex(ccxt.async_support.bitmex):
             liquidation = self.parse_liquidation(rawLiquidation)
             cache.append(liquidation)
             newLiquidations.append(liquidation)
-            self.stream_produce('liquidations', liquidation)
         client.resolve(newLiquidations, 'liquidations')
         liquidationsBySymbol = self.index_by(newLiquidations, 'symbol')
         symbols = list(liquidationsBySymbol.keys())
@@ -580,7 +578,6 @@ class bitmex(ccxt.async_support.bitmex):
         balance = self.parse_balance(data)
         self.balance = self.extend(self.balance, balance)
         messageHash = self.safe_string(message, 'table')
-        self.stream_produce('balances', self.balance)
         client.resolve(self.balance, messageHash)
 
     def handle_trades(self, client: Client, message):
@@ -660,7 +657,6 @@ class bitmex(ccxt.async_support.bitmex):
                 self.trades[symbol] = stored
             for j in range(0, len(trades)):
                 stored.append(trades[j])
-                self.stream_produce('trades', trades[j])
             client.resolve(stored, messageHash)
 
     async def watch_trades(self, symbol: str, since: Int = None, limit: Int = None, params={}) -> List[Trade]:
@@ -902,7 +898,6 @@ class bitmex(ccxt.async_support.bitmex):
             position = self.parse_position(rawPosition)
             newPositions.append(position)
             cache.append(position)
-            self.stream_produce('positions', position)
         messageHashes = self.find_message_hashes(client, 'positions::')
         for i in range(0, len(messageHashes)):
             messageHash = messageHashes[i]
@@ -1115,7 +1110,6 @@ class bitmex(ccxt.async_support.bitmex):
                     rawOrder = self.extend(previousOrder['info'], currentOrder)
                 order = self.parse_order(rawOrder)
                 stored.append(order)
-                self.stream_produce('orders', order)
                 symbol = order['symbol']
                 symbols[symbol] = True
             client.resolve(self.orders, messageHash)
@@ -1228,7 +1222,6 @@ class bitmex(ccxt.async_support.bitmex):
             trade = trades[j]
             symbol = trade['symbol']
             stored.append(trade)
-            self.stream_produce('myTrades', trade)
             symbols[symbol] = trade
         numTrades = len(trades)
         if numTrades > 0:
@@ -1448,8 +1441,6 @@ class bitmex(ccxt.async_support.bitmex):
                 stored = ArrayCacheByTimestamp(limit)
                 self.ohlcvs[symbol][timeframe] = stored
             stored.append(result)
-            ohlcvs = self.create_stream_ohlcv(symbol, timeframe, result)
-            self.stream_produce('ohlcvs', ohlcvs)
             results[messageHash] = stored
         messageHashes = list(results.keys())
         for i in range(0, len(messageHashes)):
@@ -1545,7 +1536,6 @@ class bitmex(ccxt.async_support.bitmex):
                 orderbook['timestamp'] = self.parse8601(datetime)
                 orderbook['datetime'] = datetime
             messageHash = table + ':' + symbol
-            self.stream_produce('orderbooks', orderbook)
             client.resolve(orderbook, messageHash)
         else:
             numUpdatesByMarketId: dict = {}
@@ -1576,7 +1566,6 @@ class bitmex(ccxt.async_support.bitmex):
                 symbol = market['symbol']
                 messageHash = table + ':' + symbol
                 orderbook = self.orderbooks[symbol]
-                self.stream_produce('orderbooks', orderbook)
                 client.resolve(orderbook, messageHash)
 
     def handle_system_status(self, client: Client, message):
@@ -1636,7 +1625,6 @@ class bitmex(ccxt.async_support.bitmex):
                     exception = ExchangeError(error)  # c# requirement for now
                 else:
                     exception = broad[broadKey](error)
-                self.stream_produce('errors', None, exception)
                 client.reject(exception, messageHash)
                 return False
         return True
@@ -1676,7 +1664,6 @@ class bitmex(ccxt.async_support.bitmex):
         #         ]
         #     }
         #
-        self.stream_produce('raw', message)
         if self.handle_error_message(client, message):
             table = self.safe_string(message, 'table')
             methods: dict = {

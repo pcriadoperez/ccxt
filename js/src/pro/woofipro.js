@@ -148,7 +148,6 @@ export default class woofipro extends woofiproRest {
         const timestamp = this.safeInteger(message, 'ts');
         const snapshot = this.parseOrderBook(data, symbol, timestamp, 'bids', 'asks');
         orderbook.reset(snapshot);
-        this.streamProduce('orderbooks', orderbook);
         client.resolve(orderbook, topic);
     }
     /**
@@ -235,7 +234,6 @@ export default class woofipro extends woofiproRest {
         const ticker = this.parseWsTicker(data, market);
         ticker['symbol'] = market['symbol'];
         this.tickers[market['symbol']] = ticker;
-        this.streamProduce('tickers', ticker);
         client.resolve(ticker, topic);
         return message;
     }
@@ -291,7 +289,6 @@ export default class woofipro extends woofiproRest {
             const ticker = this.parseWsTicker(this.extend(data[i], { 'date': timestamp }), market);
             this.tickers[market['symbol']] = ticker;
             result.push(ticker);
-            this.streamProduce('tickers', ticker);
         }
         client.resolve(result, topic);
     }
@@ -435,8 +432,6 @@ export default class woofipro extends woofiproRest {
         }
         const ohlcvCache = this.ohlcvs[symbol][timeframe];
         ohlcvCache.append(parsed);
-        const ohlcvs = this.createStreamOHLCV(symbol, timeframe, parsed);
-        this.streamProduce('ohlcvs', ohlcvs);
         client.resolve(ohlcvCache, topic);
     }
     /**
@@ -493,7 +488,6 @@ export default class woofipro extends woofiproRest {
         }
         const trades = this.trades[symbol];
         trades.append(trade);
-        this.streamProduce('trades', trade);
         this.trades[symbol] = trades;
         client.resolve(trades, topic);
     }
@@ -912,7 +906,6 @@ export default class woofipro extends woofiproRest {
                 parsed['datetime'] = this.safeString(order, 'datetime');
             }
             cachedOrders.append(parsed);
-            this.streamProduce('orders', parsed);
             client.resolve(this.orders, topic);
             const messageHashSymbol = topic + ':' + symbol;
             client.resolve(this.orders, messageHashSymbol);
@@ -959,7 +952,6 @@ export default class woofipro extends woofiproRest {
             this.myTrades = trades;
         }
         trades.append(trade);
-        this.streamProduce('myTrades', trade);
         client.resolve(trades, messageHash);
         const symbolSpecificMessageHash = messageHash + ':' + symbol;
         client.resolve(trades, symbolSpecificMessageHash);
@@ -1029,7 +1021,6 @@ export default class woofipro extends woofiproRest {
             const contracts = this.safeString(position, 'contracts', '0');
             if (Precise.stringGt(contracts, '0')) {
                 cache.append(position);
-                this.streamProduce('positions', position);
             }
         }
         // don't remove the future from the .futures cache
@@ -1086,7 +1077,6 @@ export default class woofipro extends woofiproRest {
             const position = this.parseWsPosition(rawPosition, market);
             newPositions.push(position);
             cache.append(position);
-            this.streamProduce('positions', position);
             const messageHash = 'positions::' + market['symbol'];
             client.resolve(position, messageHash);
         }
@@ -1232,7 +1222,6 @@ export default class woofipro extends woofiproRest {
             this.balance[code] = account;
         }
         this.balance = this.safeBalance(this.balance);
-        this.streamProduce('balances', this.balance);
         client.resolve(this.balance, 'balance');
     }
     handleErrorMessage(client, message) {
@@ -1263,14 +1252,12 @@ export default class woofipro extends woofiproRest {
                 }
             }
             else {
-                this.streamProduce('errors', undefined, error);
                 client.reject(error);
             }
             return true;
         }
     }
     handleMessage(client, message) {
-        this.streamProduce('raw', message);
         if (this.handleErrorMessage(client, message)) {
             return;
         }

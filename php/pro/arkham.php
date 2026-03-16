@@ -46,7 +46,6 @@ class arkham extends \ccxt\async\arkham {
     }
 
     public function handle_message(Client $client, $message) {
-        $this->stream_produce('raw', $message);
         //
         // confirmation
         //
@@ -149,7 +148,6 @@ class arkham extends \ccxt\async\arkham {
         $symbol = $market['symbol'];
         $ticker = $this->parse_ws_ticker($data, $market);
         $this->tickers[$symbol] = $ticker;
-        $this->stream_produce('tickers', $ticker);
         $client->resolve ($ticker, 'ticker::' . $symbol);
         // if ($this->safe_string($message, 'dataType') === 'all@ticker') {
         //     $client->resolve ($ticker, $this->getMessageHash ('ticker'));
@@ -225,8 +223,6 @@ class arkham extends \ccxt\async\arkham {
         $stored = $this->ohlcvs[$symbol][$timeframe];
         $parsed = $this->parse_ws_ohlcv($data, $market);
         $stored->append ($parsed);
-        $ohlcvs = $this->create_stream_ohlcv($symbol, $timeframe, $parsed);
-        $this->stream_produce('ohlcvs', $ohlcvs);
         $client->resolve ($stored, $messageHash);
         return $message;
     }
@@ -317,7 +313,6 @@ class arkham extends \ccxt\async\arkham {
             $orderbook['datetime'] = $this->iso8601($timestamp);
         }
         $this->orderbooks[$symbol] = $orderbook;
-        $this->stream_produce('orderbooks', $orderbook);
         $client->resolve ($this->orderbooks[$symbol], $messageHash);
     }
 
@@ -378,7 +373,6 @@ class arkham extends \ccxt\async\arkham {
         $parsed = $this->parse_ws_trade($data);
         $stored = $this->trades[$symbol];
         $stored->append ($parsed);
-        $this->stream_produce('trades', $parsed);
         $client->resolve ($stored, 'trade::' . $symbol);
     }
 
@@ -450,7 +444,7 @@ class arkham extends \ccxt\async\arkham {
         //           array(
         //             subaccountId => 0,
         //             symbol => 'USDT',
-        //             $balance => '7.035335375',
+        //             balance => '7.035335375',
         //             free => '7.035335375',
         //             priceUSDT => '1',
         //             balanceUSDT => '7.035335375',
@@ -463,7 +457,7 @@ class arkham extends \ccxt\async\arkham {
         //           {
         //             subaccountId => 0,
         //             symbol => 'SOL',
-        //             $balance => '0.03',
+        //             balance => '0.03',
         //             free => '0.03',
         //             priceUSDT => '197.37823276',
         //             balanceUSDT => '5.921346982',
@@ -484,7 +478,7 @@ class arkham extends \ccxt\async\arkham {
         //         $data => {
         //             subaccountId => 0,
         //             symbol => 'USDT',
-        //             $balance => '7.028357615',
+        //             balance => '7.028357615',
         //             free => '7.028357615',
         //             priceUSDT => '1',
         //             balanceUSDT => '7.028357615',
@@ -513,9 +507,7 @@ class arkham extends \ccxt\async\arkham {
             $this->balance[$code] = $parsed[$code];
         }
         $messageHash = 'balances';
-        $balance = $this->safe_balance($this->balance);
-        $this->stream_produce('balances', $balance);
-        $client->resolve ($balance, $messageHash);
+        $client->resolve ($this->safe_balance($this->balance), $messageHash);
     }
 
     public function parse_ws_balance($balance) {
@@ -608,7 +600,6 @@ class arkham extends \ccxt\async\arkham {
             $position = $this->parse_ws_position($data);
             $symbol = $this->safe_string($position, 'symbol');
             $this->positions[$symbol] = $position;
-            $this->stream_produce('positions', $position);
             $newPositions[] = $position;
         }
         $messageHashes = $this->find_message_hashes($client, 'positions::');
@@ -728,7 +719,6 @@ class arkham extends \ccxt\async\arkham {
         $orders = $this->orders;
         $order = $this->parse_ws_order($data);
         $orders->append ($order);
-        $this->stream_produce('orders', $order);
         $client->resolve ($orders, 'orders');
         $client->resolve ($orders, 'orders::' . $order['symbol'] . '::' . $channel);
         $client->resolve ($orders, 'orders::' . $channel);
@@ -741,7 +731,7 @@ class arkham extends \ccxt\async\arkham {
 
     public function handle_error_message(Client $client, $response): Bool {
         //
-        // $error example:
+        // error example:
         //
         //    {
         //        "id" => "30005",
@@ -757,9 +747,7 @@ class arkham extends \ccxt\async\arkham {
             $this->throw_exactly_matched_exception($this->exceptions['exact'], $errorCode, $feedback);
             $this->throw_exactly_matched_exception($this->exceptions['exact'], $message, $feedback);
             $this->throw_broadly_matched_exception($this->exceptions['broad'], $message, $feedback);
-            $error = new ExchangeError ($this->id . ' ' . $body);
-            $this->stream_produce('errors', null, $error);
-            throw $error;
+            throw new ExchangeError($this->id . ' ' . $body);
         }
         return false;
     }

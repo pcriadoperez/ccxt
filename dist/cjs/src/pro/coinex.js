@@ -161,7 +161,6 @@ class coinex extends coinex$1["default"] {
             const parsedTicker = this.parseWSTicker(entry, market);
             this.tickers[symbol] = parsedTicker;
             newTickers[symbol] = parsedTicker;
-            this.streamProduce('tickers', parsedTicker);
         }
         const messageHashes = this.findMessageHashes(client, 'tickers::');
         for (let i = 0; i < messageHashes.length; i++) {
@@ -359,7 +358,6 @@ class coinex extends coinex$1["default"] {
             this.balance[account]['info'] = info;
             this.balance[account] = this.safeBalance(this.balance[account]);
             messageHash = 'balances:' + account;
-            this.streamProduce('balances', this.balance);
             client.resolve(this.balance[account], messageHash);
         }
     }
@@ -488,7 +486,6 @@ class coinex extends coinex$1["default"] {
         const parsed = this.parseWsTrade(data, market);
         stored.append(parsed);
         this.trades[symbol] = stored;
-        this.streamProduce('myTrades', parsed);
         client.resolve(this.trades[symbol], messageWithType);
         client.resolve(this.trades[symbol], messageHash);
     }
@@ -550,7 +547,6 @@ class coinex extends coinex$1["default"] {
             const trade = trades[i];
             const parsed = this.parseWsTrade(trade, market);
             stored.append(parsed);
-            this.streamProduce('trades', parsed);
         }
         this.trades[symbol] = stored;
         client.resolve(this.trades[symbol], messageHash);
@@ -887,7 +883,6 @@ class coinex extends coinex$1["default"] {
             this.orderbooks[symbol] = currentOrderBook;
         }
         // this.checkOrderBookChecksum (this.orderbooks[symbol]);
-        this.streamProduce('orderbooks', this.orderbooks[symbol]);
         client.resolve(this.orderbooks[symbol], messageHash);
     }
     /**
@@ -1079,7 +1074,6 @@ class coinex extends coinex$1["default"] {
         const orders = this.orders;
         orders.append(parsedOrder);
         let messageHash = 'orders';
-        this.streamProduce('orders', parsedOrder);
         const messageWithType = messageHash + ':' + market['type'];
         client.resolve(this.orders, messageWithType);
         messageHash += ':' + symbol;
@@ -1312,7 +1306,6 @@ class coinex extends coinex$1["default"] {
         }, market);
     }
     handleMessage(client, message) {
-        this.streamProduce('raw', message);
         const method = this.safeString(message, 'method');
         const error = this.safeString(message, 'message');
         if (error !== undefined) {
@@ -1383,7 +1376,6 @@ class coinex extends coinex$1["default"] {
         }
         else {
             const error = new errors.AuthenticationError(this.json(message));
-            this.streamProduce('errors', undefined, error);
             client.reject(error, messageHash);
             if (messageHash in client.subscriptions) {
                 delete client.subscriptions[messageHash];

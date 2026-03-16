@@ -211,7 +211,6 @@ func  (this *GeminiCore) HandleTrade(client interface{}, message interface{})  {
         ccxt.AddElementToObject(this.Trades, symbol, stored)
     }
     stored.(ccxt.Appender).Append(trade)
-    this.StreamProduce("trades", trade)
     var messageHash interface{} = ccxt.Add("trades:", symbol)
     client.(ccxt.ClientInterface).Resolve(stored, messageHash)
 }
@@ -267,7 +266,6 @@ func  (this *GeminiCore) HandleTrades(client interface{}, message interface{})  
         for i := 0; ccxt.IsLessThan(i, ccxt.GetArrayLength(trades)); i++ {
             var trade interface{} = this.ParseWsTrade(ccxt.GetValue(trades, i), market)
             stored.(ccxt.Appender).Append(trade)
-            this.StreamProduce("trades", trade)
         }
         var messageHash interface{} = ccxt.Add("trades:", symbol)
         client.(ccxt.ClientInterface).Resolve(stored, messageHash)
@@ -290,7 +288,6 @@ func  (this *GeminiCore) HandleTradesForMultidata(client interface{}, trades int
                 ccxt.AddElementToObject(this.Trades, symbol, stored)
             }
             stored.(ccxt.Appender).Append(trade)
-            this.StreamProduce("trades", trade)
             ccxt.AddElementToObject(storesForSymbols, symbol, stored)
         }
         var symbols interface{} = ccxt.ObjectKeys(storesForSymbols)
@@ -328,8 +325,8 @@ func  (this *GeminiCore) WatchOHLCV(symbol interface{}, optionalArgs ...interfac
             params := ccxt.GetArg(optionalArgs, 3, map[string]interface{} {})
             _ = params
         
-            retRes2828 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes2828)
+            retRes2798 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes2798)
             var market interface{} = this.Market(symbol)
             var timeframeId interface{} = this.SafeString(this.Timeframes, timeframe, timeframe)
             var request interface{} = map[string]interface{} {
@@ -404,8 +401,6 @@ func  (this *GeminiCore) HandleOHLCV(client interface{}, message interface{}) in
     for i := 0; ccxt.IsLessThan(i, changesLength); i++ {
         var index interface{} = ccxt.Subtract(ccxt.Subtract(changesLength, i), 1)
         var parsed interface{} = this.ParseOHLCV(ccxt.GetValue(changes, index), market)
-        var ohlcvs interface{} = this.CreateStreamOHLCV(symbol, timeframe, parsed)
-        this.StreamProduce("ohlcvs", ohlcvs)
         stored.(ccxt.Appender).Append(parsed)
     }
     var messageHash interface{} = ccxt.Add(ccxt.Add(ccxt.Add("ohlcv:", symbol), ":"), timeframeId)
@@ -432,8 +427,8 @@ func  (this *GeminiCore) WatchOrderBook(symbol interface{}, optionalArgs ...inte
             params := ccxt.GetArg(optionalArgs, 1, map[string]interface{} {})
             _ = params
         
-            retRes3758 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes3758)
+            retRes3708 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes3708)
             var market interface{} = this.Market(symbol)
             var messageHash interface{} = ccxt.Add("orderbook:", ccxt.GetValue(market, "symbol"))
             var marketId interface{} = ccxt.GetValue(market, "id")
@@ -478,7 +473,6 @@ func  (this *GeminiCore) HandleOrderBook(client interface{}, message interface{}
     }
     ccxt.AddElementToObject(orderbook, "symbol", symbol)
     ccxt.AddElementToObject(this.Orderbooks, symbol, orderbook)
-    this.StreamProduce("orderbooks", orderbook)
     client.(ccxt.ClientInterface).Resolve(orderbook, messageHash)
 }
 /**
@@ -529,9 +523,9 @@ func  (this *GeminiCore) WatchBidsAsks(optionalArgs ...interface{}) <- chan inte
             params := ccxt.GetArg(optionalArgs, 1, map[string]interface{} {})
             _ = params
         
-                retRes44715 :=  (<-this.HelperForWatchMultipleConstruct("bidsasks", symbols, params))
-                ccxt.PanicOnError(retRes44715)
-                ch <- retRes44715
+                retRes44115 :=  (<-this.HelperForWatchMultipleConstruct("bidsasks", symbols, params))
+                ccxt.PanicOnError(retRes44115)
+                ch <- retRes44115
                 return nil
         
             }()
@@ -610,8 +604,8 @@ func  (this *GeminiCore) HelperForWatchMultipleConstruct(itemHashName interface{
             params := ccxt.GetArg(optionalArgs, 1, map[string]interface{} {})
             _ = params
         
-            retRes5158 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes5158)
+            retRes5098 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes5098)
             if ccxt.IsTrue(ccxt.IsEqual(symbols, nil)) {
                 panic(ccxt.NotSupported(ccxt.Add(this.Id, " watchMultiple requires at least one symbol")))
             }
@@ -639,9 +633,9 @@ func  (this *GeminiCore) HelperForWatchMultipleConstruct(itemHashName interface{
                 url = ccxt.Add(url, "trades=true&bids=false&offers=false")
             }
         
-                retRes54215 :=  (<-this.WatchMultiple(url, messageHashes, nil))
-                ccxt.PanicOnError(retRes54215)
-                ch <- retRes54215
+                retRes53615 :=  (<-this.WatchMultiple(url, messageHashes, nil))
+                ccxt.PanicOnError(retRes53615)
+                ch <- retRes53615
                 return nil
         
             }()
@@ -692,7 +686,6 @@ func  (this *GeminiCore) HandleOrderBookForMultidata(client interface{}, rawOrde
     ccxt.AddElementToObject(orderbook, "timestamp", timestamp)
     ccxt.AddElementToObject(orderbook, "datetime", this.Iso8601(timestamp))
     ccxt.AddElementToObject(this.Orderbooks, symbol, orderbook)
-    this.StreamProduce("orderbooks", orderbook)
     client.(ccxt.ClientInterface).Resolve(orderbook, messageHash)
 }
 func  (this *GeminiCore) HandleL2Updates(client interface{}, message interface{})  {
@@ -762,14 +755,14 @@ func  (this *GeminiCore) WatchOrders(optionalArgs ...interface{}) <- chan interf
             _ = params
             var url interface{} = ccxt.Add(ccxt.GetValue(ccxt.GetValue(this.Urls, "api"), "ws"), "/v1/order/events?eventTypeFilter=initial&eventTypeFilter=accepted&eventTypeFilter=rejected&eventTypeFilter=fill&eventTypeFilter=cancelled&eventTypeFilter=booked")
         
-            retRes6498 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes6498)
+            retRes6428 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes6428)
             var authParams interface{} = map[string]interface{} {
                 "url": url,
             }
         
-            retRes6538 := (<-this.Authenticate(authParams))
-            ccxt.PanicOnError(retRes6538)
+            retRes6468 := (<-this.Authenticate(authParams))
+            ccxt.PanicOnError(retRes6468)
             if ccxt.IsTrue(!ccxt.IsEqual(symbol, nil)) {
                 var market interface{} = this.Market(symbol)
                 symbol = ccxt.GetValue(market, "symbol")
@@ -846,7 +839,6 @@ func  (this *GeminiCore) HandleOrder(client interface{}, message interface{})  {
     var orders interface{} = this.Orders
     for i := 0; ccxt.IsLessThan(i, ccxt.GetArrayLength(message)); i++ {
         var order interface{} = this.ParseWsOrder(ccxt.GetValue(message, i))
-        this.StreamProduce("orders", order)
         orders.(ccxt.Appender).Append(order)
     }
     client.(ccxt.ClientInterface).Resolve(this.Orders, messageHash)
@@ -934,15 +926,7 @@ func  (this *GeminiCore) ParseWsOrderType(typeVar interface{}) interface{}  {
     return this.SafeString(types, typeVar, typeVar)
 }
 func  (this *GeminiCore) HandleError(client interface{}, message interface{})  {
-    //
-    //     {
-    //         "reason": "NoValidTradingPairs",
-    //         "result": "error"
-    //     }
-    //
-    err := ccxt.ExchangeError(ccxt.Add(ccxt.Add(this.Id, " "), this.Json(message)))
-    this.StreamProduce("errors", nil, err)
-    client.(ccxt.ClientInterface).Reject(err)
+    panic(ccxt.ExchangeError(this.Json(message)))
 }
 func  (this *GeminiCore) HandleMessage(client interface{}, message interface{})  {
     //
@@ -980,7 +964,6 @@ func  (this *GeminiCore) HandleMessage(client interface{}, message interface{}) 
     //         }
     //     ]
     //
-    this.StreamProduce("raw", message)
     var isArray interface{} = ccxt.IsArray(message)
     if ccxt.IsTrue(isArray) {
         this.HandleOrder(client, message)

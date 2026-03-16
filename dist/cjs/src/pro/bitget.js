@@ -271,7 +271,6 @@ class bitget extends bitget$1["default"] {
         const symbol = ticker['symbol'];
         this.tickers[symbol] = ticker;
         const messageHash = 'ticker:' + symbol;
-        this.streamProduce('tickers', ticker);
         client.resolve(ticker, messageHash);
     }
     parseWsTicker(message, market = undefined) {
@@ -651,8 +650,6 @@ class bitget extends bitget$1["default"] {
         for (let i = 0; i < data.length; i++) {
             const parsed = this.parseWsOHLCV(data[i], market);
             stored.append(parsed);
-            const resolvedData = this.createStreamOHLCV(symbol, timeframe, parsed);
-            this.streamProduce('ohlcvs', resolvedData);
         }
         let messageHash = undefined;
         if (isUta) {
@@ -937,13 +934,11 @@ class bitget extends bitget$1["default"] {
             orderbook.reset(parsedOrderbook);
             this.orderbooks[symbol] = orderbook;
         }
-        this.streamProduce('orderbooks', this.orderbooks[symbol]);
         client.resolve(this.orderbooks[symbol], messageHash);
     }
     async handleCheckSumError(client, symbol, messageHash) {
         await this.unWatchOrderBook(symbol);
         const error = new errors.ChecksumError(this.id + ' ' + this.orderbookChecksumMessage(symbol));
-        this.streamProduce('orderbooks::' + symbol, undefined, error);
         client.reject(error, messageHash);
     }
     handleDelta(bookside, delta) {
@@ -1105,7 +1100,6 @@ class bitget extends bitget$1["default"] {
             const rawTrade = data[index];
             const parsed = this.parseWsTrade(rawTrade, market);
             stored.append(parsed);
-            this.streamProduce('trades', parsed);
         }
         const messageHash = 'trade:' + symbol;
         client.resolve(stored, messageHash);
@@ -1390,7 +1384,6 @@ class bitget extends bitget$1["default"] {
             const market = this.safeMarket(marketId, undefined, undefined, 'contract');
             const position = this.parseWsPosition(rawPosition, market);
             newPositions.push(position);
-            this.streamProduce('positions', position);
             cache.append(position);
         }
         const messageHashes = this.findMessageHashes(client, instType + ':positions::');
@@ -1725,7 +1718,6 @@ class bitget extends bitget$1["default"] {
             const marketId = this.safeString2(order, 'instId', 'symbol', argInstId);
             const market = this.safeMarket(marketId, undefined, undefined, marketType);
             const parsed = this.parseWsOrder(order, market);
-            this.streamProduce('orders', parsed);
             stored.append(parsed);
             const symbol = parsed['symbol'];
             marketSymbols[symbol] = true;
@@ -2205,7 +2197,6 @@ class bitget extends bitget$1["default"] {
             stored.append(parsed);
             const symbol = parsed['symbol'];
             const symbolSpecificMessageHash = 'myTrades:' + symbol;
-            this.streamProduce('myTrades', parsed);
             client.resolve(stored, symbolSpecificMessageHash);
         }
         client.resolve(stored, messageHash);
@@ -2400,7 +2391,6 @@ class bitget extends bitget$1["default"] {
         }
         this.balance = this.safeBalance(this.balance);
         const messageHash = 'balance:' + instType;
-        this.streamProduce('balances', this.balance);
         client.resolve(this.balance, messageHash);
     }
     async watchPublic(uta, messageHash, args, params = {}) {
@@ -2548,7 +2538,6 @@ class bitget extends bitget$1["default"] {
                 // Note: if error happens on a subscribe event, user will have to close exchange to resubscribe. Issue #19041
                 client.reject(e);
             }
-            this.streamProduce('errors', undefined, e);
             return true;
         }
     }
@@ -2633,7 +2622,6 @@ class bitget extends bitget$1["default"] {
         //         }
         //     }
         //
-        this.streamProduce('raw', message);
         if (this.handleErrorMessage(client, message)) {
             return;
         }

@@ -6,16 +6,6 @@ namespace ccxt.pro;
 public class  Lighter: lighter { public Lighter(object args = null) : base(args) { } }
 public partial class lighter
 {
-    public async Task<Dictionary<string, object>> SubscribePublic(object messageHash, Dictionary<string, object> parameters = null)
-    {
-        var res = await this.subscribePublic(messageHash, parameters);
-        return ((Dictionary<string, object>)res);
-    }
-    public async Task<Dictionary<string, object>> SubscribePublicMultiple(object messageHashes, Dictionary<string, object> parameters = null)
-    {
-        var res = await this.subscribePublicMultiple(messageHashes, parameters);
-        return ((Dictionary<string, object>)res);
-    }
     /// <summary>
     /// watches information on open orders with bid (buy) and ask (sell) prices, volumes and other data
     /// </summary>

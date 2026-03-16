@@ -396,7 +396,6 @@ export default class coinbaseinternational extends coinbaseinternationalRest {
         //
         const ticker = this.parseWsTicker(message);
         const channel = this.safeString(message, 'channel');
-        this.streamProduce('tickers', ticker);
         client.resolve(ticker, channel);
         client.resolve(ticker, channel + '::' + ticker['symbol']);
     }
@@ -497,8 +496,6 @@ export default class coinbaseinternational extends coinbaseinternationalRest {
         for (let i = 0; i < data.length; i++) {
             const tick = data[i];
             const parsed = this.parseOHLCV(tick, market);
-            const ohlcvs = this.createStreamOHLCV(symbol, timeframe, parsed);
-            this.streamProduce('ohlcvs', ohlcvs);
             stored.append(parsed);
         }
         client.resolve(stored, messageHash + '::' + symbol);
@@ -562,7 +559,6 @@ export default class coinbaseinternational extends coinbaseinternationalRest {
         }
         const tradesArray = this.trades[symbol];
         tradesArray.append(trade);
-        this.streamProduce('trades', trade);
         this.trades[symbol] = tradesArray;
         client.resolve(tradesArray, channel);
         client.resolve(tradesArray, channel + '::' + trade['symbol']);
@@ -685,7 +681,6 @@ export default class coinbaseinternational extends coinbaseinternationalRest {
         orderbook['datetime'] = datetime;
         orderbook['timestamp'] = this.parse8601(datetime);
         this.orderbooks[symbol] = orderbook;
-        this.streamProduce('orderbooks', orderbook);
         client.resolve(orderbook, channel + '::' + symbol);
     }
     handleDelta(orderbook, delta) {
@@ -778,13 +773,11 @@ export default class coinbaseinternational extends coinbaseinternationalRest {
             throw new ExchangeError(feedback);
         }
         catch (e) {
-            this.streamProduce('errors', undefined, e);
             client.reject(e);
         }
         return true;
     }
     handleMessage(client, message) {
-        this.streamProduce('raw', message);
         if (this.handleErrorMessage(client, message)) {
             return;
         }

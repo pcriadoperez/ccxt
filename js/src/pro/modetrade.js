@@ -148,7 +148,6 @@ export default class modetrade extends modetradeRest {
         const timestamp = this.safeInteger(message, 'ts');
         const snapshot = this.parseOrderBook(data, symbol, timestamp, 'bids', 'asks');
         orderbook.reset(snapshot);
-        this.streamProduce('orderbooks', orderbook);
         client.resolve(orderbook, topic);
     }
     /**
@@ -235,7 +234,6 @@ export default class modetrade extends modetradeRest {
         const ticker = this.parseWsTicker(data, market);
         ticker['symbol'] = market['symbol'];
         this.tickers[market['symbol']] = ticker;
-        this.streamProduce('tickers', ticker);
         client.resolve(ticker, topic);
         return message;
     }
@@ -434,8 +432,6 @@ export default class modetrade extends modetradeRest {
         }
         const ohlcvCache = this.ohlcvs[symbol][timeframe];
         ohlcvCache.append(parsed);
-        const ohlcvs = this.createStreamOHLCV(symbol, timeframe, parsed);
-        this.streamProduce('ohlcvs', ohlcvs);
         client.resolve(ohlcvCache, topic);
     }
     /**
@@ -493,7 +489,6 @@ export default class modetrade extends modetradeRest {
         const trades = this.trades[symbol];
         trades.append(trade);
         this.trades[symbol] = trades;
-        this.streamProduce('trades', trade);
         client.resolve(trades, topic);
     }
     parseWsTrade(trade, market = undefined) {
@@ -911,7 +906,6 @@ export default class modetrade extends modetradeRest {
                 parsed['datetime'] = this.safeString(order, 'datetime');
             }
             cachedOrders.append(parsed);
-            this.streamProduce('orders', parsed);
             client.resolve(this.orders, topic);
             const messageHashSymbol = topic + ':' + symbol;
             client.resolve(this.orders, messageHashSymbol);
@@ -958,7 +952,6 @@ export default class modetrade extends modetradeRest {
             this.myTrades = trades;
         }
         trades.append(trade);
-        this.streamProduce('myTrades', trade);
         client.resolve(trades, messageHash);
         const symbolSpecificMessageHash = messageHash + ':' + symbol;
         client.resolve(trades, symbolSpecificMessageHash);
@@ -1084,7 +1077,6 @@ export default class modetrade extends modetradeRest {
             const position = this.parseWsPosition(rawPosition, market);
             newPositions.push(position);
             cache.append(position);
-            this.streamProduce('positions', position);
             const messageHash = 'positions::' + market['symbol'];
             client.resolve(position, messageHash);
         }
@@ -1230,7 +1222,6 @@ export default class modetrade extends modetradeRest {
             this.balance[code] = account;
         }
         this.balance = this.safeBalance(this.balance);
-        this.streamProduce('balances', this.balance);
         client.resolve(this.balance, 'balance');
     }
     handleErrorMessage(client, message) {
@@ -1253,7 +1244,6 @@ export default class modetrade extends modetradeRest {
             return false;
         }
         catch (error) {
-            this.streamProduce('errors', undefined, error);
             if (error instanceof AuthenticationError) {
                 const messageHash = 'authenticated';
                 client.reject(error, messageHash);
@@ -1268,7 +1258,6 @@ export default class modetrade extends modetradeRest {
         }
     }
     handleMessage(client, message) {
-        this.streamProduce('raw', message);
         if (this.handleErrorMessage(client, message)) {
             return;
         }

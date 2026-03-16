@@ -54,7 +54,6 @@ from ccxt.base.errors import BadResponse                              # noqa: F4
 from ccxt.base.errors import NullResponse                             # noqa: F401
 from ccxt.base.errors import CancelPending                            # noqa: F401
 from ccxt.base.errors import UnsubscribeError                         # noqa: F401
-from ccxt.base.errors import ConsumerFunctionError                    # noqa: F401
 from ccxt.base.errors import error_hierarchy                          # noqa: F401
 # DO_NOT_REMOVE__ERROR_IMPORTS_END
 

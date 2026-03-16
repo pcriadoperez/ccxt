@@ -262,7 +262,6 @@ class bingx extends bingx$1["default"] {
         const symbol = market['symbol'];
         const ticker = this.parseWsTicker(data, market);
         this.tickers[symbol] = ticker;
-        this.streamProduce('tickers', ticker);
         client.resolve(ticker, this.getMessageHash('ticker', symbol));
         if (this.safeString(message, 'dataType') === 'all@ticker') {
             client.resolve(ticker, this.getMessageHash('ticker'));
@@ -526,7 +525,6 @@ class bingx extends bingx$1["default"] {
         }
         for (let j = 0; j < trades.length; j++) {
             stored.append(trades[j]);
-            this.streamProduce('trades', trades[j]);
         }
         client.resolve(stored, messageHash);
     }
@@ -715,7 +713,6 @@ class bingx extends bingx$1["default"] {
         snapshot['nonce'] = nonce;
         orderbook.reset(snapshot);
         const messageHash = this.getMessageHash('orderbook', symbol);
-        this.streamProduce('orderbooks', orderbook);
         client.resolve(orderbook, messageHash);
         // resolve for "all"
         if (isAllEndpoint) {
@@ -853,8 +850,6 @@ class bingx extends bingx$1["default"] {
             const candle = candles[i];
             const parsed = this.parseWsOHLCV(candle, market);
             stored.append(parsed);
-            const ohlcvs = this.createStreamOHLCV(symbol, unifiedTimeframe, parsed);
-            this.streamProduce('ohlcvs', ohlcvs);
         }
         const resolveData = [symbol, unifiedTimeframe, stored];
         const messageHash = this.getMessageHash('ohlcv', symbol, unifiedTimeframe);
@@ -1343,7 +1338,6 @@ class bingx extends bingx$1["default"] {
             position['datetime'] = this.iso8601(timestamp);
             newPositions.push(position);
             cache.append(position);
-            this.streamProduce('positions', position);
         }
         const messageHashes = this.findMessageHashes(client, 'swap:positions::');
         for (let i = 0; i < messageHashes.length; i++) {
@@ -1376,7 +1370,6 @@ class bingx extends bingx$1["default"] {
             }
         }
         catch (e) {
-            this.streamProduce('errors', undefined, e);
             client.reject(e);
         }
         return true;
@@ -1403,7 +1396,6 @@ class bingx extends bingx$1["default"] {
                 const messageHashes = Object.keys(client.futures);
                 for (let j = 0; j < messageHashes.length; j++) {
                     const messageHash = messageHashes[j];
-                    this.streamProduce('errors', undefined, error);
                     client.reject(error, messageHash);
                 }
             }
@@ -1451,7 +1443,6 @@ class bingx extends bingx$1["default"] {
         }
         catch (e) {
             const error = new errors.NetworkError(this.id + ' pong failed with error ' + this.exceptionMessage(e));
-            this.streamProduce('errors', undefined, error);
             client.reset(error);
         }
     }
@@ -1552,7 +1543,6 @@ class bingx extends bingx$1["default"] {
         const spotHash = 'spot:order';
         const swapHash = 'swap:order';
         const messageHash = (isSpot) ? spotHash : swapHash;
-        this.streamProduce('orders', parsedOrder);
         client.resolve(stored, messageHash);
         client.resolve(stored, messageHash + ':' + symbol);
     }
@@ -1630,7 +1620,6 @@ class bingx extends bingx$1["default"] {
         const swapHash = 'swap:mytrades';
         const messageHash = isSpot ? spotHash : swapHash;
         cachedTrades.append(parsed);
-        this.streamProduce('myTrades', parsed);
         client.resolve(cachedTrades, messageHash);
         client.resolve(cachedTrades, messageHash + ':' + symbol);
     }
@@ -1692,11 +1681,9 @@ class bingx extends bingx$1["default"] {
             this.balance[type][code] = account;
         }
         this.balance[type] = this.safeBalance(this.balance[type]);
-        this.streamProduce('balances', this.balance[type]);
         client.resolve(this.balance[type], type + ':balance');
     }
     handleMessage(client, message) {
-        this.streamProduce('raw', message);
         if (!this.handleErrorMessage(client, message)) {
             return;
         }

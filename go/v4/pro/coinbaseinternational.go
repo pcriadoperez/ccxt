@@ -511,7 +511,6 @@ func  (this *CoinbaseinternationalCore) HandleTicker(client interface{}, message
     //
     var ticker interface{} = this.ParseWsTicker(message)
     var channel interface{} = this.SafeString(message, "channel")
-    this.StreamProduce("tickers", ticker)
     client.(ccxt.ClientInterface).Resolve(ticker, channel)
     client.(ccxt.ClientInterface).Resolve(ticker, ccxt.Add(ccxt.Add(channel, "::"), ccxt.GetValue(ticker, "symbol")))
 }
@@ -582,8 +581,8 @@ func  (this *CoinbaseinternationalCore) WatchOHLCV(symbol interface{}, optionalA
             params := ccxt.GetArg(optionalArgs, 3, map[string]interface{} {})
             _ = params
         
-            retRes4638 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes4638)
+            retRes4628 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes4628)
             var market interface{} = this.Market(symbol)
             symbol = ccxt.GetValue(market, "symbol")
             var options interface{} = this.SafeDict(this.Options, "timeframes", map[string]interface{} {})
@@ -635,8 +634,6 @@ func  (this *CoinbaseinternationalCore) HandleOHLCV(client interface{}, message 
     for i := 0; ccxt.IsLessThan(i, ccxt.GetArrayLength(data)); i++ {
         var tick interface{} = ccxt.GetValue(data, i)
         var parsed interface{} = this.ParseOHLCV(tick, market)
-        var ohlcvs interface{} = this.CreateStreamOHLCV(symbol, timeframe, parsed)
-        this.StreamProduce("ohlcvs", ohlcvs)
         stored.(ccxt.Appender).Append(parsed)
     }
     client.(ccxt.ClientInterface).Resolve(stored, ccxt.Add(ccxt.Add(messageHash, "::"), symbol))
@@ -664,9 +661,9 @@ func  (this *CoinbaseinternationalCore) WatchTrades(symbol interface{}, optional
             params := ccxt.GetArg(optionalArgs, 2, map[string]interface{} {})
             _ = params
         
-                retRes52815 :=  (<-this.WatchTradesForSymbols([]interface{}{symbol}, since, limit, params))
-                ccxt.PanicOnError(retRes52815)
-                ch <- retRes52815
+                retRes52515 :=  (<-this.WatchTradesForSymbols([]interface{}{symbol}, since, limit, params))
+                ccxt.PanicOnError(retRes52515)
+                ch <- retRes52515
                 return nil
         
             }()
@@ -694,8 +691,8 @@ func  (this *CoinbaseinternationalCore) WatchTradesForSymbols(symbols interface{
             params := ccxt.GetArg(optionalArgs, 2, map[string]interface{} {})
             _ = params
         
-            retRes5428 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes5428)
+            retRes5398 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes5398)
             symbols = this.MarketSymbols(symbols, nil, false, true, true)
         
             trades:= (<-this.SubscribeMultiple("MATCH", symbols, params))
@@ -736,7 +733,6 @@ func  (this *CoinbaseinternationalCore) HandleTrade(client interface{}, message 
     }
     var tradesArray interface{} = ccxt.GetValue(this.Trades, symbol)
     tradesArray.(ccxt.Appender).Append(trade)
-    this.StreamProduce("trades", trade)
     ccxt.AddElementToObject(this.Trades, symbol, tradesArray)
     client.(ccxt.ClientInterface).Resolve(tradesArray, channel)
     client.(ccxt.ClientInterface).Resolve(tradesArray, ccxt.Add(ccxt.Add(channel, "::"), ccxt.GetValue(trade, "symbol")))
@@ -795,9 +791,9 @@ func  (this *CoinbaseinternationalCore) WatchOrderBook(symbol interface{}, optio
             params := ccxt.GetArg(optionalArgs, 1, map[string]interface{} {})
             _ = params
         
-                retRes62715 :=  (<-this.WatchOrderBookForSymbols([]interface{}{symbol}, limit, params))
-                ccxt.PanicOnError(retRes62715)
-                ch <- retRes62715
+                retRes62315 :=  (<-this.WatchOrderBookForSymbols([]interface{}{symbol}, limit, params))
+                ccxt.PanicOnError(retRes62315)
+                ch <- retRes62315
                 return nil
         
             }()
@@ -823,12 +819,12 @@ func  (this *CoinbaseinternationalCore) WatchOrderBookForSymbols(symbols interfa
             params := ccxt.GetArg(optionalArgs, 1, map[string]interface{} {})
             _ = params
         
-            retRes6418 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes6418)
+            retRes6378 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes6378)
         
-                retRes64215 :=  (<-this.SubscribeMultiple("LEVEL2", symbols, params))
-                ccxt.PanicOnError(retRes64215)
-                ch <- retRes64215
+                retRes63815 :=  (<-this.SubscribeMultiple("LEVEL2", symbols, params))
+                ccxt.PanicOnError(retRes63815)
+                ch <- retRes63815
                 return nil
         
             }()
@@ -892,7 +888,6 @@ func  (this *CoinbaseinternationalCore) HandleOrderBook(client interface{}, mess
     ccxt.AddElementToObject(orderbook, "datetime", datetime)
     ccxt.AddElementToObject(orderbook, "timestamp", this.Parse8601(datetime))
     ccxt.AddElementToObject(this.Orderbooks, symbol, orderbook)
-    this.StreamProduce("orderbooks", orderbook)
     client.(ccxt.ClientInterface).Resolve(orderbook, ccxt.Add(ccxt.Add(channel, "::"), symbol))
 }
 func  (this *CoinbaseinternationalCore) HandleDelta(orderbook interface{}, delta interface{})  {
@@ -988,8 +983,7 @@ func  (this *CoinbaseinternationalCore) HandleErrorMessage(client interface{}, m
                         }
                         ret_ = func(this *CoinbaseinternationalCore) interface{} {
                             // catch block:
-                                    this.StreamProduce("errors", nil, e)
-            client.(ccxt.ClientInterface).Reject(e)
+                                    client.(ccxt.ClientInterface).Reject(e)
                             return nil
                         }(this)
                     }
@@ -1006,7 +1000,6 @@ func  (this *CoinbaseinternationalCore) HandleErrorMessage(client interface{}, m
     return true
 }
 func  (this *CoinbaseinternationalCore) HandleMessage(client interface{}, message interface{})  {
-    this.StreamProduce("raw", message)
     if ccxt.IsTrue(this.HandleErrorMessage(client, message)) {
         return
     }

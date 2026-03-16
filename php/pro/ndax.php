@@ -110,7 +110,6 @@ class ndax extends \ccxt\async\ndax {
         $this->tickers[$symbol] = $ticker;
         $name = 'SubscribeLevel1';
         $messageHash = $name . ':' . $market['id'];
-        $this->stream_produce('tickers', $ticker);
         $client->resolve ($ticker, $messageHash);
     }
 
@@ -187,7 +186,6 @@ class ndax extends \ccxt\async\ndax {
                 $tradesArray = new ArrayCache ($limit);
             }
             $tradesArray->append ($trade);
-            $this->stream_produce('trades', $trade);
             $this->trades[$symbol] = $tradesArray;
             $updates[$symbol] = true;
         }
@@ -331,12 +329,6 @@ class ndax extends \ccxt\async\ndax {
                 $market = $this->safe_market($marketId);
                 $symbol = $market['symbol'];
                 $stored = $this->safe_value($this->ohlcvs[$symbol], $timeframe, array());
-                $storedLength = count($stored);
-                if ($storedLength > 0) {
-                    $lastOhlcv = $stored[$storedLength - 1];
-                    $ohlcvs = $this->create_stream_ohlcv($symbol, $timeframe, $lastOhlcv);
-                    $this->stream_produce('ohlcvs', $ohlcvs);
-                }
                 $client->resolve ($stored, $messageHash);
             }
         }
@@ -464,7 +456,6 @@ class ndax extends \ccxt\async\ndax {
         $name = 'SubscribeLevel2';
         $messageHash = $name . ':' . $marketId;
         $this->orderbooks[$symbol] = $orderbook;
-        $this->stream_produce('orderbooks', $orderbook);
         $client->resolve ($orderbook, $messageHash);
     }
 
@@ -500,7 +491,6 @@ class ndax extends \ccxt\async\ndax {
         $orderbook = $this->order_book($snapshot, $limit);
         $this->orderbooks[$symbol] = $orderbook;
         $messageHash = $this->safe_string($subscription, 'messageHash');
-        $this->stream_produce('orderbooks', $orderbook);
         $client->resolve ($orderbook, $messageHash);
     }
 
@@ -547,7 +537,6 @@ class ndax extends \ccxt\async\ndax {
         //         "o" => "[[2,1,1608208308265,0,20782.49,1,25000,8,1,1]]"
         //     }
         //
-        $this->stream_produce('raw', $message);
         $payload = $this->safe_string($message, 'o');
         if ($payload === null) {
             return;

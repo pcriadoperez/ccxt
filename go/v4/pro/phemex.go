@@ -310,7 +310,6 @@ func  (this *PhemexCore) HandleTicker(client interface{}, message interface{})  
         ccxt.AddElementToObject(ticker, "timestamp", timestamp)
         ccxt.AddElementToObject(ticker, "datetime", this.Iso8601(timestamp))
         ccxt.AddElementToObject(this.Tickers, symbol, ticker)
-        this.StreamProduce("tickers", ticker)
         client.(ccxt.ClientInterface).Resolve(ticker, messageHash)
     }
 }
@@ -333,8 +332,8 @@ func  (this *PhemexCore) WatchBalance(optionalArgs ...interface{}) <- chan inter
                     params := ccxt.GetArg(optionalArgs, 0, map[string]interface{} {})
             _ = params
         
-            retRes3228 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes3228)
+            retRes3218 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes3218)
             var typeVar interface{} = nil
             typeVarparamsVariable := this.HandleMarketTypeAndParams("watchBalance", nil, params)
             typeVar = ccxt.GetValue(typeVarparamsVariable,0)
@@ -343,9 +342,9 @@ func  (this *PhemexCore) WatchBalance(optionalArgs ...interface{}) <- chan inter
             var messageHash interface{} = ":balance"
             messageHash = ccxt.Ternary(ccxt.IsTrue(usePerpetualApi), ccxt.Add("perpetual", messageHash), ccxt.Add(typeVar, messageHash))
         
-                retRes32815 :=  (<-this.SubscribePrivate(typeVar, messageHash, params))
-                ccxt.PanicOnError(retRes32815)
-                ch <- retRes32815
+                retRes32715 :=  (<-this.SubscribePrivate(typeVar, messageHash, params))
+                ccxt.PanicOnError(retRes32715)
+                ch <- retRes32715
                 return nil
         
             }()
@@ -423,7 +422,6 @@ func  (this *PhemexCore) HandleBalance(typeVar interface{}, client interface{}, 
         this.Balance = this.SafeBalance(this.Balance)
     }
     var messageHash interface{} = ccxt.Add(typeVar, ":balance")
-    this.StreamProduce("balances", this.Balance)
     client.(ccxt.ClientInterface).Resolve(this.Balance, messageHash)
 }
 func  (this *PhemexCore) HandleTrades(client interface{}, message interface{})  {
@@ -468,7 +466,6 @@ func  (this *PhemexCore) HandleTrades(client interface{}, message interface{})  
     var parsed interface{} = this.ParseTrades(trades, market)
     for i := 0; ccxt.IsLessThan(i, ccxt.GetArrayLength(parsed)); i++ {
         stored.(ccxt.Appender).Append(ccxt.GetValue(parsed, i))
-        this.StreamProduce("trades", ccxt.GetValue(parsed, i))
     }
     client.(ccxt.ClientInterface).Resolve(stored, messageHash)
 }
@@ -524,8 +521,6 @@ func  (this *PhemexCore) HandleOHLCV(client interface{}, message interface{})  {
         for i := 0; ccxt.IsLessThan(i, ccxt.GetArrayLength(ohlcvs)); i++ {
             var candle interface{} = ccxt.GetValue(ohlcvs, i)
             stored.(ccxt.Appender).Append(candle)
-            var ohlcvObj interface{} = this.CreateStreamOHLCV(symbol, timeframe, candle)
-            this.StreamProduce("ohlcvs", ohlcvObj)
         }
         client.(ccxt.ClientInterface).Resolve(stored, messageHash)
     }
@@ -549,8 +544,8 @@ func  (this *PhemexCore) WatchTicker(symbol interface{}, optionalArgs ...interfa
                     params := ccxt.GetArg(optionalArgs, 0, map[string]interface{} {})
             _ = params
         
-            retRes5258 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes5258)
+            retRes5208 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes5208)
             var market interface{} = this.Market(symbol)
             symbol = ccxt.GetValue(market, "symbol")
             var isSwap interface{} = ccxt.GetValue(market, "swap")
@@ -570,9 +565,9 @@ func  (this *PhemexCore) WatchTicker(symbol interface{}, optionalArgs ...interfa
             }
             var request interface{} = this.DeepExtend(subscribe, params)
         
-                retRes54415 :=  (<-this.Watch(url, messageHash, request, subscriptionHash))
-                ccxt.PanicOnError(retRes54415)
-                ch <- retRes54415
+                retRes53915 :=  (<-this.Watch(url, messageHash, request, subscriptionHash))
+                ccxt.PanicOnError(retRes53915)
+                ch <- retRes53915
                 return nil
         
             }()
@@ -600,8 +595,8 @@ func  (this *PhemexCore) WatchTickers(optionalArgs ...interface{}) <- chan inter
             params := ccxt.GetArg(optionalArgs, 1, map[string]interface{} {})
             _ = params
         
-            retRes5608 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes5608)
+            retRes5558 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes5558)
             symbols = this.MarketSymbols(symbols, nil, false)
             var first interface{} = ccxt.GetValue(symbols, 0)
             var market interface{} = this.Market(first)
@@ -666,8 +661,8 @@ func  (this *PhemexCore) WatchTrades(symbol interface{}, optionalArgs ...interfa
             params := ccxt.GetArg(optionalArgs, 2, map[string]interface{} {})
             _ = params
         
-            retRes6068 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes6068)
+            retRes6018 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes6018)
             var market interface{} = this.Market(symbol)
             symbol = ccxt.GetValue(market, "symbol")
             var url interface{} = ccxt.GetValue(ccxt.GetValue(this.Urls, "api"), "ws")
@@ -719,8 +714,8 @@ func  (this *PhemexCore) WatchOrderBook(symbol interface{}, optionalArgs ...inte
             params := ccxt.GetArg(optionalArgs, 1, map[string]interface{} {})
             _ = params
         
-            retRes6458 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes6458)
+            retRes6408 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes6408)
             var market interface{} = this.Market(symbol)
             symbol = ccxt.GetValue(market, "symbol")
             var url interface{} = ccxt.GetValue(ccxt.GetValue(this.Urls, "api"), "ws")
@@ -774,8 +769,8 @@ func  (this *PhemexCore) WatchOHLCV(symbol interface{}, optionalArgs ...interfac
             params := ccxt.GetArg(optionalArgs, 3, map[string]interface{} {})
             _ = params
         
-            retRes6828 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes6828)
+            retRes6778 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes6778)
             var market interface{} = this.Market(symbol)
             symbol = ccxt.GetValue(market, "symbol")
             var url interface{} = ccxt.GetValue(ccxt.GetValue(this.Urls, "api"), "ws")
@@ -876,7 +871,6 @@ func  (this *PhemexCore) HandleOrderBook(client interface{}, message interface{}
         ccxt.AddElementToObject(snapshot, "nonce", nonce)
         var orderbook interface{} = this.OrderBook(snapshot, depth)
         ccxt.AddElementToObject(this.Orderbooks, symbol, orderbook)
-        this.StreamProduce("orderbooks", orderbook)
         client.(ccxt.ClientInterface).Resolve(orderbook, messageHash)
     } else {
         if ccxt.IsTrue(ccxt.InOp(this.Orderbooks, symbol)) {
@@ -890,7 +884,6 @@ func  (this *PhemexCore) HandleOrderBook(client interface{}, message interface{}
             ccxt.AddElementToObject(orderbook, "timestamp", timestamp)
             ccxt.AddElementToObject(orderbook, "datetime", this.Iso8601(timestamp))
             ccxt.AddElementToObject(this.Orderbooks, symbol, orderbook)
-            this.StreamProduce("orderbooks", orderbook)
             client.(ccxt.ClientInterface).Resolve(orderbook, messageHash)
         }
     }
@@ -919,8 +912,8 @@ func  (this *PhemexCore) WatchMyTrades(optionalArgs ...interface{}) <- chan inte
             params := ccxt.GetArg(optionalArgs, 3, map[string]interface{} {})
             _ = params
         
-            retRes8098 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes8098)
+            retRes8028 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes8028)
             var market interface{} = nil
             var typeVar interface{} = nil
             var messageHash interface{} = "trades:"
@@ -1065,7 +1058,6 @@ func  (this *PhemexCore) HandleMyTrades(client interface{}, message interface{})
         var market interface{} = this.SafeMarket(marketId)
         var parsed interface{} = this.ParseTrade(rawTrade)
         cachedTrades.(ccxt.Appender).Append(parsed)
-        this.StreamProduce("myTrades", parsed)
         var symbol interface{} = ccxt.GetValue(parsed, "symbol")
         if ccxt.IsTrue(ccxt.IsEqual(typeVar, nil)) {
             typeVar = ccxt.Ternary(ccxt.IsTrue((ccxt.IsEqual(ccxt.GetValue(market, "settle"), "USDT"))), "perpetual", ccxt.GetValue(market, "type"))
@@ -1106,8 +1098,8 @@ func  (this *PhemexCore) WatchOrders(optionalArgs ...interface{}) <- chan interf
             params := ccxt.GetArg(optionalArgs, 3, map[string]interface{} {})
             _ = params
         
-            retRes9758 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes9758)
+            retRes9678 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes9678)
             var messageHash interface{} = "orders:"
             var market interface{} = nil
             var typeVar interface{} = nil
@@ -1342,7 +1334,6 @@ func  (this *PhemexCore) HandleOrders(client interface{}, message interface{})  
     for i := 0; ccxt.IsLessThan(i, ccxt.GetArrayLength(parsedOrders)); i++ {
         var parsed interface{} = ccxt.GetValue(parsedOrders, i)
         stored.(ccxt.Appender).Append(parsed)
-        this.StreamProduce("orders", parsed)
         var symbol interface{} = ccxt.GetValue(parsed, "symbol")
         var market interface{} = this.Market(symbol)
         if ccxt.IsTrue(ccxt.IsEqual(typeVar, nil)) {
@@ -1535,7 +1526,6 @@ func  (this *PhemexCore) ParseWSSwapOrder(order interface{}, optionalArgs ...int
     }, market)
 }
 func  (this *PhemexCore) HandleMessage(client interface{}, message interface{})  {
-    this.StreamProduce("raw", message)
     // private spot update
     // {
     //     "orders": { closed: [ ], fills: [ ], open: [] },
@@ -1684,7 +1674,6 @@ func  (this *PhemexCore) HandleAuthenticate(client interface{}, message interfac
         client.(ccxt.ClientInterface).Resolve(message, messageHash)
     } else {
         error := ccxt.AuthenticationError(ccxt.Add(ccxt.Add(this.Id, " "), this.Json(message)))
-        this.StreamProduce("errors", nil, error)
         client.(ccxt.ClientInterface).Reject(error, messageHash)
         if ccxt.IsTrue(ccxt.InOp(client.(ccxt.ClientInterface).GetSubscriptions(), messageHash)) {
             ccxt.Remove(client.(ccxt.ClientInterface).GetSubscriptions(), messageHash)
@@ -1699,11 +1688,11 @@ func  (this *PhemexCore) SubscribePrivate(typeVar interface{}, messageHash inter
                     params := ccxt.GetArg(optionalArgs, 0, map[string]interface{} {})
             _ = params
         
-            retRes15548 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes15548)
+            retRes15438 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes15438)
         
-            retRes15558 := (<-this.Authenticate())
-            ccxt.PanicOnError(retRes15558)
+            retRes15448 := (<-this.Authenticate())
+            ccxt.PanicOnError(retRes15448)
             var url interface{} = ccxt.GetValue(ccxt.GetValue(this.Urls, "api"), "ws")
             var requestId interface{} = this.Seconds()
             var settleIsUSDT interface{} =     (ccxt.IsEqual(this.SafeValue(params, "settle", ""), "USDT"))
@@ -1722,9 +1711,9 @@ func  (this *PhemexCore) SubscribePrivate(typeVar interface{}, messageHash inter
             }
             request = this.Extend(request, params)
         
-                retRes157315 :=  (<-this.Watch(url, messageHash, request, channel))
-                ccxt.PanicOnError(retRes157315)
-                ch <- retRes157315
+                retRes156215 :=  (<-this.Watch(url, messageHash, request, channel))
+                ccxt.PanicOnError(retRes156215)
+                ch <- retRes156215
                 return nil
         
             }()

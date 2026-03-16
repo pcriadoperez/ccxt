@@ -364,7 +364,6 @@ class bitmex extends \ccxt\async\bitmex {
             $tickers[$symbol] = $fullParsedTicker;
             $this->tickers[$symbol] = $fullParsedTicker;
             $messageHash = 'ticker:' . $symbol;
-            $this->stream_produce('tickers', $fullParsedTicker);
             $client->resolve ($fullParsedTicker, $messageHash);
             $client->resolve ($fullParsedTicker, 'alltickers');
         }
@@ -466,7 +465,6 @@ class bitmex extends \ccxt\async\bitmex {
             $liquidation = $this->parse_liquidation($rawLiquidation);
             $cache->append ($liquidation);
             $newLiquidations[] = $liquidation;
-            $this->stream_produce('liquidations', $liquidation);
         }
         $client->resolve ($newLiquidations, 'liquidations');
         $liquidationsBySymbol = $this->index_by($newLiquidations, 'symbol');
@@ -604,7 +602,6 @@ class bitmex extends \ccxt\async\bitmex {
         $balance = $this->parse_balance($data);
         $this->balance = $this->extend($this->balance, $balance);
         $messageHash = $this->safe_string($message, 'table');
-        $this->stream_produce('balances', $this->balance);
         $client->resolve ($this->balance, $messageHash);
     }
 
@@ -686,7 +683,6 @@ class bitmex extends \ccxt\async\bitmex {
             }
             for ($j = 0; $j < count($trades); $j++) {
                 $stored->append ($trades[$j]);
-                $this->stream_produce('trades', $trades[$j]);
             }
             $client->resolve ($stored, $messageHash);
         }
@@ -947,7 +943,6 @@ class bitmex extends \ccxt\async\bitmex {
             $position = $this->parse_position($rawPosition);
             $newPositions[] = $position;
             $cache->append ($position);
-            $this->stream_produce('positions', $position);
         }
         $messageHashes = $this->find_message_hashes($client, 'positions::');
         for ($i = 0; $i < count($messageHashes); $i++) {
@@ -1171,7 +1166,6 @@ class bitmex extends \ccxt\async\bitmex {
                 }
                 $order = $this->parse_order($rawOrder);
                 $stored->append ($order);
-                $this->stream_produce('orders', $order);
                 $symbol = $order['symbol'];
                 $symbols[$symbol] = true;
             }
@@ -1294,7 +1288,6 @@ class bitmex extends \ccxt\async\bitmex {
             $trade = $trades[$j];
             $symbol = $trade['symbol'];
             $stored->append ($trade);
-            $this->stream_produce('myTrades', $trade);
             $symbols[$symbol] = $trade;
         }
         $numTrades = count($trades);
@@ -1536,8 +1529,6 @@ class bitmex extends \ccxt\async\bitmex {
                 $this->ohlcvs[$symbol][$timeframe] = $stored;
             }
             $stored->append ($result);
-            $ohlcvs = $this->create_stream_ohlcv($symbol, $timeframe, $result);
-            $this->stream_produce('ohlcvs', $ohlcvs);
             $results[$messageHash] = $stored;
         }
         $messageHashes = is_array($results) ? array_keys($results) : array();
@@ -1643,7 +1634,6 @@ class bitmex extends \ccxt\async\bitmex {
                 $orderbook['datetime'] = $datetime;
             }
             $messageHash = $table . ':' . $symbol;
-            $this->stream_produce('orderbooks', $orderbook);
             $client->resolve ($orderbook, $messageHash);
         } else {
             $numUpdatesByMarketId = array();
@@ -1677,7 +1667,6 @@ class bitmex extends \ccxt\async\bitmex {
                 $symbol = $market['symbol'];
                 $messageHash = $table . ':' . $symbol;
                 $orderbook = $this->orderbooks[$symbol];
-                $this->stream_produce('orderbooks', $orderbook);
                 $client->resolve ($orderbook, $messageHash);
             }
         }
@@ -1743,7 +1732,6 @@ class bitmex extends \ccxt\async\bitmex {
                 } else {
                     $exception = new $broad[$broadKey] ($error);
                 }
-                $this->stream_produce('errors', null, $exception);
                 $client->reject ($exception, $messageHash);
                 return false;
             }
@@ -1786,7 +1774,6 @@ class bitmex extends \ccxt\async\bitmex {
         //         )
         //     }
         //
-        $this->stream_produce('raw', $message);
         if ($this->handle_error_message($client, $message)) {
             $table = $this->safe_string($message, 'table');
             $methods = array(

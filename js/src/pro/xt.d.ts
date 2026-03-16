@@ -29,7 +29,7 @@ export default class xt extends xtRest {
      * @param {object} params extra parameters specific to the xt api
      * @returns {object} data from the websocket stream
      */
-    subscribe(name: string, access: string, methodName: string, market?: any, symbols?: string[], params?: {}): Promise<any>;
+    subscribe(name: string, access: string, methodName: string, market?: Market, symbols?: string[], params?: {}): Promise<any>;
     /**
      * @ignore
      * @method

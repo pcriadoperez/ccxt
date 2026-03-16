@@ -6,16 +6,6 @@ namespace ccxt.pro;
 public class  Coinbaseexchange: coinbaseexchange { public Coinbaseexchange(object args = null) : base(args) { } }
 public partial class coinbaseexchange
 {
-    public async Task<Dictionary<string, object>> Subscribe(string name, string symbol = null, object messageHashStart = null, Dictionary<string, object> parameters = null)
-    {
-        var res = await this.subscribe(name, symbol, messageHashStart, parameters);
-        return ((Dictionary<string, object>)res);
-    }
-    public async Task<Dictionary<string, object>> SubscribeMultiple(string name, List<String> symbols, object messageHashStart = null, Dictionary<string, object> parameters = null)
-    {
-        var res = await this.subscribeMultiple(name, symbols, messageHashStart, parameters);
-        return ((Dictionary<string, object>)res);
-    }
     /// <summary>
     /// watches a price ticker, a statistical calculation with the information calculated over the past 24 hours for a specific market
     /// </summary>

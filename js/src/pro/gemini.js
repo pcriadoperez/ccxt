@@ -172,7 +172,6 @@ export default class gemini extends geminiRest {
             this.trades[symbol] = stored;
         }
         stored.append(trade);
-        this.streamProduce('trades', trade);
         const messageHash = 'trades:' + symbol;
         client.resolve(stored, messageHash);
     }
@@ -228,7 +227,6 @@ export default class gemini extends geminiRest {
             for (let i = 0; i < trades.length; i++) {
                 const trade = this.parseWsTrade(trades[i], market);
                 stored.append(trade);
-                this.streamProduce('trades', trade);
             }
             const messageHash = 'trades:' + symbol;
             client.resolve(stored, messageHash);
@@ -251,7 +249,6 @@ export default class gemini extends geminiRest {
                     this.trades[symbol] = stored;
                 }
                 stored.append(trade);
-                this.streamProduce('trades', trade);
                 storesForSymbols[symbol] = stored;
             }
             const symbols = Object.keys(storesForSymbols);
@@ -348,8 +345,6 @@ export default class gemini extends geminiRest {
         for (let i = 0; i < changesLength; i++) {
             const index = changesLength - i - 1;
             const parsed = this.parseOHLCV(changes[index], market);
-            const ohlcvs = this.createStreamOHLCV(symbol, timeframe, parsed);
-            this.streamProduce('ohlcvs', ohlcvs);
             stored.append(parsed);
         }
         const messageHash = 'ohlcv:' + symbol + ':' + timeframeId;
@@ -409,7 +404,6 @@ export default class gemini extends geminiRest {
         }
         orderbook['symbol'] = symbol;
         this.orderbooks[symbol] = orderbook;
-        this.streamProduce('orderbooks', orderbook);
         client.resolve(orderbook, messageHash);
     }
     /**
@@ -580,7 +574,6 @@ export default class gemini extends geminiRest {
         orderbook['timestamp'] = timestamp;
         orderbook['datetime'] = this.iso8601(timestamp);
         this.orderbooks[symbol] = orderbook;
-        this.streamProduce('orderbooks', orderbook);
         client.resolve(orderbook, messageHash);
     }
     handleL2Updates(client, message) {
@@ -711,7 +704,6 @@ export default class gemini extends geminiRest {
         const orders = this.orders;
         for (let i = 0; i < message.length; i++) {
             const order = this.parseWsOrder(message[i]);
-            this.streamProduce('orders', order);
             orders.append(order);
         }
         client.resolve(this.orders, messageHash);
@@ -805,9 +797,7 @@ export default class gemini extends geminiRest {
         //         "result": "error"
         //     }
         //
-        const err = new ExchangeError(this.id + ' ' + this.json(message));
-        this.streamProduce('errors', undefined, err);
-        client.reject(err);
+        throw new ExchangeError(this.json(message));
     }
     handleMessage(client, message) {
         //
@@ -845,7 +835,6 @@ export default class gemini extends geminiRest {
         //         }
         //     ]
         //
-        this.streamProduce('raw', message);
         const isArray = Array.isArray(message);
         if (isArray) {
             this.handleOrder(client, message);

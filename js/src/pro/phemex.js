@@ -297,7 +297,6 @@ export default class phemex extends phemexRest {
             ticker['timestamp'] = timestamp;
             ticker['datetime'] = this.iso8601(timestamp);
             this.tickers[symbol] = ticker;
-            this.streamProduce('tickers', ticker);
             client.resolve(ticker, messageHash);
         }
     }
@@ -393,7 +392,6 @@ export default class phemex extends phemexRest {
             this.balance = this.safeBalance(this.balance);
         }
         const messageHash = type + ':balance';
-        this.streamProduce('balances', this.balance);
         client.resolve(this.balance, messageHash);
     }
     handleTrades(client, message) {
@@ -438,7 +436,6 @@ export default class phemex extends phemexRest {
         const parsed = this.parseTrades(trades, market);
         for (let i = 0; i < parsed.length; i++) {
             stored.append(parsed[i]);
-            this.streamProduce('trades', parsed[i]);
         }
         client.resolve(stored, messageHash);
     }
@@ -494,8 +491,6 @@ export default class phemex extends phemexRest {
             for (let i = 0; i < ohlcvs.length; i++) {
                 const candle = ohlcvs[i];
                 stored.append(candle);
-                const ohlcvObj = this.createStreamOHLCV(symbol, timeframe, candle);
-                this.streamProduce('ohlcvs', ohlcvObj);
             }
             client.resolve(stored, messageHash);
         }
@@ -758,7 +753,6 @@ export default class phemex extends phemexRest {
             snapshot['nonce'] = nonce;
             const orderbook = this.orderBook(snapshot, depth);
             this.orderbooks[symbol] = orderbook;
-            this.streamProduce('orderbooks', orderbook);
             client.resolve(orderbook, messageHash);
         }
         else {
@@ -773,7 +767,6 @@ export default class phemex extends phemexRest {
                 orderbook['timestamp'] = timestamp;
                 orderbook['datetime'] = this.iso8601(timestamp);
                 this.orderbooks[symbol] = orderbook;
-                this.streamProduce('orderbooks', orderbook);
                 client.resolve(orderbook, messageHash);
             }
         }
@@ -925,7 +918,6 @@ export default class phemex extends phemexRest {
             const market = this.safeMarket(marketId);
             const parsed = this.parseTrade(rawTrade);
             cachedTrades.append(parsed);
-            this.streamProduce('myTrades', parsed);
             const symbol = parsed['symbol'];
             if (type === undefined) {
                 type = (market['settle'] === 'USDT') ? 'perpetual' : market['type'];
@@ -1180,7 +1172,6 @@ export default class phemex extends phemexRest {
         for (let i = 0; i < parsedOrders.length; i++) {
             const parsed = parsedOrders[i];
             stored.append(parsed);
-            this.streamProduce('orders', parsed);
             const symbol = parsed['symbol'];
             const market = this.market(symbol);
             if (type === undefined) {
@@ -1371,7 +1362,6 @@ export default class phemex extends phemexRest {
         }, market);
     }
     handleMessage(client, message) {
-        this.streamProduce('raw', message);
         // private spot update
         // {
         //     "orders": { closed: [ ], fills: [ ], open: [] },
@@ -1524,7 +1514,6 @@ export default class phemex extends phemexRest {
         }
         else {
             const error = new AuthenticationError(this.id + ' ' + this.json(message));
-            this.streamProduce('errors', undefined, error);
             client.reject(error, messageHash);
             if (messageHash in client.subscriptions) {
                 delete client.subscriptions[messageHash];

@@ -743,7 +743,6 @@ class xt extends xt$1["default"] {
             const event = this.safeString(message, 'event');
             const messageHashTail = isSpot ? 'spot' : 'contract';
             const messageHash = event + '::' + messageHashTail;
-            this.streamProduce('tickers', ticker);
             client.resolve(ticker, messageHash);
         }
         return message;
@@ -827,7 +826,6 @@ class xt extends xt$1["default"] {
             const symbol = ticker['symbol'];
             this.tickers[symbol] = ticker;
             newTickers.push(ticker);
-            this.streamProduce('tickers', ticker);
         }
         const messageHashStart = this.safeString(message, 'topic') + '::' + tradeType;
         const messageHashes = this.findMessageHashes(client, messageHashStart + '::');
@@ -900,8 +898,6 @@ class xt extends xt$1["default"] {
                 this.ohlcvs[symbol][timeframe] = stored;
             }
             stored.append(parsed);
-            const ohlcvs = this.createStreamOHLCV(symbol, timeframe, parsed);
-            this.streamProduce('ohlcvs', ohlcvs);
             const event = this.safeString(message, 'event');
             const messageHash = event + '::' + tradeType;
             client.resolve(stored, messageHash);
@@ -955,7 +951,6 @@ class xt extends xt$1["default"] {
                 this.trades[symbol] = tradesArray;
             }
             tradesArray.append(trade);
-            this.streamProduce('trades', trade);
             const messageHash = event + '::' + tradeType;
             client.resolve(tradesArray, messageHash);
         }
@@ -1072,7 +1067,6 @@ class xt extends xt$1["default"] {
             orderbook['timestamp'] = timestamp;
             orderbook['datetime'] = this.iso8601(timestamp);
             orderbook['symbol'] = symbol;
-            this.streamProduce('orderbooks', orderbook);
             client.resolve(orderbook, messageHash);
         }
     }
@@ -1265,7 +1259,6 @@ class xt extends xt$1["default"] {
             const market = this.safeMarket(marketId, undefined, undefined, tradeType);
             const parsed = this.parseWsOrder(order, market);
             orders.append(parsed);
-            this.streamProduce('orders', parsed);
             client.resolve(orders, 'order::' + tradeType);
         }
         return message;
@@ -1315,7 +1308,6 @@ class xt extends xt$1["default"] {
         this.balance[code] = account;
         this.balance = this.safeBalance(this.balance);
         const tradeType = ('coin' in data) ? 'contract' : 'spot';
-        this.streamProduce('balances', this.balance);
         client.resolve(this.balance, 'balance::' + tradeType);
     }
     handleMyTrades(client, message) {
@@ -1363,12 +1355,10 @@ class xt extends xt$1["default"] {
         const parsedTrade = this.parseTrade(data);
         const market = this.market(parsedTrade['symbol']);
         stored.append(parsedTrade);
-        this.streamProduce('myTrades', parsedTrade);
         const tradeType = market['contract'] ? 'contract' : 'spot';
         client.resolve(stored, 'trade::' + tradeType);
     }
     handleMessage(client, message) {
-        this.streamProduce('raw', message);
         const event = this.safeString(message, 'event');
         if (event === 'pong') {
             client.onPong();
@@ -1461,7 +1451,6 @@ class xt extends xt$1["default"] {
             this.getListenKey(true);
             return;
         }
-        this.streamProduce('errors', undefined, message);
         client.reject(message);
     }
 }

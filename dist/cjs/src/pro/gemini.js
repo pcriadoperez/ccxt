@@ -171,7 +171,6 @@ class gemini extends gemini$1["default"] {
             this.trades[symbol] = stored;
         }
         stored.append(trade);
-        this.streamProduce('trades', trade);
         const messageHash = 'trades:' + symbol;
         client.resolve(stored, messageHash);
     }
@@ -227,7 +226,6 @@ class gemini extends gemini$1["default"] {
             for (let i = 0; i < trades.length; i++) {
                 const trade = this.parseWsTrade(trades[i], market);
                 stored.append(trade);
-                this.streamProduce('trades', trade);
             }
             const messageHash = 'trades:' + symbol;
             client.resolve(stored, messageHash);
@@ -250,7 +248,6 @@ class gemini extends gemini$1["default"] {
                     this.trades[symbol] = stored;
                 }
                 stored.append(trade);
-                this.streamProduce('trades', trade);
                 storesForSymbols[symbol] = stored;
             }
             const symbols = Object.keys(storesForSymbols);
@@ -347,8 +344,6 @@ class gemini extends gemini$1["default"] {
         for (let i = 0; i < changesLength; i++) {
             const index = changesLength - i - 1;
             const parsed = this.parseOHLCV(changes[index], market);
-            const ohlcvs = this.createStreamOHLCV(symbol, timeframe, parsed);
-            this.streamProduce('ohlcvs', ohlcvs);
             stored.append(parsed);
         }
         const messageHash = 'ohlcv:' + symbol + ':' + timeframeId;
@@ -408,7 +403,6 @@ class gemini extends gemini$1["default"] {
         }
         orderbook['symbol'] = symbol;
         this.orderbooks[symbol] = orderbook;
-        this.streamProduce('orderbooks', orderbook);
         client.resolve(orderbook, messageHash);
     }
     /**
@@ -579,7 +573,6 @@ class gemini extends gemini$1["default"] {
         orderbook['timestamp'] = timestamp;
         orderbook['datetime'] = this.iso8601(timestamp);
         this.orderbooks[symbol] = orderbook;
-        this.streamProduce('orderbooks', orderbook);
         client.resolve(orderbook, messageHash);
     }
     handleL2Updates(client, message) {
@@ -710,7 +703,6 @@ class gemini extends gemini$1["default"] {
         const orders = this.orders;
         for (let i = 0; i < message.length; i++) {
             const order = this.parseWsOrder(message[i]);
-            this.streamProduce('orders', order);
             orders.append(order);
         }
         client.resolve(this.orders, messageHash);
@@ -804,9 +796,7 @@ class gemini extends gemini$1["default"] {
         //         "result": "error"
         //     }
         //
-        const err = new errors.ExchangeError(this.id + ' ' + this.json(message));
-        this.streamProduce('errors', undefined, err);
-        client.reject(err);
+        throw new errors.ExchangeError(this.json(message));
     }
     handleMessage(client, message) {
         //
@@ -844,7 +834,6 @@ class gemini extends gemini$1["default"] {
         //         }
         //     ]
         //
-        this.streamProduce('raw', message);
         const isArray = Array.isArray(message);
         if (isArray) {
             this.handleOrder(client, message);

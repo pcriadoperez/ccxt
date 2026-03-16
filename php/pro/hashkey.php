@@ -151,7 +151,6 @@ class hashkey extends \ccxt\async\hashkey {
         for ($i = 0; $i < count($data); $i++) {
             $candle = $this->safe_dict($data, $i, array());
             $parsed = $this->parse_ws_ohlcv($candle, $market);
-            $this->stream_produce('ohlcvs', $parsed);
             $stored->append ($parsed);
         }
         $messageHash = 'ohlcv:' . $symbol . ':' . $timeframe;
@@ -236,7 +235,6 @@ class hashkey extends \ccxt\async\hashkey {
         $symbol = $ticker['symbol'];
         $messageHash = 'ticker:' . $symbol;
         $this->tickers[$symbol] = $ticker;
-        $this->stream_produce('tickers', $ticker);
         $client->resolve ($this->tickers[$symbol], $messageHash);
     }
 
@@ -307,7 +305,6 @@ class hashkey extends \ccxt\async\hashkey {
                 $trade = $this->safe_dict($data, $i);
                 $parsed = $this->parse_ws_trade($trade, $market);
                 $stored->append ($parsed);
-                $this->stream_produce('trades', $parsed);
             }
         }
         $messageHash = 'trades' . ':' . $symbol;
@@ -380,7 +377,6 @@ class hashkey extends \ccxt\async\hashkey {
         $orderbook->reset ($snapshot);
         $orderbook['nonce'] = $this->safe_integer($message, 'id');
         $this->orderbooks[$symbol] = $orderbook;
-        $this->stream_produce('orderbooks', $orderbook);
         $client->resolve ($orderbook, $messageHash);
     }
 
@@ -455,7 +451,6 @@ class hashkey extends \ccxt\async\hashkey {
         $orders = $this->orders;
         $orders->append ($parsed);
         $messageHash = 'orders';
-        $this->stream_produce('orders', $parsed);
         $client->resolve ($orders, $messageHash);
         $symbol = $parsed['symbol'];
         $symbolSpecificMessageHash = $messageHash . ':' . $symbol;
@@ -562,7 +557,6 @@ class hashkey extends \ccxt\async\hashkey {
         $tradesArray->append ($parsed);
         $this->myTrades = $tradesArray;
         $messageHash = 'myTrades';
-        $this->stream_produce('myTrades', $parsed);
         $client->resolve ($tradesArray, $messageHash);
         $symbol = $parsed['symbol'];
         $symbolSpecificMessageHash = $messageHash . ':' . $symbol;
@@ -689,7 +683,6 @@ class hashkey extends \ccxt\async\hashkey {
         $parsed = $this->parse_ws_position($message);
         $positions->append ($parsed);
         $messageHash = 'positions';
-        $this->stream_produce('positions', $parsed);
         $client->resolve ($parsed, $messageHash);
         $symbol = $parsed['symbol'];
         $client->resolve ($parsed, $messageHash . ':' . $symbol);
@@ -827,7 +820,6 @@ class hashkey extends \ccxt\async\hashkey {
         $this->balance[$type][$code] = $account;
         $this->balance[$type] = $this->safe_balance($this->balance[$type]);
         $messageHash = 'balance:' . $type;
-        $this->stream_produce('balances', $this->balance[$type]);
         $client->resolve ($this->balance[$type], $messageHash);
     }
 
@@ -874,7 +866,6 @@ class hashkey extends \ccxt\async\hashkey {
     }
 
     public function handle_message(Client $client, $message) {
-        $this->stream_produce('raw', $message);
         if ((gettype($message) === 'array' && array_keys($message) === array_keys(array_keys($message)))) {
             $message = $this->safe_dict($message, 0, array());
         }

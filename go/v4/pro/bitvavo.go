@@ -227,7 +227,6 @@ func  (this *BitvavoCore) HandleTicker(client interface{}, message interface{}) 
         var ticker interface{} = this.ParseTicker(data, market)
         var symbol interface{} = ccxt.GetValue(ticker, "symbol")
         ccxt.AddElementToObject(this.Tickers, symbol, ticker)
-        this.StreamProduce("tickers", ticker)
         ccxt.AppendToArray(&result, ticker)
         client.(ccxt.ClientInterface).Resolve(ticker, messageHash)
     }
@@ -252,8 +251,8 @@ func  (this *BitvavoCore) WatchBidsAsks(optionalArgs ...interface{}) <- chan int
             params := ccxt.GetArg(optionalArgs, 1, map[string]interface{} {})
             _ = params
         
-            retRes1908 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes1908)
+            retRes1898 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes1898)
             symbols = this.MarketSymbols(symbols, nil, false)
             var channel interface{} = "ticker24h"
         
@@ -321,8 +320,8 @@ func  (this *BitvavoCore) WatchTrades(symbol interface{}, optionalArgs ...interf
             params := ccxt.GetArg(optionalArgs, 2, map[string]interface{} {})
             _ = params
         
-            retRes2418 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes2418)
+            retRes2408 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes2408)
             symbol = this.Symbol(symbol)
         
             trades:= (<-this.WatchPublic("trades", symbol, params))
@@ -362,7 +361,6 @@ func  (this *BitvavoCore) HandleTrade(client interface{}, message interface{})  
     }
     tradesArray.(ccxt.Appender).Append(trade)
     ccxt.AddElementToObject(this.Trades, symbol, tradesArray)
-    this.StreamProduce("trades", trade)
     client.(ccxt.ClientInterface).Resolve(tradesArray, messageHash)
 }
 /**
@@ -390,8 +388,8 @@ func  (this *BitvavoCore) WatchOHLCV(symbol interface{}, optionalArgs ...interfa
             params := ccxt.GetArg(optionalArgs, 3, map[string]interface{} {})
             _ = params
         
-            retRes2918 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes2918)
+            retRes2898 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes2898)
             var market interface{} = this.Market(symbol)
             symbol = ccxt.GetValue(market, "symbol")
             var name interface{} = "candles"
@@ -473,8 +471,6 @@ func  (this *BitvavoCore) HandleOHLCV(client interface{}, message interface{})  
     for i := 0; ccxt.IsLessThan(i, ccxt.GetArrayLength(candles)); i++ {
         var candle interface{} = ccxt.GetValue(candles, i)
         var parsed interface{} = this.ParseOHLCV(candle, market)
-        var ohlcv interface{} = this.CreateStreamOHLCV(symbol, timeframe, parsed)
-        this.StreamProduce("ohlcvs", ohlcv)
         stored.(ccxt.Appender).Append(parsed)
     }
     client.(ccxt.ClientInterface).Resolve(stored, messageHash)
@@ -498,8 +494,8 @@ func  (this *BitvavoCore) WatchOrderBook(symbol interface{}, optionalArgs ...int
             params := ccxt.GetArg(optionalArgs, 1, map[string]interface{} {})
             _ = params
         
-            retRes3878 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes3878)
+            retRes3838 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes3838)
             var market interface{} = this.Market(symbol)
             symbol = ccxt.GetValue(market, "symbol")
             var name interface{} = "book"
@@ -601,7 +597,6 @@ func  (this *BitvavoCore) HandleOrderBook(client interface{}, message interface{
         ccxt.AppendToArray(orderbook.(ccxt.OrderBookInterface).GetCache(), message)
     } else {
         this.HandleOrderBookMessage(client, message, orderbook)
-        this.StreamProduce("orderbooks", orderbook)
         client.(ccxt.ClientInterface).Resolve(orderbook, messageHash)
     }
 }
@@ -668,7 +663,6 @@ func  (this *BitvavoCore) HandleOrderBookSnapshot(client interface{}, message in
         this.HandleOrderBookMessage(client, messageItem, orderbook)
     }
     ccxt.AddElementToObject(this.Orderbooks, symbol, orderbook)
-    this.StreamProduce("orderbooks", orderbook)
     client.(ccxt.ClientInterface).Resolve(orderbook, messageHash)
 }
 func  (this *BitvavoCore) HandleOrderBookSubscription(client interface{}, message interface{}, subscription interface{})  {
@@ -721,11 +715,11 @@ func  (this *BitvavoCore) WatchOrders(optionalArgs ...interface{}) <- chan inter
                 panic(ccxt.ArgumentsRequired(ccxt.Add(this.Id, " watchOrders() requires a symbol argument")))
             }
         
-            retRes5918 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes5918)
+            retRes5858 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes5858)
         
-            retRes5928 := (<-this.Authenticate())
-            ccxt.PanicOnError(retRes5928)
+            retRes5868 := (<-this.Authenticate())
+            ccxt.PanicOnError(retRes5868)
             var market interface{} = this.Market(symbol)
             symbol = ccxt.GetValue(market, "symbol")
             var marketId interface{} = ccxt.GetValue(market, "id")
@@ -779,11 +773,11 @@ func  (this *BitvavoCore) WatchMyTrades(optionalArgs ...interface{}) <- chan int
                 panic(ccxt.ArgumentsRequired(ccxt.Add(this.Id, " watchMyTrades() requires a symbol argument")))
             }
         
-            retRes6298 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes6298)
+            retRes6238 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes6238)
         
-            retRes6308 := (<-this.Authenticate())
-            ccxt.PanicOnError(retRes6308)
+            retRes6248 := (<-this.Authenticate())
+            ccxt.PanicOnError(retRes6248)
             var market interface{} = this.Market(symbol)
             symbol = ccxt.GetValue(market, "symbol")
             var marketId interface{} = ccxt.GetValue(market, "id")
@@ -844,16 +838,16 @@ func  (this *BitvavoCore) CreateOrderWs(symbol interface{}, typeVar interface{},
             params := ccxt.GetArg(optionalArgs, 1, map[string]interface{} {})
             _ = params
         
-            retRes6788 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes6788)
+            retRes6728 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes6728)
         
-            retRes6798 := (<-this.Authenticate())
-            ccxt.PanicOnError(retRes6798)
+            retRes6738 := (<-this.Authenticate())
+            ccxt.PanicOnError(retRes6738)
             var request interface{} = this.CreateOrderRequest(symbol, typeVar, side, amount, price, params)
         
-                retRes68115 :=  (<-this.WatchRequest("privateCreateOrder", request))
-                ccxt.PanicOnError(retRes68115)
-                ch <- retRes68115
+                retRes67515 :=  (<-this.WatchRequest("privateCreateOrder", request))
+                ccxt.PanicOnError(retRes67515)
+                ch <- retRes67515
                 return nil
         
             }()
@@ -885,16 +879,16 @@ func  (this *BitvavoCore) EditOrderWs(id interface{}, symbol interface{}, typeVa
             params := ccxt.GetArg(optionalArgs, 2, map[string]interface{} {})
             _ = params
         
-            retRes6998 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes6998)
+            retRes6938 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes6938)
         
-            retRes7008 := (<-this.Authenticate())
-            ccxt.PanicOnError(retRes7008)
+            retRes6948 := (<-this.Authenticate())
+            ccxt.PanicOnError(retRes6948)
             var request interface{} = this.EditOrderRequest(id, symbol, typeVar, side, amount, price, params)
         
-                retRes70215 :=  (<-this.WatchRequest("privateUpdateOrder", request))
-                ccxt.PanicOnError(retRes70215)
-                ch <- retRes70215
+                retRes69615 :=  (<-this.WatchRequest("privateUpdateOrder", request))
+                ccxt.PanicOnError(retRes69615)
+                ch <- retRes69615
                 return nil
         
             }()
@@ -920,16 +914,16 @@ func  (this *BitvavoCore) CancelOrderWs(id interface{}, optionalArgs ...interfac
             params := ccxt.GetArg(optionalArgs, 1, map[string]interface{} {})
             _ = params
         
-            retRes7168 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes7168)
+            retRes7108 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes7108)
         
-            retRes7178 := (<-this.Authenticate())
-            ccxt.PanicOnError(retRes7178)
+            retRes7118 := (<-this.Authenticate())
+            ccxt.PanicOnError(retRes7118)
             var request interface{} = this.CancelOrderRequest(id, symbol, params)
         
-                retRes71915 :=  (<-this.WatchRequest("privateCancelOrder", request))
-                ccxt.PanicOnError(retRes71915)
-                ch <- retRes71915
+                retRes71315 :=  (<-this.WatchRequest("privateCancelOrder", request))
+                ccxt.PanicOnError(retRes71315)
+                ch <- retRes71315
                 return nil
         
             }()
@@ -954,11 +948,11 @@ func  (this *BitvavoCore) CancelAllOrdersWs(optionalArgs ...interface{}) <- chan
             params := ccxt.GetArg(optionalArgs, 1, map[string]interface{} {})
             _ = params
         
-            retRes7328 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes7328)
+            retRes7268 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes7268)
         
-            retRes7338 := (<-this.Authenticate())
-            ccxt.PanicOnError(retRes7338)
+            retRes7278 := (<-this.Authenticate())
+            ccxt.PanicOnError(retRes7278)
             var request interface{} = map[string]interface{} {}
             var market interface{} = nil
             if ccxt.IsTrue(!ccxt.IsEqual(symbol, nil)) {
@@ -966,9 +960,9 @@ func  (this *BitvavoCore) CancelAllOrdersWs(optionalArgs ...interface{}) <- chan
                 ccxt.AddElementToObject(request, "market", ccxt.GetValue(market, "id"))
             }
         
-                retRes74015 :=  (<-this.WatchRequest("privateCancelOrders", this.Extend(request, params)))
-                ccxt.PanicOnError(retRes74015)
-                ch <- retRes74015
+                retRes73415 :=  (<-this.WatchRequest("privateCancelOrders", this.Extend(request, params)))
+                ccxt.PanicOnError(retRes73415)
+                ch <- retRes73415
                 return nil
         
             }()
@@ -1017,20 +1011,20 @@ func  (this *BitvavoCore) FetchOrderWs(id interface{}, optionalArgs ...interface
                 panic(ccxt.ArgumentsRequired(ccxt.Add(this.Id, " fetchOrder() requires a symbol argument")))
             }
         
-            retRes7788 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes7788)
+            retRes7728 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes7728)
         
-            retRes7798 := (<-this.Authenticate())
-            ccxt.PanicOnError(retRes7798)
+            retRes7738 := (<-this.Authenticate())
+            ccxt.PanicOnError(retRes7738)
             var market interface{} = this.Market(symbol)
             var request interface{} = map[string]interface{} {
                 "orderId": id,
                 "market": ccxt.GetValue(market, "id"),
             }
         
-                retRes78515 :=  (<-this.WatchRequest("privateGetOrder", this.Extend(request, params)))
-                ccxt.PanicOnError(retRes78515)
-                ch <- retRes78515
+                retRes77915 :=  (<-this.WatchRequest("privateGetOrder", this.Extend(request, params)))
+                ccxt.PanicOnError(retRes77915)
+                ch <- retRes77915
                 return nil
         
             }()
@@ -1064,11 +1058,11 @@ func  (this *BitvavoCore) FetchOrdersWs(optionalArgs ...interface{}) <- chan int
                 panic(ccxt.ArgumentsRequired(ccxt.Add(this.Id, " fetchOrdersWs() requires a symbol argument")))
             }
         
-            retRes8038 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes8038)
+            retRes7978 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes7978)
         
-            retRes8048 := (<-this.Authenticate())
-            ccxt.PanicOnError(retRes8048)
+            retRes7988 := (<-this.Authenticate())
+            ccxt.PanicOnError(retRes7988)
             var request interface{} = this.FetchOrdersRequest(symbol, since, limit, params)
         
             orders:= (<-this.WatchRequest("privateGetOrders", request))
@@ -1097,9 +1091,9 @@ func  (this *BitvavoCore) WatchRequest(action interface{}, request interface{}) 
             ccxt.AddElementToObject(request, "requestId", messageHash)
             var url interface{} = ccxt.GetValue(ccxt.GetValue(this.Urls, "api"), "ws")
         
-                retRes82315 :=  (<-this.Watch(url, messageHashStr, request, messageHashStr))
-                ccxt.PanicOnError(retRes82315)
-                ch <- retRes82315
+                retRes81715 :=  (<-this.Watch(url, messageHashStr, request, messageHashStr))
+                ccxt.PanicOnError(retRes81715)
+                ch <- retRes81715
                 return nil
         
             }()
@@ -1129,11 +1123,11 @@ func  (this *BitvavoCore) FetchOpenOrdersWs(optionalArgs ...interface{}) <- chan
             params := ccxt.GetArg(optionalArgs, 3, map[string]interface{} {})
             _ = params
         
-            retRes8378 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes8378)
+            retRes8318 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes8318)
         
-            retRes8388 := (<-this.Authenticate())
-            ccxt.PanicOnError(retRes8388)
+            retRes8328 := (<-this.Authenticate())
+            ccxt.PanicOnError(retRes8328)
             var request interface{} = map[string]interface{} {}
             var market interface{} = nil
             if ccxt.IsTrue(!ccxt.IsEqual(symbol, nil)) {
@@ -1178,11 +1172,11 @@ func  (this *BitvavoCore) FetchMyTradesWs(optionalArgs ...interface{}) <- chan i
                 panic(ccxt.ArgumentsRequired(ccxt.Add(this.Id, " fetchMyTradesWs() requires a symbol argument")))
             }
         
-            retRes8668 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes8668)
+            retRes8608 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes8608)
         
-            retRes8678 := (<-this.Authenticate())
-            ccxt.PanicOnError(retRes8678)
+            retRes8618 := (<-this.Authenticate())
+            ccxt.PanicOnError(retRes8618)
             var request interface{} = this.FetchMyTradesRequest(symbol, since, limit, params)
         
             myTrades:= (<-this.WatchRequest("privateGetTrades", request))
@@ -1222,9 +1216,6 @@ func  (this *BitvavoCore) HandleMyTrades(client interface{}, message interface{}
     var trades interface{} = this.ParseTrades(response, nil, nil, nil)
     // const messageHash = this.buildMessageHash (action, { 'market': marketId })
     var messageHash interface{} = this.SafeString(message, "requestId")
-    for i := 0; ccxt.IsLessThan(i, ccxt.GetArrayLength(trades)); i++ {
-        this.StreamProduce("trades", ccxt.GetValue(trades, i))
-    }
     client.(ccxt.ClientInterface).Resolve(trades, messageHash)
 }
 /**
@@ -1252,16 +1243,16 @@ func  (this *BitvavoCore) WithdrawWs(code interface{}, amount interface{}, addre
             params = ccxt.GetValue(tagparamsVariable,1)
             this.CheckAddress(address)
         
-            retRes9218 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes9218)
+            retRes9128 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes9128)
         
-            retRes9228 := (<-this.Authenticate())
-            ccxt.PanicOnError(retRes9228)
+            retRes9138 := (<-this.Authenticate())
+            ccxt.PanicOnError(retRes9138)
             var request interface{} = this.WithdrawRequest(code, amount, address, tag, params)
         
-                retRes92415 :=  (<-this.WatchRequest("privateWithdrawAssets", request))
-                ccxt.PanicOnError(retRes92415)
-                ch <- retRes92415
+                retRes91515 :=  (<-this.WatchRequest("privateWithdrawAssets", request))
+                ccxt.PanicOnError(retRes91515)
+                ch <- retRes91515
                 return nil
         
             }()
@@ -1310,11 +1301,11 @@ func  (this *BitvavoCore) FetchWithdrawalsWs(optionalArgs ...interface{}) <- cha
             params := ccxt.GetArg(optionalArgs, 3, map[string]interface{} {})
             _ = params
         
-            retRes9588 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes9588)
+            retRes9498 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes9498)
         
-            retRes9598 := (<-this.Authenticate())
-            ccxt.PanicOnError(retRes9598)
+            retRes9508 := (<-this.Authenticate())
+            ccxt.PanicOnError(retRes9508)
             var request interface{} = this.FetchWithdrawalsRequest(code, since, limit, params)
         
             withdraws:= (<-this.WatchRequest("privateGetWithdrawalHistory", request))
@@ -1377,8 +1368,8 @@ func  (this *BitvavoCore) FetchOHLCVWs(symbol interface{}, optionalArgs ...inter
             params := ccxt.GetArg(optionalArgs, 3, map[string]interface{} {})
             _ = params
         
-            retRes10028 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes10028)
+            retRes9938 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes9938)
             var request interface{} = this.FetchOHLCVRequest(symbol, timeframe, since, limit, params)
             var action interface{} = "getCandles"
         
@@ -1416,11 +1407,11 @@ func  (this *BitvavoCore) FetchDepositsWs(optionalArgs ...interface{}) <- chan i
             params := ccxt.GetArg(optionalArgs, 3, map[string]interface{} {})
             _ = params
         
-            retRes10218 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes10218)
+            retRes10128 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes10128)
         
-            retRes10228 := (<-this.Authenticate())
-            ccxt.PanicOnError(retRes10228)
+            retRes10138 := (<-this.Authenticate())
+            ccxt.PanicOnError(retRes10138)
             var request interface{} = this.FetchDepositsRequest(code, since, limit, params)
         
             deposits:= (<-this.WatchRequest("privateGetDepositHistory", request))
@@ -1471,15 +1462,15 @@ func  (this *BitvavoCore) FetchTradingFeesWs(optionalArgs ...interface{}) <- cha
                     params := ccxt.GetArg(optionalArgs, 0, map[string]interface{} {})
             _ = params
         
-            retRes10598 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes10598)
+            retRes10508 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes10508)
         
-            retRes10608 := (<-this.Authenticate())
-            ccxt.PanicOnError(retRes10608)
+            retRes10518 := (<-this.Authenticate())
+            ccxt.PanicOnError(retRes10518)
         
-                retRes106115 :=  (<-this.WatchRequest("privateGetAccount", params))
-                ccxt.PanicOnError(retRes106115)
-                ch <- retRes106115
+                retRes105215 :=  (<-this.WatchRequest("privateGetAccount", params))
+                ccxt.PanicOnError(retRes105215)
+                ch <- retRes105215
                 return nil
         
             }()
@@ -1501,9 +1492,9 @@ func  (this *BitvavoCore) FetchMarketsWs(optionalArgs ...interface{}) <- chan in
                     params := ccxt.GetArg(optionalArgs, 0, map[string]interface{} {})
             _ = params
         
-                retRes107315 :=  (<-this.WatchRequest("getMarkets", params))
-                ccxt.PanicOnError(retRes107315)
-                ch <- retRes107315
+                retRes106415 :=  (<-this.WatchRequest("getMarkets", params))
+                ccxt.PanicOnError(retRes106415)
+                ch <- retRes106415
                 return nil
         
             }()
@@ -1525,12 +1516,12 @@ func  (this *BitvavoCore) FetchCurrenciesWs(optionalArgs ...interface{}) <- chan
                     params := ccxt.GetArg(optionalArgs, 0, map[string]interface{} {})
             _ = params
         
-            retRes10858 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes10858)
+            retRes10768 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes10768)
         
-                retRes108615 :=  (<-this.WatchRequest("getAssets", params))
-                ccxt.PanicOnError(retRes108615)
-                ch <- retRes108615
+                retRes107715 :=  (<-this.WatchRequest("getAssets", params))
+                ccxt.PanicOnError(retRes107715)
+                ch <- retRes107715
                 return nil
         
             }()
@@ -1596,15 +1587,15 @@ func  (this *BitvavoCore) FetchBalanceWs(optionalArgs ...interface{}) <- chan in
                     params := ccxt.GetArg(optionalArgs, 0, map[string]interface{} {})
             _ = params
         
-            retRes11448 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes11448)
+            retRes11358 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes11358)
         
-            retRes11458 := (<-this.Authenticate())
-            ccxt.PanicOnError(retRes11458)
+            retRes11368 := (<-this.Authenticate())
+            ccxt.PanicOnError(retRes11368)
         
-                retRes114615 :=  (<-this.WatchRequest("privateGetBalance", params))
-                ccxt.PanicOnError(retRes114615)
-                ch <- retRes114615
+                retRes113715 :=  (<-this.WatchRequest("privateGetBalance", params))
+                ccxt.PanicOnError(retRes113715)
+                ch <- retRes113715
                 return nil
         
             }()
@@ -1752,7 +1743,6 @@ func  (this *BitvavoCore) HandleOrder(client interface{}, message interface{})  
     }
     var orders interface{} = this.Orders
     orders.(ccxt.Appender).Append(order)
-    this.StreamProduce("orders", order)
     client.(ccxt.ClientInterface).Resolve(this.Orders, messageHash)
 }
 func  (this *BitvavoCore) HandleMyTrade(client interface{}, message interface{})  {
@@ -1782,7 +1772,6 @@ func  (this *BitvavoCore) HandleMyTrade(client interface{}, message interface{})
     }
     var tradesArray interface{} = this.MyTrades
     tradesArray.(ccxt.Appender).Append(trade)
-    this.StreamProduce("myTrades", trade)
     client.(ccxt.ClientInterface).Resolve(tradesArray, messageHash)
 }
 func  (this *BitvavoCore) HandleSubscriptionStatus(client interface{}, message interface{}) interface{}  {
@@ -1859,7 +1848,6 @@ func  (this *BitvavoCore) HandleAuthenticationMessage(client interface{}, messag
         client.(ccxt.ClientInterface).Resolve(message, messageHash)
     } else {
         error := ccxt.AuthenticationError(this.Json(message))
-        this.StreamProduce("errors", nil, error)
         client.(ccxt.ClientInterface).Reject(error, messageHash)
         // allows further authentication attempts
         if ccxt.IsTrue(ccxt.InOp(client.(ccxt.ClientInterface).GetSubscriptions(), messageHash)) {
@@ -1900,7 +1888,6 @@ func  (this *BitvavoCore) HandleErrorMessage(client interface{}, message interfa
                         ret_ = func(this *BitvavoCore) interface{} {
                             // catch block:
                                     rejected = true
-            this.StreamProduce("errors", nil, e)
             client.(ccxt.ClientInterface).Reject(e, messageHash)
                             return nil
                         }(this)
@@ -1913,7 +1900,6 @@ func  (this *BitvavoCore) HandleErrorMessage(client interface{}, message interfa
         
             }
     if !ccxt.IsTrue(rejected) {
-        this.StreamProduce("errors", nil, message)
         client.(ccxt.ClientInterface).Reject(message, messageHash)
         return true
     }
@@ -1963,7 +1949,6 @@ func  (this *BitvavoCore) HandleMessage(client interface{}, message interface{})
     //         "authenticated": true
     //     }
     //
-    this.StreamProduce("raw", message)
     var error interface{} = this.SafeString(message, "error")
     if ccxt.IsTrue(!ccxt.IsEqual(error, nil)) {
         this.HandleErrorMessage(client, message)

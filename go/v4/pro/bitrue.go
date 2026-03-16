@@ -149,7 +149,6 @@ func  (this *BitrueCore) HandleBalance(client interface{}, message interface{}) 
     var balances interface{} = this.SafeValue(message, "B", []interface{}{})
     this.ParseWSBalances(balances)
     var messageHash interface{} = "balance"
-    this.StreamProduce("balances", this.Balance)
     client.(ccxt.ClientInterface).Resolve(this.Balance, messageHash)
 }
 func  (this *BitrueCore) ParseWSBalances(balances interface{})  {
@@ -218,8 +217,8 @@ func  (this *BitrueCore) WatchOrders(optionalArgs ...interface{}) <- chan interf
             params := ccxt.GetArg(optionalArgs, 3, map[string]interface{} {})
             _ = params
         
-            retRes1868 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes1868)
+            retRes1858 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes1858)
             if ccxt.IsTrue(!ccxt.IsEqual(symbol, nil)) {
                 var market interface{} = this.Market(symbol)
                 symbol = ccxt.GetValue(market, "symbol")
@@ -280,7 +279,6 @@ func  (this *BitrueCore) HandleOrder(client interface{}, message interface{})  {
     var orders interface{} = this.Orders
     orders.(ccxt.Appender).Append(parsed)
     var messageHash interface{} = "orders"
-    this.StreamProduce("orders", parsed)
     client.(ccxt.ClientInterface).Resolve(this.Orders, messageHash)
 }
 func  (this *BitrueCore) ParseWsOrder(order interface{}, optionalArgs ...interface{}) interface{}  {
@@ -354,8 +352,8 @@ func  (this *BitrueCore) WatchOrderBook(symbol interface{}, optionalArgs ...inte
             params := ccxt.GetArg(optionalArgs, 1, map[string]interface{} {})
             _ = params
         
-            retRes3048 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes3048)
+            retRes3028 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes3028)
             var market interface{} = this.Market(symbol)
             symbol = ccxt.GetValue(market, "symbol")
             var messageHash interface{} = ccxt.Add("orderbook:", symbol)
@@ -371,9 +369,9 @@ func  (this *BitrueCore) WatchOrderBook(symbol interface{}, optionalArgs ...inte
             }
             var request interface{} = this.DeepExtend(message, params)
         
-                retRes31915 :=  (<-this.Watch(url, messageHash, request, messageHash))
-                ccxt.PanicOnError(retRes31915)
-                ch <- retRes31915
+                retRes31715 :=  (<-this.Watch(url, messageHash, request, messageHash))
+                ccxt.PanicOnError(retRes31715)
+                ch <- retRes31715
                 return nil
         
             }()
@@ -426,7 +424,6 @@ func  (this *BitrueCore) HandleOrderBook(client interface{}, message interface{}
     var snapshot interface{} = this.ParseOrderBook(tick, symbol, timestamp, "buys", "asks")
     orderbook.(ccxt.OrderBookInterface).Reset(snapshot)
     var messageHash interface{} = ccxt.Add("orderbook:", symbol)
-    this.StreamProduce("orderbooks", orderbook)
     client.(ccxt.ClientInterface).Resolve(orderbook, messageHash)
 }
 func  (this *BitrueCore) ParseWsOrderType(typeId interface{}) interface{}  {
@@ -466,14 +463,13 @@ func  (this *BitrueCore) Pong(client interface{}, message interface{}) <- chan i
                 "pong": time,
             }
         
-            retRes4088 := (<-client.(ccxt.ClientInterface).Send(pong))
-            ccxt.PanicOnError(retRes4088)
+            retRes4058 := (<-client.(ccxt.ClientInterface).Send(pong))
+            ccxt.PanicOnError(retRes4058)
                 return nil
             }()
             return ch
         }
 func  (this *BitrueCore) HandleMessage(client interface{}, message interface{})  {
-    this.StreamProduce("raw", message)
     if ccxt.IsTrue(ccxt.InOp(message, "channel")) {
         this.HandleOrderBook(client, message)
     } else if ccxt.IsTrue(ccxt.InOp(message, "ping")) {
@@ -548,7 +544,6 @@ func  (this *BitrueCore) KeepAliveListenKey(optionalArgs ...interface{}) <- chan
                                     // catch block:
                                             ccxt.AddElementToObject(this.Options, "listenKey", nil)
                     ccxt.AddElementToObject(this.Options, "listenKeyUrl", nil)
-                    this.StreamProduce("errors", nil, error)
             
                     return nil
                                     
@@ -557,8 +552,8 @@ func  (this *BitrueCore) KeepAliveListenKey(optionalArgs ...interface{}) <- chan
                         }()
             		    // try block:
                         
-                    retRes45912 := (<-this.OpenV1PrivatePutPoseidonApiV1ListenKeyListenKey(this.Extend(request, params)))
-                    ccxt.PanicOnError(retRes45912)
+                    retRes45512 := (<-this.OpenV1PrivatePutPoseidonApiV1ListenKeyListenKey(this.Extend(request, params)))
+                    ccxt.PanicOnError(retRes45512)
             		    return nil
             	    }(this)
                 

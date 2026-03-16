@@ -551,7 +551,6 @@ class kraken extends kraken$1["default"] {
             'info': ticker,
         });
         this.tickers[symbol] = result;
-        this.streamProduce('tickers', result);
         client.resolve(result, messageHash);
     }
     handleTrades(client, message) {
@@ -586,7 +585,6 @@ class kraken extends kraken$1["default"] {
         const parsed = this.parseTrades(data, market);
         for (let i = 0; i < parsed.length; i++) {
             stored.append(parsed[i]);
-            this.streamProduce('trades', parsed[i]);
         }
         client.resolve(stored, messageHash);
     }
@@ -643,8 +641,6 @@ class kraken extends kraken$1["default"] {
                 this.safeString(candle, 'close'),
                 this.safeString(candle, 'volume'),
             ];
-            const ohlcvs = this.createStreamOHLCV(symbol, timeframe, parsed);
-            this.streamProduce('ohlcvs', ohlcvs);
             stored.append(parsed);
         }
         client.resolve(stored, messageHash);
@@ -988,12 +984,10 @@ class kraken extends kraken$1["default"] {
                 const error = new errors.ChecksumError(this.id + ' ' + this.orderbookChecksumMessage(symbol));
                 delete client.subscriptions[messageHash];
                 delete this.orderbooks[symbol];
-                this.streamProduce('errors', undefined, error);
                 client.reject(error, messageHash);
                 return;
             }
         }
-        this.streamProduce('orderbooks', orderbook);
         client.resolve(orderbook, messageHash);
     }
     customHandleDeltas(bookside, deltas) {
@@ -1172,7 +1166,6 @@ class kraken extends kraken$1["default"] {
                 stored.append(parsed);
                 const symbol = parsed['symbol'];
                 symbols[symbol] = true;
-                this.streamProduce('myTrades', parsed);
             }
             const name = 'myTrades';
             client.resolve(this.myTrades, name);
@@ -1311,7 +1304,6 @@ class kraken extends kraken$1["default"] {
                         delete symbolsByOrderId[first['id']];
                     }
                 }
-                this.streamProduce('orders', newOrder);
                 stored.append(newOrder);
                 if (symbol !== undefined) {
                     symbols[symbol] = true;
@@ -1486,7 +1478,6 @@ class kraken extends kraken$1["default"] {
         const newBalance = this.deepExtend(oldBalance, balance);
         this.balance[type] = this.safeBalance(newBalance);
         const channel = this.safeString(message, 'channel');
-        this.streamProduce('balances', this.balance[type]);
         client.resolve(this.balance[type], channel);
     }
     getMessageHash(unifiedElementName, subChannelName = undefined, symbol = undefined) {
@@ -1570,7 +1561,6 @@ class kraken extends kraken$1["default"] {
             else {
                 exception = new broad[broadKey](errorMessage);
             }
-            this.streamProduce('errors', undefined, exception);
             if (requestId !== undefined) {
                 client.reject(exception, requestId);
             }
@@ -1579,7 +1569,6 @@ class kraken extends kraken$1["default"] {
         return true;
     }
     handleMessage(client, message) {
-        this.streamProduce('raw', message);
         let channel = this.safeString(message, 'channel');
         if (channel !== undefined) {
             if (channel === 'executions') {

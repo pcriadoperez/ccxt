@@ -214,7 +214,6 @@ class upbit extends upbit$1["default"] {
         const ticker = this.parseTicker(message);
         const symbol = ticker['symbol'];
         this.tickers[symbol] = ticker;
-        this.streamProduce('tickers', ticker);
         const messageHash = 'ticker:' + symbol;
         client.resolve(ticker, messageHash);
     }
@@ -270,7 +269,6 @@ class upbit extends upbit$1["default"] {
         orderbook['timestamp'] = timestamp;
         orderbook['datetime'] = datetime;
         const messageHash = 'orderbook:' + symbol;
-        this.streamProduce('orderbooks', orderbook);
         client.resolve(orderbook, messageHash);
     }
     handleTrades(client, message) {
@@ -297,7 +295,6 @@ class upbit extends upbit$1["default"] {
             this.trades[symbol] = stored;
         }
         stored.append(trade);
-        this.streamProduce('trades', trade);
         const messageHash = 'trade:' + symbol;
         client.resolve(stored, messageHash);
     }
@@ -320,7 +317,6 @@ class upbit extends upbit$1["default"] {
         const symbol = this.safeSymbol(marketId, undefined);
         const messageHash = 'candle.1s:' + symbol;
         const ohlcv = this.parseOHLCV(message);
-        this.streamProduce('ohlcvs', ohlcv);
         client.resolve(ohlcv, messageHash);
     }
     async authenticate(params = {}) {
@@ -570,7 +566,6 @@ class upbit extends upbit$1["default"] {
         }
         const trade = this.parseWsTrade(message);
         myTrades.append(trade);
-        this.streamProduce('myTrades', trade);
         let messageHash = 'myTrades';
         client.resolve(myTrades, messageHash);
         messageHash = 'myTrades:' + trade['symbol'];
@@ -601,7 +596,6 @@ class upbit extends upbit$1["default"] {
             parsed['datetime'] = this.safeString(order, 'datetime');
         }
         cachedOrders.append(parsed);
-        this.streamProduce('orders', parsed);
         let messageHash = 'myOrder';
         client.resolve(this.orders, messageHash);
         messageHash = messageHash + ':' + symbol;
@@ -655,11 +649,9 @@ class upbit extends upbit$1["default"] {
             this.balance = this.safeBalance(this.balance);
         }
         const messageHash = this.safeString(message, 'type');
-        this.streamProduce('balances', this.balance);
         client.resolve(this.balance, messageHash);
     }
     handleMessage(client, message) {
-        this.streamProduce('raw', message);
         const methods = {
             'ticker': this.handleTicker,
             'orderbook': this.handleOrderBook,

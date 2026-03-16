@@ -103,7 +103,6 @@ export default class ndax extends ndaxRest {
         this.tickers[symbol] = ticker;
         const name = 'SubscribeLevel1';
         const messageHash = name + ':' + market['id'];
-        this.streamProduce('tickers', ticker);
         client.resolve(ticker, messageHash);
     }
     /**
@@ -176,7 +175,6 @@ export default class ndax extends ndaxRest {
                 tradesArray = new ArrayCache(limit);
             }
             tradesArray.append(trade);
-            this.streamProduce('trades', trade);
             this.trades[symbol] = tradesArray;
             updates[symbol] = true;
         }
@@ -318,12 +316,6 @@ export default class ndax extends ndaxRest {
                 const market = this.safeMarket(marketId);
                 const symbol = market['symbol'];
                 const stored = this.safeValue(this.ohlcvs[symbol], timeframe, []);
-                const storedLength = stored.length;
-                if (storedLength > 0) {
-                    const lastOhlcv = stored[storedLength - 1];
-                    const ohlcvs = this.createStreamOHLCV(symbol, timeframe, lastOhlcv);
-                    this.streamProduce('ohlcvs', ohlcvs);
-                }
                 client.resolve(stored, messageHash);
             }
         }
@@ -451,7 +443,6 @@ export default class ndax extends ndaxRest {
         const name = 'SubscribeLevel2';
         const messageHash = name + ':' + marketId;
         this.orderbooks[symbol] = orderbook;
-        this.streamProduce('orderbooks', orderbook);
         client.resolve(orderbook, messageHash);
     }
     handleOrderBookSubscription(client, message, subscription) {
@@ -486,7 +477,6 @@ export default class ndax extends ndaxRest {
         const orderbook = this.orderBook(snapshot, limit);
         this.orderbooks[symbol] = orderbook;
         const messageHash = this.safeString(subscription, 'messageHash');
-        this.streamProduce('orderbooks', orderbook);
         client.resolve(orderbook, messageHash);
     }
     handleSubscriptionStatus(client, message) {
@@ -531,7 +521,6 @@ export default class ndax extends ndaxRest {
         //         "o": "[[2,1,1608208308265,0,20782.49,1,25000,8,1,1]]"
         //     }
         //
-        this.streamProduce('raw', message);
         const payload = this.safeString(message, 'o');
         if (payload === undefined) {
             return;

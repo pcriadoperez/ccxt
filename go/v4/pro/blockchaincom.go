@@ -142,7 +142,6 @@ func  (this *BlockchaincomCore) HandleBalance(client interface{}, message interf
     }
     var messageHash interface{} = "balance"
     this.Balance = this.SafeBalance(result)
-    this.StreamProduce("balances", this.Balance)
     client.(ccxt.ClientInterface).Resolve(this.Balance, messageHash)
 }
 /**
@@ -171,8 +170,8 @@ func  (this *BlockchaincomCore) WatchOHLCV(symbol interface{}, optionalArgs ...i
             params := ccxt.GetArg(optionalArgs, 3, map[string]interface{} {})
             _ = params
         
-            retRes1398 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes1398)
+            retRes1388 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes1388)
             var market interface{} = this.Market(symbol)
             symbol = ccxt.GetValue(market, "symbol")
             var interval interface{} = this.SafeString(this.Timeframes, timeframe, timeframe)
@@ -238,8 +237,6 @@ func  (this *BlockchaincomCore) HandleOHLCV(client interface{}, message interfac
             ccxt.AddElementToObject(ccxt.GetValue(this.Ohlcvs, symbol), timeframe, stored)
         }
         stored.(ccxt.Appender).Append(ohlcv)
-        var ohlcvs interface{} = this.CreateStreamOHLCV(symbol, timeframe, ohlcv)
-        this.StreamProduce("ohlcvs", ohlcvs)
         client.(ccxt.ClientInterface).Resolve(stored, messageHash)
     } else if ccxt.IsTrue(!ccxt.IsEqual(event, "subscribed")) {
         panic(ccxt.NotSupported(ccxt.Add(ccxt.Add(this.Id, " "), this.Json(message))))
@@ -262,8 +259,8 @@ func  (this *BlockchaincomCore) WatchTicker(symbol interface{}, optionalArgs ...
                     params := ccxt.GetArg(optionalArgs, 0, map[string]interface{} {})
             _ = params
         
-            retRes2178 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes2178)
+            retRes2148 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes2148)
             var market interface{} = this.Market(symbol)
             symbol = ccxt.GetValue(market, "symbol")
             var url interface{} = ccxt.GetValue(ccxt.GetValue(this.Urls, "api"), "ws")
@@ -275,9 +272,9 @@ func  (this *BlockchaincomCore) WatchTicker(symbol interface{}, optionalArgs ...
             }
             request = this.DeepExtend(request, params)
         
-                retRes22815 :=  (<-this.Watch(url, messageHash, request, messageHash))
-                ccxt.PanicOnError(retRes22815)
-                ch <- retRes22815
+                retRes22515 :=  (<-this.Watch(url, messageHash, request, messageHash))
+                ccxt.PanicOnError(retRes22515)
+                ch <- retRes22515
                 return nil
         
             }()
@@ -327,7 +324,6 @@ func  (this *BlockchaincomCore) HandleTicker(client interface{}, message interfa
     }
     var messageHash interface{} = ccxt.Add("ticker:", symbol)
     ccxt.AddElementToObject(this.Tickers, symbol, ticker)
-    this.StreamProduce("tickers", ticker)
     client.(ccxt.ClientInterface).Resolve(ticker, messageHash)
 }
 func  (this *BlockchaincomCore) ParseWsUpdatedTicker(ticker interface{}, optionalArgs ...interface{}) interface{}  {
@@ -393,8 +389,8 @@ func  (this *BlockchaincomCore) WatchTrades(symbol interface{}, optionalArgs ...
             params := ccxt.GetArg(optionalArgs, 2, map[string]interface{} {})
             _ = params
         
-            retRes3288 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes3288)
+            retRes3248 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes3248)
             var market interface{} = this.Market(symbol)
             symbol = ccxt.GetValue(market, "symbol")
             var url interface{} = ccxt.GetValue(ccxt.GetValue(this.Urls, "api"), "ws")
@@ -453,7 +449,6 @@ func  (this *BlockchaincomCore) HandleTrades(client interface{}, message interfa
     }
     var parsed interface{} = this.ParseWsTrade(message, market)
     stored.(ccxt.Appender).Append(parsed)
-    this.StreamProduce("trades", parsed)
     ccxt.AddElementToObject(this.Trades, symbol, stored)
     client.(ccxt.ClientInterface).Resolve(ccxt.GetValue(this.Trades, symbol), messageHash)
 }
@@ -516,11 +511,11 @@ func  (this *BlockchaincomCore) WatchOrders(optionalArgs ...interface{}) <- chan
             params := ccxt.GetArg(optionalArgs, 3, map[string]interface{} {})
             _ = params
         
-            retRes4318 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes4318)
+            retRes4268 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes4268)
         
-            retRes4328 := (<-this.Authenticate())
-            ccxt.PanicOnError(retRes4328)
+            retRes4278 := (<-this.Authenticate())
+            ccxt.PanicOnError(retRes4278)
             if ccxt.IsTrue(!ccxt.IsEqual(symbol, nil)) {
                 var market interface{} = this.Market(symbol)
                 symbol = ccxt.GetValue(market, "symbol")
@@ -642,7 +637,6 @@ func  (this *BlockchaincomCore) HandleOrders(client interface{}, message interfa
         cachedOrders.(ccxt.Appender).Append(parsedOrder)
     }
     this.Orders = cachedOrders
-    this.StreamProduce("orders", this.Orders)
     client.(ccxt.ClientInterface).Resolve(this.Orders, messageHash)
 }
 func  (this *BlockchaincomCore) ParseWsOrder(order interface{}, optionalArgs ...interface{}) interface{}  {
@@ -751,8 +745,8 @@ func  (this *BlockchaincomCore) WatchOrderBook(symbol interface{}, optionalArgs 
             params := ccxt.GetArg(optionalArgs, 1, map[string]interface{} {})
             _ = params
         
-            retRes6478 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes6478)
+            retRes6418 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes6418)
             var market interface{} = this.Market(symbol)
             var url interface{} = ccxt.GetValue(ccxt.GetValue(this.Urls, "api"), "ws")
             var typeVar interface{} = this.SafeString(params, "type", "l2")
@@ -836,7 +830,6 @@ func  (this *BlockchaincomCore) HandleOrderBook(client interface{}, message inte
     } else {
         panic(ccxt.NotSupported(ccxt.Add(ccxt.Add(ccxt.Add(this.Id, " watchOrderBook() does not support "), event), " yet")))
     }
-    this.StreamProduce("orderbooks", orderbook)
     client.(ccxt.ClientInterface).Resolve(orderbook, messageHash)
 }
 func  (this *BlockchaincomCore) HandleDelta(bookside interface{}, delta interface{})  {
@@ -849,7 +842,6 @@ func  (this *BlockchaincomCore) HandleDeltas(bookside interface{}, deltas interf
     }
 }
 func  (this *BlockchaincomCore) HandleMessage(client interface{}, message interface{})  {
-    this.StreamProduce("raw", message)
     var channel interface{} = this.SafeString(message, "channel")
     var handlers interface{} = map[string]interface{} {
         "ticker": this.HandleTicker,
@@ -910,9 +902,9 @@ func  (this *BlockchaincomCore) Authenticate(optionalArgs ...interface{}) <- cha
                 return nil
             }
         
-                retRes79515 := <- future.(*ccxt.Future).Await()
-                ccxt.PanicOnError(retRes79515)
-                ch <- retRes79515
+                retRes78715 := <- future.(*ccxt.Future).Await()
+                ccxt.PanicOnError(retRes78715)
+                ch <- retRes78715
                 return nil
         
             }()

@@ -121,7 +121,6 @@ class dydx(ccxt.async_support.dydx):
         for i in range(0, len(parsedTrades)):
             parsed = parsedTrades[i]
             stored.append(parsed)
-            self.stream_produce('trades', parsed)
         messageHash = 'trade' + ':' + symbol
         client.resolve(stored, messageHash)
 
@@ -237,7 +236,6 @@ class dydx(ccxt.async_support.dydx):
         orderbook['nonce'] = self.safe_integer(message, 'message_id')
         messageHash = 'orderbook:' + symbol
         self.orderbooks[symbol] = orderbook
-        self.stream_produce('orderbooks', orderbook)
         client.resolve(orderbook, messageHash)
 
     def handle_delta(self, bookside, delta):
@@ -372,15 +370,13 @@ class dydx(ccxt.async_support.dydx):
             stored = ArrayCacheByTimestamp(limit)
             self.ohlcvs[symbol][timeframe] = stored
         stored.append(parsed)
-        ohlcvs = self.create_stream_ohlcv(symbol, timeframe, parsed)
-        self.stream_produce('ohlcvs', ohlcvs)
         client.resolve(stored, messageHash)
 
     def handle_error_message(self, client: Client, message):
         #
         # {
         #     "type": "error",
-        #     "message": "*.",
+        #     "message": "....",
         #     "connection_id": "9011edff-d8f7-47fc-bbc6-0c7b5ba7dfae",
         #     "message_id": 4
         # }
@@ -389,12 +385,10 @@ class dydx(ccxt.async_support.dydx):
             msg = self.safe_string(message, 'message')
             raise ExchangeError(self.id + ' ' + msg)
         except Exception as e:
-            self.stream_produce('errors', None, e)
             client.reject(e)
         return True
 
     def handle_message(self, client: Client, message):
-        self.stream_produce('raw', message)
         type = self.safe_string(message, 'type')
         if type == 'error':
             self.handle_error_message(client, message)

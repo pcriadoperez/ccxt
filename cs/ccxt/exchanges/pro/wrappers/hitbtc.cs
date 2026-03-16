@@ -6,16 +6,6 @@ namespace ccxt.pro;
 public class  Hitbtc: hitbtc { public Hitbtc(object args = null) : base(args) { } }
 public partial class hitbtc
 {
-    public async Task<Dictionary<string, object>> SubscribePublic(string name, string messageHashPrefix, List<String> symbols = null, Dictionary<string, object> parameters = null)
-    {
-        var res = await this.subscribePublic(name, messageHashPrefix, symbols, parameters);
-        return ((Dictionary<string, object>)res);
-    }
-    public async Task<Dictionary<string, object>> SubscribePrivate(string name, string symbol = null, Dictionary<string, object> parameters = null)
-    {
-        var res = await this.subscribePrivate(name, symbol, parameters);
-        return ((Dictionary<string, object>)res);
-    }
     /// <summary>
     /// watches information on open orders with bid (buy) and ask (sell) prices, volumes and other data
     /// </summary>

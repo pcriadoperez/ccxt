@@ -290,7 +290,6 @@ export default class hitbtc extends hitbtcRest {
             orderbook['nonce'] = nonce;
             orderbook['symbol'] = symbol;
             this.orderbooks[symbol] = orderbook;
-            this.streamProduce('orderbooks', orderbook);
             client.resolve(orderbook, messageHash);
         }
     }
@@ -415,7 +414,6 @@ export default class hitbtc extends hitbtcRest {
             const symbol = market['symbol'];
             const ticker = this.parseWsTicker(data[marketId], market);
             this.tickers[symbol] = ticker;
-            this.streamProduce('tickers', ticker);
             result.push(ticker);
             const messageHash = topic + '::' + symbol;
             client.resolve(ticker, messageHash);
@@ -641,7 +639,6 @@ export default class hitbtc extends hitbtcRest {
             const trades = this.parseWsTrades(data[marketId], market);
             for (let j = 0; j < trades.length; j++) {
                 stored.append(trades[j]);
-                this.streamProduce('trades', trades[j]);
             }
             const messageHash = 'trades::' + symbol;
             client.resolve(stored, messageHash);
@@ -770,8 +767,6 @@ export default class hitbtc extends hitbtcRest {
             const ohlcvs = this.parseWsOHLCVs(data[marketId], market);
             for (let j = 0; j < ohlcvs.length; j++) {
                 stored.append(ohlcvs[j]);
-                const ohlcvsObj = this.createStreamOHLCV(symbol, timeframe, ohlcvs[j]);
-                this.streamProduce('ohlcvs', ohlcvsObj);
             }
             const messageHash = 'candles::' + symbol;
             client.resolve(stored, messageHash);
@@ -919,7 +914,6 @@ export default class hitbtc extends hitbtcRest {
         const symbol = this.safeSymbol(marketId);
         const parsed = this.parseOrder(order);
         orders.append(parsed);
-        this.streamProduce('orders', parsed);
         client.resolve(orders, messageHash);
         client.resolve(orders, messageHash + '::' + symbol);
     }
@@ -1236,7 +1230,6 @@ export default class hitbtc extends hitbtcRest {
         const params = this.safeValue(message, 'params');
         const balance = this.parseBalance(params);
         this.balance = this.deepExtend(this.balance, balance);
-        this.streamProduce('balances', this.balance);
         client.resolve(this.balance, messageHash);
     }
     handleNotification(client, message) {
@@ -1281,18 +1274,15 @@ export default class hitbtc extends hitbtcRest {
                 const parsedOrder = this.parseWsOrder(result[i]);
                 parsedOrders.push(parsedOrder);
             }
-            this.streamProduce('orders', parsedOrders);
             client.resolve(parsedOrders, messageHash);
         }
         else {
             const parsedOrder = this.parseWsOrder(result);
-            this.streamProduce('orders', parsedOrder);
             client.resolve(parsedOrder, messageHash);
         }
         return message;
     }
     handleMessage(client, message) {
-        this.streamProduce('raw', message);
         if (this.handleError(client, message)) {
             return;
         }
@@ -1360,7 +1350,6 @@ export default class hitbtc extends hitbtcRest {
         }
         else {
             const error = new AuthenticationError(this.id + ' ' + this.json(message));
-            this.streamProduce('errors', undefined, error);
             client.reject(error, messageHash);
             if (messageHash in client.subscriptions) {
                 delete client.subscriptions[messageHash];
@@ -1403,7 +1392,6 @@ export default class hitbtc extends hitbtcRest {
                     const id = this.safeString(message, 'id');
                     client.reject(e, id);
                 }
-                this.streamProduce('errors', undefined, e);
                 return true;
             }
         }

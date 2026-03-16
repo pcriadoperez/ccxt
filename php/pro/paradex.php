@@ -6,7 +6,6 @@ namespace ccxt\pro;
 // https://github.com/ccxt/ccxt/blob/master/CONTRIBUTING.md#how-to-contribute-code
 
 use Exception; // a common import
-use ccxt\ExchangeError;
 use \React\Async;
 use \React\Promise\PromiseInterface;
 
@@ -159,7 +158,6 @@ class paradex extends \ccxt\async\paradex {
             $this->trades[$symbol] = $stored;
         }
         $stored->append ($parsedTrade);
-        $this->stream_produce('trades', $parsedTrade);
         $client->resolve ($stored, $messageHash);
         return $message;
     }
@@ -252,7 +250,6 @@ class paradex extends \ccxt\async\paradex {
         $snapshot['nonce'] = $this->safe_integer($data, 'seq_no');
         $orderbook->reset ($snapshot);
         $messageHash = $this->safe_string($params, 'channel');
-        $this->stream_produce('orderbooks', $orderbook);
         $client->resolve ($orderbook, $messageHash);
     }
 
@@ -444,7 +441,6 @@ class paradex extends \ccxt\async\paradex {
         $messageHash = $channel . '.' . $symbol;
         $ticker = $this->parse_ticker($data, $market);
         $this->tickers[$symbol] = $ticker;
-        $this->stream_produce('tickers', $ticker);
         $client->resolve ($ticker, $channel);
         $client->resolve ($ticker, $messageHash);
         return $message;
@@ -610,26 +606,19 @@ class paradex extends \ccxt\async\paradex {
             return true;
         } else {
             $errorCode = $this->safe_string($error, 'code');
-            try {
-                if ($errorCode !== null) {
-                    $feedback = $this->id . ' ' . $this->json($error);
-                    $this->throw_exactly_matched_exception($this->exceptions['exact'], '-32600', $feedback);
-                    $messageString = $this->safe_value($error, 'message');
-                    if ($messageString !== null) {
-                        $this->throw_broadly_matched_exception($this->exceptions['broad'], $messageString, $feedback);
-                    }
-                    throw new ExchangeError($feedback);
+            if ($errorCode !== null) {
+                $feedback = $this->id . ' ' . $this->json($error);
+                $this->throw_exactly_matched_exception($this->exceptions['exact'], '-32600', $feedback);
+                $messageString = $this->safe_value($error, 'message');
+                if ($messageString !== null) {
+                    $this->throw_broadly_matched_exception($this->exceptions['broad'], $messageString, $feedback);
                 }
-            } catch (Exception $e) {
-                $this->stream_produce('errors', null, $e);
-                $client->reject ($e);
             }
             return false;
         }
     }
 
     public function handle_message(Client $client, $message) {
-        $this->stream_produce('raw', $message);
         if (!$this->handle_error_message($client, $message)) {
             return;
         }

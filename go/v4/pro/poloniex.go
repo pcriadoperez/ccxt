@@ -872,8 +872,6 @@ func  (this *PoloniexCore) HandleOHLCV(client interface{}, message interface{}) 
             ccxt.AddElementToObject(ccxt.GetValue(this.Ohlcvs, symbol), timeframe, stored)
         }
         stored.(ccxt.Appender).Append(parsed)
-        var ohlcvs interface{} = this.CreateStreamOHLCV(symbol, timeframe, stored)
-        this.StreamProduce("ohlcvs", ohlcvs)
         client.(ccxt.ClientInterface).Resolve(stored, messageHash)
     }
     return message
@@ -912,7 +910,6 @@ func  (this *PoloniexCore) HandleTrade(client interface{}, message interface{}) 
                 ccxt.AddElementToObject(this.Trades, symbol, tradesArray)
             }
             tradesArray.(ccxt.Appender).Append(trade)
-            this.StreamProduce("trades", trade)
             client.(ccxt.ClientInterface).Resolve(tradesArray, messageHash)
         }
     }
@@ -1106,7 +1103,6 @@ func  (this *PoloniexCore) HandleOrder(client interface{}, message interface{}) 
             if ccxt.IsTrue(ccxt.IsTrue(ccxt.IsEqual(eventType, "place")) || ccxt.IsTrue(ccxt.IsEqual(eventType, "canceled"))) {
                 var parsed interface{} = this.ParseWsOrder(order)
                 orders.(ccxt.Appender).Append(parsed)
-                this.StreamProduce("orders", parsed)
             } else {
                 var previousOrders interface{} = this.SafeValue(orders.(*ccxt.ArrayCache).Hashmap, symbol, map[string]interface{} {})
                 var previousOrder interface{} = this.SafeValue2(previousOrders, orderId, clientOrderId)
@@ -1115,8 +1111,8 @@ func  (this *PoloniexCore) HandleOrder(client interface{}, message interface{}) 
                 if ccxt.IsTrue(ccxt.IsEqual(ccxt.GetValue(previousOrder, "trades"), nil)) {
                     ccxt.AddElementToObject(previousOrder, "trades", []interface{}{})
                 }
-                retRes85220 := ccxt.GetValue(previousOrder, "trades")
-                ccxt.AppendToArray(&retRes85220, trade)
+                retRes84820 := ccxt.GetValue(previousOrder, "trades")
+                ccxt.AppendToArray(&retRes84820, trade)
                 ccxt.AddElementToObject(previousOrder, "lastTradeTimestamp", ccxt.GetValue(trade, "timestamp"))
                 var totalCost interface{} = "0"
                 var totalAmount interface{} = "0"
@@ -1159,7 +1155,6 @@ func  (this *PoloniexCore) HandleOrder(client interface{}, message interface{}) 
                 ccxt.AddElementToObject(previousOrder, "status", state)
                 // update the newUpdates count
                 orders.(ccxt.Appender).Append(previousOrder)
-                this.StreamProduce("orders", previousOrder)
             }
             ccxt.AppendToArray(&marketIds, marketId)
         }
@@ -1279,7 +1274,6 @@ func  (this *PoloniexCore) HandleTicker(client interface{}, message interface{})
             var symbol interface{} = ccxt.GetValue(ticker, "symbol")
             ccxt.AddElementToObject(this.Tickers, symbol, ticker)
             ccxt.AddElementToObject(newTickers, symbol, ticker)
-            this.StreamProduce("tickers", ticker)
         }
     }
     var messageHashes interface{} = this.FindMessageHashes(client.(*ccxt.Client), "ticker::")
@@ -1386,7 +1380,6 @@ func  (this *PoloniexCore) HandleOrderBook(client interface{}, message interface
             ccxt.AddElementToObject(orderbook, "symbol", symbol)
             ccxt.AddElementToObject(orderbook, "timestamp", timestamp)
             ccxt.AddElementToObject(orderbook, "datetime", this.Iso8601(timestamp))
-            this.StreamProduce("orderbooks", orderbook)
             client.(ccxt.ClientInterface).Resolve(orderbook, messageHash)
         }
     }
@@ -1414,7 +1407,6 @@ func  (this *PoloniexCore) HandleBalance(client interface{}, message interface{}
     var data interface{} = this.SafeValue(message, "data", []interface{}{})
     var messageHash interface{} = "balances"
     this.Balance = this.ParseWsBalance(data)
-    this.StreamProduce("balances", this.Balance)
     client.(ccxt.ClientInterface).Resolve(this.Balance, messageHash)
 }
 func  (this *PoloniexCore) ParseWsBalance(response interface{}) interface{}  {
@@ -1462,7 +1454,6 @@ func  (this *PoloniexCore) HandleMyTrades(client interface{}, parsedTrade interf
     }
     var trades interface{} = this.MyTrades
     trades.(ccxt.Appender).Append(parsedTrade)
-    this.StreamProduce("myTrades", parsedTrade)
     client.(ccxt.ClientInterface).Resolve(trades, messageHash)
     var symbolMessageHash interface{} = ccxt.Add(ccxt.Add(messageHash, ":"), symbol)
     client.(ccxt.ClientInterface).Resolve(trades, symbolMessageHash)
@@ -1471,7 +1462,6 @@ func  (this *PoloniexCore) HandlePong(client interface{})  {
     client.(ccxt.ClientInterface).SetLastPong(this.Milliseconds())
 }
 func  (this *PoloniexCore) HandleMessage(client interface{}, message interface{})  {
-    this.StreamProduce("raw", message)
     if ccxt.IsTrue(this.HandleErrorMessage(client, message)) {
         return
     }
@@ -1565,8 +1555,7 @@ func  (this *PoloniexCore) HandleErrorMessage(client interface{}, message interf
                             }
                             ret_ = func(this *PoloniexCore) interface{} {
                                 // catch block:
-                                            this.StreamProduce("errors", nil, e)
-                    if ccxt.IsTrue(ccxt.IsInstance(e, ccxt.AuthenticationError)) {
+                                            if ccxt.IsTrue(ccxt.IsInstance(e, ccxt.AuthenticationError)) {
                         var messageHash interface{} = "authenticated"
                         client.(ccxt.ClientInterface).Reject(e, messageHash)
                         if ccxt.IsTrue(ccxt.InOp(client.(ccxt.ClientInterface).GetSubscriptions(), messageHash)) {
@@ -1614,7 +1603,6 @@ func  (this *PoloniexCore) HandleAuthenticate(client interface{}, message interf
         client.(ccxt.ClientInterface).Resolve(message, messageHash)
     } else {
         error := ccxt.AuthenticationError(ccxt.Add(ccxt.Add(this.Id, " "), this.Json(message)))
-        this.StreamProduce("errors", nil, error)
         client.(ccxt.ClientInterface).Reject(error, messageHash)
         if ccxt.IsTrue(ccxt.InOp(client.(ccxt.ClientInterface).GetSubscriptions(), messageHash)) {
             ccxt.Remove(client.(ccxt.ClientInterface).GetSubscriptions(), messageHash)

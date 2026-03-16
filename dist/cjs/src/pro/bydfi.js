@@ -282,7 +282,6 @@ class bydfi extends bydfi$1["default"] {
         const symbol = ticker['symbol'];
         const messageHash = 'ticker::' + symbol;
         this.tickers[symbol] = ticker;
-        this.streamProduce('tickers', ticker);
         client.resolve(this.tickers[symbol], messageHash);
         client.resolve(this.tickers, 'ticker::all');
     }
@@ -416,8 +415,6 @@ class bydfi extends bydfi$1["default"] {
         const ohlcv = this.ohlcvs[symbol][timeframe];
         const parsed = this.parseWsOHLCV(message);
         ohlcv.append(parsed);
-        const ohlcvs = this.createStreamOHLCV(symbol, timeframe, parsed);
-        this.streamProduce('ohlcvs', ohlcvs);
         const messageHash = 'ohlcv::' + symbol + '::' + timeframe;
         client.resolve([symbol, timeframe, ohlcv], messageHash);
     }
@@ -535,7 +532,6 @@ class bydfi extends bydfi$1["default"] {
         orderbook.reset(parsed);
         const messageHash = 'orderbook::' + symbol;
         this.orderbooks[symbol] = orderbook;
-        this.streamProduce('orderbooks', orderbook);
         client.resolve(orderbook, messageHash);
     }
     /**
@@ -632,7 +628,6 @@ class bydfi extends bydfi$1["default"] {
         const lastUpdateTimestamp = this.safeInteger(message, 'T');
         order['lastUpdateTimestamp'] = lastUpdateTimestamp;
         orders.append(order);
-        this.streamProduce('orders', order);
         client.resolve(orders, messageHash);
         client.resolve(orders, symbolMessageHash);
     }
@@ -789,7 +784,6 @@ class bydfi extends bydfi$1["default"] {
         parsedPosition['timestamp'] = timestamp;
         parsedPosition['datetime'] = this.iso8601(timestamp);
         cache.append(parsedPosition);
-        this.streamProduce('positions', parsedPosition);
         client.resolve([parsedPosition], messageHash);
         client.resolve([parsedPosition], symbolMessageHash);
     }
@@ -960,7 +954,6 @@ class bydfi extends bydfi$1["default"] {
             }
             const parsedBalance = this.safeBalance(result);
             this.balance = this.extend(this.balance, parsedBalance);
-            this.streamProduce('balances', this.balance);
             client.resolve(this.balance, messageHash);
         }
     }
@@ -1013,12 +1006,9 @@ class bydfi extends bydfi$1["default"] {
         this.throwExactlyMatchedException(this.exceptions['exact'], msg, feedback);
         this.throwBroadlyMatchedException(this.exceptions['broad'], msg, feedback);
         this.throwExactlyMatchedException(this.exceptions['exact'], code, feedback);
-        const error = new errors.ExchangeError(feedback);
-        this.streamProduce('errors', undefined, error);
-        throw error;
+        throw new errors.ExchangeError(feedback);
     }
     handleMessage(client, message) {
-        this.streamProduce('raw', message);
         const code = this.safeString(message, 'code');
         if (code !== undefined && (code !== '0')) {
             this.handleErrorMessage(client, message);

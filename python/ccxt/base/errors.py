@@ -59,7 +59,6 @@ error_hierarchy = {
             'CancelPending': {},
         },
         'UnsubscribeError': {},
-        'ConsumerFunctionError': {},
     },
 }
 
@@ -228,10 +227,6 @@ class UnsubscribeError(BaseError):
     pass
 
 
-class ConsumerFunctionError(BaseError):
-    pass
-
-
 __all__ = [
     'error_hierarchy',
     'BaseError',
@@ -274,6 +269,5 @@ __all__ = [
     'BadResponse',
     'NullResponse',
     'CancelPending',
-    'UnsubscribeError',
-    'ConsumerFunctionError'
+    'UnsubscribeError'
 ]

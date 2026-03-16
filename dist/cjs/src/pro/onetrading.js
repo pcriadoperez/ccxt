@@ -131,7 +131,6 @@ class onetrading extends onetrading$1["default"] {
         //
         this.balance = this.parseBalance(message);
         const messageHash = 'balance';
-        this.streamProduce('balances', this.balance);
         client.resolve(this.balance, messageHash);
     }
     /**
@@ -216,7 +215,6 @@ class onetrading extends onetrading$1["default"] {
             const timestamp = this.parse8601(datetime);
             this.tickers[symbol]['timestamp'] = timestamp;
             this.tickers[symbol]['datetime'] = this.iso8601(timestamp);
-            this.streamProduce('tickers', this.tickers[symbol]);
             client.resolve(this.tickers[symbol], 'ticker.' + symbol);
         }
         client.resolve(this.tickers, 'tickers');
@@ -387,7 +385,6 @@ class onetrading extends onetrading$1["default"] {
         orderbook['timestamp'] = timestamp;
         orderbook['datetime'] = this.iso8601(timestamp);
         this.orderbooks[symbol] = orderbook;
-        this.streamProduce('orderbooks', orderbook);
         client.resolve(orderbook, channel);
     }
     handleDelta(orderbook, delta) {
@@ -516,7 +513,6 @@ class onetrading extends onetrading$1["default"] {
         const order = this.parseTradingOrder(message);
         const orders = this.orders;
         orders.append(order);
-        this.streamProduce('orders', order);
         client.resolve(this.orders, 'orders:' + order['symbol']);
         client.resolve(this.orders, 'orders');
     }
@@ -718,14 +714,12 @@ class onetrading extends onetrading$1["default"] {
             const order = this.parseOrder(rawOrders[i]);
             let symbol = this.safeString(order, 'symbol', '');
             orders.append(order);
-            this.streamProduce('orders', order);
             client.resolve(this.orders, 'orders:' + symbol);
             const rawTrades = this.safeValue(rawOrders[i], 'trades', []);
             for (let ii = 0; ii < rawTrades.length; ii++) {
                 const trade = this.parseTrade(rawTrades[ii]);
                 symbol = this.safeString(trade, 'symbol', symbol);
                 this.myTrades.append(trade);
-                this.streamProduce('myTrades', trade);
                 client.resolve(this.myTrades, 'myTrades:' + symbol);
             }
         }
@@ -985,13 +979,11 @@ class onetrading extends onetrading$1["default"] {
                 'datetime': datetime,
             };
             orders.append(orderObject);
-            this.streamProduce('orders', orderObject);
         }
         else {
             const parsed = this.parseOrder(update);
             symbol = this.safeString(parsed, 'symbol', '');
             orders.append(parsed);
-            this.streamProduce('orders', parsed);
         }
         client.resolve(this.orders, 'orders:' + symbol);
         client.resolve(this.orders, 'orders');
@@ -1010,7 +1002,6 @@ class onetrading extends onetrading$1["default"] {
             symbol = this.safeString(parsed, 'symbol', '');
             const myTrades = this.myTrades;
             myTrades.append(parsed);
-            this.streamProduce('myTrades', parsed);
             client.resolve(this.myTrades, 'myTrades:' + symbol);
             client.resolve(this.myTrades, 'myTrades');
         }
@@ -1173,8 +1164,6 @@ class onetrading extends onetrading$1["default"] {
         }
         stored.append(parsed);
         this.ohlcvs[symbol][timeframe] = stored;
-        const ohlcvs = this.createStreamOHLCV(symbol, timeframe, parsed);
-        this.streamProduce('ohlcvs', ohlcvs);
         client.resolve(stored, channel);
     }
     findTimeframe(timeframe, timeframes = undefined) {
@@ -1222,17 +1211,9 @@ class onetrading extends onetrading$1["default"] {
         //         "time": "2022-06-23T15:38:25.470391Z"
         //     }
         //
-        try {
-            throw new errors.ExchangeError(this.id + ' ' + this.json(message));
-        }
-        catch (e) {
-            this.streamProduce('errors', undefined, e);
-            client.reject(e);
-        }
-        return true;
+        throw new errors.ExchangeError(this.id + ' ' + this.json(message));
     }
     handleMessage(client, message) {
-        this.streamProduce('raw', message);
         const error = this.safeValue(message, 'error');
         if (error !== undefined) {
             this.handleErrorMessage(client, message);

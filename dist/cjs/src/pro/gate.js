@@ -523,11 +523,9 @@ class gate extends gate$1["default"] {
             const checksum = this.handleOption('watchOrderBook', 'checksum', true);
             if (checksum) {
                 const error = new errors.ChecksumError(this.id + ' ' + this.orderbookChecksumMessage(symbol));
-                this.streamProduce('orderbooks::' + symbol, undefined, error);
                 client.reject(error, messageHash);
             }
         }
-        this.streamProduce('orderbooks', storedOrderBook);
         client.resolve(storedOrderBook, messageHash);
     }
     getCacheIndex(orderBook, cache) {
@@ -705,7 +703,6 @@ class gate extends gate$1["default"] {
             const symbol = parsedItem['symbol'];
             if (isTicker) {
                 this.tickers[symbol] = parsedItem;
-                this.streamProduce('tickers', parsedItem);
             }
             else {
                 this.bidsasks[symbol] = parsedItem;
@@ -826,7 +823,6 @@ class gate extends gate$1["default"] {
                 this.trades[symbol] = cachedTrades;
             }
             cachedTrades.append(trade);
-            this.streamProduce('trades', trade);
             const hash = 'trades:' + symbol;
             client.resolve(cachedTrades, hash);
         }
@@ -903,8 +899,6 @@ class gate extends gate$1["default"] {
                 this.ohlcvs[symbol][timeframe] = stored;
             }
             stored.append(parsed);
-            const ohlcvs = this.createStreamOHLCV(symbol, timeframe, parsed);
-            this.streamProduce('ohlcvs', ohlcvs);
             marketIds[symbol] = timeframe;
         }
         const keys = Object.keys(marketIds);
@@ -998,7 +992,6 @@ class gate extends gate$1["default"] {
         const marketIds = {};
         for (let i = 0; i < parsed.length; i++) {
             const trade = parsed[i];
-            this.streamProduce('myTrades', trade);
             cachedTrades.append(trade);
             const symbol = trade['symbol'];
             marketIds[symbol] = true;
@@ -1123,7 +1116,6 @@ class gate extends gate$1["default"] {
         });
         const messageHash = channelType + '.balance';
         this.balance = this.safeBalance(this.balance);
-        this.streamProduce('balances', this.balance);
         client.resolve(this.balance, messageHash);
     }
     /**
@@ -1209,7 +1201,6 @@ class gate extends gate$1["default"] {
             const contracts = this.safeNumber(position, 'contracts', 0);
             if (contracts > 0) {
                 cache.append(position);
-                this.streamProduce('positions', position);
             }
         }
         // don't remove the future from the .futures cache
@@ -1257,7 +1248,6 @@ class gate extends gate$1["default"] {
         for (let i = 0; i < data.length; i++) {
             const rawPosition = data[i];
             const position = this.parsePosition(rawPosition);
-            this.streamProduce('positions', position);
             const symbol = this.safeString(position, 'symbol');
             const side = this.safeString(position, 'side');
             // Control when position is closed no side is returned
@@ -1407,7 +1397,6 @@ class gate extends gate$1["default"] {
                 }
             }
             stored.append(parsed);
-            this.streamProduce('orders', parsed);
             const symbol = parsed['symbol'];
             const market = this.market(symbol);
             marketIds[market['id']] = true;
@@ -1545,8 +1534,6 @@ class gate extends gate$1["default"] {
             cache.append(liquidation);
             const symbol = this.safeString(liquidation, 'symbol');
             const symbolLiquidations = this.safeValue(cache, symbol, []);
-            this.streamProduce('liquidations', liquidation);
-            this.streamProduce('myLiquidations', liquidation);
             client.resolve(symbolLiquidations, 'myLiquidations::' + symbol);
         }
         client.resolve(newLiquidations, 'myLiquidations');
@@ -1665,7 +1652,6 @@ class gate extends gate$1["default"] {
                 throw new errors.ExchangeError(this.json(message));
             }
             catch (e) {
-                this.streamProduce('errors', undefined, e);
                 client.reject(e, messageHash);
                 if ((messageHash !== undefined) && (messageHash in client.subscriptions)) {
                     delete client.subscriptions[messageHash];
@@ -1847,7 +1833,6 @@ class gate extends gate$1["default"] {
         //        ]
         //    }
         //
-        this.streamProduce('raw', message);
         if (this.handleErrorMessage(client, message)) {
             return;
         }

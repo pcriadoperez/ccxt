@@ -218,14 +218,12 @@ class woo extends woo$1["default"] {
                     const ts = this.safeInteger(message, 'ts');
                     if (ts > timestamp) {
                         this.handleOrderBookMessage(client, message, orderbook);
-                        this.streamProduce('orderbooks', orderbook);
                         client.resolve(orderbook, topic);
                     }
                 }
                 catch (e) {
                     delete this.orderbooks[symbol];
                     delete client.subscriptions[topic];
-                    this.streamProduce('orderbooks::' + symbol, orderbook);
                     client.reject(e, topic);
                 }
             }
@@ -241,7 +239,6 @@ class woo extends woo$1["default"] {
             const timestamp = this.safeInteger(message, 'ts');
             const snapshot = this.parseOrderBook(data, symbol, timestamp, 'bids', 'asks');
             orderbook.reset(snapshot);
-            this.streamProduce('orderbooks', orderbook);
             client.resolve(orderbook, topic);
         }
     }
@@ -281,12 +278,10 @@ class woo extends woo$1["default"] {
                 }
             }
             this.orderbooks[symbol] = orderbook;
-            this.streamProduce('orderbooks', orderbook);
             client.resolve(orderbook, messageHash);
         }
         catch (e) {
             delete client.subscriptions[messageHash];
-            this.streamProduce('orderbooks::' + symbol, undefined, e);
             client.reject(e, messageHash);
         }
     }
@@ -409,7 +404,6 @@ class woo extends woo$1["default"] {
         const ticker = this.parseWsTicker(data, market);
         ticker['symbol'] = market['symbol'];
         this.tickers[market['symbol']] = ticker;
-        this.streamProduce('tickers', ticker);
         client.resolve(ticker, topic);
         return message;
     }
@@ -493,7 +487,6 @@ class woo extends woo$1["default"] {
             const ticker = this.parseWsTicker(this.extend(data[i], { 'date': timestamp }), market);
             this.tickers[market['symbol']] = ticker;
             result.push(ticker);
-            this.streamProduce('tickers', ticker);
         }
         client.resolve(result, topic);
     }
@@ -681,8 +674,6 @@ class woo extends woo$1["default"] {
             this.ohlcvs[symbol][timeframe] = stored;
         }
         stored.append(parsed);
-        const ohlcvs = this.createStreamOHLCV(symbol, timeframe, parsed);
-        this.streamProduce('ohlcvs', ohlcvs);
         client.resolve(stored, topic);
     }
     /**
@@ -755,7 +746,6 @@ class woo extends woo$1["default"] {
             tradesArray = new Cache.ArrayCache(limit);
         }
         tradesArray.append(trade);
-        this.streamProduce('trades', trade);
         this.trades[symbol] = tradesArray;
         client.resolve(tradesArray, topic);
     }
@@ -1159,7 +1149,6 @@ class woo extends woo$1["default"] {
                 parsed['datetime'] = this.safeString(order, 'datetime');
             }
             cachedOrders.append(parsed);
-            this.streamProduce('orders', parsed);
             client.resolve(this.orders, topic);
             const messageHashSymbol = topic + ':' + symbol;
             client.resolve(this.orders, messageHashSymbol);
@@ -1203,7 +1192,6 @@ class woo extends woo$1["default"] {
         }
         const trade = this.parseWsTrade(message);
         myTrades.append(trade);
-        this.streamProduce('myTrades', trade);
         let messageHash = 'myTrades:' + trade['symbol'];
         client.resolve(myTrades, messageHash);
         messageHash = 'myTrades';
@@ -1274,7 +1262,6 @@ class woo extends woo$1["default"] {
             const contracts = this.safeNumber(position, 'contracts', 0);
             if (contracts > 0) {
                 cache.append(position);
-                this.streamProduce('positions', position);
             }
         }
         // don't remove the future from the .futures cache
@@ -1325,7 +1312,6 @@ class woo extends woo$1["default"] {
             const position = this.parsePosition(rawPosition, market);
             newPositions.push(position);
             cache.append(position);
-            this.streamProduce('positions', position);
             const messageHash = 'positions::' + market['symbol'];
             client.resolve(position, messageHash);
         }
@@ -1399,7 +1385,6 @@ class woo extends woo$1["default"] {
             this.balance[code] = account;
         }
         this.balance = this.safeBalance(this.balance);
-        this.streamProduce('balances', this.balance);
         client.resolve(this.balance, 'balance');
     }
     /**
@@ -1470,7 +1455,6 @@ class woo extends woo$1["default"] {
                 }
             }
             else {
-                this.streamProduce('errors', undefined, error);
                 client.reject(error);
             }
             return true;
@@ -1499,7 +1483,6 @@ class woo extends woo$1["default"] {
         this.cleanCache(subscription);
     }
     handleMessage(client, message) {
-        this.streamProduce('raw', message);
         if (this.handleErrorMessage(client, message)) {
             return;
         }
@@ -1603,7 +1586,6 @@ class woo extends woo$1["default"] {
         }
         else {
             const error = new errors.AuthenticationError(this.json(message));
-            this.streamProduce('errors', undefined, error);
             client.reject(error, messageHash);
             // allows further authentication attempts
             if (messageHash in client.subscriptions) {

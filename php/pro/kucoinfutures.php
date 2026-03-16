@@ -284,10 +284,7 @@ class kucoinfutures extends \ccxt\async\kucoinfutures {
         $market = $this->safe_market($marketId, null, '-');
         $ticker = $this->parse_ticker($data, $market);
         $this->tickers[$market['symbol']] = $ticker;
-        $messageHash = $this->get_message_hash('ticker', $market['symbol']);
-        $this->stream_produce('tickers', $ticker);
-        $client->resolve ($ticker, $messageHash);
-        return $message;
+        $client->resolve ($ticker, $this->get_message_hash('ticker', $market['symbol']));
     }
 
     public function watch_bids_asks(?array $symbols = null, $params = array ()): PromiseInterface {
@@ -452,7 +449,6 @@ class kucoinfutures extends \ccxt\async\kucoinfutures {
             if (is_array($client->futures) && array_key_exists($messageHash, $client->futures)) {
                 $future = $client->futures[$messageHash];
                 $future->resolve ($cache);
-                $this->stream_produce('positions', $position);
                 $client->resolve ($position, 'position:' . $symbol);
             }
         }) ();
@@ -569,7 +565,6 @@ class kucoinfutures extends \ccxt\async\kucoinfutures {
         }
         $position = $this->extend($currentPosition, $newPosition);
         $cache->append ($position);
-        $this->stream_produce('positions', $position);
         $client->resolve ($position, $messageHash);
     }
 
@@ -706,7 +701,6 @@ class kucoinfutures extends \ccxt\async\kucoinfutures {
             $this->trades[$symbol] = $trades;
         }
         $trades->append ($trade);
-        $this->stream_produce('trades', $trade);
         $messageHash = 'trades:' . $symbol;
         $client->resolve ($trades, $messageHash);
         return $message;
@@ -788,8 +782,6 @@ class kucoinfutures extends \ccxt\async\kucoinfutures {
         }
         $stored = $this->ohlcvs[$symbol][$timeframe];
         $stored->append ($parsed);
-        $ohlcvs = $this->create_stream_ohlcv($symbol, $timeframe, $parsed);
-        $this->stream_produce('ohlcvs', $ohlcvs);
         $client->resolve ($stored, $messageHash);
     }
 
@@ -985,7 +977,6 @@ class kucoinfutures extends \ccxt\async\kucoinfutures {
             return;
         }
         $this->handle_delta($storedOrderBook, $data);
-        $this->stream_produce('orderbooks', $storedOrderBook);
         $client->resolve ($storedOrderBook, $messageHash);
     }
 
@@ -1145,7 +1136,6 @@ class kucoinfutures extends \ccxt\async\kucoinfutures {
                 }
             }
             $cachedOrders->append ($parsed);
-            $this->stream_produce('orders', $parsed);
             $client->resolve ($this->orders, $messageHash);
             $symbolSpecificMessageHash = $messageHash . ':' . $symbol;
             $client->resolve ($this->orders, $symbolSpecificMessageHash);
@@ -1202,7 +1192,6 @@ class kucoinfutures extends \ccxt\async\kucoinfutures {
         $account['used'] = $this->safe_string($data, 'holdBalance');
         $this->balance[$code] = $account;
         $this->balance = $this->safe_balance($this->balance);
-        $this->stream_produce('balances', $this->balance);
         $client->resolve ($this->balance, 'balance');
     }
 
@@ -1261,7 +1250,6 @@ class kucoinfutures extends \ccxt\async\kucoinfutures {
                 }
             }
             $this->balance['info'] = $this->safe_value($snapshot, 'info', array());
-            $this->stream_produce('balances', $this->balance);
             $client->resolve ($this->balance, $messageHash);
         }) ();
     }
@@ -1342,12 +1330,7 @@ class kucoinfutures extends \ccxt\async\kucoinfutures {
             }
             $this->options['urls'][$type] = null;
         }
-        try {
-            $this->handle_errors(1, '', $client->url, '', array(), $data, $message, array(), array());
-        } catch (Exception $e) {
-            $this->stream_produce('errors', null, $e);
-            $client->reject ($e);
-        }
+        $this->handle_errors(1, '', $client->url, '', array(), $data, $message, array(), array());
         return true;
     }
 
@@ -1383,7 +1366,6 @@ class kucoinfutures extends \ccxt\async\kucoinfutures {
     }
 
     public function handle_message(Client $client, $message) {
-        $this->stream_produce('raw', $message);
         $type = $this->safe_string($message, 'type');
         $methods = array(
             // 'heartbeat' => $this->handleHeartbeat,

@@ -108,7 +108,6 @@ export default class bittrade extends bittradeRest {
         ticker['datetime'] = this.iso8601(timestamp);
         const symbol = ticker['symbol'];
         this.tickers[symbol] = ticker;
-        this.streamProduce('tickers', ticker);
         client.resolve(ticker, ch);
         return message;
     }
@@ -185,7 +184,6 @@ export default class bittrade extends bittradeRest {
         for (let i = 0; i < data.length; i++) {
             const trade = this.parseTrade(data[i], market);
             tradesCache.append(trade);
-            this.streamProduce('trades', trade);
         }
         client.resolve(tradesCache, ch);
         return message;
@@ -261,8 +259,6 @@ export default class bittrade extends bittradeRest {
         }
         const tick = this.safeValue(message, 'tick');
         const parsed = this.parseOHLCV(tick, market);
-        const ohlcvs = this.createStreamOHLCV(symbol, timeframe, parsed);
-        this.streamProduce('ohlcvs', ohlcvs);
         stored.append(parsed);
         client.resolve(stored, ch);
     }
@@ -338,7 +334,6 @@ export default class bittrade extends bittradeRest {
             this.handleOrderBookMessage(client, messages[i], orderbook);
         }
         this.orderbooks[symbol] = orderbook;
-        this.streamProduce('orderbooks', orderbook);
         client.resolve(orderbook, messageHash);
     }
     async watchOrderBookSnapshot(client, message, subscription) {
@@ -370,7 +365,6 @@ export default class bittrade extends bittradeRest {
         }
         catch (e) {
             delete client.subscriptions[messageHash];
-            this.streamProduce('orderbooks', undefined, e);
             client.reject(e, messageHash);
         }
         return undefined;
@@ -455,7 +449,6 @@ export default class bittrade extends bittradeRest {
         }
         else {
             this.handleOrderBookMessage(client, message, orderbook);
-            this.streamProduce('orderbooks', orderbook);
             client.resolve(orderbook, messageHash);
         }
     }
@@ -571,15 +564,11 @@ export default class bittrade extends bittradeRest {
             const subscription = this.safeValue(subscriptionsById, id);
             if (subscription !== undefined) {
                 const errorCode = this.safeString(message, 'err-code');
-                const errMsg = this.safeString(message, 'err-msg');
                 try {
                     this.throwExactlyMatchedException(this.exceptions['exact'], errorCode, this.json(message));
-                    this.throwBroadlyMatchedException(this.exceptions['broad'], errMsg, this.json(message));
-                    throw new ExchangeError(this.json(message));
                 }
                 catch (e) {
                     const messageHash = this.safeString(subscription, 'messageHash');
-                    this.streamProduce('errors', undefined, e);
                     client.reject(e, messageHash);
                     client.reject(e, id);
                     if (id in client.subscriptions) {
@@ -592,7 +581,6 @@ export default class bittrade extends bittradeRest {
         return message;
     }
     handleMessage(client, message) {
-        this.streamProduce('raw', message);
         if (this.handleErrorMessage(client, message)) {
             //
             //     {"id":1583414227,"status":"ok","subbed":"market.btcusdt.mbp.150","ts":1583414229143}

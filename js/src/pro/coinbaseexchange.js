@@ -400,7 +400,6 @@ export default class coinbaseexchange extends coinbaseexchangeRest {
                 this.trades[symbol] = tradesArray;
             }
             tradesArray.append(trade);
-            this.streamProduce('trades', trade);
             client.resolve(tradesArray, messageHash);
         }
         return message;
@@ -418,7 +417,6 @@ export default class coinbaseexchange extends coinbaseexchangeRest {
                 this.myTrades = tradesArray;
             }
             tradesArray.append(trade);
-            this.streamProduce('myTrades', trade);
             client.resolve(tradesArray, messageHash);
         }
         return message;
@@ -618,7 +616,6 @@ export default class coinbaseexchange extends coinbaseexchangeRest {
             if (previousOrder === undefined) {
                 const parsed = this.parseWsOrder(message);
                 orders.append(parsed);
-                this.streamProduce('orders', parsed);
                 client.resolve(orders, messageHash);
             }
             else {
@@ -683,7 +680,6 @@ export default class coinbaseexchange extends coinbaseexchangeRest {
                         orders.append(previousOrder);
                         client.resolve(orders, messageHash);
                     }
-                    this.streamProduce('orders', previousOrder);
                 }
             }
         }
@@ -765,7 +761,6 @@ export default class coinbaseexchange extends coinbaseexchangeRest {
             this.tickers[symbol] = ticker;
             const messageHash = 'ticker:' + symbol;
             const idMessageHash = 'ticker:' + marketId;
-            this.streamProduce('tickers', ticker);
             client.resolve(ticker, messageHash);
             client.resolve(ticker, idMessageHash);
         }
@@ -876,7 +871,6 @@ export default class coinbaseexchange extends coinbaseexchangeRest {
             orderbook['timestamp'] = undefined;
             orderbook['datetime'] = undefined;
             orderbook['symbol'] = symbol;
-            this.streamProduce('orderbooks', orderbook);
             client.resolve(orderbook, messageHash);
         }
         else if (type === 'l2update') {
@@ -898,7 +892,6 @@ export default class coinbaseexchange extends coinbaseexchangeRest {
             }
             orderbook['timestamp'] = timestamp;
             orderbook['datetime'] = this.iso8601(timestamp);
-            this.streamProduce('orderbooks', orderbook);
             client.resolve(orderbook, messageHash);
         }
     }
@@ -944,12 +937,10 @@ export default class coinbaseexchange extends coinbaseexchangeRest {
         }
         catch (error) {
             client.reject(error);
-            this.streamProduce('errors', undefined, error);
             return true;
         }
     }
     handleMessage(client, message) {
-        this.streamProduce('raw', message);
         const type = this.safeString(message, 'type');
         const methods = {
             'snapshot': this.handleOrderBook,

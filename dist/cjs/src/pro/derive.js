@@ -133,7 +133,6 @@ class derive extends derive$1["default"] {
         const timestamp = this.safeInteger(data, 'timestamp');
         const snapshot = this.parseOrderBook(data, symbol, timestamp, 'bids', 'asks');
         orderbook.reset(snapshot);
-        this.streamProduce('orderbooks', orderbook);
         client.resolve(orderbook, topic);
     }
     /**
@@ -234,7 +233,6 @@ class derive extends derive$1["default"] {
         const data = this.safeDict(rawData, 'instrument_ticker');
         const topic = this.safeValue(params, 'channel');
         const ticker = this.parseTicker(data);
-        this.streamProduce('tickers', ticker);
         this.tickers[ticker['symbol']] = ticker;
         client.resolve(ticker, topic);
         return message;
@@ -416,7 +414,6 @@ class derive extends derive$1["default"] {
         for (let i = 0; i < data.length; i++) {
             const trade = this.parseTrade(data[i]);
             tradesArray.append(trade);
-            this.streamProduce('trades', trade);
         }
         this.trades[symbol] = tradesArray;
         client.resolve(tradesArray, topic);
@@ -578,7 +575,6 @@ class derive extends derive$1["default"] {
                     parsed['timestamp'] = this.safeInteger(order, 'timestamp');
                     parsed['datetime'] = this.safeString(order, 'datetime');
                 }
-                this.streamProduce('orders', parsed);
                 cachedOrders.append(parsed);
                 const messageHashSymbol = topic + ':' + symbol;
                 client.resolve(this.orders, messageHashSymbol);
@@ -642,7 +638,6 @@ class derive extends derive$1["default"] {
         for (let i = 0; i < rawTrades.length; i++) {
             const trade = this.parseTrade(message);
             myTrades.append(trade);
-            this.streamProduce('myTrades', trade);
             client.resolve(myTrades, topic);
             const messageHash = topic + trade['symbol'];
             client.resolve(myTrades, messageHash);
@@ -671,21 +666,18 @@ class derive extends derive$1["default"] {
         catch (error) {
             if (error instanceof errors.AuthenticationError) {
                 const messageHash = 'authenticated';
-                this.streamProduce('errors', undefined, error);
                 client.reject(error, messageHash);
                 if (messageHash in client.subscriptions) {
                     delete client.subscriptions[messageHash];
                 }
             }
             else {
-                this.streamProduce('errors', undefined, error);
                 client.reject(error);
             }
             return true;
         }
     }
     handleMessage(client, message) {
-        this.streamProduce('raw', message);
         if (this.handleErrorMessage(client, message)) {
             return;
         }
@@ -750,7 +742,6 @@ class derive extends derive$1["default"] {
         }
         else {
             const error = new errors.AuthenticationError(this.json(message));
-            this.streamProduce('errors', undefined, error);
             client.reject(error, messageHash);
             // allows further authentication attempts
             if (messageHash in client.subscriptions) {

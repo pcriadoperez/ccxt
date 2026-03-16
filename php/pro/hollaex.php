@@ -6,7 +6,6 @@ namespace ccxt\pro;
 // https://github.com/ccxt/ccxt/blob/master/CONTRIBUTING.md#how-to-contribute-code
 
 use Exception; // a common import
-use ccxt\ExchangeError;
 use ccxt\AuthenticationError;
 use \React\Async;
 use \React\Promise\PromiseInterface;
@@ -116,7 +115,6 @@ class hollaex extends \ccxt\async\hollaex {
             $orderbook->reset ($snapshot);
         }
         $messageHash = $channel . ':' . $marketId;
-        $this->stream_produce('orderbooks', $orderbook);
         $client->resolve ($orderbook, $messageHash);
     }
 
@@ -175,7 +173,6 @@ class hollaex extends \ccxt\async\hollaex {
         $parsedTrades = $this->parse_trades($data, $market);
         for ($j = 0; $j < count($parsedTrades); $j++) {
             $stored->append ($parsedTrades[$j]);
-            $this->stream_produce('trades', $parsedTrades[$j]);
         }
         $messageHash = $channel . ':' . $marketId;
         $client->resolve ($stored, $messageHash);
@@ -256,7 +253,6 @@ class hollaex extends \ccxt\async\hollaex {
             $market = $this->market($symbol);
             $marketId = $market['id'];
             $marketIds[$marketId] = true;
-            $this->stream_produce('myTrades', $parsed);
         }
         // non-$symbol specific
         $client->resolve ($this->myTrades, $channel);
@@ -382,7 +378,6 @@ class hollaex extends \ccxt\async\hollaex {
             $market = $this->market($symbol);
             $marketId = $market['id'];
             $marketIds[$marketId] = true;
-            $this->stream_produce('orders', $parsed);
         }
         // non-$symbol specific
         $client->resolve ($this->orders, $channel);
@@ -445,7 +440,6 @@ class hollaex extends \ccxt\async\hollaex {
             $this->balance[$code] = $account;
         }
         $this->balance = $this->safe_balance($this->balance);
-        $this->stream_produce('balances', $this->balance);
         $client->resolve ($this->balance, $messageHash);
     }
 
@@ -501,15 +495,11 @@ class hollaex extends \ccxt\async\hollaex {
             if ($error !== null) {
                 $feedback = $this->id . ' ' . $this->json($message);
                 $this->throw_exactly_matched_exception($this->exceptions['ws']['exact'], $error, $feedback);
-                $this->throw_broadly_matched_exception($this->exceptions['ws']['broad'], $error, $feedback);
-                throw new ExchangeError($feedback);
             }
         } catch (Exception $e) {
             if ($e instanceof AuthenticationError) {
                 return false;
             }
-            $client->reject ($e);
-            $this->stream_produce('errors', null, $e);
         }
         return $message;
     }
@@ -600,7 +590,6 @@ class hollaex extends \ccxt\async\hollaex {
         //         }
         //     }
         //
-        $this->stream_produce('raw', $message);
         if (!$this->handle_error_message($client, $message)) {
             return;
         }

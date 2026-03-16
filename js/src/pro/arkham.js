@@ -44,7 +44,6 @@ export default class arkham extends arkhamRest {
         });
     }
     handleMessage(client, message) {
-        this.streamProduce('raw', message);
         //
         // confirmation
         //
@@ -140,7 +139,6 @@ export default class arkham extends arkhamRest {
         const symbol = market['symbol'];
         const ticker = this.parseWsTicker(data, market);
         this.tickers[symbol] = ticker;
-        this.streamProduce('tickers', ticker);
         client.resolve(ticker, 'ticker::' + symbol);
         // if (this.safeString (message, 'dataType') === 'all@ticker') {
         //     client.resolve (ticker, this.getMessageHash ('ticker'));
@@ -211,8 +209,6 @@ export default class arkham extends arkhamRest {
         const stored = this.ohlcvs[symbol][timeframe];
         const parsed = this.parseWsOHLCV(data, market);
         stored.append(parsed);
-        const ohlcvs = this.createStreamOHLCV(symbol, timeframe, parsed);
-        this.streamProduce('ohlcvs', ohlcvs);
         client.resolve(stored, messageHash);
         return message;
     }
@@ -299,7 +295,6 @@ export default class arkham extends arkhamRest {
             orderbook['datetime'] = this.iso8601(timestamp);
         }
         this.orderbooks[symbol] = orderbook;
-        this.streamProduce('orderbooks', orderbook);
         client.resolve(this.orderbooks[symbol], messageHash);
     }
     handleDelta(bookside, delta) {
@@ -355,7 +350,6 @@ export default class arkham extends arkhamRest {
         const parsed = this.parseWsTrade(data);
         const stored = this.trades[symbol];
         stored.append(parsed);
-        this.streamProduce('trades', parsed);
         client.resolve(stored, 'trade::' + symbol);
     }
     parseWsTrade(trade, market = undefined) {
@@ -485,9 +479,7 @@ export default class arkham extends arkhamRest {
             this.balance[code] = parsed[code];
         }
         const messageHash = 'balances';
-        const balance = this.safeBalance(this.balance);
-        this.streamProduce('balances', balance);
-        client.resolve(balance, messageHash);
+        client.resolve(this.safeBalance(this.balance), messageHash);
     }
     parseWsBalance(balance) {
         // same as REST api
@@ -576,7 +568,6 @@ export default class arkham extends arkhamRest {
             const position = this.parseWsPosition(data);
             const symbol = this.safeString(position, 'symbol');
             this.positions[symbol] = position;
-            this.streamProduce('positions', position);
             newPositions.push(position);
         }
         const messageHashes = this.findMessageHashes(client, 'positions::');
@@ -690,7 +681,6 @@ export default class arkham extends arkhamRest {
         const orders = this.orders;
         const order = this.parseWsOrder(data);
         orders.append(order);
-        this.streamProduce('orders', order);
         client.resolve(orders, 'orders');
         client.resolve(orders, 'orders::' + order['symbol'] + '::' + channel);
         client.resolve(orders, 'orders::' + channel);
@@ -717,9 +707,7 @@ export default class arkham extends arkhamRest {
             this.throwExactlyMatchedException(this.exceptions['exact'], errorCode, feedback);
             this.throwExactlyMatchedException(this.exceptions['exact'], message, feedback);
             this.throwBroadlyMatchedException(this.exceptions['broad'], message, feedback);
-            const error = new ExchangeError(this.id + ' ' + body);
-            this.streamProduce('errors', undefined, error);
-            throw error;
+            throw new ExchangeError(this.id + ' ' + body);
         }
         return false;
     }

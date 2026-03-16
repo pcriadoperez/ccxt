@@ -247,7 +247,6 @@ class backpack(ccxt.async_support.backpack):
         parsedTicker = self.parse_ws_ticker(ticker, market)
         messageHash = 'ticker' + ':' + symbol
         self.tickers[symbol] = parsedTicker
-        self.stream_produce('tickers', parsedTicker)
         client.resolve(parsedTicker, messageHash)
 
     def parse_ws_ticker(self, ticker: dict, market: Market = None) -> Ticker:
@@ -517,8 +516,6 @@ class backpack(ccxt.async_support.backpack):
         ohlcv = self.ohlcvs[symbol][timeframe]
         parsed = self.parse_ws_ohlcv(data)
         ohlcv.append(parsed)
-        ohlcvs = self.create_stream_ohlcv(symbol, timeframe, parsed)
-        self.stream_produce('ohlcvs', ohlcvs)
         messageHash = 'candles:' + symbol + ':' + timeframe
         client.resolve([symbol, timeframe, ohlcv], messageHash)
 
@@ -659,7 +656,6 @@ class backpack(ccxt.async_support.backpack):
         cache = self.trades[symbol]
         trade = self.parse_ws_trade(data, market)
         cache.append(trade)
-        self.stream_produce('trades', trade)
         messageHash = 'trades:' + symbol
         client.resolve(cache, messageHash)
         client.resolve(cache, 'trades')
@@ -822,7 +818,6 @@ class backpack(ccxt.async_support.backpack):
         elif nonce > deltaNonce:
             return
         self.handle_delta(storedOrderBook, data)
-        self.stream_produce('orderbooks', storedOrderBook)
         client.resolve(storedOrderBook, messageHash)
 
     def handle_delta(self, orderbook, delta):
@@ -944,7 +939,6 @@ class backpack(ccxt.async_support.backpack):
             orders = ArrayCacheBySymbolById(limit)
             self.orders = orders
         orders.append(parsed)
-        self.stream_produce('orders', parsed)
         client.resolve(orders, messageHash)
         symbolSpecificMessageHash = messageHash + ':' + symbol
         client.resolve(orders, symbolSpecificMessageHash)
@@ -1130,7 +1124,6 @@ class backpack(ccxt.async_support.backpack):
         parsedPosition['timestamp'] = timestamp
         parsedPosition['datetime'] = self.iso8601(timestamp)
         cache.append(parsedPosition)
-        self.stream_produce('positions', parsedPosition)
         symbolSpecificMessageHash = messageHash + ':' + parsedPosition['symbol']
         client.resolve([parsedPosition], messageHash)
         client.resolve([parsedPosition], symbolSpecificMessageHash)
@@ -1207,7 +1200,6 @@ class backpack(ccxt.async_support.backpack):
         })
 
     def handle_message(self, client: Client, message):
-        self.stream_produce('raw', message)
         if not self.handle_error_message(client, message):
             return
         data = self.safe_dict(message, 'data')
@@ -1242,9 +1234,7 @@ class backpack(ccxt.async_support.backpack):
         try:
             if code is not None:
                 msg = self.safe_string(error, 'message')
-                err = ExchangeError(self.id + ' ' + msg)
-                self.stream_produce('errors', None, err)
-                raise err
+                raise ExchangeError(self.id + ' ' + msg)
             return True
         except Exception as e:
             client.reject(e)

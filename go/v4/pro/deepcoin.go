@@ -364,7 +364,6 @@ func  (this *DeepcoinCore) HandleTicker(client interface{}, message interface{})
     var parsedTicker interface{} = this.ParseWsTicker(data, market)
     var messageHash interface{} = ccxt.Add(ccxt.Add("ticker", "::"), symbol)
     ccxt.AddElementToObject(this.Tickers, symbol, parsedTicker)
-    this.StreamProduce("tickers", parsedTicker)
     client.(ccxt.ClientInterface).Resolve(parsedTicker, messageHash)
 }
 func  (this *DeepcoinCore) ParseWsTicker(ticker interface{}, optionalArgs ...interface{}) interface{}  {
@@ -452,8 +451,8 @@ func  (this *DeepcoinCore) WatchTrades(symbol interface{}, optionalArgs ...inter
             params := ccxt.GetArg(optionalArgs, 2, map[string]interface{} {})
             _ = params
         
-            retRes3498 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes3498)
+            retRes3488 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes3488)
             var market interface{} = this.Market(symbol)
             var messageHash interface{} = ccxt.Add(ccxt.Add("trades", "::"), ccxt.GetValue(market, "symbol"))
         
@@ -486,17 +485,17 @@ func  (this *DeepcoinCore) UnWatchTrades(symbol interface{}, optionalArgs ...int
                     params := ccxt.GetArg(optionalArgs, 0, map[string]interface{} {})
             _ = params
         
-            retRes3698 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes3698)
+            retRes3688 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes3688)
             var market interface{} = this.Market(symbol)
             var messageHash interface{} = ccxt.Add(ccxt.Add("trades", "::"), ccxt.GetValue(market, "symbol"))
             var subscription interface{} = map[string]interface{} {
                 "topic": "trades",
             }
         
-                retRes37515 :=  (<-this.UnWatchPublic(market, messageHash, "2", params, subscription))
-                ccxt.PanicOnError(retRes37515)
-                ch <- retRes37515
+                retRes37415 :=  (<-this.UnWatchPublic(market, messageHash, "2", params, subscription))
+                ccxt.PanicOnError(retRes37415)
+                ch <- retRes37415
                 return nil
         
             }()
@@ -537,7 +536,6 @@ func  (this *DeepcoinCore) HandleTrades(client interface{}, message interface{})
     if ccxt.IsTrue(!ccxt.IsEqual(data, nil)) {
         var trade interface{} = this.ParseWsTrade(data, market)
         strored.(ccxt.Appender).Append(trade)
-        this.StreamProduce("trades", trade)
     }
     var messageHash interface{} = ccxt.Add(ccxt.Add("trades", "::"), symbol)
     client.(ccxt.ClientInterface).Resolve(strored, messageHash)
@@ -645,8 +643,8 @@ func  (this *DeepcoinCore) WatchOHLCV(symbol interface{}, optionalArgs ...interf
             params := ccxt.GetArg(optionalArgs, 3, map[string]interface{} {})
             _ = params
         
-            retRes5108 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes5108)
+            retRes5088 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes5088)
             var market interface{} = this.Market(symbol)
             symbol = ccxt.GetValue(market, "symbol")
             var timeframes interface{} = this.SafeDict(this.Options, "timeframes", map[string]interface{} {})
@@ -686,8 +684,8 @@ func  (this *DeepcoinCore) UnWatchOHLCV(symbol interface{}, optionalArgs ...inte
             params := ccxt.GetArg(optionalArgs, 1, map[string]interface{} {})
             _ = params
         
-            retRes5358 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes5358)
+            retRes5338 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes5338)
             var market interface{} = this.Market(symbol)
             symbol = ccxt.GetValue(market, "symbol")
             var timeframes interface{} = this.SafeDict(this.Options, "timeframes", map[string]interface{} {})
@@ -699,9 +697,9 @@ func  (this *DeepcoinCore) UnWatchOHLCV(symbol interface{}, optionalArgs ...inte
                 "symbolsAndTimeframes": []interface{}{[]interface{}{symbol, timeframe}},
             }
         
-                retRes54615 :=  (<-this.UnWatchPublic(market, messageHash, "11", params, subscription, suffix))
-                ccxt.PanicOnError(retRes54615)
-                ch <- retRes54615
+                retRes54415 :=  (<-this.UnWatchPublic(market, messageHash, "11", params, subscription, suffix))
+                ccxt.PanicOnError(retRes54415)
+                ch <- retRes54415
                 return nil
         
             }()
@@ -750,8 +748,6 @@ func  (this *DeepcoinCore) HandleOHLCV(client interface{}, message interface{}) 
     if ccxt.IsTrue(!ccxt.IsEqual(data, nil)) {
         var ohlcv interface{} = this.ParseWsOHLCV(data, market)
         stored.(ccxt.Appender).Append(ohlcv)
-        var ohlcvs interface{} = this.CreateStreamOHLCV(symbol, timeframe, ohlcv)
-        this.StreamProduce("ohlcvs", ohlcvs)
     }
     var messageHash interface{} = ccxt.Add(ccxt.Add(ccxt.Add(ccxt.Add("ohlcv", "::"), symbol), "::"), timeframe)
     client.(ccxt.ClientInterface).Resolve(stored, messageHash)
@@ -794,8 +790,8 @@ func  (this *DeepcoinCore) WatchOrderBook(symbol interface{}, optionalArgs ...in
             params := ccxt.GetArg(optionalArgs, 1, map[string]interface{} {})
             _ = params
         
-            retRes6348 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes6348)
+            retRes6308 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes6308)
             var market interface{} = this.Market(symbol)
             var messageHash interface{} = ccxt.Add(ccxt.Add("orderbook", "::"), ccxt.GetValue(market, "symbol"))
             var suffix interface{} = "_0.1"
@@ -826,8 +822,8 @@ func  (this *DeepcoinCore) UnWatchOrderBook(symbol interface{}, optionalArgs ...
                     params := ccxt.GetArg(optionalArgs, 0, map[string]interface{} {})
             _ = params
         
-            retRes6528 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes6528)
+            retRes6488 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes6488)
             var market interface{} = this.Market(symbol)
             var messageHash interface{} = ccxt.Add(ccxt.Add("orderbook", "::"), ccxt.GetValue(market, "symbol"))
             var suffix interface{} = "_0.1"
@@ -835,9 +831,9 @@ func  (this *DeepcoinCore) UnWatchOrderBook(symbol interface{}, optionalArgs ...
                 "topic": "orderbook",
             }
         
-                retRes65915 :=  (<-this.UnWatchPublic(market, messageHash, "25", params, subscription, suffix))
-                ccxt.PanicOnError(retRes65915)
-                ch <- retRes65915
+                retRes65515 :=  (<-this.UnWatchPublic(market, messageHash, "25", params, subscription, suffix))
+                ccxt.PanicOnError(retRes65515)
+                ch <- retRes65515
                 return nil
         
             }()
@@ -882,7 +878,6 @@ func  (this *DeepcoinCore) HandleOrderBook(client interface{}, message interface
     } else {
         this.HandleOrderBookMessage(client, message, orderbook)
         var messageHash interface{} = ccxt.Add(ccxt.Add("orderbook", "::"), symbol)
-        this.StreamProduce("orderbooks", orderbook)
         client.(ccxt.ClientInterface).Resolve(orderbook, messageHash)
     }
 }
@@ -906,12 +901,12 @@ func  (this *DeepcoinCore) HandleOrderBookSnapshot(client interface{}, message i
         var volume interface{} = this.SafeNumber(entryData, "V")
         if ccxt.IsTrue(ccxt.IsEqual(side, "0")) {
             // bid
-            retRes72616 := ccxt.GetValue(orderedEntries, "bids")
-            ccxt.AppendToArray(&retRes72616, []interface{}{price, volume})
+            retRes72116 := ccxt.GetValue(orderedEntries, "bids")
+            ccxt.AppendToArray(&retRes72116, []interface{}{price, volume})
         } else if ccxt.IsTrue(ccxt.IsEqual(side, "1")) {
             // ask
-            retRes72916 := ccxt.GetValue(orderedEntries, "asks")
-            ccxt.AppendToArray(&retRes72916, []interface{}{price, volume})
+            retRes72416 := ccxt.GetValue(orderedEntries, "asks")
+            ccxt.AppendToArray(&retRes72416, []interface{}{price, volume})
         }
     }
     var timestamp interface{} = this.SafeInteger(message, "mt")
@@ -924,7 +919,6 @@ func  (this *DeepcoinCore) HandleOrderBookSnapshot(client interface{}, message i
     }
     orderbook.(ccxt.OrderBookInterface).SetCache([]interface{}{})
     var messageHash interface{} = ccxt.Add(ccxt.Add("orderbook", "::"), symbol)
-    this.StreamProduce("orderbooks", orderbook)
     client.(ccxt.ClientInterface).Resolve(orderbook, messageHash)
 }
 func  (this *DeepcoinCore) HandleOrderBookMessage(client interface{}, message interface{}, orderbook interface{})  {
@@ -992,8 +986,8 @@ func  (this *DeepcoinCore) WatchMyTrades(optionalArgs ...interface{}) <- chan in
             _ = params
             var messageHash interface{} = "myTrades"
         
-            retRes8008 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes8008)
+            retRes7948 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes7948)
             if ccxt.IsTrue(!ccxt.IsEqual(symbol, nil)) {
                 symbol = this.Symbol(symbol)
                 messageHash = ccxt.Add(messageHash, ccxt.Add("::", symbol))
@@ -1058,7 +1052,6 @@ func  (this *DeepcoinCore) HandleMyTrade(client interface{}, message interface{}
         var stored interface{} = this.MyTrades
         var parsed interface{} = this.ParseWsTrade(data, market)
         stored.(ccxt.Appender).Append(parsed)
-        this.StreamProduce("myTrades", parsed)
         client.(ccxt.ClientInterface).Resolve(stored, messageHash)
         client.(ccxt.ClientInterface).Resolve(stored, symbolMessageHash)
     }
@@ -1089,8 +1082,8 @@ func  (this *DeepcoinCore) WatchOrders(optionalArgs ...interface{}) <- chan inte
             _ = params
             var messageHash interface{} = "orders"
         
-            retRes8788 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes8788)
+            retRes8718 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes8718)
             if ccxt.IsTrue(!ccxt.IsEqual(symbol, nil)) {
                 symbol = this.Symbol(symbol)
                 messageHash = ccxt.Add(messageHash, ccxt.Add("::", symbol))
@@ -1154,7 +1147,6 @@ func  (this *DeepcoinCore) HandleOrder(client interface{}, message interface{}) 
         }
         var parsed interface{} = this.ParseWsOrder(data, market)
         this.Orders.(ccxt.Appender).Append(parsed)
-        this.StreamProduce("orders", parsed)
         client.(ccxt.ClientInterface).Resolve(this.Orders, messageHash)
         client.(ccxt.ClientInterface).Resolve(this.Orders, symbolMessageHash)
     }
@@ -1248,8 +1240,8 @@ func  (this *DeepcoinCore) WatchPositions(optionalArgs ...interface{}) <- chan i
             params := ccxt.GetArg(optionalArgs, 3, map[string]interface{} {})
             _ = params
         
-            retRes10188 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes10188)
+            retRes10108 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes10108)
         
             listenKey:= (<-this.Authenticate())
             ccxt.PanicOnError(listenKey)
@@ -1319,7 +1311,6 @@ func  (this *DeepcoinCore) HandlePosition(client interface{}, message interface{
         }
         var parsed interface{} = this.ParseWsPosition(data, market)
         this.Positions.(ccxt.Appender).Append(parsed)
-        this.StreamProduce("positions", parsed)
         client.(ccxt.ClientInterface).Resolve(this.Positions, messageHash)
         client.(ccxt.ClientInterface).Resolve(this.Positions, symbolMessageHash)
     }
@@ -1397,7 +1388,6 @@ func  (this *DeepcoinCore) ParseWsMarginMode(marginMode interface{}) interface{}
     return this.SafeString(modes, marginMode, marginMode)
 }
 func  (this *DeepcoinCore) HandleMessage(client interface{}, message interface{})  {
-    this.StreamProduce("raw", message)
     if ccxt.IsTrue(ccxt.IsEqual(message, "pong")) {
         this.HandlePong(client, message)
     } else {
@@ -1500,8 +1490,7 @@ func  (this *DeepcoinCore) HandleErrorMessage(client interface{}, message interf
                         }
                         ret_ = func(this *DeepcoinCore) interface{} {
                             // catch block:
-                                    this.StreamProduce("errors", nil, e)
-            client.(ccxt.ClientInterface).Reject(e, messageHash)
+                                    client.(ccxt.ClientInterface).Reject(e, messageHash)
                             return nil
                         }(this)
                     }

@@ -285,7 +285,6 @@ class deepcoin extends \ccxt\async\deepcoin {
         $parsedTicker = $this->parse_ws_ticker($data, $market);
         $messageHash = 'ticker' . '::' . $symbol;
         $this->tickers[$symbol] = $parsedTicker;
-        $this->stream_produce('tickers', $parsedTicker);
         $client->resolve ($parsedTicker, $messageHash);
     }
 
@@ -430,7 +429,6 @@ class deepcoin extends \ccxt\async\deepcoin {
         if ($data !== null) {
             $trade = $this->parse_ws_trade($data, $market);
             $strored->append ($trade);
-            $this->stream_produce('trades', $trade);
         }
         $messageHash = 'trades' . '::' . $symbol;
         $client->resolve ($strored, $messageHash);
@@ -613,8 +611,6 @@ class deepcoin extends \ccxt\async\deepcoin {
         if ($data !== null) {
             $ohlcv = $this->parse_ws_ohlcv($data, $market);
             $stored->append ($ohlcv);
-            $ohlcvs = $this->create_stream_ohlcv($symbol, $timeframe, $ohlcv);
-            $this->stream_produce('ohlcvs', $ohlcvs);
         }
         $messageHash = 'ohlcv' . '::' . $symbol . '::' . $timeframe;
         $client->resolve ($stored, $messageHash);
@@ -726,7 +722,6 @@ class deepcoin extends \ccxt\async\deepcoin {
         } else {
             $this->handle_order_book_message($client, $message, $orderbook);
             $messageHash = 'orderbook' . '::' . $symbol;
-            $this->stream_produce('orderbooks', $orderbook);
             $client->resolve ($orderbook, $messageHash);
         }
     }
@@ -767,7 +762,6 @@ class deepcoin extends \ccxt\async\deepcoin {
         }
         $orderbook->cache = array();
         $messageHash = 'orderbook' . '::' . $symbol;
-        $this->stream_produce('orderbooks', $orderbook);
         $client->resolve ($orderbook, $messageHash);
     }
 
@@ -886,7 +880,6 @@ class deepcoin extends \ccxt\async\deepcoin {
             $stored = $this->myTrades;
             $parsed = $this->parse_ws_trade($data, $market);
             $stored->append ($parsed);
-            $this->stream_produce('myTrades', $parsed);
             $client->resolve ($stored, $messageHash);
             $client->resolve ($stored, $symbolMessageHash);
         }
@@ -965,7 +958,6 @@ class deepcoin extends \ccxt\async\deepcoin {
             }
             $parsed = $this->parse_ws_order($data, $market);
             $this->orders.append ($parsed);
-            $this->stream_produce('orders', $parsed);
             $client->resolve ($this->orders, $messageHash);
             $client->resolve ($this->orders, $symbolMessageHash);
         }
@@ -1109,7 +1101,6 @@ class deepcoin extends \ccxt\async\deepcoin {
             }
             $parsed = $this->parse_ws_position($data, $market);
             $this->positions.append ($parsed);
-            $this->stream_produce('positions', $parsed);
             $client->resolve ($this->positions, $messageHash);
             $client->resolve ($this->positions, $symbolMessageHash);
         }
@@ -1189,7 +1180,6 @@ class deepcoin extends \ccxt\async\deepcoin {
     }
 
     public function handle_message(Client $client, $message) {
-        $this->stream_produce('raw', $message);
         if ($message === 'pong') {
             $this->handle_pong($client, $message);
         } else {
@@ -1290,7 +1280,6 @@ class deepcoin extends \ccxt\async\deepcoin {
             $this->throw_broadly_matched_exception($this->exceptions['broad'], $messageText, $feedback);
             throw new ExchangeError($feedback);
         } catch (Exception $e) {
-            $this->stream_produce('errors', null, $e);
             $client->reject ($e, $messageHash);
         }
     }

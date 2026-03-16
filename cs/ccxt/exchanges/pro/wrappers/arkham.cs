@@ -6,11 +6,6 @@ namespace ccxt.pro;
 public class  Arkham: arkham { public Arkham(object args = null) : base(args) { } }
 public partial class arkham
 {
-    public async Task<Dictionary<string, object>> Subscribe(string messageHash, string rawChannel, Dictionary<string, object> parameters)
-    {
-        var res = await this.subscribe(messageHash, rawChannel, parameters);
-        return ((Dictionary<string, object>)res);
-    }
     /// <summary>
     /// watches a price ticker, a statistical calculation with the information calculated over the past 24 hours for a specific market
     /// </summary>

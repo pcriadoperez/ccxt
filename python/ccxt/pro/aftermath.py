@@ -117,7 +117,6 @@ class aftermath(ccxt.async_support.aftermath):
         messageHash = market['id'] + '@trade'
         trades = self.trades[symbol]
         trades.append(trade)
-        self.stream_produce('trades', trade)
         self.trades[symbol] = trades
         client.resolve(trades, messageHash)
 
@@ -174,7 +173,6 @@ class aftermath(ccxt.async_support.aftermath):
             nonce = self.safe_integer(message, 'nonce')
             if nonce == (prevNonce + 1):
                 self.handle_order_book_message(client, message, orderbook)
-                self.stream_produce('orderbooks', orderbook)
                 client.resolve(orderbook, topic)
 
     async def fetch_order_book_snapshot(self, client, message, subscription):
@@ -192,10 +190,8 @@ class aftermath(ccxt.async_support.aftermath):
             orderbook = self.orderbooks[symbol]
             orderbook.reset(snapshot)
             self.orderbooks[symbol] = orderbook
-            self.stream_produce('orderbooks', orderbook)
             client.resolve(orderbook, messageHash)
         except Exception as e:
-            self.stream_produce('orderbooks', None, e)
             del client.subscriptions[messageHash]
             client.reject(e, messageHash)
 
@@ -312,7 +308,6 @@ class aftermath(ccxt.async_support.aftermath):
         market = self.safe_market(symbol)
         position = self.parse_position(message, market)
         cache.append(position)
-        self.stream_produce('positions', position)
         messageHash = 'positions::' + market['symbol']
         client.resolve(position, messageHash)
         client.resolve([position], 'positions')
@@ -328,7 +323,6 @@ class aftermath(ccxt.async_support.aftermath):
                     self.throw_exactly_matched_exception(self.exceptions['exact'], message, feedback)
                     raise ExchangeError(message)
                 except Exception as error:
-                    self.stream_produce('errors', None, error)
                     if isinstance(error, AuthenticationError):
                         messageHash = 'authenticated'
                         client.reject(error, messageHash)
@@ -340,7 +334,6 @@ class aftermath(ccxt.async_support.aftermath):
         return False
 
     def handle_message(self, client: Client, message):
-        self.stream_produce('raw', message)
         if self.handle_error_message(client, message):
             return
         # methods: Dict = {

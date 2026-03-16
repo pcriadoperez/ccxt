@@ -234,7 +234,6 @@ class htx(ccxt.async_support.htx):
         ticker['datetime'] = self.iso8601(timestamp)
         symbol = ticker['symbol']
         self.tickers[symbol] = ticker
-        self.stream_produce('tickers', ticker)
         client.resolve(ticker, ch)
         return message
 
@@ -318,7 +317,6 @@ class htx(ccxt.async_support.htx):
         for i in range(0, len(data)):
             trade = self.parse_trade(data[i], market)
             tradesCache.append(trade)
-            self.stream_produce('trades', trade)
         client.resolve(tradesCache, ch)
         return message
 
@@ -402,8 +400,6 @@ class htx(ccxt.async_support.htx):
             self.ohlcvs[symbol][timeframe] = stored
         tick = self.safe_value(message, 'tick')
         parsed = self.parse_ohlcv(tick, market)
-        ohlcvs = self.create_stream_ohlcv(symbol, timeframe, parsed)
-        self.stream_produce('ohlcvs', ohlcvs)
         stored.append(parsed)
         client.resolve(stored, ch)
 
@@ -514,7 +510,6 @@ class htx(ccxt.async_support.htx):
             subscription['lastTimestamp'] = snapshotTimestamp
             snapshotLimit = self.safe_integer(subscription, 'limit')
             snapshotOrderBook = self.order_book(snapshot, snapshotLimit)
-            self.stream_produce('orderbooks', snapshotOrderBook)
             client.resolve(snapshotOrderBook, id)
             if (sequence is None) or (nonce < sequence):
                 maxAttempts = self.handle_option('watchOrderBook', 'maxRetries', 3)
@@ -538,12 +533,10 @@ class htx(ccxt.async_support.htx):
                     self.handle_order_book_message(client, messages[i])
                 orderbook.cache = []
                 self.orderbooks[symbol] = orderbook
-                self.stream_produce('orderbooks', orderbook)
                 client.resolve(orderbook, messageHash)
         except Exception as e:
             del client.subscriptions[messageHash]
             del self.orderbooks[symbol]
-            self.stream_produce('errors', None, e)
             client.reject(e, messageHash)
 
     async def watch_order_book_snapshot(self, client, message, subscription):
@@ -577,7 +570,6 @@ class htx(ccxt.async_support.htx):
             return orderbook.limit()
         except Exception as e:
             del client.subscriptions[messageHash]
-            self.stream_produce('errors', None, e)
             client.reject(e, messageHash)
         return None
 
@@ -751,7 +743,6 @@ class htx(ccxt.async_support.htx):
             orderbook.cache.append(message)
         else:
             self.handle_order_book_message(client, message)
-            self.stream_produce('orderbooks', orderbook)
             client.resolve(orderbook, messageHash)
 
     def handle_order_book_subscription(self, client: Client, message, subscription):
@@ -1075,7 +1066,6 @@ class htx(ccxt.async_support.htx):
             self.orders = ArrayCacheBySymbolById(limit)
         cachedOrders = self.orders
         cachedOrders.append(parsedOrder)
-        self.stream_produce('orders', parsedOrder)
         client.resolve(self.orders, messageHash)
         # when we make a global subscription(for contracts only) our message hash can't have a symbol/currency attached
         # so we're removing it here
@@ -1408,7 +1398,6 @@ class htx(ccxt.async_support.htx):
             position['datetime'] = self.iso8601(timestamp)
             newPositions.append(position)
             cache.append(position)
-            self.stream_produce('positions', position)
         messageHashes = self.find_message_hashes(client, marginMode + ':positions::')
         for i in range(0, len(messageHashes)):
             messageHash = messageHashes[i]
@@ -1639,7 +1628,6 @@ class htx(ccxt.async_support.htx):
             account['total'] = self.safe_string(data, 'balance')
             self.balance[code] = account
             self.balance = self.safe_balance(self.balance)
-            self.stream_produce('balances', self.balance)
             client.resolve(self.balance, channel)
         else:
             # contract balance
@@ -1685,7 +1673,6 @@ class htx(ccxt.async_support.htx):
                 self.balance[code] = unifiedAccount
                 self.balance = self.safe_balance(self.balance)
                 client.resolve(self.balance, 'accounts_unify')
-                self.stream_produce('balances', self.balance)
             elif subType == 'linear':
                 margin = self.safe_string(subscription, 'margin')
                 if margin == 'cross':
@@ -1733,7 +1720,6 @@ class htx(ccxt.async_support.htx):
                     account['used'] = self.safe_string(balance, 'margin_frozen')
                     self.balance[code] = account
                     self.balance = self.safe_balance(self.balance)
-            self.stream_produce('balances', self.balance)
             client.resolve(self.balance, messageHash)
 
     def handle_subscription_status(self, client: Client, message):
@@ -1932,7 +1918,6 @@ class htx(ccxt.async_support.htx):
                 await client.send({'op': 'pong', 'ts': pingTs})
         except Exception as e:
             error = NetworkError(self.id + ' pong failed ' + self.exception_message(e))
-            self.stream_produce('errors', None, error)
             client.reset(error)
 
     def handle_ping(self, client: Client, message):
@@ -2006,7 +1991,6 @@ class htx(ccxt.async_support.htx):
                     raise ExchangeError(self.json(message))
                 except Exception as e:
                     messageHash = self.safe_string(subscription, 'messageHash')
-                    self.stream_produce('errors', None, e)
                     client.reject(e, messageHash)
                     client.reject(e, id)
                     if id in client.subscriptions:
@@ -2027,11 +2011,9 @@ class htx(ccxt.async_support.htx):
                     return False
                 else:
                     client.reject(e)
-                self.stream_produce('errors', None, e)
         return True
 
     def handle_message(self, client: Client, message):
-        self.stream_produce('raw', message)
         if self.handle_error_message(client, message):
             #
             #     {"id":1583414227,"status":"ok","subbed":"market.btcusdt.mbp.150","ts":1583414229143}
@@ -2177,7 +2159,6 @@ class htx(ccxt.async_support.htx):
                 symbol = self.safe_string(parsed, 'symbol')
                 if symbol is not None:
                     cachedTrades.append(parsed)
-                    self.stream_produce('myTrades', parsed)
                     client.resolve(self.myTrades, messageHash)
             else:
                 # self trades object is artificially created
@@ -2188,10 +2169,9 @@ class htx(ccxt.async_support.htx):
                 for i in range(0, len(rawTrades)):
                     trade = rawTrades[i]
                     parsedTrade = self.parse_trade(trade, market)
-                    # add extra params(side, type, *) coming from the order
+                    # add extra params(side, type, ...) coming from the order
                     parsedTrade = self.extend(parsedTrade, extendParams)
                     cachedTrades.append(parsedTrade)
-                    self.stream_produce('myTrades', parsedTrade)
                 # messageHash here is the orders one, so
                 # we have to recreate the trades messageHash = orderMessageHash + ':' + 'trade'
                 tradesHash = messageHash + ':' + 'trade'

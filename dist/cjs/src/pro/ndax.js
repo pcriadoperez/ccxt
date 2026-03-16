@@ -102,7 +102,6 @@ class ndax extends ndax$1["default"] {
         this.tickers[symbol] = ticker;
         const name = 'SubscribeLevel1';
         const messageHash = name + ':' + market['id'];
-        this.streamProduce('tickers', ticker);
         client.resolve(ticker, messageHash);
     }
     /**
@@ -175,7 +174,6 @@ class ndax extends ndax$1["default"] {
                 tradesArray = new Cache.ArrayCache(limit);
             }
             tradesArray.append(trade);
-            this.streamProduce('trades', trade);
             this.trades[symbol] = tradesArray;
             updates[symbol] = true;
         }
@@ -317,12 +315,6 @@ class ndax extends ndax$1["default"] {
                 const market = this.safeMarket(marketId);
                 const symbol = market['symbol'];
                 const stored = this.safeValue(this.ohlcvs[symbol], timeframe, []);
-                const storedLength = stored.length;
-                if (storedLength > 0) {
-                    const lastOhlcv = stored[storedLength - 1];
-                    const ohlcvs = this.createStreamOHLCV(symbol, timeframe, lastOhlcv);
-                    this.streamProduce('ohlcvs', ohlcvs);
-                }
                 client.resolve(stored, messageHash);
             }
         }
@@ -450,7 +442,6 @@ class ndax extends ndax$1["default"] {
         const name = 'SubscribeLevel2';
         const messageHash = name + ':' + marketId;
         this.orderbooks[symbol] = orderbook;
-        this.streamProduce('orderbooks', orderbook);
         client.resolve(orderbook, messageHash);
     }
     handleOrderBookSubscription(client, message, subscription) {
@@ -485,7 +476,6 @@ class ndax extends ndax$1["default"] {
         const orderbook = this.orderBook(snapshot, limit);
         this.orderbooks[symbol] = orderbook;
         const messageHash = this.safeString(subscription, 'messageHash');
-        this.streamProduce('orderbooks', orderbook);
         client.resolve(orderbook, messageHash);
     }
     handleSubscriptionStatus(client, message) {
@@ -530,7 +520,6 @@ class ndax extends ndax$1["default"] {
         //         "o": "[[2,1,1608208308265,0,20782.49,1,25000,8,1,1]]"
         //     }
         //
-        this.streamProduce('raw', message);
         const payload = this.safeString(message, 'o');
         if (payload === undefined) {
             return;
