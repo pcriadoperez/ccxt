@@ -874,6 +874,7 @@ class kucoin extends Exchange {
                     'spot' => 'trade',
                     'margin' => 'margin',
                     'cross' => 'margin',
+                    'marginV2' => 'margin',
                     'isolated' => 'isolated',
                     'main' => 'main',
                     'funding' => 'main',
@@ -1169,6 +1170,7 @@ class kucoin extends Exchange {
                     'inverse' => null,
                 ),
             ),
+            'rollingWindowSize' => 30000.0,  // https://www.kucoin.com/docs-new/rate-limit
         ));
     }
 

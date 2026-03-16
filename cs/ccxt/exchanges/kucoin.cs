@@ -776,6 +776,7 @@ public partial class kucoin : Exchange
                     { "spot", "trade" },
                     { "margin", "margin" },
                     { "cross", "margin" },
+                    { "marginV2", "margin" },
                     { "isolated", "isolated" },
                     { "main", "main" },
                     { "funding", "main" },
@@ -1000,6 +1001,7 @@ public partial class kucoin : Exchange
                     { "inverse", null },
                 } },
             } },
+            { "rollingWindowSize", 30000 },
         });
     }
 

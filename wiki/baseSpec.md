@@ -3002,6 +3002,7 @@ fetches historical funding rate prices
 * [paradex](/exchanges/paradex.md#fetchfundingratehistory)
 * [phemex](/exchanges/phemex.md#fetchfundingratehistory)
 * [toobit](/exchanges/toobit.md#fetchfundingratehistory)
+* [whitebit](/exchanges/whitebit.md#fetchfundingratehistory)
 * [woo](/exchanges/woo.md#fetchfundingratehistory)
 * [woofipro](/exchanges/woofipro.md#fetchfundingratehistory)
 * [xt](/exchanges/xt.md#fetchfundingratehistory)
@@ -4067,6 +4068,7 @@ retrieves the open interest of a contract trading pair
 * [bitfinex](/exchanges/bitfinex.md#fetchopeninterest)
 * [bitget](/exchanges/bitget.md#fetchopeninterest)
 * [bitmart](/exchanges/bitmart.md#fetchopeninterest)
+* [bullish](/exchanges/bullish.md#fetchopeninterest)
 * [bybit](/exchanges/bybit.md#fetchopeninterest)
 * [delta](/exchanges/delta.md#fetchopeninterest)
 * [deribit](/exchanges/deribit.md#fetchopeninterest)
@@ -6311,6 +6313,7 @@ returns [enableUnifiedMargin, enableUnifiedAccount] so the user can check if uni
 
 ##### Supported exchanges
 * [bybit](/exchanges/bybit.md#isunifiedenabled)
+* [hyperliquid](/exchanges/hyperliquid.md#isunifiedenabled)
 
 ---
 
@@ -6371,6 +6374,24 @@ calculates the presumptive fee that would be charged for an order
 
 ##### Supported exchanges
 * [&lt;anonymous&gt;](/exchanges/&lt;anonymous&gt;.md#market)
+
+---
+
+<a name="preLoadLighterLibrary" id="preloadlighterlibrary"></a>
+
+## preLoadLighterLibrary
+if the required credentials are available in options, it will pre-load the lighter Signer to avoid delaying sensitive calls like createOrder the first time they're executed
+
+**Kind**: instance   
+**Returns**: <code>boolean</code> - true if the signer was loaded, false otherwise
+
+
+| Param |
+| --- |
+| params | 
+
+##### Supported exchanges
+* [lighter](/exchanges/lighter.md#preloadlighterlibrary)
 
 ---
 
@@ -6980,6 +7001,7 @@ unWatches information on multiple trades made by the user
 ##### Supported exchanges
 * [bybit](/exchanges/bybit.md#unwatchmytrades)
 * [hyperliquid](/exchanges/hyperliquid.md#unwatchmytrades)
+* [lighter](/exchanges/lighter.md#unwatchmytrades)
 
 ---
 
@@ -7662,6 +7684,7 @@ watches information on multiple trades made by the user
 * [htx](/exchanges/htx.md#watchmytrades)
 * [hyperliquid](/exchanges/hyperliquid.md#watchmytrades)
 * [kucoin](/exchanges/kucoin.md#watchmytrades)
+* [lighter](/exchanges/lighter.md#watchmytrades)
 * [mexc](/exchanges/mexc.md#watchmytrades)
 * [modetrade](/exchanges/modetrade.md#watchmytrades)
 * [okx](/exchanges/okx.md#watchmytrades)

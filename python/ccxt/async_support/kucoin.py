@@ -889,6 +889,7 @@ class kucoin(Exchange, ImplicitAPI):
                     'spot': 'trade',
                     'margin': 'margin',
                     'cross': 'margin',
+                    'marginV2': 'margin',
                     'isolated': 'isolated',
                     'main': 'main',
                     'funding': 'main',
@@ -1184,6 +1185,7 @@ class kucoin(Exchange, ImplicitAPI):
                     'inverse': None,
                 },
             },
+            'rollingWindowSize': 30000.0,  # https://www.kucoin.com/docs-new/rate-limit
         })
 
     def nonce(self):
