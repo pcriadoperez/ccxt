@@ -241,7 +241,6 @@ class htx extends \ccxt\async\htx {
         $ticker['datetime'] = $this->iso8601($timestamp);
         $symbol = $ticker['symbol'];
         $this->tickers[$symbol] = $ticker;
-        $this->stream_produce('tickers', $ticker);
         $client->resolve ($ticker, $ch);
         return $message;
     }
@@ -334,7 +333,6 @@ class htx extends \ccxt\async\htx {
         for ($i = 0; $i < count($data); $i++) {
             $trade = $this->parse_trade($data[$i], $market);
             $tradesCache->append ($trade);
-            $this->stream_produce('trades', $trade);
         }
         $client->resolve ($tradesCache, $ch);
         return $message;
@@ -428,8 +426,6 @@ class htx extends \ccxt\async\htx {
         }
         $tick = $this->safe_value($message, 'tick');
         $parsed = $this->parse_ohlcv($tick, $market);
-        $ohlcvs = $this->create_stream_ohlcv($symbol, $timeframe, $parsed);
-        $this->stream_produce('ohlcvs', $ohlcvs);
         $stored->append ($parsed);
         $client->resolve ($stored, $ch);
     }
@@ -553,7 +549,6 @@ class htx extends \ccxt\async\htx {
             $subscription['lastTimestamp'] = $snapshotTimestamp;
             $snapshotLimit = $this->safe_integer($subscription, 'limit');
             $snapshotOrderBook = $this->order_book($snapshot, $snapshotLimit);
-            $this->stream_produce('orderbooks', $snapshotOrderBook);
             $client->resolve ($snapshotOrderBook, $id);
             if (($sequence === null) || ($nonce < $sequence)) {
                 $maxAttempts = $this->handle_option('watchOrderBook', 'maxRetries', 3);
@@ -580,13 +575,11 @@ class htx extends \ccxt\async\htx {
                 }
                 $orderbook->cache = array();
                 $this->orderbooks[$symbol] = $orderbook;
-                $this->stream_produce('orderbooks', $orderbook);
                 $client->resolve ($orderbook, $messageHash);
             }
         } catch (Exception $e) {
             unset($client->subscriptions[$messageHash]);
             unset($this->orderbooks[$symbol]);
-            $this->stream_produce('errors', null, $e);
             $client->reject ($e, $messageHash);
         }
     }
@@ -623,7 +616,6 @@ class htx extends \ccxt\async\htx {
                 return $orderbook->limit ();
             } catch (Exception $e) {
                 unset($client->subscriptions[$messageHash]);
-                $this->stream_produce('errors', null, $e);
                 $client->reject ($e, $messageHash);
             }
             return null;
@@ -809,7 +801,6 @@ class htx extends \ccxt\async\htx {
             $orderbook->cache[] = $message;
         } else {
             $this->handle_order_book_message($client, $message);
-            $this->stream_produce('orderbooks', $orderbook);
             $client->resolve ($orderbook, $messageHash);
         }
     }
@@ -1160,7 +1151,6 @@ class htx extends \ccxt\async\htx {
         }
         $cachedOrders = $this->orders;
         $cachedOrders->append ($parsedOrder);
-        $this->stream_produce('orders', $parsedOrder);
         $client->resolve ($this->orders, $messageHash);
         // when we make a global subscription (for contracts only) our $message hash can't have a symbol/currency attached
         // so we're removing it here
@@ -1512,7 +1502,6 @@ class htx extends \ccxt\async\htx {
             $position['datetime'] = $this->iso8601($timestamp);
             $newPositions[] = $position;
             $cache->append ($position);
-            $this->stream_produce('positions', $position);
         }
         $messageHashes = $this->find_message_hashes($client, $marginMode . ':$positions::');
         for ($i = 0; $i < count($messageHashes); $i++) {
@@ -1758,7 +1747,6 @@ class htx extends \ccxt\async\htx {
             $account['total'] = $this->safe_string($data, 'balance');
             $this->balance[$code] = $account;
             $this->balance = $this->safe_balance($this->balance);
-            $this->stream_produce('balances', $this->balance);
             $client->resolve ($this->balance, $channel);
         } else {
             // contract $balance
@@ -1806,7 +1794,6 @@ class htx extends \ccxt\async\htx {
                 $this->balance[$code] = $unifiedAccount;
                 $this->balance = $this->safe_balance($this->balance);
                 $client->resolve ($this->balance, 'accounts_unify');
-                $this->stream_produce('balances', $this->balance);
             } elseif ($subType === 'linear') {
                 $margin = $this->safe_string($subscription, 'margin');
                 if ($margin === 'cross') {
@@ -1861,7 +1848,6 @@ class htx extends \ccxt\async\htx {
                     $this->balance = $this->safe_balance($this->balance);
                 }
             }
-            $this->stream_produce('balances', $this->balance);
             $client->resolve ($this->balance, $messageHash);
         }
     }
@@ -2084,7 +2070,6 @@ class htx extends \ccxt\async\htx {
                 }
             } catch (Exception $e) {
                 $error = new NetworkError ($this->id . ' pong failed ' . $this->exception_message($e));
-                $this->stream_produce('errors', null, $error);
                 $client->reset ($error);
             }
         }) ();
@@ -2163,7 +2148,6 @@ class htx extends \ccxt\async\htx {
                     throw new ExchangeError($this->json($message));
                 } catch (Exception $e) {
                     $messageHash = $this->safe_string($subscription, 'messageHash');
-                    $this->stream_produce('errors', null, $e);
                     $client->reject ($e, $messageHash);
                     $client->reject ($e, $id);
                     if (is_array($client->subscriptions) && array_key_exists($id, $client->subscriptions)) {
@@ -2190,14 +2174,12 @@ class htx extends \ccxt\async\htx {
                 } else {
                     $client->reject ($e);
                 }
-                $this->stream_produce('errors', null, $e);
             }
         }
         return true;
     }
 
     public function handle_message(Client $client, $message) {
-        $this->stream_produce('raw', $message);
         if ($this->handle_error_message($client, $message)) {
             //
             //     array("id":1583414227,"status":"ok","subbed":"market.btcusdt.mbp.150","ts":1583414229143)
@@ -2358,7 +2340,6 @@ class htx extends \ccxt\async\htx {
                 $symbol = $this->safe_string($parsed, 'symbol');
                 if ($symbol !== null) {
                     $cachedTrades->append ($parsed);
-                    $this->stream_produce('myTrades', $parsed);
                     $client->resolve ($this->myTrades, $messageHash);
                 }
             } else {
@@ -2373,7 +2354,6 @@ class htx extends \ccxt\async\htx {
                     // add extra params (side, type, ...) coming from the order
                     $parsedTrade = $this->extend($parsedTrade, $extendParams);
                     $cachedTrades->append ($parsedTrade);
-                    $this->stream_produce('myTrades', $parsedTrade);
                 }
                 // $messageHash here is the orders one, so
                 // we have to recreate the trades $messageHash = orderMessageHash . ':' . 'trade'

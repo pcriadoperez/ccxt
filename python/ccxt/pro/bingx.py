@@ -261,7 +261,6 @@ class bingx(ccxt.async_support.bingx):
         symbol = market['symbol']
         ticker = self.parse_ws_ticker(data, market)
         self.tickers[symbol] = ticker
-        self.stream_produce('tickers', ticker)
         client.resolve(ticker, self.get_message_hash('ticker', symbol))
         if self.safe_string(message, 'dataType') == 'all@ticker':
             client.resolve(ticker, self.get_message_hash('ticker'))
@@ -509,7 +508,6 @@ class bingx(ccxt.async_support.bingx):
             self.trades[symbol] = stored
         for j in range(0, len(trades)):
             stored.append(trades[j])
-            self.stream_produce('trades', trades[j])
         client.resolve(stored, messageHash)
 
     async def watch_order_book(self, symbol: str, limit: Int = None, params={}) -> OrderBook:
@@ -689,7 +687,6 @@ class bingx(ccxt.async_support.bingx):
         snapshot['nonce'] = nonce
         orderbook.reset(snapshot)
         messageHash = self.get_message_hash('orderbook', symbol)
-        self.stream_produce('orderbooks', orderbook)
         client.resolve(orderbook, messageHash)
         # resolve for "all"
         if isAllEndpoint:
@@ -820,8 +817,6 @@ class bingx(ccxt.async_support.bingx):
             candle = candles[i]
             parsed = self.parse_ws_ohlcv(candle, market)
             stored.append(parsed)
-            ohlcvs = self.create_stream_ohlcv(symbol, unifiedTimeframe, parsed)
-            self.stream_produce('ohlcvs', ohlcvs)
         resolveData = [symbol, unifiedTimeframe, stored]
         messageHash = self.get_message_hash('ohlcv', symbol, unifiedTimeframe)
         client.resolve(resolveData, messageHash)
@@ -1232,7 +1227,7 @@ class bingx(ccxt.async_support.bingx):
         #         "E": 1696244249320,
         #         "a": {
         #             "m": "ORDER",
-        #             "B": [*],
+        #             "B": [...],
         #             "P": [
         #                 {
         #                     "s": "LINK-USDT",
@@ -1291,7 +1286,6 @@ class bingx(ccxt.async_support.bingx):
                 feedback = self.id + ' ' + self.json(message)
                 self.throw_exactly_matched_exception(self.exceptions['exact'], code, feedback)
         except Exception as e:
-            self.stream_produce('errors', None, e)
             client.reject(e)
         return True
 
@@ -1314,7 +1308,6 @@ class bingx(ccxt.async_support.bingx):
                 messageHashes = list(client.futures.keys())
                 for j in range(0, len(messageHashes)):
                     messageHash = messageHashes[j]
-                    self.stream_produce('errors', None, error)
                     client.reject(error, messageHash)
             self.options['listenKey'] = None
             self.options['lastAuthenticatedTime'] = 0
@@ -1355,7 +1348,6 @@ class bingx(ccxt.async_support.bingx):
                 })
         except Exception as e:
             error = NetworkError(self.id + ' pong failed with error ' + self.exception_message(e))
-            self.stream_produce('errors', None, error)
             client.reset(error)
 
     def handle_order(self, client, message):
@@ -1454,7 +1446,6 @@ class bingx(ccxt.async_support.bingx):
         spotHash = 'spot:order'
         swapHash = 'swap:order'
         messageHash = spotHash if (isSpot) else swapHash
-        self.stream_produce('orders', parsedOrder)
         client.resolve(stored, messageHash)
         client.resolve(stored, messageHash + ':' + symbol)
 
@@ -1531,7 +1522,6 @@ class bingx(ccxt.async_support.bingx):
         swapHash = 'swap:mytrades'
         messageHash = spotHash if isSpot else swapHash
         cachedTrades.append(parsed)
-        self.stream_produce('myTrades', parsed)
         client.resolve(cachedTrades, messageHash)
         client.resolve(cachedTrades, messageHash + ':' + symbol)
 
@@ -1591,11 +1581,9 @@ class bingx(ccxt.async_support.bingx):
             account['free'] = self.safe_string(balance, 'wb')
             self.balance[type][code] = account
         self.balance[type] = self.safe_balance(self.balance[type])
-        self.stream_produce('balances', self.balance[type])
         client.resolve(self.balance[type], type + ':balance')
 
     def handle_message(self, client: Client, message):
-        self.stream_produce('raw', message)
         if not self.handle_error_message(client, message):
             return
         # public subscriptions

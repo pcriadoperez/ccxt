@@ -352,7 +352,6 @@ class okx extends \ccxt\async\okx {
                 $this->trades[$symbol] = $stored;
             }
             $stored->append ($trade);
-            $this->stream_produce('trades', $trade);
             $client->resolve ($stored, $messageHash);
         }
     }
@@ -631,7 +630,6 @@ class okx extends \ccxt\async\okx {
         for ($i = 0; $i < count($data); $i++) {
             $ticker = $this->parse_ticker($data[$i]);
             $this->tickers[$symbol] = $ticker;
-            $this->stream_produce('tickers', $ticker);
             $newTickers[$symbol] = $ticker;
         }
         $messageHash = $channel . '::' . $symbol;
@@ -823,7 +821,6 @@ class okx extends \ccxt\async\okx {
             }
             $cache = $this->liquidations;
             $cache->append ($liquidation);
-            $this->stream_produce('liquidations', $liquidation);
             $client->resolve (array( $liquidation ), 'liquidations');
             $client->resolve (array( $liquidation ), 'liquidations::' . $symbol);
         }
@@ -925,7 +922,6 @@ class okx extends \ccxt\async\okx {
             }
             $cache = $this->liquidations;
             $cache->append ($liquidation);
-            $this->stream_produce('myLiquidations', $liquidation);
             $client->resolve (array( $liquidation ), 'myLiquidations');
             $client->resolve (array( $liquidation ), 'myLiquidations::' . $symbol);
         }
@@ -1175,8 +1171,6 @@ class okx extends \ccxt\async\okx {
             }
             $stored->append ($parsed);
             $messageHash = $channel . ':' . $market['id'];
-            $ohlcvs = $this->create_stream_ohlcv($symbol, $timeframe, $parsed);
-            $this->stream_produce('ohlcvs', $ohlcvs);
             $client->resolve ($stored, $messageHash);
             // for multiOHLCV we need special object, to other "multi"
             // methods, because OHLCV response item does not contain $symbol
@@ -1432,7 +1426,6 @@ class okx extends \ccxt\async\okx {
                 if ($symbol !== null) {
                     unset($this->orderbooks[$symbol]);
                 }
-                $this->stream_produce('orderbooks::' . $symbol, null, $error);
                 $client->reject ($error, $messageHash);
             }
         }
@@ -1552,7 +1545,6 @@ class okx extends \ccxt\async\okx {
                 $this->orderbooks[$symbol] = $orderbook;
                 $orderbook['symbol'] = $symbol;
                 $this->handle_order_book_message($client, $update, $orderbook, $messageHash);
-                $this->stream_produce('orderbooks', $orderbook);
                 $client->resolve ($orderbook, $messageHash);
             }
         } elseif ($action === 'update') {
@@ -1561,7 +1553,6 @@ class okx extends \ccxt\async\okx {
                 for ($i = 0; $i < count($data); $i++) {
                     $update = $data[$i];
                     $this->handle_order_book_message($client, $update, $orderbook, $messageHash, $market);
-                    $this->stream_produce('orderbooks', $orderbook);
                     $client->resolve ($orderbook, $messageHash);
                 }
             }
@@ -1575,7 +1566,6 @@ class okx extends \ccxt\async\okx {
                 $timestamp = $this->safe_integer($update, 'ts');
                 $snapshot = $this->parse_order_book($update, $symbol, $timestamp, 'bids', 'asks', 0, 1);
                 $orderbook->reset ($snapshot);
-                $this->stream_produce('orderbooks', $orderbook);
                 $client->resolve ($orderbook, $messageHash);
             }
         }
@@ -1688,7 +1678,6 @@ class okx extends \ccxt\async\okx {
         $oldBalance = $this->safe_value($this->balance, $type, array());
         $newBalance = $this->deep_extend($oldBalance, $balance);
         $this->balance[$type] = $this->safe_balance($newBalance);
-        $this->stream_produce('balances', $this->balance[$type]);
         $client->resolve ($this->balance[$type], $channel);
     }
 
@@ -1901,10 +1890,8 @@ class okx extends \ccxt\async\okx {
                 $shortPosition['side'] = 'short';
                 $cache->append ($shortPosition);
                 $newPositions[] = $shortPosition;
-                $this->stream_produce('positions', $shortPosition);
             }
             $newPositions[] = $position;
-            $this->stream_produce('positions', $position);
             $cache->append ($position);
         }
         $messageHash = $channel;
@@ -2038,7 +2025,6 @@ class okx extends \ccxt\async\okx {
             for ($i = 0; $i < count($parsed); $i++) {
                 $order = $parsed[$i];
                 $stored->append ($order);
-                $this->stream_produce('orders', $order);
                 $symbol = $order['symbol'];
                 $market = $this->market($symbol);
                 $marketIds[] = $market['id'];
@@ -2133,7 +2119,6 @@ class okx extends \ccxt\async\okx {
             $rawTrade = $filteredOrders[$i];
             $trade = $this->order_to_trade($rawTrade);
             $myTrades->append ($trade);
-            $this->stream_produce('myTrades', $trade);
             $symbol = $trade['symbol'];
             $symbols[$symbol] = true;
         }
@@ -2493,7 +2478,6 @@ class okx extends \ccxt\async\okx {
     }
 
     public function handle_message(Client $client, $message) {
-        $this->stream_produce('raw', $message);
         if (!$this->handle_error_message($client, $message)) {
             return;
         }

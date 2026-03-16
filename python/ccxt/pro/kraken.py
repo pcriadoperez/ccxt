@@ -524,7 +524,6 @@ class kraken(ccxt.async_support.kraken):
             'info': ticker,
         })
         self.tickers[symbol] = result
-        self.stream_produce('tickers', result)
         client.resolve(result, messageHash)
 
     def handle_trades(self, client: Client, message):
@@ -558,7 +557,6 @@ class kraken(ccxt.async_support.kraken):
         parsed = self.parse_trades(data, market)
         for i in range(0, len(parsed)):
             stored.append(parsed[i])
-            self.stream_produce('trades', parsed[i])
         client.resolve(stored, messageHash)
 
     def handle_ohlcv(self, client: Client, message):
@@ -612,8 +610,6 @@ class kraken(ccxt.async_support.kraken):
                 self.safe_string(candle, 'close'),
                 self.safe_string(candle, 'volume'),
             ]
-            ohlcvs = self.create_stream_ohlcv(symbol, timeframe, parsed)
-            self.stream_produce('ohlcvs', ohlcvs)
             stored.append(parsed)
         client.resolve(stored, messageHash)
 
@@ -936,10 +932,8 @@ class kraken(ccxt.async_support.kraken):
                 error = ChecksumError(self.id + ' ' + self.orderbook_checksum_message(symbol))
                 del client.subscriptions[messageHash]
                 del self.orderbooks[symbol]
-                self.stream_produce('errors', None, error)
                 client.reject(error, messageHash)
                 return
-        self.stream_produce('orderbooks', orderbook)
         client.resolve(orderbook, messageHash)
 
     def custom_handle_deltas(self, bookside, deltas):
@@ -1110,7 +1104,6 @@ class kraken(ccxt.async_support.kraken):
                 stored.append(parsed)
                 symbol = parsed['symbol']
                 symbols[symbol] = True
-                self.stream_produce('myTrades', parsed)
             name = 'myTrades'
             client.resolve(self.myTrades, name)
             keys = list(symbols.keys())
@@ -1240,7 +1233,6 @@ class kraken(ccxt.async_support.kraken):
                     symbolsByOrderId = self.safe_value(self.options, 'symbolsByOrderId', {})
                     if first['id'] in symbolsByOrderId:
                         del symbolsByOrderId[first['id']]
-                self.stream_produce('orders', newOrder)
                 stored.append(newOrder)
                 if symbol is not None:
                     symbols[symbol] = True
@@ -1407,7 +1399,6 @@ class kraken(ccxt.async_support.kraken):
         newBalance = self.deep_extend(oldBalance, balance)
         self.balance[type] = self.safe_balance(newBalance)
         channel = self.safe_string(message, 'channel')
-        self.stream_produce('balances', self.balance[type])
         client.resolve(self.balance[type], channel)
 
     def get_message_hash(self, unifiedElementName: str, subChannelName: Str = None, symbol: Str = None):
@@ -1485,14 +1476,12 @@ class kraken(ccxt.async_support.kraken):
                 exception = ExchangeError(errorMessage)  # c# requirement to convert the errorMessage to string
             else:
                 exception = broad[broadKey](errorMessage)
-            self.stream_produce('errors', None, exception)
             if requestId is not None:
                 client.reject(exception, requestId)
             return False
         return True
 
     def handle_message(self, client: Client, message):
-        self.stream_produce('raw', message)
         channel = self.safe_string(message, 'channel')
         if channel is not None:
             if channel == 'executions':

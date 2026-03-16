@@ -248,8 +248,6 @@ class bitfinex(ccxt.async_support.bitfinex):
             ohlcv = ohlcvs[ohlcvsLength - i - 1]
             parsed = self.parse_ohlcv(ohlcv, market)
             stored.append(parsed)
-            streamOhlcvs = self.create_stream_ohlcv(symbol, timeframe, parsed)
-            self.stream_produce('ohlcvs', streamOhlcvs)
         client.resolve(stored, messageHash)
 
     async def watch_trades(self, symbol: str, since: Int = None, limit: Int = None, params={}) -> List[Trade]:
@@ -346,7 +344,6 @@ class bitfinex(ccxt.async_support.bitfinex):
         tradesArray = self.myTrades
         tradesArray.append(trade)
         self.myTrades = tradesArray
-        self.stream_produce('myTrades', trade)
         # generic subscription
         client.resolve(tradesArray, name)
         # specific subscription
@@ -403,7 +400,6 @@ class bitfinex(ccxt.async_support.bitfinex):
                 index = length - i - 1
                 parsed = self.parse_ws_trade(trades[index], market)
                 stored.append(parsed)
-                self.stream_produce('trades', parsed)
         else:
             # update
             type = self.safe_string(message, 1)
@@ -414,7 +410,6 @@ class bitfinex(ccxt.async_support.bitfinex):
             trade = self.safe_value(message, 2, [])
             parsed = self.parse_ws_trade(trade, market)
             stored.append(parsed)
-            self.stream_produce('trades', trade)
         client.resolve(stored, messageHash)
 
     def parse_ws_trade(self, trade, market=None):
@@ -540,7 +535,6 @@ class bitfinex(ccxt.async_support.bitfinex):
         messageHash = channel + ':' + marketId
         self.tickers[symbol] = parsed
         client.resolve(parsed, messageHash)
-        self.stream_produce('tickers', parsed)
 
     def parse_ws_ticker(self, ticker, market=None):
         #
@@ -672,7 +666,6 @@ class bitfinex(ccxt.async_support.bitfinex):
                     side = 'asks' if (amount < 0) else 'bids'
                     bookside = orderbook[side]
                     bookside.storeArray([price, size, counter])
-            self.stream_produce('orderbooks', orderbook)
             orderbook['symbol'] = symbol
             client.resolve(orderbook, messageHash)
         else:
@@ -697,7 +690,6 @@ class bitfinex(ccxt.async_support.bitfinex):
                 side = 'asks' if Precise.string_lt(amount, '0') else 'bids'
                 bookside = orderbookItem[side]
                 bookside.storeArray([self.parse_number(price), self.parse_number(size), self.parse_number(counter)])
-            self.stream_produce('orderbooks', orderbook)
             client.resolve(orderbook, messageHash)
 
     def handle_checksum(self, client: Client, message, subscription):
@@ -838,7 +830,6 @@ class bitfinex(ccxt.async_support.bitfinex):
         for i in range(0, len(updatesKeys)):
             type = updatesKeys[i]
             messageHash = 'balance:' + type
-            self.stream_produce('balances', self.balance[type])
             client.resolve(self.balance[type], messageHash)
 
     def parse_ws_balance(self, balance):
@@ -969,7 +960,6 @@ class bitfinex(ccxt.async_support.bitfinex):
         else:
             error = AuthenticationError(self.json(message))
             client.reject(error, messageHash)
-            self.stream_produce('errors', None, error)
             # allows further authentication attempts
             if messageHash in client.subscriptions:
                 del client.subscriptions[messageHash]
@@ -1051,11 +1041,9 @@ class bitfinex(ccxt.async_support.bitfinex):
                 symbol = parsed['symbol']
                 symbolIds[symbol] = True
                 orders.append(parsed)
-                self.stream_produce('orders', parsed)
         else:
             parsed = self.parse_ws_order(data)
             orders.append(parsed)
-            self.stream_produce('orders', parsed)
             symbol = parsed['symbol']
             symbolIds[symbol] = True
         name = 'orders'
@@ -1161,7 +1149,6 @@ class bitfinex(ccxt.async_support.bitfinex):
         }, market)
 
     def handle_message(self, client: Client, message):
-        self.stream_produce('raw', message)
         channelId = self.safe_string(message, 0)
         #
         #     [

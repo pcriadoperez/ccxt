@@ -491,7 +491,6 @@ func  (this *CoincatchCore) HandleTicker(client interface{}, message interface{}
     var symbol interface{} = ccxt.GetValue(market, "symbol")
     ccxt.AddElementToObject(this.Tickers, symbol, ticker)
     var messageHash interface{} = ccxt.Add(hash, symbol)
-    this.StreamProduce("tickers", ticker)
     client.(ccxt.ClientInterface).Resolve(ccxt.GetValue(this.Tickers, symbol), messageHash)
 }
 func  (this *CoincatchCore) ParseWsTicker(ticker interface{}, optionalArgs ...interface{}) interface{}  {
@@ -597,8 +596,8 @@ func  (this *CoincatchCore) WatchOHLCV(symbol interface{}, optionalArgs ...inter
             params := ccxt.GetArg(optionalArgs, 3, map[string]interface{} {})
             _ = params
         
-            retRes4428 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes4428)
+            retRes4418 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes4418)
             var market interface{} = this.Market(symbol)
             var timeframes interface{} = ccxt.GetValue(this.Options, "timeframesForWs")
             var channel interface{} = ccxt.Add("candle", this.SafeString(timeframes, timeframe))
@@ -644,15 +643,15 @@ func  (this *CoincatchCore) UnWatchOHLCV(symbol interface{}, optionalArgs ...int
             params := ccxt.GetArg(optionalArgs, 1, map[string]interface{} {})
             _ = params
         
-            retRes4718 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes4718)
+            retRes4708 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes4708)
             var timeframes interface{} = ccxt.GetValue(this.Options, "timeframesForWs")
             var interval interface{} = this.SafeString(timeframes, timeframe)
             var channel interface{} = ccxt.Add("candle", interval)
         
-                retRes47515 :=  (<-this.UnWatchChannel(symbol, channel, ccxt.Add("ohlcv:", interval), params))
-                ccxt.PanicOnError(retRes47515)
-                ch <- retRes47515
+                retRes47415 :=  (<-this.UnWatchChannel(symbol, channel, ccxt.Add("ohlcv:", interval), params))
+                ccxt.PanicOnError(retRes47415)
+                ch <- retRes47415
                 return nil
         
             }()
@@ -699,7 +698,6 @@ func  (this *CoincatchCore) HandleOHLCV(client interface{}, message interface{})
     for i := 0; ccxt.IsLessThan(i, ccxt.GetArrayLength(data)); i++ {
         var candle interface{} = this.SafeList(data, i, []interface{}{})
         var parsed interface{} = this.ParseWsOHLCV(candle, market)
-        this.StreamProduce("ohlcvs", parsed)
         stored.(ccxt.Appender).Append(parsed)
     }
     var messageHash interface{} = ccxt.Add(ccxt.Add(ccxt.Add(hash, symbol), ":"), timeframe)
@@ -740,9 +738,9 @@ func  (this *CoincatchCore) WatchOrderBook(symbol interface{}, optionalArgs ...i
             params := ccxt.GetArg(optionalArgs, 1, map[string]interface{} {})
             _ = params
         
-                retRes55815 :=  (<-this.WatchOrderBookForSymbols([]interface{}{symbol}, limit, params))
-                ccxt.PanicOnError(retRes55815)
-                ch <- retRes55815
+                retRes55615 :=  (<-this.WatchOrderBookForSymbols([]interface{}{symbol}, limit, params))
+                ccxt.PanicOnError(retRes55615)
+                ch <- retRes55615
                 return nil
         
             }()
@@ -766,8 +764,8 @@ func  (this *CoincatchCore) UnWatchOrderBook(symbol interface{}, optionalArgs ..
                     params := ccxt.GetArg(optionalArgs, 0, map[string]interface{} {})
             _ = params
         
-            retRes5728 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes5728)
+            retRes5708 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes5708)
             var channel interface{} = "books"
             var limit interface{} = this.SafeInteger(params, "limit")
             if ccxt.IsTrue(ccxt.IsTrue((ccxt.IsEqual(limit, 5))) || ccxt.IsTrue((ccxt.IsEqual(limit, 15)))) {
@@ -775,9 +773,9 @@ func  (this *CoincatchCore) UnWatchOrderBook(symbol interface{}, optionalArgs ..
                 channel = ccxt.Add(channel, ccxt.ToString(limit))
             }
         
-                retRes57915 :=  (<-this.UnWatchChannel(symbol, channel, channel, params))
-                ccxt.PanicOnError(retRes57915)
-                ch <- retRes57915
+                retRes57715 :=  (<-this.UnWatchChannel(symbol, channel, channel, params))
+                ccxt.PanicOnError(retRes57715)
+                ch <- retRes57715
                 return nil
         
             }()
@@ -803,8 +801,8 @@ func  (this *CoincatchCore) WatchOrderBookForSymbols(symbols interface{}, option
             params := ccxt.GetArg(optionalArgs, 1, map[string]interface{} {})
             _ = params
         
-            retRes5938 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes5938)
+            retRes5918 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes5918)
             symbols = this.MarketSymbols(symbols)
             var channel interface{} = "books"
             var topics interface{} = []interface{}{}
@@ -908,7 +906,6 @@ func  (this *CoincatchCore) HandleOrderBook(client interface{}, message interfac
         orderbook.(ccxt.OrderBookInterface).Reset(parsedOrderbook)
         ccxt.AddElementToObject(this.Orderbooks, symbol, orderbook)
     }
-    this.StreamProduce("orderbooks", ccxt.GetValue(this.Orderbooks, symbol))
     client.(ccxt.ClientInterface).Resolve(ccxt.GetValue(this.Orderbooks, symbol), messageHash)
 }
 func  (this *CoincatchCore) HandleCheckSumError(client interface{}, symbol interface{}, messageHash interface{}) <- chan interface{} {
@@ -917,10 +914,9 @@ func  (this *CoincatchCore) HandleCheckSumError(client interface{}, symbol inter
                 defer close(ch)
                 defer ccxt.ReturnPanicError(ch)
                 
-            retRes6948 := (<-this.UnWatchOrderBook(symbol))
-            ccxt.PanicOnError(retRes6948)
+            retRes6918 := (<-this.UnWatchOrderBook(symbol))
+            ccxt.PanicOnError(retRes6918)
             error := ccxt.ChecksumError(ccxt.Add(ccxt.Add(this.Id, " "), this.OrderbookChecksumMessage(symbol)))
-            this.StreamProduce("errors", nil, error)
             client.(ccxt.ClientInterface).Reject(error, messageHash)
                 return nil
             }()
@@ -959,9 +955,9 @@ func  (this *CoincatchCore) WatchTrades(symbol interface{}, optionalArgs ...inte
             params := ccxt.GetArg(optionalArgs, 2, map[string]interface{} {})
             _ = params
         
-                retRes72415 :=  (<-this.WatchTradesForSymbols([]interface{}{symbol}, since, limit, params))
-                ccxt.PanicOnError(retRes72415)
-                ch <- retRes72415
+                retRes72015 :=  (<-this.WatchTradesForSymbols([]interface{}{symbol}, since, limit, params))
+                ccxt.PanicOnError(retRes72015)
+                ch <- retRes72015
                 return nil
         
             }()
@@ -994,8 +990,8 @@ func  (this *CoincatchCore) WatchTradesForSymbols(symbols interface{}, optionalA
                 panic(ccxt.ArgumentsRequired(ccxt.Add(this.Id, " watchTradesForSymbols() requires a non-empty array of symbols")))
             }
         
-            retRes7438 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes7438)
+            retRes7398 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes7398)
             symbols = this.MarketSymbols(symbols)
             var topics interface{} = []interface{}{}
             var messageHashes interface{} = []interface{}{}
@@ -1045,12 +1041,12 @@ func  (this *CoincatchCore) UnWatchTrades(symbol interface{}, optionalArgs ...in
                     params := ccxt.GetArg(optionalArgs, 0, map[string]interface{} {})
             _ = params
         
-            retRes7788 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes7788)
+            retRes7748 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes7748)
         
-                retRes77915 :=  (<-this.UnWatchChannel(symbol, "trade", "trade", params))
-                ccxt.PanicOnError(retRes77915)
-                ch <- retRes77915
+                retRes77515 :=  (<-this.UnWatchChannel(symbol, "trade", "trade", params))
+                ccxt.PanicOnError(retRes77515)
+                ch <- retRes77515
                 return nil
         
             }()
@@ -1084,7 +1080,6 @@ func  (this *CoincatchCore) HandleTrades(client interface{}, message interface{}
         for i := 0; ccxt.IsLessThan(i, ccxt.GetArrayLength(data)); i++ {
             var trade interface{} = this.SafeList(data, i)
             var parsed interface{} = this.ParseWsTrade(trade, market)
-            this.StreamProduce("trades", parsed)
             stored.(ccxt.Appender).Append(parsed)
         }
     }
@@ -1156,9 +1151,9 @@ func  (this *CoincatchCore) WatchBalance(optionalArgs ...interface{}) <- chan in
             }
             var messageHash interface{} = ccxt.Add("balance:", ccxt.ToLower(instType))
         
-                retRes87115 :=  (<-this.WatchPrivate(messageHash, messageHash, args, params))
-                ccxt.PanicOnError(retRes87115)
-                ch <- retRes87115
+                retRes86615 :=  (<-this.WatchPrivate(messageHash, messageHash, args, params))
+                ccxt.PanicOnError(retRes86615)
+                ch <- retRes86615
                 return nil
         
             }()
@@ -1217,7 +1212,6 @@ func  (this *CoincatchCore) HandleBalance(client interface{}, message interface{
     var arg interface{} = this.SafeDict(message, "arg")
     var instType interface{} = this.SafeStringLower(arg, "instType")
     var messageHash interface{} = ccxt.Add("balance:", instType)
-    this.StreamProduce("balances", this.Balance)
     client.(ccxt.ClientInterface).Resolve(this.Balance, messageHash)
 }
 /**
@@ -1251,8 +1245,8 @@ func  (this *CoincatchCore) WatchOrders(optionalArgs ...interface{}) <- chan int
             _ = params
             var methodName interface{} = "watchOrders"
         
-            retRes9498 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes9498)
+            retRes9438 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes9438)
             var market interface{} = nil
             var marketId interface{} = nil
             if ccxt.IsTrue(!ccxt.IsEqual(symbol, nil)) {
@@ -1401,7 +1395,6 @@ func  (this *CoincatchCore) HandleOrder(client interface{}, message interface{})
         stored.(ccxt.Appender).Append(parsed)
         symbol = ccxt.GetValue(parsed, "symbol")
         var messageHash interface{} = ccxt.Add("orders:", symbol)
-        this.StreamProduce("orders", parsed)
         client.(ccxt.ClientInterface).Resolve(stored, messageHash)
     }
     client.(ccxt.ClientInterface).Resolve(stored, hash)
@@ -1528,8 +1521,8 @@ func  (this *CoincatchCore) WatchPositions(optionalArgs ...interface{}) <- chan 
             params := ccxt.GetArg(optionalArgs, 3, map[string]interface{} {})
             _ = params
         
-            retRes12028 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes12028)
+            retRes11958 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes11958)
             symbols = this.MarketSymbols(symbols, "swap")
             var messageHashes interface{} = []interface{}{}
             var hash interface{} = "positions"
@@ -1649,7 +1642,6 @@ func  (this *CoincatchCore) HandlePositions(client interface{}, message interfac
                     ccxt.AppendToArray(&positionsForSymbol, position)
                 }
             }
-            this.StreamProduce("positions", positionsForSymbol)
             client.(ccxt.ClientInterface).Resolve(positionsForSymbol, messageHash)
         }
     }
@@ -1752,13 +1744,11 @@ func  (this *CoincatchCore) HandleErrorMessage(client interface{}, message inter
                             // catch block:
                                     if ccxt.IsTrue(ccxt.IsInstance(e, ccxt.AuthenticationError)) {
                 var messageHash interface{} = "authenticated"
-                this.StreamProduce("errors", nil, e)
                 client.(ccxt.ClientInterface).Reject(e, messageHash)
                 if ccxt.IsTrue(ccxt.InOp(client.(ccxt.ClientInterface).GetSubscriptions(), messageHash)) {
                     ccxt.Remove(client.(ccxt.ClientInterface).GetSubscriptions(), messageHash)
                 }
             } else {
-                this.StreamProduce("errors", nil, e)
                 client.(ccxt.ClientInterface).Reject(e)
             }
             return true
@@ -1786,7 +1776,6 @@ func  (this *CoincatchCore) HandleErrorMessage(client interface{}, message inter
             }
 }
 func  (this *CoincatchCore) HandleMessage(client interface{}, message interface{})  {
-    this.StreamProduce("raw", message)
     // todo handle with subscribe and unsubscribe
     if ccxt.IsTrue(this.HandleErrorMessage(client, message)) {
         return

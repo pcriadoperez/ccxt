@@ -475,7 +475,6 @@ class coinbase extends \ccxt\async\coinbase {
                 $symbol = $result['symbol'];
                 $this->tickers[$symbol] = $result;
                 $newTickers[] = $result;
-                $this->stream_produce('tickers', $result);
                 $messageHash = $channel . '::' . $symbol;
                 $client->resolve ($result, $messageHash);
                 $this->try_resolve_usdc($client, $messageHash, $result);
@@ -752,9 +751,7 @@ class coinbase extends \ccxt\async\coinbase {
             $currentTrades = $this->safe_list($currentEvent, 'trades');
             for ($j = 0; $j < count($currentTrades); $j++) {
                 $item = $currentTrades[$i];
-                $parsedTrade = $this->parse_trade($item);
-                $tradesArray->append ($parsedTrade);
-                $this->stream_produce('trades', $parsedTrade);
+                $tradesArray->append ($this->parse_trade($item));
             }
         }
         $client->resolve ($tradesArray, $messageHash);
@@ -807,7 +804,6 @@ class coinbase extends \ccxt\async\coinbase {
                 if (!(is_array($marketIds) && array_key_exists($marketId, $marketIds))) {
                     $marketIds[] = $marketId;
                 }
-                $this->stream_produce('orders', $parsed);
                 $cachedOrders->append ($parsed);
             }
         }
@@ -938,7 +934,6 @@ class coinbase extends \ccxt\async\coinbase {
             $orderbook['timestamp'] = $this->parse8601($datetime);
             $orderbook['datetime'] = $datetime;
             $orderbook['symbol'] = $symbol;
-            $this->stream_produce('orderbooks', $orderbook);
             $client->resolve ($orderbook, $messageHash);
             $this->try_resolve_usdc($client, $messageHash, $orderbook);
         }
@@ -1011,7 +1006,6 @@ class coinbase extends \ccxt\async\coinbase {
     }
 
     public function handle_message($client, $message) {
-        $this->stream_produce('raw', $message);
         $channel = $this->safe_string($message, 'channel');
         $methods = array(
             'subscriptions' => array($this, 'handle_subscription_status'),
@@ -1024,10 +1018,8 @@ class coinbase extends \ccxt\async\coinbase {
         );
         $type = $this->safe_string($message, 'type');
         if ($type === 'error') {
-            $errorMessage = $this->safe_string($message, 'message', '');
-            $err = new ExchangeError ($this->id . $errorMessage);
-            $this->stream_produce('errors', null, $err);
-            throw $err;
+            $errorMessage = $this->safe_string($message, 'message');
+            throw new ExchangeError($errorMessage);
         }
         $method = $this->safe_value($methods, $channel);
         if ($method) {

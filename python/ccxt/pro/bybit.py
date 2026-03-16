@@ -593,7 +593,6 @@ class bybit(ccxt.async_support.bybit):
         parsed['datetime'] = self.iso8601(timestamp)
         self.tickers[symbol] = parsed
         messageHash = 'ticker:' + symbol
-        self.stream_produce('tickers', parsed)
         client.resolve(self.tickers[symbol], messageHash)
 
     async def watch_bids_asks(self, symbols: Strings = None, params={}) -> Tickers:
@@ -786,8 +785,6 @@ class bybit(ccxt.async_support.bybit):
         for i in range(0, len(data)):
             parsed = self.parse_ws_ohlcv(data[i], market)
             stored.append(parsed)
-            ohlcvs = self.create_stream_ohlcv(symbol, timeframe, parsed)
-            self.stream_produce('ohlcvs', ohlcvs)
         messageHash = 'ohlcv::' + symbol + '::' + timeframe
         resolveData = [symbol, timeframe, stored]
         client.resolve(resolveData, messageHash)
@@ -933,7 +930,7 @@ class bybit(ccxt.async_support.bybit):
         #         "data": {
         #             "s": "BTCUSDT",
         #             "b": [
-        #        ,
+        #                 ...,
         #                 [
         #                     "16493.50",
         #                     "0.006"
@@ -985,7 +982,6 @@ class bybit(ccxt.async_support.bybit):
             orderbook['datetime'] = self.iso8601(timestamp)
         messageHash = 'orderbook' + ':' + symbol
         self.orderbooks[symbol] = orderbook
-        self.stream_produce('orderbooks', orderbook)
         client.resolve(orderbook, messageHash)
         if limit == '1':
             bidask = self.parse_ws_bid_ask(self.orderbooks[symbol], market)
@@ -1127,7 +1123,6 @@ class bybit(ccxt.async_support.bybit):
         for j in range(0, len(trades)):
             parsed = self.parse_ws_trade(trades[j], market)
             stored.append(parsed)
-            self.stream_produce('trades', parsed)
         messageHash = 'trade' + ':' + symbol
         client.resolve(stored, messageHash)
 
@@ -1391,7 +1386,6 @@ class bybit(ccxt.async_support.bybit):
             symbol = parsed['symbol']
             symbols[symbol] = True
             trades.append(parsed)
-            self.stream_produce('myTrades', parsed)
         keys = list(symbols.keys())
         for i in range(0, len(keys)):
             currentMessageHash = 'myTrades:' + keys[i]
@@ -1462,7 +1456,6 @@ class bybit(ccxt.async_support.bybit):
             for ii in range(0, len(positions)):
                 position = positions[ii]
                 cache.append(position)
-                self.stream_produce('positions', position)
         # don't remove the future from the .futures cache
         if messageHash in client.futures:
             future = client.futures[messageHash]
@@ -1525,15 +1518,12 @@ class bybit(ccxt.async_support.bybit):
                 # closing update, adding both sides to "reset" both sides
                 # since we don't know which side is being closed
                 position['side'] = 'long'
-                self.stream_produce('positions', position)
                 cache.append(position)
                 position['side'] = 'short'
-                self.stream_produce('positions', position)
                 cache.append(position)
                 position['side'] = None
             else:
                 # regular update
-                self.stream_produce('positions', position)
                 cache.append(position)
         messageHashes = self.find_message_hashes(client, 'positions::')
         for i in range(0, len(messageHashes)):
@@ -1637,7 +1627,6 @@ class bybit(ccxt.async_support.bybit):
                     self.liquidations = ArrayCache(limit)
                 cache = self.liquidations
                 cache.append(liquidation)
-                self.stream_produce('liquidations', liquidation)
                 client.resolve([liquidation], 'liquidations')
                 client.resolve([liquidation], 'liquidations::' + symbol)
         else:
@@ -1651,7 +1640,6 @@ class bybit(ccxt.async_support.bybit):
                 self.liquidations = ArrayCache(limit)
             cache = self.liquidations
             cache.append(liquidation)
-            self.stream_produce('liquidations', liquidation)
             client.resolve([liquidation], 'liquidations')
             client.resolve([liquidation], 'liquidations::' + symbol)
 
@@ -1877,7 +1865,6 @@ class bybit(ccxt.async_support.bybit):
             # }
             symbol = parsed['symbol']
             symbols[symbol] = True
-            self.stream_produce('orders', parsed)
             orders.append(parsed)
         symbolsArray = list(symbols.keys())
         for i in range(0, len(symbolsArray)):
@@ -2110,7 +2097,6 @@ class bybit(ccxt.async_support.bybit):
             self.balance[account]['datetime'] = self.iso8601(timestamp)
             self.balance[account] = self.safe_balance(self.balance[account])
             messageHash = 'balances:' + account
-            self.stream_produce('balances', self.balance[account])
             client.resolve(self.balance[account], messageHash)
         else:
             self.balance['info'] = info
@@ -2119,7 +2105,6 @@ class bybit(ccxt.async_support.bybit):
             self.balance['datetime'] = self.iso8601(timestamp)
             self.balance = self.safe_balance(self.balance)
             messageHash = 'balances'
-            self.stream_produce('balances', self.balance)
             client.resolve(self.balance, messageHash)
 
     def parse_ws_balance(self, balance, accountType=None):
@@ -2280,11 +2265,9 @@ class bybit(ccxt.async_support.bybit):
             else:
                 messageHash = self.safe_string(message, 'reqId')
                 client.reject(error, messageHash)
-            self.stream_produce('errors', None, error)
             return True
 
     def handle_message(self, client: Client, message):
-        self.stream_produce('raw', message)
         topic = self.safe_string_2(message, 'topic', 'op', '')
         if self.handle_error_message(client, message):
             return
@@ -2403,7 +2386,6 @@ class bybit(ccxt.async_support.bybit):
             future.resolve(True)
         else:
             error = AuthenticationError(self.id + ' ' + self.json(message))
-            self.stream_produce('errors', None, error)
             client.reject(error, messageHash)
             if messageHash in client.subscriptions:
                 del client.subscriptions[messageHash]

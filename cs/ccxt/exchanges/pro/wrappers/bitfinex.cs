@@ -6,16 +6,6 @@ namespace ccxt.pro;
 public class  Bitfinex: bitfinex { public Bitfinex(object args = null) : base(args) { } }
 public partial class bitfinex
 {
-    public async Task<Dictionary<string, object>> Subscribe(object channel, object symbol, Dictionary<string, object> parameters = null)
-    {
-        var res = await this.subscribe(channel, symbol, parameters);
-        return ((Dictionary<string, object>)res);
-    }
-    public async Task<Dictionary<string, object>> SubscribePrivate(object messageHash)
-    {
-        var res = await this.subscribePrivate(messageHash);
-        return ((Dictionary<string, object>)res);
-    }
     /// <summary>
     /// watches historical candlestick data containing the open, high, low, and close price, and the volume of a market
     /// </summary>

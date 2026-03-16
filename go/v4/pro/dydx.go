@@ -162,7 +162,6 @@ func  (this *DydxCore) HandleTrades(client interface{}, message interface{})  {
     for i := 0; ccxt.IsLessThan(i, ccxt.GetArrayLength(parsedTrades)); i++ {
         var parsed interface{} = ccxt.GetValue(parsedTrades, i)
         stored.(ccxt.Appender).Append(parsed)
-        this.StreamProduce("trades", parsed)
     }
     var messageHash interface{} = ccxt.Add(ccxt.Add("trade", ":"), symbol)
     client.(ccxt.ClientInterface).Resolve(stored, messageHash)
@@ -218,8 +217,8 @@ func  (this *DydxCore) WatchOrderBook(symbol interface{}, optionalArgs ...interf
             params := ccxt.GetArg(optionalArgs, 1, map[string]interface{} {})
             _ = params
         
-            retRes1728 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes1728)
+            retRes1718 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes1718)
             var url interface{} = ccxt.GetValue(ccxt.GetValue(this.Urls, "api"), "ws")
             var market interface{} = this.Market(symbol)
             var messageHash interface{} = ccxt.Add("orderbook:", ccxt.GetValue(market, "symbol"))
@@ -255,8 +254,8 @@ func  (this *DydxCore) UnWatchOrderBook(symbol interface{}, optionalArgs ...inte
                     params := ccxt.GetArg(optionalArgs, 0, map[string]interface{} {})
             _ = params
         
-            retRes1958 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes1958)
+            retRes1948 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes1948)
             var url interface{} = ccxt.GetValue(ccxt.GetValue(this.Urls, "api"), "ws")
             var market interface{} = this.Market(symbol)
             var messageHash interface{} = ccxt.Add("orderbook:", ccxt.GetValue(market, "symbol"))
@@ -266,9 +265,9 @@ func  (this *DydxCore) UnWatchOrderBook(symbol interface{}, optionalArgs ...inte
                 "id": ccxt.GetValue(market, "id"),
             }
         
-                retRes20415 :=  (<-this.Watch(url, messageHash, this.Extend(request, params), messageHash))
-                ccxt.PanicOnError(retRes20415)
-                ch <- retRes20415
+                retRes20315 :=  (<-this.Watch(url, messageHash, this.Extend(request, params), messageHash))
+                ccxt.PanicOnError(retRes20315)
+                ch <- retRes20315
                 return nil
         
             }()
@@ -314,7 +313,6 @@ func  (this *DydxCore) HandleOrderBook(client interface{}, message interface{}) 
     ccxt.AddElementToObject(orderbook, "nonce", this.SafeInteger(message, "message_id"))
     var messageHash interface{} = ccxt.Add("orderbook:", symbol)
     ccxt.AddElementToObject(this.Orderbooks, symbol, orderbook)
-    this.StreamProduce("orderbooks", orderbook)
     client.(ccxt.ClientInterface).Resolve(orderbook, messageHash)
 }
 func  (this *DydxCore) HandleDelta(bookside interface{}, delta interface{})  {
@@ -353,8 +351,8 @@ func  (this *DydxCore) WatchOHLCV(symbol interface{}, optionalArgs ...interface{
             params := ccxt.GetArg(optionalArgs, 3, map[string]interface{} {})
             _ = params
         
-            retRes2758 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes2758)
+            retRes2738 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes2738)
             var url interface{} = ccxt.GetValue(ccxt.GetValue(this.Urls, "api"), "ws")
             var market interface{} = this.Market(symbol)
             var messageHash interface{} = ccxt.Add("ohlcv:", ccxt.GetValue(market, "symbol"))
@@ -398,8 +396,8 @@ func  (this *DydxCore) UnWatchOHLCV(symbol interface{}, optionalArgs ...interfac
             params := ccxt.GetArg(optionalArgs, 1, map[string]interface{} {})
             _ = params
         
-            retRes3048 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes3048)
+            retRes3028 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes3028)
             var url interface{} = ccxt.GetValue(ccxt.GetValue(this.Urls, "api"), "ws")
             var market interface{} = this.Market(symbol)
             var messageHash interface{} = ccxt.Add("ohlcv:", ccxt.GetValue(market, "symbol"))
@@ -410,9 +408,9 @@ func  (this *DydxCore) UnWatchOHLCV(symbol interface{}, optionalArgs ...interfac
                 "id": ccxt.Add(ccxt.Add(ccxt.GetValue(market, "id"), "/"), resolution),
             }
         
-                retRes31415 :=  (<-this.Watch(url, messageHash, this.Extend(request, params), messageHash))
-                ccxt.PanicOnError(retRes31415)
-                ch <- retRes31415
+                retRes31215 :=  (<-this.Watch(url, messageHash, this.Extend(request, params), messageHash))
+                ccxt.PanicOnError(retRes31215)
+                ch <- retRes31215
                 return nil
         
             }()
@@ -490,8 +488,6 @@ func  (this *DydxCore) HandleOHLCV(client interface{}, message interface{})  {
         ccxt.AddElementToObject(ccxt.GetValue(this.Ohlcvs, symbol), timeframe, stored)
     }
     stored.(ccxt.Appender).Append(parsed)
-    var ohlcvs interface{} = this.CreateStreamOHLCV(symbol, timeframe, parsed)
-    this.StreamProduce("ohlcvs", ohlcvs)
     client.(ccxt.ClientInterface).Resolve(stored, messageHash)
 }
 func  (this *DydxCore) HandleErrorMessage(client interface{}, message interface{}) interface{}  {
@@ -505,8 +501,7 @@ func  (this *DydxCore) HandleErrorMessage(client interface{}, message interface{
                         }
                         ret_ = func(this *DydxCore) interface{} {
                             // catch block:
-                                    this.StreamProduce("errors", nil, e)
-            client.(ccxt.ClientInterface).Reject(e)
+                                    client.(ccxt.ClientInterface).Reject(e)
                             return nil
                         }(this)
                     }
@@ -521,7 +516,6 @@ func  (this *DydxCore) HandleErrorMessage(client interface{}, message interface{
     return true
 }
 func  (this *DydxCore) HandleMessage(client interface{}, message interface{})  {
-    this.StreamProduce("raw", message)
     var typeVar interface{} = this.SafeString(message, "type")
     if ccxt.IsTrue(ccxt.IsEqual(typeVar, "error")) {
         this.HandleErrorMessage(client, message)

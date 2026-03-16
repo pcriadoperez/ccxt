@@ -33,16 +33,6 @@ public partial class krakenfutures
         var res = await this.watchOrderBookForSymbols(symbols, limit, parameters);
         return ((ccxt.pro.IOrderBook) res).Copy();
     }
-    public async Task<Dictionary<string, object>> SubscribePublic(string name, List<string> symbols, Dictionary<string, object> parameters = null)
-    {
-        var res = await this.subscribePublic(name, symbols, parameters);
-        return ((Dictionary<string, object>)res);
-    }
-    public async Task<Dictionary<string, object>> SubscribePrivate(string name, string messageHash, Dictionary<string, object> parameters = null)
-    {
-        var res = await this.subscribePrivate(name, messageHash, parameters);
-        return ((Dictionary<string, object>)res);
-    }
     /// <summary>
     /// watches a price ticker, a statistical calculation with the information calculated over the past 24 hours for a specific market
     /// </summary>

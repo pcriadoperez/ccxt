@@ -115,7 +115,6 @@ func  (this *IndependentreserveCore) HandleTrades(client interface{}, message in
     }
     var trade interface{} = this.ParseWsTrade(data)
     stored.(ccxt.Appender).Append(trade)
-    this.StreamProduce("trades", trade)
     ccxt.AddElementToObject(this.Trades, symbol, stored)
     client.(ccxt.ClientInterface).Resolve(ccxt.GetValue(this.Trades, symbol), messageHash)
 }
@@ -171,8 +170,8 @@ func  (this *IndependentreserveCore) WatchOrderBook(symbol interface{}, optional
             params := ccxt.GetArg(optionalArgs, 1, map[string]interface{} {})
             _ = params
         
-            retRes1408 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes1408)
+            retRes1398 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes1398)
             var market interface{} = this.Market(symbol)
             symbol = ccxt.GetValue(market, "symbol")
             if ccxt.IsTrue(ccxt.IsEqual(limit, nil)) {
@@ -271,13 +270,11 @@ func  (this *IndependentreserveCore) HandleOrderBook(client interface{}, message
             error := ccxt.ChecksumError(ccxt.Add(ccxt.Add(this.Id, " "), this.OrderbookChecksumMessage(symbol)))
             ccxt.Remove(client.(ccxt.ClientInterface).GetSubscriptions(), messageHash)
             ccxt.Remove(this.Orderbooks, symbol)
-            this.StreamProduce(ccxt.Add("orderbooks::", symbol), nil, error)
             client.(ccxt.ClientInterface).Reject(error, messageHash)
             return
         }
     }
     if ccxt.IsTrue(receivedSnapshot) {
-        this.StreamProduce("orderbooks", orderBook)
         client.(ccxt.ClientInterface).Resolve(orderbook, messageHash)
     }
 }
@@ -318,7 +315,6 @@ func  (this *IndependentreserveCore) HandleSubscriptions(client interface{}, mes
     return message
 }
 func  (this *IndependentreserveCore) HandleMessage(client interface{}, message interface{})  {
-    this.StreamProduce("raw", message)
     var event interface{} = this.SafeString(message, "Event")
     var handlers interface{} = map[string]interface{} {
         "Subscriptions": this.HandleSubscriptions,

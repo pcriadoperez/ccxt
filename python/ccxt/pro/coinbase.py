@@ -247,7 +247,7 @@ class coinbase(ccxt.async_support.coinbase):
             subscribe['signature'] = self.hmac(self.encode(auth), self.encode(self.secret), hashlib.sha256)
         else:
             if self.apiKey.startswith('-----BEGIN'):
-                raise ArgumentsRequired(self.id + ' apiKey should contain the name(eg: organizations/3b910e93*.) and not the public key')
+                raise ArgumentsRequired(self.id + ' apiKey should contain the name(eg: organizations/3b910e93....) and not the public key')
             currentToken = self.safe_string(self.options, 'wsToken')
             tokenTimestamp = self.safe_integer(self.options, 'wsTokenTimestamp', 0)
             seconds = self.seconds()
@@ -433,7 +433,6 @@ class coinbase(ccxt.async_support.coinbase):
                 symbol = result['symbol']
                 self.tickers[symbol] = result
                 newTickers.append(result)
-                self.stream_produce('tickers', result)
                 messageHash = channel + '::' + symbol
                 client.resolve(result, messageHash)
                 self.try_resolve_usdc(client, messageHash, result)
@@ -675,9 +674,7 @@ class coinbase(ccxt.async_support.coinbase):
             currentTrades = self.safe_list(currentEvent, 'trades')
             for j in range(0, len(currentTrades)):
                 item = currentTrades[i]
-                parsedTrade = self.parse_trade(item)
-                tradesArray.append(parsedTrade)
-                self.stream_produce('trades', parsedTrade)
+                tradesArray.append(self.parse_trade(item))
         client.resolve(tradesArray, messageHash)
         self.try_resolve_usdc(client, messageHash, tradesArray)
 
@@ -725,7 +722,6 @@ class coinbase(ccxt.async_support.coinbase):
                 marketId = self.safe_string(responseOrder, 'product_id')
                 if not (marketId in marketIds):
                     marketIds.append(marketId)
-                self.stream_produce('orders', parsed)
                 cachedOrders.append(parsed)
         for i in range(0, len(marketIds)):
             marketId = marketIds[i]
@@ -847,7 +843,6 @@ class coinbase(ccxt.async_support.coinbase):
             orderbook['timestamp'] = self.parse8601(datetime)
             orderbook['datetime'] = datetime
             orderbook['symbol'] = symbol
-            self.stream_produce('orderbooks', orderbook)
             client.resolve(orderbook, messageHash)
             self.try_resolve_usdc(client, messageHash, orderbook)
 
@@ -912,7 +907,6 @@ class coinbase(ccxt.async_support.coinbase):
         return message
 
     def handle_message(self, client, message):
-        self.stream_produce('raw', message)
         channel = self.safe_string(message, 'channel')
         methods: dict = {
             'subscriptions': self.handle_subscription_status,
@@ -925,10 +919,8 @@ class coinbase(ccxt.async_support.coinbase):
         }
         type = self.safe_string(message, 'type')
         if type == 'error':
-            errorMessage = self.safe_string(message, 'message', '')
-            err = ExchangeError(self.id + errorMessage)
-            self.stream_produce('errors', None, err)
-            raise err
+            errorMessage = self.safe_string(message, 'message')
+            raise ExchangeError(errorMessage)
         method = self.safe_value(methods, channel)
         if method:
             method(client, message)

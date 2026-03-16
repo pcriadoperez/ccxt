@@ -148,7 +148,6 @@ class modetrade(ccxt.async_support.modetrade):
         timestamp = self.safe_integer(message, 'ts')
         snapshot = self.parse_order_book(data, symbol, timestamp, 'bids', 'asks')
         orderbook.reset(snapshot)
-        self.stream_produce('orderbooks', orderbook)
         client.resolve(orderbook, topic)
 
     async def watch_ticker(self, symbol: str, params={}) -> Ticker:
@@ -235,7 +234,6 @@ class modetrade(ccxt.async_support.modetrade):
         ticker = self.parse_ws_ticker(data, market)
         ticker['symbol'] = market['symbol']
         self.tickers[market['symbol']] = ticker
-        self.stream_produce('tickers', ticker)
         client.resolve(ticker, topic)
         return message
 
@@ -429,8 +427,6 @@ class modetrade(ccxt.async_support.modetrade):
             self.ohlcvs[symbol][timeframe] = stored
         ohlcvCache = self.ohlcvs[symbol][timeframe]
         ohlcvCache.append(parsed)
-        ohlcvs = self.create_stream_ohlcv(symbol, timeframe, parsed)
-        self.stream_produce('ohlcvs', ohlcvs)
         client.resolve(ohlcvCache, topic)
 
     async def watch_trades(self, symbol: str, since: Int = None, limit: Int = None, params={}) -> List[Trade]:
@@ -486,7 +482,6 @@ class modetrade(ccxt.async_support.modetrade):
         trades = self.trades[symbol]
         trades.append(trade)
         self.trades[symbol] = trades
-        self.stream_produce('trades', trade)
         client.resolve(trades, topic)
 
     def parse_ws_trade(self, trade, market=None):
@@ -882,7 +877,6 @@ class modetrade(ccxt.async_support.modetrade):
                 parsed['timestamp'] = self.safe_integer(order, 'timestamp')
                 parsed['datetime'] = self.safe_string(order, 'datetime')
             cachedOrders.append(parsed)
-            self.stream_produce('orders', parsed)
             client.resolve(self.orders, topic)
             messageHashSymbol = topic + ':' + symbol
             client.resolve(self.orders, messageHashSymbol)
@@ -927,7 +921,6 @@ class modetrade(ccxt.async_support.modetrade):
             trades = ArrayCacheBySymbolById(limit)
             self.myTrades = trades
         trades.append(trade)
-        self.stream_produce('myTrades', trade)
         client.resolve(trades, messageHash)
         symbolSpecificMessageHash = messageHash + ':' + symbol
         client.resolve(trades, symbolSpecificMessageHash)
@@ -1041,7 +1034,6 @@ class modetrade(ccxt.async_support.modetrade):
             position = self.parse_ws_position(rawPosition, market)
             newPositions.append(position)
             cache.append(position)
-            self.stream_produce('positions', position)
             messageHash = 'positions::' + market['symbol']
             client.resolve(position, messageHash)
         client.resolve(newPositions, 'positions')
@@ -1183,7 +1175,6 @@ class modetrade(ccxt.async_support.modetrade):
             account['free'] = Precise.string_sub(total, used)
             self.balance[code] = account
         self.balance = self.safe_balance(self.balance)
-        self.stream_produce('balances', self.balance)
         client.resolve(self.balance, 'balance')
 
     def handle_error_message(self, client: Client, message) -> Bool:
@@ -1202,7 +1193,6 @@ class modetrade(ccxt.async_support.modetrade):
                 self.throw_exactly_matched_exception(self.exceptions['exact'], errorMessage, feedback)
             return False
         except Exception as error:
-            self.stream_produce('errors', None, error)
             if isinstance(error, AuthenticationError):
                 messageHash = 'authenticated'
                 client.reject(error, messageHash)
@@ -1213,7 +1203,6 @@ class modetrade(ccxt.async_support.modetrade):
             return True
 
     def handle_message(self, client: Client, message):
-        self.stream_produce('raw', message)
         if self.handle_error_message(client, message):
             return
         methods: dict = {

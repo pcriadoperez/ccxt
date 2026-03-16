@@ -6,16 +6,6 @@ namespace ccxt.pro;
 public class  Coinbase: coinbase { public Coinbase(object args = null) : base(args) { } }
 public partial class coinbase
 {
-    public async Task<Dictionary<string, object>> Subscribe(string name, bool isPrivate, object symbol = null, Dictionary<string, object> parameters = null)
-    {
-        var res = await this.subscribe(name, isPrivate, symbol, parameters);
-        return ((Dictionary<string, object>)res);
-    }
-    public async Task<Dictionary<string, object>> SubscribeMultiple(string name, bool isPrivate, List<String> symbols = null, Dictionary<string, object> parameters = null)
-    {
-        var res = await this.subscribeMultiple(name, isPrivate, symbols, parameters);
-        return ((Dictionary<string, object>)res);
-    }
     public Dictionary<string, object> CreateWSAuth(string name, List<string> productIds)
     {
         var res = this.createWSAuth(name, productIds);

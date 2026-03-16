@@ -6,11 +6,6 @@ namespace ccxt.pro;
 public class  Oxfun: oxfun { public Oxfun(object args = null) : base(args) { } }
 public partial class oxfun
 {
-    public async Task<Dictionary<string, object>> SubscribeMultiple(object messageHashes, object argsArray, Dictionary<string, object> parameters = null)
-    {
-        var res = await this.subscribeMultiple(messageHashes, argsArray, parameters);
-        return ((Dictionary<string, object>)res);
-    }
     /// <summary>
     /// watches information on multiple trades made in a market
     /// </summary>

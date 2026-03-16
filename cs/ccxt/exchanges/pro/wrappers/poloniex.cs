@@ -6,11 +6,6 @@ namespace ccxt.pro;
 public class  Poloniex: poloniex { public Poloniex(object args = null) : base(args) { } }
 public partial class poloniex
 {
-    public async Task<Dictionary<string, object>> Subscribe(string name, string messageHash, bool isPrivate, List<String> symbols = null, Dictionary<string, object> parameters = null)
-    {
-        var res = await this.subscribe(name, messageHash, isPrivate, symbols, parameters);
-        return ((Dictionary<string, object>)res);
-    }
     /// <summary>
     /// create a trade order
     /// </summary>

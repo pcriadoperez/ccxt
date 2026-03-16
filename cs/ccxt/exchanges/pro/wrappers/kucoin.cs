@@ -6,16 +6,6 @@ namespace ccxt.pro;
 public class  Kucoin: kucoin { public Kucoin(object args = null) : base(args) { } }
 public partial class kucoin
 {
-    public async Task<Dictionary<string, object>> Subscribe(object url, object messageHash, object subscriptionHash, Dictionary<string, object> parameters = null, object subscription = null)
-    {
-        var res = await this.subscribe(url, messageHash, subscriptionHash, parameters, subscription);
-        return ((Dictionary<string, object>)res);
-    }
-    public async Task<Dictionary<string, object>> SubscribeMultiple(object url, object messageHashes, object topic, object subscriptionHashes, Dictionary<string, object> parameters = null, object subscription = null)
-    {
-        var res = await this.subscribeMultiple(url, messageHashes, topic, subscriptionHashes, parameters, subscription);
-        return ((Dictionary<string, object>)res);
-    }
     /// <summary>
     /// watches a price ticker, a statistical calculation with the information calculated over the past 24 hours for a specific market
     /// </summary>

@@ -9,7 +9,6 @@ import hashlib
 from ccxt.base.types import Any, Balances, Bool, Int, Order, OrderBook, Str, Trade
 from ccxt.async_support.base.ws.client import Client
 from typing import List
-from ccxt.base.errors import ExchangeError
 from ccxt.base.errors import AuthenticationError
 from ccxt.base.errors import BadRequest
 from ccxt.base.errors import BadSymbol
@@ -115,7 +114,6 @@ class hollaex(ccxt.async_support.hollaex):
             orderbook = self.orderbooks[symbol]
             orderbook.reset(snapshot)
         messageHash = channel + ':' + marketId
-        self.stream_produce('orderbooks', orderbook)
         client.resolve(orderbook, messageHash)
 
     async def watch_trades(self, symbol: str, since: Int = None, limit: Int = None, params={}) -> List[Trade]:
@@ -168,7 +166,6 @@ class hollaex(ccxt.async_support.hollaex):
         parsedTrades = self.parse_trades(data, market)
         for j in range(0, len(parsedTrades)):
             stored.append(parsedTrades[j])
-            self.stream_produce('trades', parsedTrades[j])
         messageHash = channel + ':' + marketId
         client.resolve(stored, messageHash)
         client.resolve(stored, channel)
@@ -240,7 +237,6 @@ class hollaex(ccxt.async_support.hollaex):
             market = self.market(symbol)
             marketId = market['id']
             marketIds[marketId] = True
-            self.stream_produce('myTrades', parsed)
         # non-symbol specific
         client.resolve(self.myTrades, channel)
         keys = list(marketIds.keys())
@@ -355,7 +351,6 @@ class hollaex(ccxt.async_support.hollaex):
             market = self.market(symbol)
             marketId = market['id']
             marketIds[marketId] = True
-            self.stream_produce('orders', parsed)
         # non-symbol specific
         client.resolve(self.orders, channel)
         keys = list(marketIds.keys())
@@ -411,7 +406,6 @@ class hollaex(ccxt.async_support.hollaex):
             account[freeOrTotal] = self.safe_string(data, key)
             self.balance[code] = account
         self.balance = self.safe_balance(self.balance)
-        self.stream_produce('balances', self.balance)
         client.resolve(self.balance, messageHash)
 
     async def watch_public(self, messageHash, params={}):
@@ -459,13 +453,9 @@ class hollaex(ccxt.async_support.hollaex):
             if error is not None:
                 feedback = self.id + ' ' + self.json(message)
                 self.throw_exactly_matched_exception(self.exceptions['ws']['exact'], error, feedback)
-                self.throw_broadly_matched_exception(self.exceptions['ws']['broad'], error, feedback)
-                raise ExchangeError(feedback)
         except Exception as e:
             if isinstance(e, AuthenticationError):
                 return False
-            client.reject(e)
-            self.stream_produce('errors', None, e)
         return message
 
     def handle_message(self, client: Client, message):
@@ -554,7 +544,6 @@ class hollaex(ccxt.async_support.hollaex):
         #         }
         #     }
         #
-        self.stream_produce('raw', message)
         if not self.handle_error_message(client, message):
             return
         content = self.safe_string(message, 'message')

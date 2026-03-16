@@ -323,7 +323,6 @@ class okx(ccxt.async_support.okx):
                 stored = ArrayCache(tradesLimit)
                 self.trades[symbol] = stored
             stored.append(trade)
-            self.stream_produce('trades', trade)
             client.resolve(stored, messageHash)
 
     async def watch_funding_rate(self, symbol: str, params={}) -> FundingRate:
@@ -568,7 +567,6 @@ class okx(ccxt.async_support.okx):
         for i in range(0, len(data)):
             ticker = self.parse_ticker(data[i])
             self.tickers[symbol] = ticker
-            self.stream_produce('tickers', ticker)
             newTickers[symbol] = ticker
         messageHash = channel + '::' + symbol
         client.resolve(newTickers, messageHash)
@@ -743,7 +741,6 @@ class okx(ccxt.async_support.okx):
                 self.liquidations = ArrayCache(limit)
             cache = self.liquidations
             cache.append(liquidation)
-            self.stream_produce('liquidations', liquidation)
             client.resolve([liquidation], 'liquidations')
             client.resolve([liquidation], 'liquidations::' + symbol)
 
@@ -835,7 +832,6 @@ class okx(ccxt.async_support.okx):
                 self.liquidations = ArrayCache(limit)
             cache = self.liquidations
             cache.append(liquidation)
-            self.stream_produce('myLiquidations', liquidation)
             client.resolve([liquidation], 'myLiquidations')
             client.resolve([liquidation], 'myLiquidations::' + symbol)
 
@@ -1062,8 +1058,6 @@ class okx(ccxt.async_support.okx):
                 self.ohlcvs[symbol][timeframe] = stored
             stored.append(parsed)
             messageHash = channel + ':' + market['id']
-            ohlcvs = self.create_stream_ohlcv(symbol, timeframe, parsed)
-            self.stream_produce('ohlcvs', ohlcvs)
             client.resolve(stored, messageHash)
             # for multiOHLCV we need special object, to other "multi"
             # methods, because OHLCV response item does not contain symbol
@@ -1288,7 +1282,6 @@ class okx(ccxt.async_support.okx):
                 del client.subscriptions[messageHash]
                 if symbol is not None:
                     del self.orderbooks[symbol]
-                self.stream_produce('orderbooks::' + symbol, None, error)
                 client.reject(error, messageHash)
         timestamp = self.safe_integer(message, 'ts')
         orderbook['nonce'] = seqId
@@ -1405,7 +1398,6 @@ class okx(ccxt.async_support.okx):
                 self.orderbooks[symbol] = orderbook
                 orderbook['symbol'] = symbol
                 self.handle_order_book_message(client, update, orderbook, messageHash)
-                self.stream_produce('orderbooks', orderbook)
                 client.resolve(orderbook, messageHash)
         elif action == 'update':
             if symbol in self.orderbooks:
@@ -1413,7 +1405,6 @@ class okx(ccxt.async_support.okx):
                 for i in range(0, len(data)):
                     update = data[i]
                     self.handle_order_book_message(client, update, orderbook, messageHash, market)
-                    self.stream_produce('orderbooks', orderbook)
                     client.resolve(orderbook, messageHash)
         elif (channel == 'books5') or (channel == 'bbo-tbt'):
             if not (symbol in self.orderbooks):
@@ -1424,7 +1415,6 @@ class okx(ccxt.async_support.okx):
                 timestamp = self.safe_integer(update, 'ts')
                 snapshot = self.parse_order_book(update, symbol, timestamp, 'bids', 'asks', 0, 1)
                 orderbook.reset(snapshot)
-                self.stream_produce('orderbooks', orderbook)
                 client.resolve(orderbook, messageHash)
         return message
 
@@ -1525,7 +1515,6 @@ class okx(ccxt.async_support.okx):
         oldBalance = self.safe_value(self.balance, type, {})
         newBalance = self.deep_extend(oldBalance, balance)
         self.balance[type] = self.safe_balance(newBalance)
-        self.stream_produce('balances', self.balance[type])
         client.resolve(self.balance[type], channel)
 
     def order_to_trade(self, order, market=None):
@@ -1722,9 +1711,7 @@ class okx(ccxt.async_support.okx):
                 shortPosition['side'] = 'short'
                 cache.append(shortPosition)
                 newPositions.append(shortPosition)
-                self.stream_produce('positions', shortPosition)
             newPositions.append(position)
-            self.stream_produce('positions', position)
             cache.append(position)
         messageHash = channel
         if symbol is not None:
@@ -1846,7 +1833,6 @@ class okx(ccxt.async_support.okx):
             for i in range(0, len(parsed)):
                 order = parsed[i]
                 stored.append(order)
-                self.stream_produce('orders', order)
                 symbol = order['symbol']
                 market = self.market(symbol)
                 marketIds.append(market['id'])
@@ -1933,7 +1919,6 @@ class okx(ccxt.async_support.okx):
             rawTrade = filteredOrders[i]
             trade = self.order_to_trade(rawTrade)
             myTrades.append(trade)
-            self.stream_produce('myTrades', trade)
             symbol = trade['symbol']
             symbols[symbol] = True
         messageHash = channel + '::myTrades'
@@ -2245,7 +2230,6 @@ class okx(ccxt.async_support.okx):
         return True
 
     def handle_message(self, client: Client, message):
-        self.stream_produce('raw', message)
         if not self.handle_error_message(client, message):
             return
         #

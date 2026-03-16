@@ -149,7 +149,6 @@ func  (this *BitoproCore) HandleOrderBook(client interface{}, message interface{
     var timestamp interface{} = this.SafeInteger(message, "timestamp")
     var snapshot interface{} = this.ParseOrderBook(message, symbol, timestamp, "bids", "asks", "price", "amount")
     orderbook.(ccxt.OrderBookInterface).Reset(snapshot)
-    this.StreamProduce("orderbooks", orderbook)
     client.(ccxt.ClientInterface).Resolve(orderbook, messageHash)
 }
 /**
@@ -175,8 +174,8 @@ func  (this *BitoproCore) WatchTrades(symbol interface{}, optionalArgs ...interf
             params := ccxt.GetArg(optionalArgs, 2, map[string]interface{} {})
             _ = params
         
-            retRes1368 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes1368)
+            retRes1358 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes1358)
             var market interface{} = this.Market(symbol)
             symbol = ccxt.GetValue(market, "symbol")
             var messageHash interface{} = ccxt.Add(ccxt.Add("TRADE", ":"), symbol)
@@ -227,7 +226,6 @@ func  (this *BitoproCore) HandleTrade(client interface{}, message interface{})  
     }
     for i := 0; ccxt.IsLessThan(i, ccxt.GetArrayLength(trades)); i++ {
         tradesCache.(ccxt.Appender).Append(ccxt.GetValue(trades, i))
-        this.StreamProduce("trades", ccxt.GetValue(trades, i))
     }
     ccxt.AddElementToObject(this.Trades, symbol, tradesCache)
     client.(ccxt.ClientInterface).Resolve(tradesCache, messageHash)
@@ -258,8 +256,8 @@ func  (this *BitoproCore) WatchMyTrades(optionalArgs ...interface{}) <- chan int
             _ = params
             this.CheckRequiredCredentials()
         
-            retRes2008 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes2008)
+            retRes1988 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes1988)
             var messageHash interface{} = "USER_TRADE"
             if ccxt.IsTrue(!ccxt.IsEqual(symbol, nil)) {
                 var market interface{} = this.Market(symbol)
@@ -318,7 +316,6 @@ func  (this *BitoproCore) HandleMyTrade(client interface{}, message interface{})
     var trades interface{} = this.MyTrades
     var parsed interface{} = this.ParseWsTrade(data)
     trades.(ccxt.Appender).Append(parsed)
-    this.StreamProduce("myTrades", parsed)
     client.(ccxt.ClientInterface).Resolve(trades, messageHash)
     client.(ccxt.ClientInterface).Resolve(trades, ccxt.Add(ccxt.Add(messageHash, ":"), symbol))
 }
@@ -415,15 +412,15 @@ func  (this *BitoproCore) WatchTicker(symbol interface{}, optionalArgs ...interf
                     params := ccxt.GetArg(optionalArgs, 0, map[string]interface{} {})
             _ = params
         
-            retRes3438 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes3438)
+            retRes3408 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes3408)
             var market interface{} = this.Market(symbol)
             symbol = ccxt.GetValue(market, "symbol")
             var messageHash interface{} = ccxt.Add(ccxt.Add("TICKER", ":"), symbol)
         
-                retRes34715 :=  (<-this.WatchPublic("tickers", messageHash, ccxt.GetValue(market, "id")))
-                ccxt.PanicOnError(retRes34715)
-                ch <- retRes34715
+                retRes34415 :=  (<-this.WatchPublic("tickers", messageHash, ccxt.GetValue(market, "id")))
+                ccxt.PanicOnError(retRes34415)
+                ch <- retRes34415
                 return nil
         
             }()
@@ -460,7 +457,6 @@ func  (this *BitoproCore) HandleTicker(client interface{}, message interface{}) 
     ccxt.AddElementToObject(result, "timestamp", timestamp)
     ccxt.AddElementToObject(result, "datetime", this.Iso8601(timestamp)) // we shouldn't set "datetime" string provided by server, as those values are obviously wrong offset from UTC
     ccxt.AddElementToObject(this.Tickers, symbol, result)
-    this.StreamProduce("tickers", result)
     client.(ccxt.ClientInterface).Resolve(result, messageHash)
 }
 func  (this *BitoproCore) Authenticate(url interface{})  {
@@ -513,15 +509,15 @@ func  (this *BitoproCore) WatchBalance(optionalArgs ...interface{}) <- chan inte
             _ = params
             this.CheckRequiredCredentials()
         
-            retRes4298 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes4298)
+            retRes4258 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes4258)
             var messageHash interface{} = "ACCOUNT_BALANCE"
             var url interface{} = ccxt.Add(ccxt.Add(ccxt.GetValue(ccxt.GetValue(this.Urls, "ws"), "private"), "/"), "account-balance")
             this.Authenticate(url)
         
-                retRes43315 :=  (<-this.Watch(url, messageHash, nil, messageHash))
-                ccxt.PanicOnError(retRes43315)
-                ch <- retRes43315
+                retRes42915 :=  (<-this.Watch(url, messageHash, nil, messageHash))
+                ccxt.PanicOnError(retRes42915)
+                ch <- retRes42915
                 return nil
         
             }()
@@ -565,11 +561,9 @@ func  (this *BitoproCore) HandleBalance(client interface{}, message interface{})
         ccxt.AddElementToObject(result, code, account)
     }
     this.Balance = this.SafeBalance(result)
-    this.StreamProduce("balances", this.Balance)
     client.(ccxt.ClientInterface).Resolve(this.Balance, event)
 }
 func  (this *BitoproCore) HandleMessage(client interface{}, message interface{})  {
-    this.StreamProduce("raw", message)
     var methods interface{} = map[string]interface{} {
         "TRADE": this.HandleTrade,
         "TICKER": this.HandleTicker,

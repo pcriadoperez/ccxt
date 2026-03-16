@@ -519,9 +519,7 @@ class gate(ccxt.async_support.gate):
             checksum = self.handle_option('watchOrderBook', 'checksum', True)
             if checksum:
                 error = ChecksumError(self.id + ' ' + self.orderbook_checksum_message(symbol))
-                self.stream_produce('orderbooks::' + symbol, None, error)
                 client.reject(error, messageHash)
-        self.stream_produce('orderbooks', storedOrderBook)
         client.resolve(storedOrderBook, messageHash)
 
     def get_cache_index(self, orderBook, cache):
@@ -689,7 +687,6 @@ class gate(ccxt.async_support.gate):
             symbol = parsedItem['symbol']
             if isTicker:
                 self.tickers[symbol] = parsedItem
-                self.stream_produce('tickers', parsedItem)
             else:
                 self.bidsasks[symbol] = parsedItem
             messageHash = objectName + ':' + symbol
@@ -794,7 +791,6 @@ class gate(ccxt.async_support.gate):
                 cachedTrades = ArrayCache(limit)
                 self.trades[symbol] = cachedTrades
             cachedTrades.append(trade)
-            self.stream_produce('trades', trade)
             hash = 'trades:' + symbol
             client.resolve(cachedTrades, hash)
 
@@ -865,8 +861,6 @@ class gate(ccxt.async_support.gate):
                 stored = ArrayCacheByTimestamp(limit)
                 self.ohlcvs[symbol][timeframe] = stored
             stored.append(parsed)
-            ohlcvs = self.create_stream_ohlcv(symbol, timeframe, parsed)
-            self.stream_produce('ohlcvs', ohlcvs)
             marketIds[symbol] = timeframe
         keys = list(marketIds.keys())
         for i in range(0, len(keys)):
@@ -951,7 +945,6 @@ class gate(ccxt.async_support.gate):
         marketIds: dict = {}
         for i in range(0, len(parsed)):
             trade = parsed[i]
-            self.stream_produce('myTrades', trade)
             cachedTrades.append(trade)
             symbol = trade['symbol']
             marketIds[symbol] = True
@@ -1071,7 +1064,6 @@ class gate(ccxt.async_support.gate):
         })
         messageHash = channelType + '.balance'
         self.balance = self.safe_balance(self.balance)
-        self.stream_produce('balances', self.balance)
         client.resolve(self.balance, messageHash)
 
     async def watch_positions(self, symbols: Strings = None, since: Int = None, limit: Int = None, params={}) -> List[Position]:
@@ -1147,7 +1139,6 @@ class gate(ccxt.async_support.gate):
             contracts = self.safe_number(position, 'contracts', 0)
             if contracts > 0:
                 cache.append(position)
-                self.stream_produce('positions', position)
         # don't remove the future from the .futures cache
         if messageHash in client.futures:
             future = client.futures[messageHash]
@@ -1192,7 +1183,6 @@ class gate(ccxt.async_support.gate):
         for i in range(0, len(data)):
             rawPosition = data[i]
             position = self.parse_position(rawPosition)
-            self.stream_produce('positions', position)
             symbol = self.safe_string(position, 'symbol')
             side = self.safe_string(position, 'side')
             # Control when position is closed no side is returned
@@ -1325,7 +1315,6 @@ class gate(ccxt.async_support.gate):
                     left = self.safe_integer(info, 'left')
                     parsed['status'] = 'closed' if (left == 0) else 'canceled'
             stored.append(parsed)
-            self.stream_produce('orders', parsed)
             symbol = parsed['symbol']
             market = self.market(symbol)
             marketIds[market['id']] = True
@@ -1455,7 +1444,6 @@ class gate(ccxt.async_support.gate):
             cache.append(liquidation)
             symbol = self.safe_string(liquidation, 'symbol')
             symbolLiquidations = self.safe_value(cache, symbol, [])
-            self.stream_produce('myLiquidations', liquidation)
             client.resolve(symbolLiquidations, 'myLiquidations::' + symbol)
         client.resolve(newLiquidations, 'myLiquidations')
 
@@ -1572,7 +1560,6 @@ class gate(ccxt.async_support.gate):
                 self.throw_broadly_matched_exception(self.exceptions['ws']['broad'], errorMessage, self.json(message))
                 raise ExchangeError(self.json(message))
             except Exception as e:
-                self.stream_produce('errors', None, e)
                 client.reject(e, messageHash)
                 if (messageHash is not None) and (messageHash in client.subscriptions):
                     del client.subscriptions[messageHash]
@@ -1687,7 +1674,7 @@ class gate(ccxt.async_support.gate):
         #          {
         #             "contract": "BTC_USDT-20211130-65000-C",
         #             "create_time": 1637897000,
-        #               (*)
+        #               (...)
         #       ]
         #   }
         # orderbook
@@ -1740,7 +1727,6 @@ class gate(ccxt.async_support.gate):
         #        ]
         #    }
         #
-        self.stream_produce('raw', message)
         if self.handle_error_message(client, message):
             return
         event = self.safe_string(message, 'event')

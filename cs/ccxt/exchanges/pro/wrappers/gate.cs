@@ -439,11 +439,6 @@ public partial class gate
         var res = await this.watchBidsAsks(symbols, parameters);
         return new Tickers(res);
     }
-    public async Task<Tickers> SubscribeWatchTickersAndBidsAsks(List<String> symbols = null, string callerMethodName = null, Dictionary<string, object> parameters = null)
-    {
-        var res = await this.subscribeWatchTickersAndBidsAsks(symbols, callerMethodName, parameters);
-        return new Tickers(res);
-    }
     /// <summary>
     /// get the list of most recent trades for a particular symbol
     /// </summary>
@@ -741,20 +736,5 @@ public partial class gate
         var limit = limit2 == 0 ? null : (object)limit2;
         var res = await this.watchMyLiquidationsForSymbols(symbols, since, limit, parameters);
         return ((IList<object>)res).Select(item => new Liquidation(item)).ToList<Liquidation>();
-    }
-    public async Task<Dictionary<string, object>> SubscribePublic(object url, object messageHash, object payload, object channel, Dictionary<string, object> parameters = null, object subscription = null)
-    {
-        var res = await this.subscribePublic(url, messageHash, payload, channel, parameters, subscription);
-        return ((Dictionary<string, object>)res);
-    }
-    public async Task<Dictionary<string, object>> SubscribePublicMultiple(object url, object messageHashes, object payload, object channel, Dictionary<string, object> parameters = null)
-    {
-        var res = await this.subscribePublicMultiple(url, messageHashes, payload, channel, parameters);
-        return ((Dictionary<string, object>)res);
-    }
-    public async Task<Dictionary<string, object>> SubscribePrivate(object url, object messageHash, object payload, object channel, object parameters, bool requiresUid = false)
-    {
-        var res = await this.subscribePrivate(url, messageHash, payload, channel, parameters, requiresUid);
-        return ((Dictionary<string, object>)res);
     }
 }

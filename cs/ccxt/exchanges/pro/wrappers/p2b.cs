@@ -6,11 +6,6 @@ namespace ccxt.pro;
 public class  P2b: p2b { public P2b(object args = null) : base(args) { } }
 public partial class p2b
 {
-    public async Task<Dictionary<string, object>> Subscribe(string name, string messageHash, object request, Dictionary<string, object> parameters = null)
-    {
-        var res = await this.subscribe(name, messageHash, request, parameters);
-        return ((Dictionary<string, object>)res);
-    }
     /// <summary>
     /// watches historical candlestick data containing the open, high, low, and close price, and the volume of a market. Can only subscribe to one timeframe at a time for each symbol
     /// </summary>

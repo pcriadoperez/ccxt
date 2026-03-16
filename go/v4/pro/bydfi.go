@@ -377,7 +377,6 @@ func  (this *BydfiCore) HandleTicker(client interface{}, message interface{})  {
     var symbol interface{} = ccxt.GetValue(ticker, "symbol")
     var messageHash interface{} = ccxt.Add("ticker::", symbol)
     ccxt.AddElementToObject(this.Tickers, symbol, ticker)
-    this.StreamProduce("tickers", ticker)
     client.(ccxt.ClientInterface).Resolve(ccxt.GetValue(this.Tickers, symbol), messageHash)
     client.(ccxt.ClientInterface).Resolve(this.Tickers, "ticker::all")
 }
@@ -436,9 +435,9 @@ func  (this *BydfiCore) UnWatchOHLCV(symbol interface{}, optionalArgs ...interfa
             params := ccxt.GetArg(optionalArgs, 1, map[string]interface{} {})
             _ = params
         
-                retRes32515 :=  (<-this.UnWatchOHLCVForSymbols([]interface{}{[]interface{}{symbol, timeframe}}, params))
-                ccxt.PanicOnError(retRes32515)
-                ch <- retRes32515
+                retRes32415 :=  (<-this.UnWatchOHLCVForSymbols([]interface{}{[]interface{}{symbol, timeframe}}, params))
+                ccxt.PanicOnError(retRes32415)
+                ch <- retRes32415
                 return nil
         
             }()
@@ -471,8 +470,8 @@ func  (this *BydfiCore) WatchOHLCVForSymbols(symbolsAndTimeframes interface{}, o
                 panic(ccxt.ArgumentsRequired(ccxt.Add(this.Id, " watchOHLCVForSymbols() requires a an array of symbols and timeframes, like  [\\'ETH/USDC\\', \\'1m\\']")))
             }
         
-            retRes3448 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes3448)
+            retRes3438 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes3438)
             var channels interface{} = []interface{}{}
             var messageHashes interface{} = []interface{}{}
             for i := 0; ccxt.IsLessThan(i, ccxt.GetArrayLength(symbolsAndTimeframes)); i++ {
@@ -521,8 +520,8 @@ func  (this *BydfiCore) UnWatchOHLCVForSymbols(symbolsAndTimeframes interface{},
                 panic(ccxt.ArgumentsRequired(ccxt.Add(this.Id, " unWatchOHLCVForSymbols() requires a an array of symbols and timeframes, like  [\\'ETH/USDC\\', \\'1m\\']")))
             }
         
-            retRes3798 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes3798)
+            retRes3788 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes3788)
             var channels interface{} = []interface{}{}
             var messageHashes interface{} = []interface{}{}
             for i := 0; ccxt.IsLessThan(i, ccxt.GetArrayLength(symbolsAndTimeframes)); i++ {
@@ -542,9 +541,9 @@ func  (this *BydfiCore) UnWatchOHLCVForSymbols(symbolsAndTimeframes interface{},
                 "symbolsAndTimeframes": symbolsAndTimeframes,
             }
         
-                retRes39615 :=  (<-this.WatchPublic(messageHashes, channels, params, subscription))
-                ccxt.PanicOnError(retRes39615)
-                ch <- retRes39615
+                retRes39515 :=  (<-this.WatchPublic(messageHashes, channels, params, subscription))
+                ccxt.PanicOnError(retRes39515)
+                ch <- retRes39515
                 return nil
         
             }()
@@ -582,8 +581,6 @@ func  (this *BydfiCore) HandleOHLCV(client interface{}, message interface{})  {
     var ohlcv interface{} = ccxt.GetValue(ccxt.GetValue(this.Ohlcvs, symbol), timeframe)
     var parsed interface{} = this.ParseWsOHLCV(message)
     ohlcv.(ccxt.Appender).Append(parsed)
-    var ohlcvs interface{} = this.CreateStreamOHLCV(symbol, timeframe, parsed)
-    this.StreamProduce("ohlcvs", ohlcvs)
     var messageHash interface{} = ccxt.Add(ccxt.Add(ccxt.Add("ohlcv::", symbol), "::"), timeframe)
     client.(ccxt.ClientInterface).Resolve([]interface{}{symbol, timeframe, ohlcv}, messageHash)
 }
@@ -607,9 +604,9 @@ func  (this *BydfiCore) WatchOrderBook(symbol interface{}, optionalArgs ...inter
             params := ccxt.GetArg(optionalArgs, 1, map[string]interface{} {})
             _ = params
         
-                retRes44815 :=  (<-this.WatchOrderBookForSymbols([]interface{}{symbol}, limit, params))
-                ccxt.PanicOnError(retRes44815)
-                ch <- retRes44815
+                retRes44515 :=  (<-this.WatchOrderBookForSymbols([]interface{}{symbol}, limit, params))
+                ccxt.PanicOnError(retRes44515)
+                ch <- retRes44515
                 return nil
         
             }()
@@ -632,9 +629,9 @@ func  (this *BydfiCore) UnWatchOrderBook(symbol interface{}, optionalArgs ...int
                     params := ccxt.GetArg(optionalArgs, 0, map[string]interface{} {})
             _ = params
         
-                retRes46115 :=  (<-this.UnWatchOrderBookForSymbols([]interface{}{symbol}, params))
-                ccxt.PanicOnError(retRes46115)
-                ch <- retRes46115
+                retRes45815 :=  (<-this.UnWatchOrderBookForSymbols([]interface{}{symbol}, params))
+                ccxt.PanicOnError(retRes45815)
+                ch <- retRes45815
                 return nil
         
             }()
@@ -660,8 +657,8 @@ func  (this *BydfiCore) WatchOrderBookForSymbols(symbols interface{}, optionalAr
             params := ccxt.GetArg(optionalArgs, 1, map[string]interface{} {})
             _ = params
         
-            retRes4758 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes4758)
+            retRes4728 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes4728)
             symbols = this.MarketSymbols(symbols, nil, false)
             var depth interface{} = "100"
             depthparamsVariable := this.HandleOptionAndParams(params, "watchOrderBookForSymbols", "depth", depth)
@@ -711,8 +708,8 @@ func  (this *BydfiCore) UnWatchOrderBookForSymbols(symbols interface{}, optional
                     params := ccxt.GetArg(optionalArgs, 0, map[string]interface{} {})
             _ = params
         
-            retRes5088 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes5088)
+            retRes5058 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes5058)
             symbols = this.MarketSymbols(symbols, nil, false)
             var depth interface{} = "100"
             depthparamsVariable := this.HandleOptionAndParams(params, "watchOrderBookForSymbols", "depth", depth)
@@ -742,9 +739,9 @@ func  (this *BydfiCore) UnWatchOrderBookForSymbols(symbols interface{}, optional
                 "unsubscribe": true,
             })
         
-                retRes53115 :=  (<-this.WatchPublic(messageHashes, channels, params, subscription))
-                ccxt.PanicOnError(retRes53115)
-                ch <- retRes53115
+                retRes52815 :=  (<-this.WatchPublic(messageHashes, channels, params, subscription))
+                ccxt.PanicOnError(retRes52815)
+                ch <- retRes52815
                 return nil
         
             }()
@@ -771,7 +768,6 @@ func  (this *BydfiCore) HandleOrderBook(client interface{}, message interface{})
     orderbook.(ccxt.OrderBookInterface).Reset(parsed)
     var messageHash interface{} = ccxt.Add("orderbook::", symbol)
     ccxt.AddElementToObject(this.Orderbooks, symbol, orderbook)
-    this.StreamProduce("orderbooks", orderbook)
     client.(ccxt.ClientInterface).Resolve(orderbook, messageHash)
 }
 /**
@@ -803,9 +799,9 @@ func  (this *BydfiCore) WatchOrders(optionalArgs ...interface{}) <- chan interfa
                 symbols = []interface{}{symbol}
             }
         
-                retRes57515 :=  (<-this.WatchOrdersForSymbols(symbols, since, limit, params))
-                ccxt.PanicOnError(retRes57515)
-                ch <- retRes57515
+                retRes57115 :=  (<-this.WatchOrdersForSymbols(symbols, since, limit, params))
+                ccxt.PanicOnError(retRes57115)
+                ch <- retRes57115
                 return nil
         
             }()
@@ -834,8 +830,8 @@ func  (this *BydfiCore) WatchOrdersForSymbols(symbols interface{}, optionalArgs 
             params := ccxt.GetArg(optionalArgs, 2, map[string]interface{} {})
             _ = params
         
-            retRes5908 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes5908)
+            retRes5868 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes5868)
             symbols = this.MarketSymbols(symbols, nil, true)
             var messageHashes interface{} = []interface{}{}
             if ccxt.IsTrue(ccxt.IsEqual(symbols, nil)) {
@@ -905,7 +901,6 @@ func  (this *BydfiCore) HandleOrder(client interface{}, message interface{})  {
     var lastUpdateTimestamp interface{} = this.SafeInteger(message, "T")
     ccxt.AddElementToObject(order, "lastUpdateTimestamp", lastUpdateTimestamp)
     orders.(ccxt.Appender).Append(order)
-    this.StreamProduce("orders", order)
     client.(ccxt.ClientInterface).Resolve(orders, messageHash)
     client.(ccxt.ClientInterface).Resolve(orders, symbolMessageHash)
 }
@@ -1000,8 +995,8 @@ func  (this *BydfiCore) WatchPositions(optionalArgs ...interface{}) <- chan inte
             params := ccxt.GetArg(optionalArgs, 3, map[string]interface{} {})
             _ = params
         
-            retRes7368 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes7368)
+            retRes7318 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes7318)
             symbols = this.MarketSymbols(symbols, nil, true)
             var messageHashes interface{} = []interface{}{}
             var messageHash interface{} = "positions"
@@ -1086,7 +1081,6 @@ func  (this *BydfiCore) HandlePositions(client interface{}, message interface{})
     ccxt.AddElementToObject(parsedPosition, "timestamp", timestamp)
     ccxt.AddElementToObject(parsedPosition, "datetime", this.Iso8601(timestamp))
     cache.(ccxt.Appender).Append(parsedPosition)
-    this.StreamProduce("positions", parsedPosition)
     client.(ccxt.ClientInterface).Resolve([]interface{}{parsedPosition}, messageHash)
     client.(ccxt.ClientInterface).Resolve([]interface{}{parsedPosition}, symbolMessageHash)
 }
@@ -1169,8 +1163,8 @@ func  (this *BydfiCore) WatchBalance(optionalArgs ...interface{}) <- chan interf
                     params := ccxt.GetArg(optionalArgs, 0, map[string]interface{} {})
             _ = params
         
-            retRes8908 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes8908)
+            retRes8848 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes8848)
             var url interface{} = ccxt.GetValue(ccxt.GetValue(this.Urls, "api"), "ws")
             var client interface{} = this.Client(url)
             this.FetchBalanceSnapshot(client)
@@ -1179,14 +1173,14 @@ func  (this *BydfiCore) WatchBalance(optionalArgs ...interface{}) <- chan interf
             var awaitBalanceSnapshot interface{} = this.SafeBool(options, "awaitBalanceSnapshot", true)
             if ccxt.IsTrue(ccxt.IsTrue(fetchBalanceSnapshot) && ccxt.IsTrue(awaitBalanceSnapshot)) {
         
-                retRes89812 := (<-client.(ccxt.ClientInterface).Future("fetchBalanceSnapshot"))
-                ccxt.PanicOnError(retRes89812)
+                retRes89212 := (<-client.(ccxt.ClientInterface).Future("fetchBalanceSnapshot"))
+                ccxt.PanicOnError(retRes89212)
             }
             var messageHash interface{} = "balance"
         
-                retRes90115 :=  (<-this.WatchPrivate([]interface{}{messageHash}, params))
-                ccxt.PanicOnError(retRes90115)
-                ch <- retRes90115
+                retRes89515 :=  (<-this.WatchPrivate([]interface{}{messageHash}, params))
+                ccxt.PanicOnError(retRes89515)
+                ch <- retRes89515
                 return nil
         
             }()
@@ -1285,7 +1279,6 @@ func  (this *BydfiCore) HandleBalance(client interface{}, message interface{})  
         }
         var parsedBalance interface{} = this.SafeBalance(result)
         this.Balance = this.Extend(this.Balance, parsedBalance)
-        this.StreamProduce("balances", this.Balance)
         client.(ccxt.ClientInterface).Resolve(this.Balance, messageHash)
     }
 }
@@ -1338,11 +1331,9 @@ func  (this *BydfiCore) HandleErrorMessage(client interface{}, message interface
     this.ThrowExactlyMatchedException(ccxt.GetValue(this.Exceptions, "exact"), msg, feedback)
     this.ThrowBroadlyMatchedException(ccxt.GetValue(this.Exceptions, "broad"), msg, feedback)
     this.ThrowExactlyMatchedException(ccxt.GetValue(this.Exceptions, "exact"), code, feedback)
-    this.StreamProduce("errors", nil, feedback)
     panic(ccxt.ExchangeError(feedback))
 }
 func  (this *BydfiCore) HandleMessage(client interface{}, message interface{})  {
-    this.StreamProduce("raw", message)
     var code interface{} = this.SafeString(message, "code")
     if ccxt.IsTrue(ccxt.IsTrue(!ccxt.IsEqual(code, nil)) && ccxt.IsTrue((!ccxt.IsEqual(code, "0")))) {
         this.HandleErrorMessage(client, message)

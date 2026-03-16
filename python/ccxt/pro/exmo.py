@@ -129,7 +129,6 @@ class exmo(ccxt.async_support.exmo):
         elif type == 'margin':
             self.parse_margin_balance(message)
         messageHash = 'balance:' + type
-        self.stream_produce('balances', self.balance)
         client.resolve(self.balance, messageHash)
 
     def parse_spot_balance(self, message):
@@ -281,7 +280,6 @@ class exmo(ccxt.async_support.exmo):
         parsedTicker = self.parse_ticker(ticker, market)
         messageHash = 'ticker:' + symbol
         self.tickers[symbol] = parsedTicker
-        self.stream_produce('tickers', parsedTicker)
         client.resolve(parsedTicker, messageHash)
 
     async def watch_trades(self, symbol: str, since: Int = None, limit: Int = None, params={}) -> List[Trade]:
@@ -341,7 +339,6 @@ class exmo(ccxt.async_support.exmo):
             trade = trades[i]
             parsed = self.parse_trade(trade, market)
             stored.append(parsed)
-            self.stream_produce('trades', parsed)
         self.trades[symbol] = stored
         client.resolve(self.trades[symbol], messageHash)
 
@@ -457,7 +454,6 @@ class exmo(ccxt.async_support.exmo):
         for j in range(0, len(trades)):
             trade = trades[j]
             myTrades.append(trade)
-            self.stream_produce('myTrades', trade)
             symbols[trade['symbol']] = True
         symbolKeys = list(symbols.keys())
         for i in range(0, len(symbolKeys)):
@@ -546,7 +542,6 @@ class exmo(ccxt.async_support.exmo):
             self.handle_deltas(orderbook['bids'], bids)
             orderbook['timestamp'] = timestamp
             orderbook['datetime'] = self.iso8601(timestamp)
-        self.stream_produce('orderbooks', orderbook)
         client.resolve(orderbook, messageHash)
 
     def handle_delta(self, bookside, delta):
@@ -667,7 +662,6 @@ class exmo(ccxt.async_support.exmo):
         for j in range(0, len(rawOrders)):
             order = self.parse_ws_order(rawOrders[j])
             cachedOrders.append(order)
-            self.stream_produce('orders', order)
             symbols[order['symbol']] = True
         symbolKeys = list(symbols.keys())
         for i in range(0, len(symbolKeys)):
@@ -776,7 +770,6 @@ class exmo(ccxt.async_support.exmo):
         #     "id": 1,
         #     "topic": "spot/ticker:BTC_USDT"
         # }
-        self.stream_produce('raw', message)
         event = self.safe_string(message, 'event')
         events: dict = {
             'logged_in': self.handle_authentication_message,
@@ -809,9 +802,7 @@ class exmo(ccxt.async_support.exmo):
                 if handler is not None:
                     handler(client, message)
                     return
-        err = NotSupported(self.id + ' received an unsupported message: ' + self.json(message))
-        self.stream_produce('errors', None, err)
-        client.reject(err)
+        raise NotSupported(self.id + ' received an unsupported message: ' + self.json(message))
 
     def handle_subscribed(self, client: Client, message):
         #

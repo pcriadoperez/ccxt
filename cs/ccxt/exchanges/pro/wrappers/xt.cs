@@ -6,11 +6,6 @@ namespace ccxt.pro;
 public class  Xt: xt { public Xt(object args = null) : base(args) { } }
 public partial class xt
 {
-    public async Task<Dictionary<string, object>> Subscribe(string name, string access, string methodName, object market = null, List<string> symbols = null, Dictionary<string, object> parameters = null)
-    {
-        var res = await this.subscribe(name, access, methodName, market, symbols, parameters);
-        return ((Dictionary<string, object>)res);
-    }
     /// <summary>
     /// watches a price ticker, a statistical calculation with the information calculated over the past 24 hours for a specific market
     /// </summary>

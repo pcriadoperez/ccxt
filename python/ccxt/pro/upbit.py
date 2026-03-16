@@ -208,7 +208,6 @@ class upbit(ccxt.async_support.upbit):
         ticker = self.parse_ticker(message)
         symbol = ticker['symbol']
         self.tickers[symbol] = ticker
-        self.stream_produce('tickers', ticker)
         messageHash = 'ticker:' + symbol
         client.resolve(ticker, messageHash)
 
@@ -230,7 +229,7 @@ class upbit(ccxt.async_support.upbit):
         #      {ask_price: 0.02295086,
         #        "bid_price": 0.02150802,
         #        "ask_size": 1.585,
-        #        "bid_size": 5}, *],
+        #        "bid_size": 5}, ...],
         #   "stream_type": "SNAPSHOT"}
         marketId = self.safe_string(message, 'code')
         symbol = self.safe_symbol(marketId, None, '-')
@@ -262,7 +261,6 @@ class upbit(ccxt.async_support.upbit):
         orderbook['timestamp'] = timestamp
         orderbook['datetime'] = datetime
         messageHash = 'orderbook:' + symbol
-        self.stream_produce('orderbooks', orderbook)
         client.resolve(orderbook, messageHash)
 
     def handle_trades(self, client: Client, message):
@@ -288,7 +286,6 @@ class upbit(ccxt.async_support.upbit):
             stored = ArrayCache(limit)
             self.trades[symbol] = stored
         stored.append(trade)
-        self.stream_produce('trades', trade)
         messageHash = 'trade:' + symbol
         client.resolve(stored, messageHash)
 
@@ -311,7 +308,6 @@ class upbit(ccxt.async_support.upbit):
         symbol = self.safe_symbol(marketId, None)
         messageHash = 'candle.1s:' + symbol
         ohlcv = self.parse_ohlcv(message)
-        self.stream_produce('ohlcvs', ohlcv)
         client.resolve(ohlcv, messageHash)
 
     async def authenticate(self, params={}):
@@ -365,7 +361,7 @@ class upbit(ccxt.async_support.upbit):
         if isNewChannel:
             subscriptions[channelKey] = request
         # Build subscription message with all requested private channels
-        # Format: [{'ticket': uuid}, {'type': 'myOrder'}, {'type': 'myAsset'}, *]
+        # Format: [{'ticket': uuid}, {'type': 'myOrder'}, {'type': 'myAsset'}, ...]
         requests = []
         channelKeys = list(subscriptions.keys())
         for i in range(0, len(channelKeys)):
@@ -544,7 +540,6 @@ class upbit(ccxt.async_support.upbit):
             myTrades = ArrayCacheBySymbolById(limit)
         trade = self.parse_ws_trade(message)
         myTrades.append(trade)
-        self.stream_produce('myTrades', trade)
         messageHash = 'myTrades'
         client.resolve(myTrades, messageHash)
         messageHash = 'myTrades:' + trade['symbol']
@@ -571,7 +566,6 @@ class upbit(ccxt.async_support.upbit):
             parsed['timestamp'] = self.safe_integer(order, 'timestamp')
             parsed['datetime'] = self.safe_string(order, 'datetime')
         cachedOrders.append(parsed)
-        self.stream_produce('orders', parsed)
         messageHash = 'myOrder'
         client.resolve(self.orders, messageHash)
         messageHash = messageHash + ':' + symbol
@@ -624,11 +618,9 @@ class upbit(ccxt.async_support.upbit):
             self.balance[code] = account
             self.balance = self.safe_balance(self.balance)
         messageHash = self.safe_string(message, 'type')
-        self.stream_produce('balances', self.balance)
         client.resolve(self.balance, messageHash)
 
     def handle_message(self, client: Client, message):
-        self.stream_produce('raw', message)
         methods: dict = {
             'ticker': self.handle_ticker,
             'orderbook': self.handle_order_book,

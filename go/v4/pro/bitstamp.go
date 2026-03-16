@@ -143,7 +143,6 @@ func  (this *BitstampCore) HandleOrderBook(client interface{}, message interface
         return
     }
     this.HandleDelta(storedOrderBook, delta)
-    this.StreamProduce("orderbooks", storedOrderBook)
     client.(ccxt.ClientInterface).Resolve(storedOrderBook, messageHash)
 }
 func  (this *BitstampCore) HandleDelta(orderbook interface{}, delta interface{})  {
@@ -203,8 +202,8 @@ func  (this *BitstampCore) WatchTrades(symbol interface{}, optionalArgs ...inter
             params := ccxt.GetArg(optionalArgs, 2, map[string]interface{} {})
             _ = params
         
-            retRes1768 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes1768)
+            retRes1758 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes1758)
             var market interface{} = this.Market(symbol)
             symbol = ccxt.GetValue(market, "symbol")
             var messageHash interface{} = ccxt.Add("trades:", symbol)
@@ -307,7 +306,6 @@ func  (this *BitstampCore) HandleTrade(client interface{}, message interface{}) 
         ccxt.AddElementToObject(this.Trades, symbol, tradesArray)
     }
     tradesArray.(ccxt.Appender).Append(trade)
-    this.StreamProduce("trades", trade)
     client.(ccxt.ClientInterface).Resolve(tradesArray, messageHash)
 }
 /**
@@ -337,8 +335,8 @@ func  (this *BitstampCore) WatchOrders(optionalArgs ...interface{}) <- chan inte
                 panic(ccxt.ArgumentsRequired(ccxt.Add(this.Id, " watchOrders() requires a symbol argument")))
             }
         
-            retRes2908 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes2908)
+            retRes2888 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes2888)
             var market interface{} = this.Market(symbol)
             symbol = ccxt.GetValue(market, "symbol")
             var channel interface{} = "private-my_orders"
@@ -393,7 +391,6 @@ func  (this *BitstampCore) HandleOrders(client interface{}, message interface{})
     ccxt.AddElementToObject(order, "event", this.SafeString(message, "event"))
     var parsed interface{} = this.ParseWsOrder(order, market)
     stored.(ccxt.Appender).Append(parsed)
-    this.StreamProduce("orders", parsed)
     client.(ccxt.ClientInterface).Resolve(this.Orders, channel)
 }
 func  (this *BitstampCore) ParseWsOrder(order interface{}, optionalArgs ...interface{}) interface{}  {
@@ -561,38 +558,14 @@ func  (this *BitstampCore) HandleErrorMessage(client interface{}, message interf
     // }
     var event interface{} = this.SafeString(message, "event")
     if ccxt.IsTrue(ccxt.IsEqual(event, "bts:error")) {
-        
-            {
-                 func(this *BitstampCore) (ret_ interface{}) {
-        		    defer func() {
-                        if e := recover(); e != nil {
-                            if e == "break" {
-                                return
-                            }
-                            ret_ = func(this *BitstampCore) interface{} {
-                                // catch block:
-                                            this.StreamProduce("errors", nil, e)
-                                return nil
-                            }(this)
-                        }
-                    }()
-        		    // try block:
-                                var feedback interface{} = ccxt.Add(ccxt.Add(this.Id, " "), this.Json(message))
-                    var data interface{} = this.SafeValue(message, "data", map[string]interface{} {})
-                    var code interface{} = this.SafeNumber(data, "code")
-                    var msg interface{} = this.SafeString(data, "message")
-                    this.ThrowExactlyMatchedException(ccxt.GetValue(this.Exceptions, "exact"), code, feedback)
-                    this.ThrowBroadlyMatchedException(ccxt.GetValue(this.Exceptions, "broad"), msg, feedback)
-                    panic(ccxt.ExchangeError(feedback))
-        		    
-        	    }(this)
-            
-                }
+        var feedback interface{} = ccxt.Add(ccxt.Add(this.Id, " "), this.Json(message))
+        var data interface{} = this.SafeValue(message, "data", map[string]interface{} {})
+        var code interface{} = this.SafeNumber(data, "code")
+        this.ThrowExactlyMatchedException(ccxt.GetValue(this.Exceptions, "exact"), code, feedback)
     }
     return true
 }
 func  (this *BitstampCore) HandleMessage(client interface{}, message interface{})  {
-    this.StreamProduce("raw", message)
     if !ccxt.IsTrue(this.HandleErrorMessage(client, message)) {
         return
     }
@@ -678,8 +651,8 @@ func  (this *BitstampCore) SubscribePrivate(subscription interface{}, messageHas
             _ = params
             var url interface{} = ccxt.GetValue(ccxt.GetValue(this.Urls, "api"), "ws")
         
-            retRes5968 := (<-this.Authenticate())
-            ccxt.PanicOnError(retRes5968)
+            retRes5858 := (<-this.Authenticate())
+            ccxt.PanicOnError(retRes5858)
             messageHash = ccxt.Add(messageHash, ccxt.Add("-", ccxt.GetValue(this.Options, "userId")))
             var request interface{} = map[string]interface{} {
                 "event": "bts:subscribe",
@@ -690,9 +663,9 @@ func  (this *BitstampCore) SubscribePrivate(subscription interface{}, messageHas
             }
             ccxt.AddElementToObject(subscription, "messageHash", messageHash)
         
-                retRes60615 :=  (<-this.Watch(url, messageHash, this.Extend(request, params), messageHash, subscription))
-                ccxt.PanicOnError(retRes60615)
-                ch <- retRes60615
+                retRes59515 :=  (<-this.Watch(url, messageHash, this.Extend(request, params), messageHash, subscription))
+                ccxt.PanicOnError(retRes59515)
+                ch <- retRes59515
                 return nil
         
             }()
