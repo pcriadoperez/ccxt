@@ -130,6 +130,7 @@ func  (this *HollaexCore) HandleOrderBook(client interface{}, message interface{
         orderbook.(ccxt.OrderBookInterface).Reset(snapshot)
     }
     var messageHash interface{} = ccxt.Add(ccxt.Add(channel, ":"), marketId)
+    this.StreamProduce("orderbooks", orderbook)
     client.(ccxt.ClientInterface).Resolve(orderbook, messageHash)
 }
 /**
@@ -155,8 +156,8 @@ func  (this *HollaexCore) WatchTrades(symbol interface{}, optionalArgs ...interf
             params := ccxt.GetArg(optionalArgs, 2, map[string]interface{} {})
             _ = params
         
-            retRes1298 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes1298)
+            retRes1308 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes1308)
             var market interface{} = this.Market(symbol)
             symbol = ccxt.GetValue(market, "symbol")
             var messageHash interface{} = ccxt.Add(ccxt.Add("trade", ":"), ccxt.GetValue(market, "id"))
@@ -203,6 +204,7 @@ func  (this *HollaexCore) HandleTrades(client interface{}, message interface{}) 
     var parsedTrades interface{} = this.ParseTrades(data, market)
     for j := 0; ccxt.IsLessThan(j, ccxt.GetArrayLength(parsedTrades)); j++ {
         stored.(ccxt.Appender).Append(ccxt.GetValue(parsedTrades, j))
+        this.StreamProduce("trades", ccxt.GetValue(parsedTrades, j))
     }
     var messageHash interface{} = ccxt.Add(ccxt.Add(channel, ":"), marketId)
     client.(ccxt.ClientInterface).Resolve(stored, messageHash)
@@ -233,8 +235,8 @@ func  (this *HollaexCore) WatchMyTrades(optionalArgs ...interface{}) <- chan int
             params := ccxt.GetArg(optionalArgs, 3, map[string]interface{} {})
             _ = params
         
-            retRes1888 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes1888)
+            retRes1908 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes1908)
             var messageHash interface{} = "usertrade"
             var market interface{} = nil
             if ccxt.IsTrue(!ccxt.IsEqual(symbol, nil)) {
@@ -302,6 +304,7 @@ func  (this *HollaexCore) HandleMyTrades(client interface{}, message interface{}
         var market interface{} = this.Market(symbol)
         var marketId interface{} = ccxt.GetValue(market, "id")
         ccxt.AddElementToObject(marketIds, marketId, true)
+        this.StreamProduce("myTrades", parsed)
     }
     // non-symbol specific
     client.(ccxt.ClientInterface).Resolve(this.MyTrades, channel)
@@ -337,8 +340,8 @@ func  (this *HollaexCore) WatchOrders(optionalArgs ...interface{}) <- chan inter
             params := ccxt.GetArg(optionalArgs, 3, map[string]interface{} {})
             _ = params
         
-            retRes2718 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes2718)
+            retRes2748 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes2748)
             var messageHash interface{} = "order"
             var market interface{} = nil
             if ccxt.IsTrue(!ccxt.IsEqual(symbol, nil)) {
@@ -446,6 +449,7 @@ func  (this *HollaexCore) HandleOrder(client interface{}, message interface{}, o
         var market interface{} = this.Market(symbol)
         var marketId interface{} = ccxt.GetValue(market, "id")
         ccxt.AddElementToObject(marketIds, marketId, true)
+        this.StreamProduce("orders", parsed)
     }
     // non-symbol specific
     client.(ccxt.ClientInterface).Resolve(this.Orders, channel)
@@ -473,9 +477,9 @@ func  (this *HollaexCore) WatchBalance(optionalArgs ...interface{}) <- chan inte
             _ = params
             var messageHash interface{} = "wallet"
         
-                retRes39215 :=  (<-this.WatchPrivate(messageHash, params))
-                ccxt.PanicOnError(retRes39215)
-                ch <- retRes39215
+                retRes39615 :=  (<-this.WatchPrivate(messageHash, params))
+                ccxt.PanicOnError(retRes39615)
+                ch <- retRes39615
                 return nil
         
             }()
@@ -517,6 +521,7 @@ func  (this *HollaexCore) HandleBalance(client interface{}, message interface{})
         ccxt.AddElementToObject(this.Balance, code, account)
     }
     this.Balance = this.SafeBalance(this.Balance)
+    this.StreamProduce("balances", this.Balance)
     client.(ccxt.ClientInterface).Resolve(this.Balance, messageHash)
 }
 func  (this *HollaexCore) WatchPublic(messageHash interface{}, optionalArgs ...interface{}) <- chan interface{} {
@@ -533,9 +538,9 @@ func  (this *HollaexCore) WatchPublic(messageHash interface{}, optionalArgs ...i
             }
             var message interface{} = this.Extend(request, params)
         
-                retRes44115 :=  (<-this.Watch(url, messageHash, message, messageHash))
-                ccxt.PanicOnError(retRes44115)
-                ch <- retRes44115
+                retRes44615 :=  (<-this.Watch(url, messageHash, message, messageHash))
+                ccxt.PanicOnError(retRes44615)
+                ch <- retRes44615
                 return nil
         
             }()
@@ -573,9 +578,9 @@ func  (this *HollaexCore) WatchPrivate(messageHash interface{}, optionalArgs ...
             }
             var message interface{} = this.Extend(request, params)
         
-                retRes46915 :=  (<-this.Watch(signedUrl, messageHash, message, messageHash))
-                ccxt.PanicOnError(retRes46915)
-                ch <- retRes46915
+                retRes47415 :=  (<-this.Watch(signedUrl, messageHash, message, messageHash))
+                ccxt.PanicOnError(retRes47415)
+                ch <- retRes47415
                 return nil
         
             }()
@@ -600,6 +605,8 @@ func  (this *HollaexCore) HandleErrorMessage(client interface{}, message interfa
                                     if ccxt.IsTrue(ccxt.IsInstance(e, ccxt.AuthenticationError)) {
                 return false
             }
+            client.(ccxt.ClientInterface).Reject(e)
+            this.StreamProduce("errors", nil, e)
                             return nil
                         }(this)
                     }
@@ -608,6 +615,8 @@ func  (this *HollaexCore) HandleErrorMessage(client interface{}, message interfa
                         if ccxt.IsTrue(!ccxt.IsEqual(error, nil)) {
                 var feedback interface{} = ccxt.Add(ccxt.Add(this.Id, " "), this.Json(message))
                 this.ThrowExactlyMatchedException(ccxt.GetValue(ccxt.GetValue(this.Exceptions, "ws"), "exact"), error, feedback)
+                this.ThrowBroadlyMatchedException(ccxt.GetValue(ccxt.GetValue(this.Exceptions, "ws"), "broad"), error, feedback)
+                panic(ccxt.ExchangeError(feedback))
             }
     		    return nil
     	    }(this)
@@ -701,6 +710,7 @@ func  (this *HollaexCore) HandleMessage(client interface{}, message interface{})
     //         }
     //     }
     //
+    this.StreamProduce("raw", message)
     if !ccxt.IsTrue(this.HandleErrorMessage(client, message)) {
         return
     }

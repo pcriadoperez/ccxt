@@ -181,6 +181,7 @@ class gemini extends \ccxt\async\gemini {
             $this->trades[$symbol] = $stored;
         }
         $stored->append ($trade);
+        $this->stream_produce('trades', $trade);
         $messageHash = 'trades:' . $symbol;
         $client->resolve ($stored, $messageHash);
     }
@@ -237,6 +238,7 @@ class gemini extends \ccxt\async\gemini {
             for ($i = 0; $i < count($trades); $i++) {
                 $trade = $this->parse_ws_trade($trades[$i], $market);
                 $stored->append ($trade);
+                $this->stream_produce('trades', $trade);
             }
             $messageHash = 'trades:' . $symbol;
             $client->resolve ($stored, $messageHash);
@@ -260,6 +262,7 @@ class gemini extends \ccxt\async\gemini {
                     $this->trades[$symbol] = $stored;
                 }
                 $stored->append ($trade);
+                $this->stream_produce('trades', $trade);
                 $storesForSymbols[$symbol] = $stored;
             }
             $symbols = is_array($storesForSymbols) ? array_keys($storesForSymbols) : array();
@@ -360,6 +363,8 @@ class gemini extends \ccxt\async\gemini {
         for ($i = 0; $i < $changesLength; $i++) {
             $index = $changesLength - $i - 1;
             $parsed = $this->parse_ohlcv($changes[$index], $market);
+            $ohlcvs = $this->create_stream_ohlcv($symbol, $timeframe, $parsed);
+            $this->stream_produce('ohlcvs', $ohlcvs);
             $stored->append ($parsed);
         }
         $messageHash = 'ohlcv:' . $symbol . ':' . $timeframeId;
@@ -423,6 +428,7 @@ class gemini extends \ccxt\async\gemini {
         }
         $orderbook['symbol'] = $symbol;
         $this->orderbooks[$symbol] = $orderbook;
+        $this->stream_produce('orderbooks', $orderbook);
         $client->resolve ($orderbook, $messageHash);
     }
 
@@ -600,6 +606,7 @@ class gemini extends \ccxt\async\gemini {
         $orderbook['timestamp'] = $timestamp;
         $orderbook['datetime'] = $this->iso8601($timestamp);
         $this->orderbooks[$symbol] = $orderbook;
+        $this->stream_produce('orderbooks', $orderbook);
         $client->resolve ($orderbook, $messageHash);
     }
 
@@ -737,6 +744,7 @@ class gemini extends \ccxt\async\gemini {
         $orders = $this->orders;
         for ($i = 0; $i < count($message); $i++) {
             $order = $this->parse_ws_order($message[$i]);
+            $this->stream_produce('orders', $order);
             $orders->append ($order);
         }
         $client->resolve ($this->orders, $messageHash);
@@ -832,7 +840,9 @@ class gemini extends \ccxt\async\gemini {
         //         "result" => "error"
         //     }
         //
-        throw new ExchangeError($this->json($message));
+        $err = new ExchangeError ($this->id . ' ' . $this->json($message));
+        $this->stream_produce('errors', null, $err);
+        $client->reject ($err);
     }
 
     public function handle_message(Client $client, $message) {
@@ -871,6 +881,7 @@ class gemini extends \ccxt\async\gemini {
         //         }
         //     )
         //
+        $this->stream_produce('raw', $message);
         $isArray = (gettype($message) === 'array' && array_keys($message) === array_keys(array_keys($message)));
         if ($isArray) {
             $this->handle_order($client, $message);

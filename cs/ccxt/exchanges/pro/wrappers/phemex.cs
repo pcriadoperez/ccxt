@@ -252,4 +252,9 @@ public partial class phemex
         var res = await this.watchOrders(symbol, since, limit, parameters);
         return ((IList<object>)res).Select(item => new Order(item)).ToList<Order>();
     }
+    public async Task<Dictionary<string, object>> SubscribePrivate(object type, object messageHash, Dictionary<string, object> parameters = null)
+    {
+        var res = await this.subscribePrivate(type, messageHash, parameters);
+        return ((Dictionary<string, object>)res);
+    }
 }

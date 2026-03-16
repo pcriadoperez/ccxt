@@ -127,6 +127,7 @@ func  (this *CoincheckCore) HandleOrderBook(client interface{}, message interfac
         orderbook.(ccxt.OrderBookInterface).Reset(snapshot)
     }
     var messageHash interface{} = ccxt.Add("orderbook:", symbol)
+    this.StreamProduce("orderbooks", orderbook)
     client.(ccxt.ClientInterface).Resolve(orderbook, messageHash)
 }
 /**
@@ -152,8 +153,8 @@ func  (this *CoincheckCore) WatchTrades(symbol interface{}, optionalArgs ...inte
             params := ccxt.GetArg(optionalArgs, 2, map[string]interface{} {})
             _ = params
         
-            retRes1218 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes1218)
+            retRes1228 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes1228)
             var market interface{} = this.Market(symbol)
             symbol = ccxt.GetValue(market, "symbol")
             var messageHash interface{} = ccxt.Add("trade:", ccxt.GetValue(market, "symbol"))
@@ -203,6 +204,7 @@ func  (this *CoincheckCore) HandleTrades(client interface{}, message interface{}
         var data interface{} = this.SafeValue(message, i)
         var trade interface{} = this.ParseWsTrade(data)
         stored.(ccxt.Appender).Append(trade)
+        this.StreamProduce("trades", trade)
     }
     var messageHash interface{} = ccxt.Add("trade:", symbol)
     client.(ccxt.ClientInterface).Resolve(stored, messageHash)
@@ -244,6 +246,7 @@ func  (this *CoincheckCore) ParseWsTrade(trade interface{}, optionalArgs ...inte
     }, market)
 }
 func  (this *CoincheckCore) HandleMessage(client interface{}, message interface{})  {
+    this.StreamProduce("raw", message)
     var data interface{} = this.SafeValue(message, 0)
     if !ccxt.IsTrue(ccxt.IsArray(data)) {
         this.HandleOrderBook(client, message)

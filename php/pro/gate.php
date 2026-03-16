@@ -559,9 +559,11 @@ class gate extends \ccxt\async\gate {
             $checksum = $this->handle_option('watchOrderBook', 'checksum', true);
             if ($checksum) {
                 $error = new ChecksumError ($this->id . ' ' . $this->orderbook_checksum_message($symbol));
+                $this->stream_produce('orderbooks::' . $symbol, null, $error);
                 $client->reject ($error, $messageHash);
             }
         }
+        $this->stream_produce('orderbooks', $storedOrderBook);
         $client->resolve ($storedOrderBook, $messageHash);
     }
 
@@ -755,6 +757,7 @@ class gate extends \ccxt\async\gate {
             $symbol = $parsedItem['symbol'];
             if ($isTicker) {
                 $this->tickers[$symbol] = $parsedItem;
+                $this->stream_produce('tickers', $parsedItem);
             } else {
                 $this->bidsasks[$symbol] = $parsedItem;
             }
@@ -879,6 +882,7 @@ class gate extends \ccxt\async\gate {
                 $this->trades[$symbol] = $cachedTrades;
             }
             $cachedTrades->append ($trade);
+            $this->stream_produce('trades', $trade);
             $hash = 'trades:' . $symbol;
             $client->resolve ($cachedTrades, $hash);
         }
@@ -957,6 +961,8 @@ class gate extends \ccxt\async\gate {
                 $this->ohlcvs[$symbol][$timeframe] = $stored;
             }
             $stored->append ($parsed);
+            $ohlcvs = $this->create_stream_ohlcv($symbol, $timeframe, $parsed);
+            $this->stream_produce('ohlcvs', $ohlcvs);
             $marketIds[$symbol] = $timeframe;
         }
         $keys = is_array($marketIds) ? array_keys($marketIds) : array();
@@ -1052,6 +1058,7 @@ class gate extends \ccxt\async\gate {
         $marketIds = array();
         for ($i = 0; $i < count($parsed); $i++) {
             $trade = $parsed[$i];
+            $this->stream_produce('myTrades', $trade);
             $cachedTrades->append ($trade);
             $symbol = $trade['symbol'];
             $marketIds[$symbol] = true;
@@ -1178,6 +1185,7 @@ class gate extends \ccxt\async\gate {
         ));
         $messageHash = $channelType . '.balance';
         $this->balance = $this->safe_balance($this->balance);
+        $this->stream_produce('balances', $this->balance);
         $client->resolve ($this->balance, $messageHash);
     }
 
@@ -1268,6 +1276,7 @@ class gate extends \ccxt\async\gate {
                 $contracts = $this->safe_number($position, 'contracts', 0);
                 if ($contracts > 0) {
                     $cache->append ($position);
+                    $this->stream_produce('positions', $position);
                 }
             }
             // don't remove the $future from the .futures $cache
@@ -1317,6 +1326,7 @@ class gate extends \ccxt\async\gate {
         for ($i = 0; $i < count($data); $i++) {
             $rawPosition = $data[$i];
             $position = $this->parse_position($rawPosition);
+            $this->stream_produce('positions', $position);
             $symbol = $this->safe_string($position, 'symbol');
             $side = $this->safe_string($position, 'side');
             // Control when $position is closed no $side is returned
@@ -1466,6 +1476,7 @@ class gate extends \ccxt\async\gate {
                 }
             }
             $stored->append ($parsed);
+            $this->stream_produce('orders', $parsed);
             $symbol = $parsed['symbol'];
             $market = $this->market($symbol);
             $marketIds[$market['id']] = true;
@@ -1607,6 +1618,7 @@ class gate extends \ccxt\async\gate {
             $cache->append ($liquidation);
             $symbol = $this->safe_string($liquidation, 'symbol');
             $symbolLiquidations = $this->safe_value($cache, $symbol, array());
+            $this->stream_produce('myLiquidations', $liquidation);
             $client->resolve ($symbolLiquidations, 'myLiquidations::' . $symbol);
         }
         $client->resolve ($newLiquidations, 'myLiquidations');
@@ -1726,6 +1738,7 @@ class gate extends \ccxt\async\gate {
                 $this->throw_broadly_matched_exception($this->exceptions['ws']['broad'], $errorMessage, $this->json($message));
                 throw new ExchangeError($this->json($message));
             } catch (Exception $e) {
+                $this->stream_produce('errors', null, $e);
                 $client->reject ($e, $messageHash);
                 if (($messageHash !== null) && (is_array($client->subscriptions) && array_key_exists($messageHash, $client->subscriptions))) {
                     unset($client->subscriptions[$messageHash]);
@@ -1911,6 +1924,7 @@ class gate extends \ccxt\async\gate {
         //        )
         //    }
         //
+        $this->stream_produce('raw', $message);
         if ($this->handle_error_message($client, $message)) {
             return;
         }

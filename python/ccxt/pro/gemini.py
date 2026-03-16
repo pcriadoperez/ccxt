@@ -170,6 +170,7 @@ class gemini(ccxt.async_support.gemini):
             stored = ArrayCache(tradesLimit)
             self.trades[symbol] = stored
         stored.append(trade)
+        self.stream_produce('trades', trade)
         messageHash = 'trades:' + symbol
         client.resolve(stored, messageHash)
 
@@ -224,6 +225,7 @@ class gemini(ccxt.async_support.gemini):
             for i in range(0, len(trades)):
                 trade = self.parse_ws_trade(trades[i], market)
                 stored.append(trade)
+                self.stream_produce('trades', trade)
             messageHash = 'trades:' + symbol
             client.resolve(stored, messageHash)
 
@@ -243,6 +245,7 @@ class gemini(ccxt.async_support.gemini):
                     stored = ArrayCache(tradesLimit)
                     self.trades[symbol] = stored
                 stored.append(trade)
+                self.stream_produce('trades', trade)
                 storesForSymbols[symbol] = stored
             symbols = list(storesForSymbols.keys())
             for i in range(0, len(symbols)):
@@ -333,6 +336,8 @@ class gemini(ccxt.async_support.gemini):
         for i in range(0, changesLength):
             index = changesLength - i - 1
             parsed = self.parse_ohlcv(changes[index], market)
+            ohlcvs = self.create_stream_ohlcv(symbol, timeframe, parsed)
+            self.stream_produce('ohlcvs', ohlcvs)
             stored.append(parsed)
         messageHash = 'ohlcv:' + symbol + ':' + timeframeId
         client.resolve(stored, messageHash)
@@ -389,6 +394,7 @@ class gemini(ccxt.async_support.gemini):
             orderbook[side] = bookside
         orderbook['symbol'] = symbol
         self.orderbooks[symbol] = orderbook
+        self.stream_produce('orderbooks', orderbook)
         client.resolve(orderbook, messageHash)
 
     async def watch_order_book_for_symbols(self, symbols: List[str], limit: Int = None, params={}) -> OrderBook:
@@ -544,6 +550,7 @@ class gemini(ccxt.async_support.gemini):
         orderbook['timestamp'] = timestamp
         orderbook['datetime'] = self.iso8601(timestamp)
         self.orderbooks[symbol] = orderbook
+        self.stream_produce('orderbooks', orderbook)
         client.resolve(orderbook, messageHash)
 
     def handle_l2_updates(self, client: Client, message):
@@ -671,6 +678,7 @@ class gemini(ccxt.async_support.gemini):
         orders = self.orders
         for i in range(0, len(message)):
             order = self.parse_ws_order(message[i])
+            self.stream_produce('orders', order)
             orders.append(order)
         client.resolve(self.orders, messageHash)
 
@@ -760,7 +768,9 @@ class gemini(ccxt.async_support.gemini):
         #         "result": "error"
         #     }
         #
-        raise ExchangeError(self.json(message))
+        err = ExchangeError(self.id + ' ' + self.json(message))
+        self.stream_produce('errors', None, err)
+        client.reject(err)
 
     def handle_message(self, client: Client, message):
         #
@@ -798,6 +808,7 @@ class gemini(ccxt.async_support.gemini):
         #         }
         #     ]
         #
+        self.stream_produce('raw', message)
         isArray = isinstance(message, list)
         if isArray:
             self.handle_order(client, message)

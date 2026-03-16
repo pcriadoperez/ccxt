@@ -410,6 +410,8 @@ func  (this *P2bCore) HandleOHLCV(client interface{}, message interface{}) inter
             ccxt.AddElementToObject(ccxt.GetValue(this.Ohlcvs, symbol), timeframe, stored)
         }
         stored.(ccxt.Appender).Append(parsed)
+        var ohlcvs interface{} = this.CreateStreamOHLCV(symbol, timeframe, parsed)
+        this.StreamProduce("ohlcvs", ohlcvs)
         client.(ccxt.ClientInterface).Resolve(stored, messageHash)
     }
     return message
@@ -449,6 +451,7 @@ func  (this *P2bCore) HandleTrade(client interface{}, message interface{}) inter
         var item interface{} = ccxt.GetValue(trades, i)
         var trade interface{} = this.ParseTrade(item, market)
         tradesArray.(ccxt.Appender).Append(trade)
+        this.StreamProduce("trades", trade)
     }
     var messageHash interface{} = ccxt.Add("deals::", symbol)
     client.(ccxt.ClientInterface).Resolve(tradesArray, messageHash)
@@ -508,6 +511,7 @@ func  (this *P2bCore) HandleTicker(client interface{}, message interface{}) inte
     var symbol interface{} = ccxt.GetValue(ticker, "symbol")
     ccxt.AddElementToObject(this.Tickers, symbol, ticker)
     var messageHash interface{} = ccxt.Add(ccxt.Add(messageHashStart, "::"), symbol)
+    this.StreamProduce("tickers", ticker)
     client.(ccxt.ClientInterface).Resolve(ticker, messageHash)
     return message
 }
@@ -564,9 +568,11 @@ func  (this *P2bCore) HandleOrderBook(client interface{}, message interface{})  
         }
     }
     ccxt.AddElementToObject(orderbook, "symbol", symbol)
+    this.StreamProduce("orderbooks", orderbook)
     client.(ccxt.ClientInterface).Resolve(orderbook, messageHash)
 }
 func  (this *P2bCore) HandleMessage(client interface{}, message interface{})  {
+    this.StreamProduce("raw", message)
     if ccxt.IsTrue(this.HandleErrorMessage(client, message)) {
         return
     }
@@ -591,7 +597,10 @@ func  (this *P2bCore) HandleMessage(client interface{}, message interface{})  {
 func  (this *P2bCore) HandleErrorMessage(client interface{}, message interface{}) interface{}  {
     var error interface{} = this.SafeString(message, "error")
     if ccxt.IsTrue(!ccxt.IsEqual(error, nil)) {
-        panic(ccxt.ExchangeError(ccxt.Add(ccxt.Add(this.Id, " error: "), this.Json(error))))
+        err := ccxt.ExchangeError(ccxt.Add(ccxt.Add(this.Id, " error: "), this.Json(error)))
+        this.StreamProduce("errors", nil, err)
+        client.(ccxt.ClientInterface).Reject(err)
+        return true
     }
     return false
 }

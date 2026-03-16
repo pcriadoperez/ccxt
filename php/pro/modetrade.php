@@ -157,6 +157,7 @@ class modetrade extends \ccxt\async\modetrade {
         $timestamp = $this->safe_integer($message, 'ts');
         $snapshot = $this->parse_order_book($data, $symbol, $timestamp, 'bids', 'asks');
         $orderbook->reset ($snapshot);
+        $this->stream_produce('orderbooks', $orderbook);
         $client->resolve ($orderbook, $topic);
     }
 
@@ -248,6 +249,7 @@ class modetrade extends \ccxt\async\modetrade {
         $ticker = $this->parse_ws_ticker($data, $market);
         $ticker['symbol'] = $market['symbol'];
         $this->tickers[$market['symbol']] = $ticker;
+        $this->stream_produce('tickers', $ticker);
         $client->resolve ($ticker, $topic);
         return $message;
     }
@@ -459,6 +461,8 @@ class modetrade extends \ccxt\async\modetrade {
         }
         $ohlcvCache = $this->ohlcvs[$symbol][$timeframe];
         $ohlcvCache->append ($parsed);
+        $ohlcvs = $this->create_stream_ohlcv($symbol, $timeframe, $parsed);
+        $this->stream_produce('ohlcvs', $ohlcvs);
         $client->resolve ($ohlcvCache, $topic);
     }
 
@@ -520,6 +524,7 @@ class modetrade extends \ccxt\async\modetrade {
         $trades = $this->trades[$symbol];
         $trades->append ($trade);
         $this->trades[$symbol] = $trades;
+        $this->stream_produce('trades', $trade);
         $client->resolve ($trades, $topic);
     }
 
@@ -955,6 +960,7 @@ class modetrade extends \ccxt\async\modetrade {
                 $parsed['datetime'] = $this->safe_string($order, 'datetime');
             }
             $cachedOrders->append ($parsed);
+            $this->stream_produce('orders', $parsed);
             $client->resolve ($this->orders, $topic);
             $messageHashSymbol = $topic . ':' . $symbol;
             $client->resolve ($this->orders, $messageHashSymbol);
@@ -1002,6 +1008,7 @@ class modetrade extends \ccxt\async\modetrade {
             $this->myTrades = $trades;
         }
         $trades->append ($trade);
+        $this->stream_produce('myTrades', $trade);
         $client->resolve ($trades, $messageHash);
         $symbolSpecificMessageHash = $messageHash . ':' . $symbol;
         $client->resolve ($trades, $symbolSpecificMessageHash);
@@ -1133,6 +1140,7 @@ class modetrade extends \ccxt\async\modetrade {
             $position = $this->parse_ws_position($rawPosition, $market);
             $newPositions[] = $position;
             $cache->append ($position);
+            $this->stream_produce('positions', $position);
             $messageHash = 'positions::' . $market['symbol'];
             $client->resolve ($position, $messageHash);
         }
@@ -1282,6 +1290,7 @@ class modetrade extends \ccxt\async\modetrade {
             $this->balance[$code] = $account;
         }
         $this->balance = $this->safe_balance($this->balance);
+        $this->stream_produce('balances', $this->balance);
         $client->resolve ($this->balance, 'balance');
     }
 
@@ -1304,6 +1313,7 @@ class modetrade extends \ccxt\async\modetrade {
             }
             return false;
         } catch (Exception $error) {
+            $this->stream_produce('errors', null, $error);
             if ($error instanceof AuthenticationError) {
                 $messageHash = 'authenticated';
                 $client->reject ($error, $messageHash);
@@ -1318,6 +1328,7 @@ class modetrade extends \ccxt\async\modetrade {
     }
 
     public function handle_message(Client $client, $message) {
+        $this->stream_produce('raw', $message);
         if ($this->handle_error_message($client, $message)) {
             return;
         }

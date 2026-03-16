@@ -157,7 +157,7 @@ class xt extends \ccxt\async\xt {
         // $this->handleBidAsks (storedAsks, $asks);
     }
 
-    public function subscribe(string $name, string $access, string $methodName, ?array $market = null, ?array $symbols = null, $params = array ()) {
+    public function subscribe(string $name, string $access, string $methodName, $market = null, ?array $symbols = null, $params = array ()) {
         return Async\async(function () use ($name, $access, $methodName, $market, $symbols, $params) {
             /**
              * @ignore
@@ -803,6 +803,7 @@ class xt extends \ccxt\async\xt {
             $event = $this->safe_string($message, 'event');
             $messageHashTail = $isSpot ? 'spot' : 'contract';
             $messageHash = $event . '::' . $messageHashTail;
+            $this->stream_produce('tickers', $ticker);
             $client->resolve ($ticker, $messageHash);
         }
         return $message;
@@ -887,6 +888,7 @@ class xt extends \ccxt\async\xt {
             $symbol = $ticker['symbol'];
             $this->tickers[$symbol] = $ticker;
             $newTickers[] = $ticker;
+            $this->stream_produce('tickers', $ticker);
         }
         $messageHashStart = $this->safe_string($message, 'topic') . '::' . $tradeType;
         $messageHashes = $this->find_message_hashes($client, $messageHashStart . '::');
@@ -960,6 +962,8 @@ class xt extends \ccxt\async\xt {
                 $this->ohlcvs[$symbol][$timeframe] = $stored;
             }
             $stored->append ($parsed);
+            $ohlcvs = $this->create_stream_ohlcv($symbol, $timeframe, $parsed);
+            $this->stream_produce('ohlcvs', $ohlcvs);
             $event = $this->safe_string($message, 'event');
             $messageHash = $event . '::' . $tradeType;
             $client->resolve ($stored, $messageHash);
@@ -1014,6 +1018,7 @@ class xt extends \ccxt\async\xt {
                 $this->trades[$symbol] = $tradesArray;
             }
             $tradesArray->append ($trade);
+            $this->stream_produce('trades', $trade);
             $messageHash = $event . '::' . $tradeType;
             $client->resolve ($tradesArray, $messageHash);
         }
@@ -1131,6 +1136,7 @@ class xt extends \ccxt\async\xt {
             $orderbook['timestamp'] = $timestamp;
             $orderbook['datetime'] = $this->iso8601($timestamp);
             $orderbook['symbol'] = $symbol;
+            $this->stream_produce('orderbooks', $orderbook);
             $client->resolve ($orderbook, $messageHash);
         }
     }
@@ -1326,6 +1332,7 @@ class xt extends \ccxt\async\xt {
             $market = $this->safe_market($marketId, null, null, $tradeType);
             $parsed = $this->parse_ws_order($order, $market);
             $orders->append ($parsed);
+            $this->stream_produce('orders', $parsed);
             $client->resolve ($orders, 'order::' . $tradeType);
         }
         return $message;
@@ -1376,6 +1383,7 @@ class xt extends \ccxt\async\xt {
         $this->balance[$code] = $account;
         $this->balance = $this->safe_balance($this->balance);
         $tradeType = (is_array($data) && array_key_exists('coin', $data)) ? 'contract' : 'spot';
+        $this->stream_produce('balances', $this->balance);
         $client->resolve ($this->balance, 'balance::' . $tradeType);
     }
 
@@ -1424,11 +1432,13 @@ class xt extends \ccxt\async\xt {
         $parsedTrade = $this->parse_trade($data);
         $market = $this->market($parsedTrade['symbol']);
         $stored->append ($parsedTrade);
+        $this->stream_produce('myTrades', $parsedTrade);
         $tradeType = $market['contract'] ? 'contract' : 'spot';
         $client->resolve ($stored, 'trade::' . $tradeType);
     }
 
     public function handle_message(Client $client, $message) {
+        $this->stream_produce('raw', $message);
         $event = $this->safe_string($message, 'event');
         if ($event === 'pong') {
             $client->onPong ();
@@ -1522,6 +1532,7 @@ class xt extends \ccxt\async\xt {
             $this->get_listen_key(true);
             return;
         }
+        $this->stream_produce('errors', null, $message);
         $client->reject ($message);
     }
 }

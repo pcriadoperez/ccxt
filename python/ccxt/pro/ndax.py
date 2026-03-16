@@ -107,6 +107,7 @@ class ndax(ccxt.async_support.ndax):
         self.tickers[symbol] = ticker
         name = 'SubscribeLevel1'
         messageHash = name + ':' + market['id']
+        self.stream_produce('tickers', ticker)
         client.resolve(ticker, messageHash)
 
     async def watch_trades(self, symbol: str, since: Int = None, limit: Int = None, params={}) -> List[Trade]:
@@ -177,6 +178,7 @@ class ndax(ccxt.async_support.ndax):
                 limit = self.safe_integer(self.options, 'tradesLimit', 1000)
                 tradesArray = ArrayCache(limit)
             tradesArray.append(trade)
+            self.stream_produce('trades', trade)
             self.trades[symbol] = tradesArray
             updates[symbol] = True
         symbols = list(updates.keys())
@@ -308,6 +310,11 @@ class ndax(ccxt.async_support.ndax):
                 market = self.safe_market(marketId)
                 symbol = market['symbol']
                 stored = self.safe_value(self.ohlcvs[symbol], timeframe, [])
+                storedLength = len(stored)
+                if storedLength > 0:
+                    lastOhlcv = stored[storedLength - 1]
+                    ohlcvs = self.create_stream_ohlcv(symbol, timeframe, lastOhlcv)
+                    self.stream_produce('ohlcvs', ohlcvs)
                 client.resolve(stored, messageHash)
 
     async def watch_order_book(self, symbol: str, limit: Int = None, params={}) -> OrderBook:
@@ -423,6 +430,7 @@ class ndax(ccxt.async_support.ndax):
         name = 'SubscribeLevel2'
         messageHash = name + ':' + marketId
         self.orderbooks[symbol] = orderbook
+        self.stream_produce('orderbooks', orderbook)
         client.resolve(orderbook, messageHash)
 
     def handle_order_book_subscription(self, client: Client, message, subscription):
@@ -457,6 +465,7 @@ class ndax(ccxt.async_support.ndax):
         orderbook = self.order_book(snapshot, limit)
         self.orderbooks[symbol] = orderbook
         messageHash = self.safe_string(subscription, 'messageHash')
+        self.stream_produce('orderbooks', orderbook)
         client.resolve(orderbook, messageHash)
 
     def handle_subscription_status(self, client: Client, message):
@@ -499,6 +508,7 @@ class ndax(ccxt.async_support.ndax):
         #         "o": "[[2,1,1608208308265,0,20782.49,1,25000,8,1,1]]"
         #     }
         #
+        self.stream_produce('raw', message)
         payload = self.safe_string(message, 'o')
         if payload is None:
             return

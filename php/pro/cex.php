@@ -125,6 +125,7 @@ class cex extends \ccxt\async\cex {
         }
         $this->balance = $this->safe_balance($result);
         $messageHash = $this->safe_string($message, 'oid');
+        $this->stream_produce('balances', $this->balance);
         $client->resolve ($this->balance, $messageHash);
     }
 
@@ -251,6 +252,7 @@ class cex extends \ccxt\async\cex {
             $rawTrade = $data[$index];
             $parsed = $this->parse_ws_old_trade($rawTrade, $market);
             $stored->append ($parsed);
+            $this->stream_produce('trades', $parsed);
         }
         $messageHash = 'trades';
         $this->trades[$symbol] = $stored;
@@ -382,6 +384,7 @@ class cex extends \ccxt\async\cex {
         $client->resolve ($ticker, $messageHash);
         $client->resolve ($ticker, 'tickers');
         $messageHash = $this->safe_string($message, 'oid');
+        $this->stream_produce('tickers', $ticker);
         if ($messageHash !== null) {
             $client->resolve ($ticker, $messageHash);
         }
@@ -614,6 +617,7 @@ class cex extends \ccxt\async\cex {
         }
         $trade = $this->parse_ws_trade($data);
         $stored->append ($trade);
+        $this->stream_produce('myTrades', $trade);
         $messageHash = 'myTrades:' . $trade['symbol'];
         $client->resolve ($stored, $messageHash);
     }
@@ -798,6 +802,7 @@ class cex extends \ccxt\async\cex {
         $order = $this->safe_order($order);
         $storedOrders->append ($order);
         $messageHash = 'orders:' . $symbol;
+        $this->stream_produce('orders', $order);
         $client->resolve ($storedOrders, $messageHash);
     }
 
@@ -952,6 +957,7 @@ class cex extends \ccxt\async\cex {
             $order = $this->parse_order($rawOrder, $market);
             $order['status'] = 'open';
             $myOrders->append ($order);
+            $this->stream_produce('orders', $order);
         }
         $this->orders = $myOrders;
         $messageHash = 'orders:' . $symbol;
@@ -1035,6 +1041,7 @@ class cex extends \ccxt\async\cex {
             'incrementalId' => $incrementalId,
         );
         $this->orderbooks[$symbol] = $orderbook;
+        $this->stream_produce('orderbooks', $orderbook);
         $client->resolve ($orderbook, $messageHash);
     }
 
@@ -1082,6 +1089,7 @@ class cex extends \ccxt\async\cex {
         $storedOrderBook['timestamp'] = $timestamp;
         $storedOrderBook['datetime'] = $this->iso8601($timestamp);
         $storedOrderBook['nonce'] = $incrementalId;
+        $this->stream_produce('orderbooks', $storedOrderBook);
         $client->resolve ($storedOrderBook, $messageHash);
     }
 
@@ -1159,10 +1167,14 @@ class cex extends \ccxt\async\cex {
         $messageHash = 'ohlcv:' . $symbol;
         $data = $this->safe_value($message, 'data', array());
         $limit = $this->safe_integer($this->options, 'OHLCVLimit', 1000);
+        $stored = null;
         $stored = new ArrayCacheByTimestamp ($limit);
         $sorted = $this->sort_by($data, 0);
         for ($i = 0; $i < count($sorted); $i++) {
-            $stored->append ($this->parse_ohlcv($sorted[$i], $market));
+            $parsed = $this->parse_ohlcv($sorted[$i], $market);
+            $stored->append ($parsed);
+            $ohlcvs = $this->create_stream_ohlcv($symbol, 'unknown', $parsed);
+            $this->stream_produce('ohlcvs', $ohlcvs);
         }
         if (!(is_array($this->ohlcvs) && array_key_exists($symbol, $this->ohlcvs))) {
             $this->ohlcvs[$symbol] = array();
@@ -1212,6 +1224,8 @@ class cex extends \ccxt\async\cex {
         );
         $stored = $this->safe_value($this->ohlcvs, $symbol);
         $stored->append ($ohlcv);
+        $ohlcvs = $this->create_stream_ohlcv($symbol, '1m', $ohlcv);
+        $this->stream_produce('ohlcvs', $ohlcvs);
         $client->resolve ($stored, $messageHash);
     }
 
@@ -1241,6 +1255,8 @@ class cex extends \ccxt\async\cex {
                 $this->safe_number($data[$i], 5),
             ];
             $stored->append ($ohlcv);
+            $ohlcvs = $this->create_stream_ohlcv($symbol, null, $ohlcv);
+            $this->stream_produce('ohlcvs', $ohlcvs);
         }
         $dataLength = count($data);
         if ($dataLength > 0) {
@@ -1527,6 +1543,7 @@ class cex extends \ccxt\async\cex {
         } catch (Exception $error) {
             $messageHash = $this->safe_string($message, 'oid');
             $future = $this->safe_value($client['futures'], $messageHash);
+            $this->stream_produce('errors', null, $error);
             if ($future !== null) {
                 $client->reject ($error, $messageHash);
                 return true;
@@ -1537,6 +1554,7 @@ class cex extends \ccxt\async\cex {
     }
 
     public function handle_message(Client $client, $message) {
+        $this->stream_produce('raw', $message);
         $ok = $this->safe_string($message, 'ok');
         if ($ok === 'error') {
             $this->handle_error_message($client, $message);

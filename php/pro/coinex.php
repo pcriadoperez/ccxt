@@ -169,6 +169,7 @@ class coinex extends \ccxt\async\coinex {
             $parsedTicker = $this->parse_ws_ticker($entry, $market);
             $this->tickers[$symbol] = $parsedTicker;
             $newTickers[$symbol] = $parsedTicker;
+            $this->stream_produce('tickers', $parsedTicker);
         }
         $messageHashes = $this->find_message_hashes($client, 'tickers::');
         for ($i = 0; $i < count($messageHashes); $i++) {
@@ -370,6 +371,7 @@ class coinex extends \ccxt\async\coinex {
             $this->balance[$account]['info'] = $info;
             $this->balance[$account] = $this->safe_balance($this->balance[$account]);
             $messageHash = 'balances:' . $account;
+            $this->stream_produce('balances', $this->balance);
             $client->resolve ($this->balance[$account], $messageHash);
         }
     }
@@ -500,6 +502,7 @@ class coinex extends \ccxt\async\coinex {
         $parsed = $this->parse_ws_trade($data, $market);
         $stored->append ($parsed);
         $this->trades[$symbol] = $stored;
+        $this->stream_produce('myTrades', $parsed);
         $client->resolve ($this->trades[$symbol], $messageWithType);
         $client->resolve ($this->trades[$symbol], $messageHash);
     }
@@ -562,6 +565,7 @@ class coinex extends \ccxt\async\coinex {
             $trade = $trades[$i];
             $parsed = $this->parse_ws_trade($trade, $market);
             $stored->append ($parsed);
+            $this->stream_produce('trades', $parsed);
         }
         $this->trades[$symbol] = $stored;
         $client->resolve ($this->trades[$symbol], $messageHash);
@@ -916,6 +920,7 @@ class coinex extends \ccxt\async\coinex {
             $this->orderbooks[$symbol] = $currentOrderBook;
         }
         // $this->checkOrderBookChecksum ($this->orderbooks[$symbol]);
+        $this->stream_produce('orderbooks', $this->orderbooks[$symbol]);
         $client->resolve ($this->orderbooks[$symbol], $messageHash);
     }
 
@@ -1108,6 +1113,7 @@ class coinex extends \ccxt\async\coinex {
         $orders = $this->orders;
         $orders->append ($parsedOrder);
         $messageHash = 'orders';
+        $this->stream_produce('orders', $parsedOrder);
         $messageWithType = $messageHash . ':' . $market['type'];
         $client->resolve ($this->orders, $messageWithType);
         $messageHash .= ':' . $symbol;
@@ -1347,6 +1353,7 @@ class coinex extends \ccxt\async\coinex {
     }
 
     public function handle_message(Client $client, $message) {
+        $this->stream_produce('raw', $message);
         $method = $this->safe_string($message, 'method');
         $error = $this->safe_string($message, 'message');
         if ($error !== null) {
@@ -1418,6 +1425,7 @@ class coinex extends \ccxt\async\coinex {
             $future->resolve (true);
         } else {
             $error = new AuthenticationError ($this->json($message));
+            $this->stream_produce('errors', null, $error);
             $client->reject ($error, $messageHash);
             if (is_array($client->subscriptions) && array_key_exists($messageHash, $client->subscriptions)) {
                 unset($client->subscriptions[$messageHash]);

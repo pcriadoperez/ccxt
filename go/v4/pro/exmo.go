@@ -150,6 +150,7 @@ func  (this *ExmoCore) HandleBalance(client interface{}, message interface{})  {
         this.ParseMarginBalance(message)
     }
     var messageHash interface{} = ccxt.Add("balance:", typeVar)
+    this.StreamProduce("balances", this.Balance)
     client.(ccxt.ClientInterface).Resolve(this.Balance, messageHash)
 }
 func  (this *ExmoCore) ParseSpotBalance(message interface{})  {
@@ -239,8 +240,8 @@ func  (this *ExmoCore) WatchTicker(symbol interface{}, optionalArgs ...interface
                     params := ccxt.GetArg(optionalArgs, 0, map[string]interface{} {})
             _ = params
         
-            retRes2198 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes2198)
+            retRes2208 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes2208)
             var market interface{} = this.Market(symbol)
             symbol = ccxt.GetValue(market, "symbol")
             var url interface{} = ccxt.GetValue(ccxt.GetValue(ccxt.GetValue(this.Urls, "api"), "ws"), "public")
@@ -252,9 +253,9 @@ func  (this *ExmoCore) WatchTicker(symbol interface{}, optionalArgs ...interface
             }
             var request interface{} = this.DeepExtend(message, params)
         
-                retRes23215 :=  (<-this.Watch(url, messageHash, request, messageHash, request))
-                ccxt.PanicOnError(retRes23215)
-                ch <- retRes23215
+                retRes23315 :=  (<-this.Watch(url, messageHash, request, messageHash, request))
+                ccxt.PanicOnError(retRes23315)
+                ch <- retRes23315
                 return nil
         
             }()
@@ -279,8 +280,8 @@ func  (this *ExmoCore) WatchTickers(optionalArgs ...interface{}) <- chan interfa
             params := ccxt.GetArg(optionalArgs, 1, map[string]interface{} {})
             _ = params
         
-            retRes2458 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes2458)
+            retRes2468 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes2468)
             symbols = this.MarketSymbols(symbols, nil, false)
             var messageHashes interface{} = []interface{}{}
             var args interface{} = []interface{}{}
@@ -297,8 +298,8 @@ func  (this *ExmoCore) WatchTickers(optionalArgs ...interface{}) <- chan interfa
             }
             var request interface{} = this.DeepExtend(message, params)
         
-            retRes2618 := (<-this.WatchMultiple(url, messageHashes, request, messageHashes, request))
-            ccxt.PanicOnError(retRes2618)
+            retRes2628 := (<-this.WatchMultiple(url, messageHashes, request, messageHashes, request))
+            ccxt.PanicOnError(retRes2628)
         
             ch <- this.FilterByArray(this.Tickers, "symbol", symbols)
             return nil
@@ -335,6 +336,7 @@ func  (this *ExmoCore) HandleTicker(client interface{}, message interface{})  {
     var parsedTicker interface{} = this.ParseTicker(ticker, market)
     var messageHash interface{} = ccxt.Add("ticker:", symbol)
     ccxt.AddElementToObject(this.Tickers, symbol, parsedTicker)
+    this.StreamProduce("tickers", parsedTicker)
     client.(ccxt.ClientInterface).Resolve(parsedTicker, messageHash)
 }
 /**
@@ -359,8 +361,8 @@ func  (this *ExmoCore) WatchTrades(symbol interface{}, optionalArgs ...interface
             params := ccxt.GetArg(optionalArgs, 2, map[string]interface{} {})
             _ = params
         
-            retRes3088 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes3088)
+            retRes3108 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes3108)
             var market interface{} = this.Market(symbol)
             symbol = ccxt.GetValue(market, "symbol")
             var url interface{} = ccxt.GetValue(ccxt.GetValue(ccxt.GetValue(this.Urls, "api"), "ws"), "public")
@@ -414,6 +416,7 @@ func  (this *ExmoCore) HandleTrades(client interface{}, message interface{})  {
         var trade interface{} = ccxt.GetValue(trades, i)
         var parsed interface{} = this.ParseTrade(trade, market)
         stored.(ccxt.Appender).Append(parsed)
+        this.StreamProduce("trades", parsed)
     }
     ccxt.AddElementToObject(this.Trades, symbol, stored)
     client.(ccxt.ClientInterface).Resolve(ccxt.GetValue(this.Trades, symbol), messageHash)
@@ -442,11 +445,11 @@ func  (this *ExmoCore) WatchMyTrades(optionalArgs ...interface{}) <- chan interf
             params := ccxt.GetArg(optionalArgs, 3, map[string]interface{} {})
             _ = params
         
-            retRes3748 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes3748)
+            retRes3778 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes3778)
         
-            retRes3758 := (<-this.Authenticate(params))
-            ccxt.PanicOnError(retRes3758)
+            retRes3788 := (<-this.Authenticate(params))
+            ccxt.PanicOnError(retRes3788)
             typeVarqueryVariable := this.HandleMarketTypeAndParams("watchMyTrades", nil, params)
             typeVar := ccxt.GetValue(typeVarqueryVariable,0)
             query := ccxt.GetValue(typeVarqueryVariable,1)
@@ -558,6 +561,7 @@ func  (this *ExmoCore) HandleMyTrades(client interface{}, message interface{})  
     for j := 0; ccxt.IsLessThan(j, ccxt.GetArrayLength(trades)); j++ {
         var trade interface{} = ccxt.GetValue(trades, j)
         myTrades.(ccxt.Appender).Append(trade)
+        this.StreamProduce("myTrades", trade)
         ccxt.AddElementToObject(symbols, ccxt.GetValue(trade, "symbol"), true)
     }
     var symbolKeys interface{} = ccxt.ObjectKeys(symbols)
@@ -587,8 +591,8 @@ func  (this *ExmoCore) WatchOrderBook(symbol interface{}, optionalArgs ...interf
             params := ccxt.GetArg(optionalArgs, 1, map[string]interface{} {})
             _ = params
         
-            retRes5028 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes5028)
+            retRes5068 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes5068)
             var market interface{} = this.Market(symbol)
             symbol = ccxt.GetValue(market, "symbol")
             var url interface{} = ccxt.GetValue(ccxt.GetValue(ccxt.GetValue(this.Urls, "api"), "ws"), "public")
@@ -667,6 +671,7 @@ func  (this *ExmoCore) HandleOrderBook(client interface{}, message interface{}) 
         ccxt.AddElementToObject(orderbook, "timestamp", timestamp)
         ccxt.AddElementToObject(orderbook, "datetime", this.Iso8601(timestamp))
     }
+    this.StreamProduce("orderbooks", orderbook)
     client.(ccxt.ClientInterface).Resolve(orderbook, messageHash)
 }
 func  (this *ExmoCore) HandleDelta(bookside interface{}, delta interface{})  {
@@ -704,11 +709,11 @@ func  (this *ExmoCore) WatchOrders(optionalArgs ...interface{}) <- chan interfac
             params := ccxt.GetArg(optionalArgs, 3, map[string]interface{} {})
             _ = params
         
-            retRes6048 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes6048)
+            retRes6098 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes6098)
         
-            retRes6058 := (<-this.Authenticate(params))
-            ccxt.PanicOnError(retRes6058)
+            retRes6108 := (<-this.Authenticate(params))
+            ccxt.PanicOnError(retRes6108)
             typeVarqueryVariable := this.HandleMarketTypeAndParams("watchOrders", nil, params)
             typeVar := ccxt.GetValue(typeVarqueryVariable,0)
             query := ccxt.GetValue(typeVarqueryVariable,1)
@@ -814,6 +819,7 @@ func  (this *ExmoCore) HandleOrders(client interface{}, message interface{})  {
     for j := 0; ccxt.IsLessThan(j, ccxt.GetArrayLength(rawOrders)); j++ {
         var order interface{} = this.ParseWsOrder(ccxt.GetValue(rawOrders, j))
         cachedOrders.(ccxt.Appender).Append(order)
+        this.StreamProduce("orders", order)
         ccxt.AddElementToObject(symbols, ccxt.GetValue(order, "symbol"), true)
     }
     var symbolKeys interface{} = ccxt.ObjectKeys(symbols)
@@ -932,6 +938,7 @@ func  (this *ExmoCore) HandleMessage(client interface{}, message interface{})  {
     //     "id": 1,
     //     "topic": "spot/ticker:BTC_USDT"
     // }
+    this.StreamProduce("raw", message)
     var event interface{} = this.SafeString(message, "event")
     var events interface{} = map[string]interface{} {
         "logged_in": this.HandleAuthenticationMessage,
@@ -968,7 +975,9 @@ func  (this *ExmoCore) HandleMessage(client interface{}, message interface{})  {
             }
         }
     }
-    panic(ccxt.NotSupported(ccxt.Add(ccxt.Add(this.Id, " received an unsupported message: "), this.Json(message))))
+    err := ccxt.NotSupported(ccxt.Add(ccxt.Add(this.Id, " received an unsupported message: "), this.Json(message)))
+    this.StreamProduce("errors", nil, err)
+    client.(ccxt.ClientInterface).Reject(err)
 }
 func  (this *ExmoCore) HandleSubscribed(client interface{}, message interface{}) interface{}  {
     //

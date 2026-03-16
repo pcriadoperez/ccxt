@@ -561,6 +561,7 @@ class kraken extends \ccxt\async\kraken {
             'info' => $ticker,
         ));
         $this->tickers[$symbol] = $result;
+        $this->stream_produce('tickers', $result);
         $client->resolve ($result, $messageHash);
     }
 
@@ -596,6 +597,7 @@ class kraken extends \ccxt\async\kraken {
         $parsed = $this->parse_trades($data, $market);
         for ($i = 0; $i < count($parsed); $i++) {
             $stored->append ($parsed[$i]);
+            $this->stream_produce('trades', $parsed[$i]);
         }
         $client->resolve ($stored, $messageHash);
     }
@@ -653,6 +655,8 @@ class kraken extends \ccxt\async\kraken {
                 $this->safe_string($candle, 'close'),
                 $this->safe_string($candle, 'volume'),
             );
+            $ohlcvs = $this->create_stream_ohlcv($symbol, $timeframe, $parsed);
+            $this->stream_produce('ohlcvs', $ohlcvs);
             $stored->append ($parsed);
         }
         $client->resolve ($stored, $messageHash);
@@ -1028,10 +1032,12 @@ class kraken extends \ccxt\async\kraken {
                 $error = new ChecksumError ($this->id . ' ' . $this->orderbook_checksum_message($symbol));
                 unset($client->subscriptions[$messageHash]);
                 unset($this->orderbooks[$symbol]);
+                $this->stream_produce('errors', null, $error);
                 $client->reject ($error, $messageHash);
                 return;
             }
         }
+        $this->stream_produce('orderbooks', $orderbook);
         $client->resolve ($orderbook, $messageHash);
     }
 
@@ -1223,6 +1229,7 @@ class kraken extends \ccxt\async\kraken {
                 $stored->append ($parsed);
                 $symbol = $parsed['symbol'];
                 $symbols[$symbol] = true;
+                $this->stream_produce('myTrades', $parsed);
             }
             $name = 'myTrades';
             $client->resolve ($this->myTrades, $name);
@@ -1366,6 +1373,7 @@ class kraken extends \ccxt\async\kraken {
                         unset($symbolsByOrderId[$first['id']]);
                     }
                 }
+                $this->stream_produce('orders', $newOrder);
                 $stored->append ($newOrder);
                 if ($symbol !== null) {
                     $symbols[$symbol] = true;
@@ -1547,6 +1555,7 @@ class kraken extends \ccxt\async\kraken {
         $newBalance = $this->deep_extend($oldBalance, $balance);
         $this->balance[$type] = $this->safe_balance($newBalance);
         $channel = $this->safe_string($message, 'channel');
+        $this->stream_produce('balances', $this->balance[$type]);
         $client->resolve ($this->balance[$type], $channel);
     }
 
@@ -1631,6 +1640,7 @@ class kraken extends \ccxt\async\kraken {
             } else {
                 $exception = new $broad[$broadKey] ($errorMessage);
             }
+            $this->stream_produce('errors', null, $exception);
             if ($requestId !== null) {
                 $client->reject ($exception, $requestId);
             }
@@ -1640,6 +1650,7 @@ class kraken extends \ccxt\async\kraken {
     }
 
     public function handle_message(Client $client, $message) {
+        $this->stream_produce('raw', $message);
         $channel = $this->safe_string($message, 'channel');
         if ($channel !== null) {
             if ($channel === 'executions') {

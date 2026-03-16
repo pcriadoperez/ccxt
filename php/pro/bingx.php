@@ -275,6 +275,7 @@ class bingx extends \ccxt\async\bingx {
         $symbol = $market['symbol'];
         $ticker = $this->parse_ws_ticker($data, $market);
         $this->tickers[$symbol] = $ticker;
+        $this->stream_produce('tickers', $ticker);
         $client->resolve ($ticker, $this->get_message_hash('ticker', $symbol));
         if ($this->safe_string($message, 'dataType') === 'all@ticker') {
             $client->resolve ($ticker, $this->get_message_hash('ticker'));
@@ -543,6 +544,7 @@ class bingx extends \ccxt\async\bingx {
         }
         for ($j = 0; $j < count($trades); $j++) {
             $stored->append ($trades[$j]);
+            $this->stream_produce('trades', $trades[$j]);
         }
         $client->resolve ($stored, $messageHash);
     }
@@ -736,6 +738,7 @@ class bingx extends \ccxt\async\bingx {
         $snapshot['nonce'] = $nonce;
         $orderbook->reset ($snapshot);
         $messageHash = $this->get_message_hash('orderbook', $symbol);
+        $this->stream_produce('orderbooks', $orderbook);
         $client->resolve ($orderbook, $messageHash);
         // resolve for "all"
         if ($isAllEndpoint) {
@@ -873,6 +876,8 @@ class bingx extends \ccxt\async\bingx {
             $candle = $candles[$i];
             $parsed = $this->parse_ws_ohlcv($candle, $market);
             $stored->append ($parsed);
+            $ohlcvs = $this->create_stream_ohlcv($symbol, $unifiedTimeframe, $parsed);
+            $this->stream_produce('ohlcvs', $ohlcvs);
         }
         $resolveData = array( $symbol, $unifiedTimeframe, $stored );
         $messageHash = $this->get_message_hash('ohlcv', $symbol, $unifiedTimeframe);
@@ -1414,6 +1419,7 @@ class bingx extends \ccxt\async\bingx {
                 $this->throw_exactly_matched_exception($this->exceptions['exact'], $code, $feedback);
             }
         } catch (Exception $e) {
+            $this->stream_produce('errors', null, $e);
             $client->reject ($e);
         }
         return true;
@@ -1441,6 +1447,7 @@ class bingx extends \ccxt\async\bingx {
                     $messageHashes = is_array($client->futures) ? array_keys($client->futures) : array();
                     for ($j = 0; $j < count($messageHashes); $j++) {
                         $messageHash = $messageHashes[$j];
+                        $this->stream_produce('errors', null, $error);
                         $client->reject ($error, $messageHash);
                     }
                 }
@@ -1492,6 +1499,7 @@ class bingx extends \ccxt\async\bingx {
                 }
             } catch (Exception $e) {
                 $error = new NetworkError ($this->id . ' pong failed with $error ' . $this->exception_message($e));
+                $this->stream_produce('errors', null, $error);
                 $client->reset ($error);
             }
         }) ();
@@ -1594,6 +1602,7 @@ class bingx extends \ccxt\async\bingx {
         $spotHash = 'spot:order';
         $swapHash = 'swap:order';
         $messageHash = ($isSpot) ? $spotHash : $swapHash;
+        $this->stream_produce('orders', $parsedOrder);
         $client->resolve ($stored, $messageHash);
         $client->resolve ($stored, $messageHash . ':' . $symbol);
     }
@@ -1672,6 +1681,7 @@ class bingx extends \ccxt\async\bingx {
         $swapHash = 'swap:mytrades';
         $messageHash = $isSpot ? $spotHash : $swapHash;
         $cachedTrades->append ($parsed);
+        $this->stream_produce('myTrades', $parsed);
         $client->resolve ($cachedTrades, $messageHash);
         $client->resolve ($cachedTrades, $messageHash . ':' . $symbol);
     }
@@ -1734,10 +1744,12 @@ class bingx extends \ccxt\async\bingx {
             $this->balance[$type][$code] = $account;
         }
         $this->balance[$type] = $this->safe_balance($this->balance[$type]);
+        $this->stream_produce('balances', $this->balance[$type]);
         $client->resolve ($this->balance[$type], $type . ':balance');
     }
 
     public function handle_message(Client $client, $message) {
+        $this->stream_produce('raw', $message);
         if (!$this->handle_error_message($client, $message)) {
             return;
         }

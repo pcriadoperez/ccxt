@@ -284,6 +284,7 @@ class backpack extends \ccxt\async\backpack {
         $parsedTicker = $this->parse_ws_ticker($ticker, $market);
         $messageHash = 'ticker' . ':' . $symbol;
         $this->tickers[$symbol] = $parsedTicker;
+        $this->stream_produce('tickers', $parsedTicker);
         $client->resolve ($parsedTicker, $messageHash);
     }
 
@@ -584,6 +585,8 @@ class backpack extends \ccxt\async\backpack {
         $ohlcv = $this->ohlcvs[$symbol][$timeframe];
         $parsed = $this->parse_ws_ohlcv($data);
         $ohlcv->append ($parsed);
+        $ohlcvs = $this->create_stream_ohlcv($symbol, $timeframe, $parsed);
+        $this->stream_produce('ohlcvs', $ohlcvs);
         $messageHash = 'candles:' . $symbol . ':' . $timeframe;
         $client->resolve (array( $symbol, $timeframe, $ohlcv ), $messageHash);
     }
@@ -744,6 +747,7 @@ class backpack extends \ccxt\async\backpack {
         $cache = $this->trades[$symbol];
         $trade = $this->parse_ws_trade($data, $market);
         $cache->append ($trade);
+        $this->stream_produce('trades', $trade);
         $messageHash = 'trades:' . $symbol;
         $client->resolve ($cache, $messageHash);
         $client->resolve ($cache, 'trades');
@@ -926,6 +930,7 @@ class backpack extends \ccxt\async\backpack {
             return;
         }
         $this->handle_delta($storedOrderBook, $data);
+        $this->stream_produce('orderbooks', $storedOrderBook);
         $client->resolve ($storedOrderBook, $messageHash);
     }
 
@@ -1067,6 +1072,7 @@ class backpack extends \ccxt\async\backpack {
             $this->orders = $orders;
         }
         $orders->append ($parsed);
+        $this->stream_produce('orders', $parsed);
         $client->resolve ($orders, $messageHash);
         $symbolSpecificMessageHash = $messageHash . ':' . $symbol;
         $client->resolve ($orders, $symbolSpecificMessageHash);
@@ -1269,6 +1275,7 @@ class backpack extends \ccxt\async\backpack {
         $parsedPosition['timestamp'] = $timestamp;
         $parsedPosition['datetime'] = $this->iso8601($timestamp);
         $cache->append ($parsedPosition);
+        $this->stream_produce('positions', $parsedPosition);
         $symbolSpecificMessageHash = $messageHash . ':' . $parsedPosition['symbol'];
         $client->resolve (array( $parsedPosition ), $messageHash);
         $client->resolve (array( $parsedPosition ), $symbolSpecificMessageHash);
@@ -1349,6 +1356,7 @@ class backpack extends \ccxt\async\backpack {
     }
 
     public function handle_message(Client $client, $message) {
+        $this->stream_produce('raw', $message);
         if (!$this->handle_error_message($client, $message)) {
             return;
         }
@@ -1386,7 +1394,9 @@ class backpack extends \ccxt\async\backpack {
         try {
             if ($code !== null) {
                 $msg = $this->safe_string($error, 'message');
-                throw new ExchangeError($this->id . ' ' . $msg);
+                $err = new ExchangeError ($this->id . ' ' . $msg);
+                $this->stream_produce('errors', null, $err);
+                throw $err;
             }
             return true;
         } catch (Exception $e) {

@@ -119,6 +119,7 @@ class toobit(ccxt.async_support.toobit):
         #       }
         #     ]
         #
+        self.stream_produce('raw', message)
         topic = self.safe_string(message, 'topic')
         if self.handle_error_message(client, message):
             return
@@ -245,6 +246,7 @@ class toobit(ccxt.async_support.toobit):
             trade = parsed[i]
             trade['symbol'] = symbol
             stored.append(trade)
+            self.stream_produce('trades', trade)
         messageHash = 'trade::' + symbol
         client.resolve(stored, messageHash)
 
@@ -352,6 +354,8 @@ class toobit(ccxt.async_support.toobit):
         for i in range(0, len(data)):
             parsed = self.parse_ws_ohlcv(data[i], market)
             stored.append(parsed)
+            ohlcvs = self.create_stream_ohlcv(symbol, timeframe, parsed)
+            self.stream_produce('ohlcvs', ohlcvs)
         messageHash = 'ohlcv::' + symbol + '::' + timeframe
         resolveData = [symbol, timeframe, stored]
         client.resolve(resolveData, messageHash)
@@ -466,6 +470,7 @@ class toobit(ccxt.async_support.toobit):
             symbol = parsed['symbol']
             self.tickers[symbol] = parsed
             newTickers[symbol] = parsed
+            self.stream_produce('tickers', parsed)
             messageHash = 'ticker::' + symbol
             client.resolve(parsed, messageHash)
         client.resolve(newTickers, 'tickers')
@@ -563,6 +568,7 @@ class toobit(ccxt.async_support.toobit):
             self.handle_deltas(orderBook['bids'], bids)
             orderBook['timestamp'] = timestamp
             self.orderbooks[symbol] = orderBook
+            self.stream_produce('orderbooks', orderBook)
             client.resolve(orderBook, messageHash)
 
     def handle_delta(self, bookside, delta):
@@ -611,6 +617,7 @@ class toobit(ccxt.async_support.toobit):
             timestamp = self.safe_integer(entry, 't')
             snapshot = self.parse_order_book(entry, symbol, timestamp, 'b', 'a')
             orderbook.reset(snapshot)
+            self.stream_produce('orderbooks', orderbook)
             client.resolve(orderbook, messageHash)
 
     async def watch_balance(self, params={}) -> Balances:
@@ -702,6 +709,7 @@ class toobit(ccxt.async_support.toobit):
             account['free'] = self.safe_string(balance, 'f')
             self.balance[type][code] = account
         self.balance[type] = self.safe_balance(self.balance[type])
+        self.stream_produce('balances', self.balance[type])
         client.resolve(self.balance[type], type + ':balance')
 
     async def load_balance_snapshot(self, client, messageHash, marketType):
@@ -778,6 +786,7 @@ class toobit(ccxt.async_support.toobit):
         orders = self.orders
         order = self.parse_ws_order(message)
         orders.append(order)
+        self.stream_produce('orders', order)
         messageHash = 'orders'
         client.resolve(orders, messageHash)
         messageHash = 'orders:' + self.safe_string(order, 'symbol')
@@ -875,6 +884,7 @@ class toobit(ccxt.async_support.toobit):
             myTrades = ArrayCacheBySymbolById(limit)
         trade = self.parse_my_trade(message)
         myTrades.append(trade)
+        self.stream_produce('myTrades', trade)
         messageHash = 'myTrades:' + trade['symbol']
         client.resolve(myTrades, messageHash)
         messageHash = 'myTrades'
@@ -1001,6 +1011,7 @@ class toobit(ccxt.async_support.toobit):
             position['datetime'] = self.iso8601(timestamp)
             newPositions.append(position)
             cache.append(position)
+            self.stream_produce('positions', position)
         messageHashes = self.find_message_hashes(client, accountType + ':positions::')
         for i in range(0, len(messageHashes)):
             messageHash = messageHashes[i]
@@ -1106,6 +1117,7 @@ class toobit(ccxt.async_support.toobit):
             desc = self.safe_string(message, 'desc')
             msg = self.id + ' code: ' + code + ' message: ' + desc
             exception = ExchangeError(msg)  # c# fix
+            self.stream_produce('errors', None, exception)
             client.reject(exception)
             return True
         return False

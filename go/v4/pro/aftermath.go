@@ -163,6 +163,7 @@ func  (this *AftermathCore) HandleTrade(client interface{}, message interface{})
     var messageHash interface{} = ccxt.Add(ccxt.GetValue(market, "id"), "@trade")
     var trades interface{} = ccxt.GetValue(this.Trades, symbol)
     trades.(ccxt.Appender).Append(trade)
+    this.StreamProduce("trades", trade)
     ccxt.AddElementToObject(this.Trades, symbol, trades)
     client.(ccxt.ClientInterface).Resolve(trades, messageHash)
 }
@@ -186,8 +187,8 @@ func  (this *AftermathCore) WatchOrderBook(symbol interface{}, optionalArgs ...i
             params := ccxt.GetArg(optionalArgs, 1, map[string]interface{} {})
             _ = params
         
-            retRes1358 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes1358)
+            retRes1368 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes1368)
             var market interface{} = this.Market(symbol)
             symbol = ccxt.GetValue(market, "symbol")
             var topic interface{} = ccxt.Add(ccxt.GetValue(market, "id"), "@orderbook")
@@ -236,6 +237,7 @@ func  (this *AftermathCore) HandleOrderBook(client interface{}, message interfac
         var nonce interface{} = this.SafeInteger(message, "nonce")
         if ccxt.IsTrue(ccxt.IsEqual(nonce, (ccxt.Add(prevNonce, 1)))) {
             this.HandleOrderBookMessage(client, message, orderbook)
+            this.StreamProduce("orderbooks", orderbook)
             client.(ccxt.ClientInterface).Resolve(orderbook, topic)
         }
     }
@@ -258,7 +260,8 @@ func  (this *AftermathCore) FetchOrderBookSnapshot(client interface{}, message i
                                 }
                                 ret_ = func(this *AftermathCore) interface{} {
                                     // catch block:
-                                            ccxt.Remove(client.(ccxt.ClientInterface).GetSubscriptions(), messageHash)
+                                            this.StreamProduce("orderbooks", nil, e)
+                    ccxt.Remove(client.(ccxt.ClientInterface).GetSubscriptions(), messageHash)
                     client.(ccxt.ClientInterface).Reject(e, messageHash)
                                     return nil
                                 }(this)
@@ -278,6 +281,7 @@ func  (this *AftermathCore) FetchOrderBookSnapshot(client interface{}, message i
                     var orderbook interface{} = ccxt.GetValue(this.Orderbooks, symbol)
                     orderbook.(ccxt.OrderBookInterface).Reset(snapshot)
                     ccxt.AddElementToObject(this.Orderbooks, symbol, orderbook)
+                    this.StreamProduce("orderbooks", orderbook)
                     client.(ccxt.ClientInterface).Resolve(orderbook, messageHash)
             		    return nil
             	    }(this)
@@ -333,8 +337,8 @@ func  (this *AftermathCore) WatchPositions(optionalArgs ...interface{}) <- chan 
             params := ccxt.GetArg(optionalArgs, 3, map[string]interface{} {})
             _ = params
         
-            retRes2428 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes2428)
+            retRes2468 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes2468)
             var messageHashes interface{} = []interface{}{}
             symbols = this.MarketSymbols(symbols)
             if !ccxt.IsTrue(this.IsEmpty(symbols)) {
@@ -449,6 +453,7 @@ func  (this *AftermathCore) HandlePositions(client interface{}, message interfac
     var market interface{} = this.SafeMarket(symbol)
     var position interface{} = this.ParsePosition(message, market)
     cache.(ccxt.Appender).Append(position)
+    this.StreamProduce("positions", position)
     var messageHash interface{} = ccxt.Add("positions::", ccxt.GetValue(market, "symbol"))
     client.(ccxt.ClientInterface).Resolve(position, messageHash)
     client.(ccxt.ClientInterface).Resolve([]interface{}{position}, "positions")
@@ -469,7 +474,8 @@ func  (this *AftermathCore) HandleErrorMessage(client interface{}, message inter
                                 }
                                 ret_ = func(this *AftermathCore) interface{} {
                                     // catch block:
-                                                    if ccxt.IsTrue(ccxt.IsInstance(error, ccxt.AuthenticationError)) {
+                                                    this.StreamProduce("errors", nil, error)
+                            if ccxt.IsTrue(ccxt.IsInstance(error, ccxt.AuthenticationError)) {
                                 var messageHash interface{} = "authenticated"
                                 client.(ccxt.ClientInterface).Reject(error, messageHash)
                                 if ccxt.IsTrue(ccxt.InOp(client.(ccxt.ClientInterface).GetSubscriptions(), messageHash)) {
@@ -496,6 +502,7 @@ func  (this *AftermathCore) HandleErrorMessage(client interface{}, message inter
     return false
 }
 func  (this *AftermathCore) HandleMessage(client interface{}, message interface{})  {
+    this.StreamProduce("raw", message)
     if ccxt.IsTrue(this.HandleErrorMessage(client, message)) {
         return
     }

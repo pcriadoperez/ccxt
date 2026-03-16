@@ -220,6 +220,8 @@ func  (this *AscendexCore) HandleOHLCV(client interface{}, message interface{}) 
         ccxt.AddElementToObject(ccxt.GetValue(this.Ohlcvs, symbol), timeframe, stored)
     }
     stored.(ccxt.Appender).Append(parsed)
+    var ohlcvs interface{} = this.CreateStreamOHLCV(symbol, timeframe, parsed)
+    this.StreamProduce("ohlcvs", ohlcvs)
     client.(ccxt.ClientInterface).Resolve(stored, messageHash)
     return message
 }
@@ -246,9 +248,9 @@ func  (this *AscendexCore) WatchTrades(symbol interface{}, optionalArgs ...inter
             params := ccxt.GetArg(optionalArgs, 2, map[string]interface{} {})
             _ = params
         
-                retRes17015 :=  (<-this.WatchTradesForSymbols([]interface{}{symbol}, since, limit, params))
-                ccxt.PanicOnError(retRes17015)
-                ch <- retRes17015
+                retRes17215 :=  (<-this.WatchTradesForSymbols([]interface{}{symbol}, since, limit, params))
+                ccxt.PanicOnError(retRes17215)
+                ch <- retRes17215
                 return nil
         
             }()
@@ -278,8 +280,8 @@ func  (this *AscendexCore) WatchTradesForSymbols(symbols interface{}, optionalAr
             params := ccxt.GetArg(optionalArgs, 2, map[string]interface{} {})
             _ = params
         
-            retRes1868 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes1868)
+            retRes1888 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes1888)
             symbols = this.MarketSymbols(symbols, nil, false, true, true)
             var marketIds interface{} = []interface{}{}
             var messageHashes interface{} = []interface{}{}
@@ -342,6 +344,7 @@ func  (this *AscendexCore) HandleTrades(client interface{}, message interface{})
     }
     for i := 0; ccxt.IsLessThan(i, ccxt.GetArrayLength(trades)); i++ {
         tradesArray.(ccxt.Appender).Append(ccxt.GetValue(trades, i))
+        this.StreamProduce("trades", ccxt.GetValue(trades, i))
     }
     ccxt.AddElementToObject(this.Trades, symbol, tradesArray)
     client.(ccxt.ClientInterface).Resolve(tradesArray, messageHash)
@@ -366,8 +369,8 @@ func  (this *AscendexCore) WatchOrderBook(symbol interface{}, optionalArgs ...in
             params := ccxt.GetArg(optionalArgs, 1, map[string]interface{} {})
             _ = params
         
-            retRes2598 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes2598)
+            retRes2628 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes2628)
             var market interface{} = this.Market(symbol)
             var channel interface{} = ccxt.Add(ccxt.Add("depth", ":"), ccxt.GetValue(market, "id"))
             params = this.Extend(params, map[string]interface{} {
@@ -393,8 +396,8 @@ func  (this *AscendexCore) WatchOrderBookSnapshot(symbol interface{}, optionalAr
             params := ccxt.GetArg(optionalArgs, 1, map[string]interface{} {})
             _ = params
         
-            retRes2708 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes2708)
+            retRes2738 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes2738)
             var market interface{} = this.Market(symbol)
             var action interface{} = "depth-snapshot"
             var channel interface{} = ccxt.Add(ccxt.Add(action, ":"), ccxt.GetValue(market, "id"))
@@ -474,6 +477,7 @@ func  (this *AscendexCore) HandleOrderBookSnapshot(client interface{}, message i
         this.HandleOrderBookMessage(client, messageItem, orderbook)
     }
     ccxt.AddElementToObject(this.Orderbooks, symbol, orderbook)
+    this.StreamProduce("orderbooks", orderbook)
     client.(ccxt.ClientInterface).Resolve(orderbook, messageHash)
 }
 func  (this *AscendexCore) HandleOrderBook(client interface{}, message interface{})  {
@@ -501,6 +505,7 @@ func  (this *AscendexCore) HandleOrderBook(client interface{}, message interface
         ccxt.AppendToArray(orderbook.(ccxt.OrderBookInterface).GetCache(), message)
     } else {
         this.HandleOrderBookMessage(client, message, orderbook)
+        this.StreamProduce("orderbooks", orderbook)
         client.(ccxt.ClientInterface).Resolve(orderbook, messageHash)
     }
 }
@@ -567,8 +572,8 @@ func  (this *AscendexCore) WatchBalance(optionalArgs ...interface{}) <- chan int
                     params := ccxt.GetArg(optionalArgs, 0, map[string]interface{} {})
             _ = params
         
-            retRes4218 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes4218)
+            retRes4268 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes4268)
             typeVarqueryVariable := this.HandleMarketTypeAndParams("watchBalance", nil, params)
             typeVar := ccxt.GetValue(typeVarqueryVariable,0)
             query := ccxt.GetValue(typeVarqueryVariable,1)
@@ -585,9 +590,9 @@ func  (this *AscendexCore) WatchBalance(optionalArgs ...interface{}) <- chan int
                 messageHash = "balance:swap"
             }
         
-                retRes43515 :=  (<-this.WatchPrivate(channel, messageHash, query))
-                ccxt.PanicOnError(retRes43515)
-                ch <- retRes43515
+                retRes44015 :=  (<-this.WatchPrivate(channel, messageHash, query))
+                ccxt.PanicOnError(retRes44015)
+                ch <- retRes44015
                 return nil
         
             }()
@@ -687,6 +692,7 @@ func  (this *AscendexCore) HandleBalance(client interface{}, message interface{}
         }
     }
     var messageHash interface{} = ccxt.Add(ccxt.Add("balance", ":"), typeVar)
+    this.StreamProduce("balances", this.SafeBalance(result))
     client.(ccxt.ClientInterface).Resolve(this.SafeBalance(result), messageHash)
 }
 /**
@@ -714,8 +720,8 @@ func  (this *AscendexCore) WatchOrders(optionalArgs ...interface{}) <- chan inte
             params := ccxt.GetArg(optionalArgs, 3, map[string]interface{} {})
             _ = params
         
-            retRes5478 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes5478)
+            retRes5538 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes5538)
             var market interface{} = nil
             if ccxt.IsTrue(!ccxt.IsEqual(symbol, nil)) {
                 market = this.Market(symbol)
@@ -805,6 +811,7 @@ func  (this *AscendexCore) HandleOrder(client interface{}, message interface{}) 
     var orders interface{} = this.Orders
     orders.(ccxt.Appender).Append(order)
     var symbolMessageHash interface{} = ccxt.Add(ccxt.Add(messageHash, ":"), ccxt.GetValue(order, "symbol"))
+    this.StreamProduce("orders", order)
     client.(ccxt.ClientInterface).Resolve(orders, symbolMessageHash)
     client.(ccxt.ClientInterface).Resolve(orders, messageHash)
 }
@@ -946,6 +953,7 @@ func  (this *AscendexCore) HandleErrorMessage(client interface{}, message interf
             } else {
                 client.(ccxt.ClientInterface).Reject(e)
             }
+            this.StreamProduce("errors", nil, e)
             return true
                             
                         }(this)
@@ -978,6 +986,7 @@ func  (this *AscendexCore) HandleAuthenticate(client interface{}, message interf
     client.(ccxt.ClientInterface).Resolve(message, messageHash)
 }
 func  (this *AscendexCore) HandleMessage(client interface{}, message interface{})  {
+    this.StreamProduce("raw", message)
     if ccxt.IsTrue(this.HandleErrorMessage(client, message)) {
         return
     }
@@ -1202,11 +1211,11 @@ func  (this *AscendexCore) Pong(client interface{}, message interface{}) <- chan
                         }()
             		    // try block:
                         
-                    retRes99312 := (<-client.(ccxt.ClientInterface).Send(map[string]interface{} {
+                    retRes100212 := (<-client.(ccxt.ClientInterface).Send(map[string]interface{} {
                         "op": "pong",
                         "hp": this.SafeInteger(message, "hp"),
                     }))
-                    ccxt.PanicOnError(retRes99312)
+                    ccxt.PanicOnError(retRes100212)
             		    return nil
             	    }(this)
                 

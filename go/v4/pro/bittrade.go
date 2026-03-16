@@ -133,6 +133,7 @@ func  (this *BittradeCore) HandleTicker(client interface{}, message interface{})
     ccxt.AddElementToObject(ticker, "datetime", this.Iso8601(timestamp))
     var symbol interface{} = ccxt.GetValue(ticker, "symbol")
     ccxt.AddElementToObject(this.Tickers, symbol, ticker)
+    this.StreamProduce("tickers", ticker)
     client.(ccxt.ClientInterface).Resolve(ticker, ch)
     return message
 }
@@ -158,8 +159,8 @@ func  (this *BittradeCore) WatchTrades(symbol interface{}, optionalArgs ...inter
             params := ccxt.GetArg(optionalArgs, 2, map[string]interface{} {})
             _ = params
         
-            retRes1288 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes1288)
+            retRes1298 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes1298)
             var market interface{} = this.Market(symbol)
             symbol = ccxt.GetValue(market, "symbol")
             // only supports a limit of 150 at this time
@@ -230,6 +231,7 @@ func  (this *BittradeCore) HandleTrades(client interface{}, message interface{})
     for i := 0; ccxt.IsLessThan(i, ccxt.GetArrayLength(data)); i++ {
         var trade interface{} = this.ParseTrade(ccxt.GetValue(data, i), market)
         tradesCache.(ccxt.Appender).Append(trade)
+        this.StreamProduce("trades", trade)
     }
     client.(ccxt.ClientInterface).Resolve(tradesCache, ch)
     return message
@@ -259,8 +261,8 @@ func  (this *BittradeCore) WatchOHLCV(symbol interface{}, optionalArgs ...interf
             params := ccxt.GetArg(optionalArgs, 3, map[string]interface{} {})
             _ = params
         
-            retRes2088 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes2088)
+            retRes2108 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes2108)
             var market interface{} = this.Market(symbol)
             symbol = ccxt.GetValue(market, "symbol")
             var interval interface{} = this.SafeString(this.Timeframes, timeframe, timeframe)
@@ -328,6 +330,8 @@ func  (this *BittradeCore) HandleOHLCV(client interface{}, message interface{}) 
     }
     var tick interface{} = this.SafeValue(message, "tick")
     var parsed interface{} = this.ParseOHLCV(tick, market)
+    var ohlcvs interface{} = this.CreateStreamOHLCV(symbol, timeframe, parsed)
+    this.StreamProduce("ohlcvs", ohlcvs)
     stored.(ccxt.Appender).Append(parsed)
     client.(ccxt.ClientInterface).Resolve(stored, ch)
 }
@@ -353,8 +357,8 @@ func  (this *BittradeCore) WatchOrderBook(symbol interface{}, optionalArgs ...in
                 panic(ccxt.ExchangeError(ccxt.Add(this.Id, " watchOrderBook accepts limit = 150 only")))
             }
         
-            retRes2858 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes2858)
+            retRes2898 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes2898)
             var market interface{} = this.Market(symbol)
             symbol = ccxt.GetValue(market, "symbol")
             // only supports a limit of 150 at this time
@@ -422,6 +426,7 @@ func  (this *BittradeCore) HandleOrderBookSnapshot(client interface{}, message i
         this.HandleOrderBookMessage(client, ccxt.GetValue(messages, i), orderbook)
     }
     ccxt.AddElementToObject(this.Orderbooks, symbol, orderbook)
+    this.StreamProduce("orderbooks", orderbook)
     client.(ccxt.ClientInterface).Resolve(orderbook, messageHash)
 }
 func  (this *BittradeCore) WatchOrderBookSnapshot(client interface{}, message interface{}, subscription interface{}) <- chan interface{} {
@@ -441,6 +446,7 @@ func  (this *BittradeCore) WatchOrderBookSnapshot(client interface{}, message in
                                 ret_ = func(this *BittradeCore) interface{} {
                                     // catch block:
                                             ccxt.Remove(client.(ccxt.ClientInterface).GetSubscriptions(), messageHash)
+                    this.StreamProduce("orderbooks", nil, e)
                     client.(ccxt.ClientInterface).Reject(e, messageHash)
                                     return nil
                                 }(this)
@@ -565,6 +571,7 @@ func  (this *BittradeCore) HandleOrderBook(client interface{}, message interface
         ccxt.AppendToArray(orderbook.(ccxt.OrderBookInterface).GetCache(), message)
     } else {
         this.HandleOrderBookMessage(client, message, orderbook)
+        this.StreamProduce("orderbooks", orderbook)
         client.(ccxt.ClientInterface).Resolve(orderbook, messageHash)
     }
 }
@@ -662,10 +669,10 @@ func  (this *BittradeCore) Pong(client interface{}, message interface{}) <- chan
             //     { ping: 1583491673714 }
             //
         
-            retRes5618 := (<-client.(ccxt.ClientInterface).Send(map[string]interface{} {
+            retRes5688 := (<-client.(ccxt.ClientInterface).Send(map[string]interface{} {
                 "pong": this.SafeInteger(message, "ping"),
             }))
-            ccxt.PanicOnError(retRes5618)
+            ccxt.PanicOnError(retRes5688)
                 return nil
             }()
             return ch
@@ -690,6 +697,7 @@ func  (this *BittradeCore) HandleErrorMessage(client interface{}, message interf
         var subscription interface{} = this.SafeValue(subscriptionsById, id)
         if ccxt.IsTrue(!ccxt.IsEqual(subscription, nil)) {
             var errorCode interface{} = this.SafeString(message, "err-code")
+            var errMsg interface{} = this.SafeString(message, "err-msg")
             
                 {
                      func(this *BittradeCore) (ret_ interface{}) {
@@ -701,6 +709,7 @@ func  (this *BittradeCore) HandleErrorMessage(client interface{}, message interf
                                 ret_ = func(this *BittradeCore) interface{} {
                                     // catch block:
                                                     var messageHash interface{} = this.SafeString(subscription, "messageHash")
+                            this.StreamProduce("errors", nil, e)
                             client.(ccxt.ClientInterface).Reject(e, messageHash)
                             client.(ccxt.ClientInterface).Reject(e, id)
                             if ccxt.IsTrue(ccxt.InOp(client.(ccxt.ClientInterface).GetSubscriptions(), id)) {
@@ -712,7 +721,9 @@ func  (this *BittradeCore) HandleErrorMessage(client interface{}, message interf
                         }()
             		    // try block:
                                         this.ThrowExactlyMatchedException(ccxt.GetValue(this.Exceptions, "exact"), errorCode, this.Json(message))
-            		    return nil
+                            this.ThrowBroadlyMatchedException(ccxt.GetValue(this.Exceptions, "broad"), errMsg, this.Json(message))
+                            panic(ccxt.ExchangeError(this.Json(message)))
+            		    
             	    }(this)
                 
                     }
@@ -722,6 +733,7 @@ func  (this *BittradeCore) HandleErrorMessage(client interface{}, message interf
     return message
 }
 func  (this *BittradeCore) HandleMessage(client interface{}, message interface{})  {
+    this.StreamProduce("raw", message)
     if ccxt.IsTrue(this.HandleErrorMessage(client, message)) {
         //
         //     {"id":1583414227,"status":"ok","subbed":"market.btcusdt.mbp.150","ts":1583414229143}

@@ -6,6 +6,16 @@ namespace ccxt.pro;
 public class  Bitmart: bitmart { public Bitmart(object args = null) : base(args) { } }
 public partial class bitmart
 {
+    public async Task<Dictionary<string, object>> Subscribe(object channel, object symbol, object type, Dictionary<string, object> parameters = null)
+    {
+        var res = await this.subscribe(channel, symbol, type, parameters);
+        return ((Dictionary<string, object>)res);
+    }
+    public async Task<Dictionary<string, object>> SubscribeMultiple(string channel, string type, List<String> symbols = null, Dictionary<string, object> parameters = null)
+    {
+        var res = await this.subscribeMultiple(channel, type, symbols, parameters);
+        return ((Dictionary<string, object>)res);
+    }
     /// <summary>
     /// watch balance and get the amount of funds available for trading or funds locked in orders
     /// </summary>

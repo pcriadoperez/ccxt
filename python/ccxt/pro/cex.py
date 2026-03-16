@@ -121,6 +121,7 @@ class cex(ccxt.async_support.cex):
             result[code] = account
         self.balance = self.safe_balance(result)
         messageHash = self.safe_string(message, 'oid')
+        self.stream_produce('balances', self.balance)
         client.resolve(self.balance, messageHash)
 
     async def watch_trades(self, symbol: str, since: Int = None, limit: Int = None, params={}) -> List[Trade]:
@@ -233,6 +234,7 @@ class cex(ccxt.async_support.cex):
             rawTrade = data[index]
             parsed = self.parse_ws_old_trade(rawTrade, market)
             stored.append(parsed)
+            self.stream_produce('trades', parsed)
         messageHash = 'trades'
         self.trades[symbol] = stored
         client.resolve(self.trades[symbol], messageHash)
@@ -349,6 +351,7 @@ class cex(ccxt.async_support.cex):
         client.resolve(ticker, messageHash)
         client.resolve(ticker, 'tickers')
         messageHash = self.safe_string(message, 'oid')
+        self.stream_produce('tickers', ticker)
         if messageHash is not None:
             client.resolve(ticker, messageHash)
 
@@ -560,6 +563,7 @@ class cex(ccxt.async_support.cex):
             self.myTrades = stored
         trade = self.parse_ws_trade(data)
         stored.append(trade)
+        self.stream_produce('myTrades', trade)
         messageHash = 'myTrades:' + trade['symbol']
         client.resolve(stored, messageHash)
 
@@ -734,6 +738,7 @@ class cex(ccxt.async_support.cex):
         order = self.safe_order(order)
         storedOrders.append(order)
         messageHash = 'orders:' + symbol
+        self.stream_produce('orders', order)
         client.resolve(storedOrders, messageHash)
 
     def parse_ws_order_update(self, order, market=None):
@@ -875,6 +880,7 @@ class cex(ccxt.async_support.cex):
             order = self.parse_order(rawOrder, market)
             order['status'] = 'open'
             myOrders.append(order)
+            self.stream_produce('orders', order)
         self.orders = myOrders
         messageHash = 'orders:' + symbol
         ordersLength = len(myOrders)
@@ -952,6 +958,7 @@ class cex(ccxt.async_support.cex):
             'incrementalId': incrementalId,
         }
         self.orderbooks[symbol] = orderbook
+        self.stream_produce('orderbooks', orderbook)
         client.resolve(orderbook, messageHash)
 
     def pair_to_symbol(self, pair):
@@ -996,6 +1003,7 @@ class cex(ccxt.async_support.cex):
         storedOrderBook['timestamp'] = timestamp
         storedOrderBook['datetime'] = self.iso8601(timestamp)
         storedOrderBook['nonce'] = incrementalId
+        self.stream_produce('orderbooks', storedOrderBook)
         client.resolve(storedOrderBook, messageHash)
 
     def handle_delta(self, bookside, delta):
@@ -1065,10 +1073,14 @@ class cex(ccxt.async_support.cex):
         messageHash = 'ohlcv:' + symbol
         data = self.safe_value(message, 'data', [])
         limit = self.safe_integer(self.options, 'OHLCVLimit', 1000)
+        stored = None
         stored = ArrayCacheByTimestamp(limit)
         sorted = self.sort_by(data, 0)
         for i in range(0, len(sorted)):
-            stored.append(self.parse_ohlcv(sorted[i], market))
+            parsed = self.parse_ohlcv(sorted[i], market)
+            stored.append(parsed)
+            ohlcvs = self.create_stream_ohlcv(symbol, 'unknown', parsed)
+            self.stream_produce('ohlcvs', ohlcvs)
         if not (symbol in self.ohlcvs):
             self.ohlcvs[symbol] = {}
         self.ohlcvs[symbol]['unknown'] = stored
@@ -1114,6 +1126,8 @@ class cex(ccxt.async_support.cex):
         ]
         stored = self.safe_value(self.ohlcvs, symbol)
         stored.append(ohlcv)
+        ohlcvs = self.create_stream_ohlcv(symbol, '1m', ohlcv)
+        self.stream_produce('ohlcvs', ohlcvs)
         client.resolve(stored, messageHash)
 
     def handle_ohlcv(self, client: Client, message):
@@ -1142,6 +1156,8 @@ class cex(ccxt.async_support.cex):
                 self.safe_number(data[i], 5),
             ]
             stored.append(ohlcv)
+            ohlcvs = self.create_stream_ohlcv(symbol, None, ohlcv)
+            self.stream_produce('ohlcvs', ohlcvs)
         dataLength = len(data)
         if dataLength > 0:
             client.resolve(stored, messageHash)
@@ -1398,6 +1414,7 @@ class cex(ccxt.async_support.cex):
         except Exception as error:
             messageHash = self.safe_string(message, 'oid')
             future = self.safe_value(client['futures'], messageHash)
+            self.stream_produce('errors', None, error)
             if future is not None:
                 client.reject(error, messageHash)
                 return True
@@ -1405,6 +1422,7 @@ class cex(ccxt.async_support.cex):
                 raise error
 
     def handle_message(self, client: Client, message):
+        self.stream_produce('raw', message)
         ok = self.safe_string(message, 'ok')
         if ok == 'error':
             self.handle_error_message(client, message)

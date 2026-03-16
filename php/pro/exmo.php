@@ -133,6 +133,7 @@ class exmo extends \ccxt\async\exmo {
             $this->parse_margin_balance($message);
         }
         $messageHash = 'balance:' . $type;
+        $this->stream_produce('balances', $this->balance);
         $client->resolve ($this->balance, $messageHash);
     }
 
@@ -297,6 +298,7 @@ class exmo extends \ccxt\async\exmo {
         $parsedTicker = $this->parse_ticker($ticker, $market);
         $messageHash = 'ticker:' . $symbol;
         $this->tickers[$symbol] = $parsedTicker;
+        $this->stream_produce('tickers', $parsedTicker);
         $client->resolve ($parsedTicker, $messageHash);
     }
 
@@ -361,6 +363,7 @@ class exmo extends \ccxt\async\exmo {
             $trade = $trades[$i];
             $parsed = $this->parse_trade($trade, $market);
             $stored->append ($parsed);
+            $this->stream_produce('trades', $parsed);
         }
         $this->trades[$symbol] = $stored;
         $client->resolve ($this->trades[$symbol], $messageHash);
@@ -484,6 +487,7 @@ class exmo extends \ccxt\async\exmo {
         for ($j = 0; $j < count($trades); $j++) {
             $trade = $trades[$j];
             $myTrades->append ($trade);
+            $this->stream_produce('myTrades', $trade);
             $symbols[$trade['symbol']] = true;
         }
         $symbolKeys = is_array($symbols) ? array_keys($symbols) : array();
@@ -580,6 +584,7 @@ class exmo extends \ccxt\async\exmo {
             $orderbook['timestamp'] = $timestamp;
             $orderbook['datetime'] = $this->iso8601($timestamp);
         }
+        $this->stream_produce('orderbooks', $orderbook);
         $client->resolve ($orderbook, $messageHash);
     }
 
@@ -710,6 +715,7 @@ class exmo extends \ccxt\async\exmo {
         for ($j = 0; $j < count($rawOrders); $j++) {
             $order = $this->parse_ws_order($rawOrders[$j]);
             $cachedOrders->append ($order);
+            $this->stream_produce('orders', $order);
             $symbols[$order['symbol']] = true;
         }
         $symbolKeys = is_array($symbols) ? array_keys($symbols) : array();
@@ -827,6 +833,7 @@ class exmo extends \ccxt\async\exmo {
         //     "id" => 1,
         //     "topic" => "spot/ticker:BTC_USDT"
         // }
+        $this->stream_produce('raw', $message);
         $event = $this->safe_string($message, 'event');
         $events = array(
             'logged_in' => array($this, 'handle_authentication_message'),
@@ -863,7 +870,9 @@ class exmo extends \ccxt\async\exmo {
                 }
             }
         }
-        throw new NotSupported($this->id . ' received an unsupported $message => ' . $this->json($message));
+        $err = new NotSupported ($this->id . ' received an unsupported $message => ' . $this->json($message));
+        $this->stream_produce('errors', null, $err);
+        $client->reject ($err);
     }
 
     public function handle_subscribed(Client $client, $message) {

@@ -208,7 +208,7 @@ class binance(ccxt.async_support.binance):
     def is_spot_url(self, client: Client):
         return(client.url.find('/stream') > -1) or (client.url.find('demo-stream') > -1)
 
-    def stream(self, type: Str, subscriptionHash: Str, numSubscriptions=1):
+    def stream_id(self, type: Str, subscriptionHash: Str, numSubscriptions=1):
         streamBySubscriptionsHash = self.safe_dict(self.options, 'streamBySubscriptionsHash', self.create_safe_dictionary())
         stream = self.safe_string(streamBySubscriptionsHash, subscriptionHash)
         if stream is None:
@@ -301,7 +301,7 @@ class binance(ccxt.async_support.binance):
         elif self.isInverse(type, subType):
             type = 'delivery'
         numSubscriptions = len(subscriptionHashes)
-        url = self.get_ws_url(type, self.get_future_ws_category('forceOrder')) + '/' + self.stream(type, streamHash, numSubscriptions)
+        url = self.get_ws_url(type, self.get_future_ws_category('forceOrder')) + '/' + self.stream_id(type, streamHash, numSubscriptions)
         requestId = self.request_id(url)
         request = {
             'method': 'SUBSCRIBE',
@@ -366,6 +366,7 @@ class binance(ccxt.async_support.binance):
             self.liquidations = ArrayCache(limit)
         cache = self.liquidations
         cache.append(liquidation)
+        self.stream_produce('liquidations', liquidation)
         client.resolve([liquidation], 'liquidations')
         client.resolve([liquidation], 'liquidations::' + symbol)
 
@@ -571,6 +572,7 @@ class binance(ccxt.async_support.binance):
             cache = ArrayCache(limit)
         cache.append(liquidation)
         self.myLiquidations = cache
+        self.stream_produce('myLiquidations', liquidation)
         client.resolve([liquidation], 'myLiquidations')
         client.resolve([liquidation], 'myLiquidations::' + symbol)
 
@@ -678,7 +680,7 @@ class binance(ccxt.async_support.binance):
             symbolHash = subscriptionHash + '@' + str(watchOrderBookRate) + 'ms'
             subParams.append(symbolHash)
         messageHashesLength = len(messageHashes)
-        url = self.get_ws_url(type, self.get_future_ws_category(name)) + '/' + self.stream(type, streamHash, messageHashesLength)
+        url = self.get_ws_url(type, self.get_future_ws_category(name)) + '/' + self.stream_id(type, streamHash, messageHashesLength)
         requestId = self.request_id(url)
         request: dict = {
             'method': 'SUBSCRIBE',
@@ -735,7 +737,7 @@ class binance(ccxt.async_support.binance):
             symbolHash = subscriptionHash + '@' + watchOrderBookRate + 'ms'
             subParams.append(symbolHash)
         messageHashesLength = len(subMessageHashes)
-        url = self.get_ws_url(type, self.get_future_ws_category('depth')) + '/' + self.stream(type, streamHash, messageHashesLength)
+        url = self.get_ws_url(type, self.get_future_ws_category('depth')) + '/' + self.stream_id(type, streamHash, messageHashesLength)
         requestId = self.request_id(url)
         request: dict = {
             'method': 'UNSUBSCRIBE',
@@ -839,6 +841,7 @@ class binance(ccxt.async_support.binance):
         timestamp = self.safe_integer(result, 'T')
         orderbook = self.parse_order_book(result, None, timestamp)
         orderbook['nonce'] = self.safe_integer_2(result, 'lastUpdateId', 'u')
+        self.stream_produce('orderbooks', orderbook)
         client.resolve(orderbook, messageHash)
 
     async def fetch_order_book_snapshot(self, client, message, subscription):
@@ -881,10 +884,12 @@ class binance(ccxt.async_support.binance):
                     if ((U - 1) <= orderbook['nonce']) and ((u - 1) >= orderbook['nonce']):
                         self.handle_order_book_message(client, messageItem, orderbook)
             self.orderbooks[symbol] = orderbook
+            self.stream_produce('orderbooks', orderbook)
             client.resolve(orderbook, messageHash)
         except Exception as e:
             del client.subscriptions[messageHash]
             client.reject(e, messageHash)
+            self.stream_produce('orderbooks', None, e)
 
     def handle_delta(self, bookside, delta):
         price = self.safe_float(delta, 0)
@@ -965,6 +970,7 @@ class binance(ccxt.async_support.binance):
                         if conditional:
                             self.handle_order_book_message(client, message, orderbook)
                             if nonce < orderbook['nonce']:
+                                self.stream_produce('orderbooks', orderbook)
                                 client.resolve(orderbook, messageHash)
                         else:
                             checksum = self.handle_option('watchOrderBook', 'checksum', True)
@@ -980,6 +986,7 @@ class binance(ccxt.async_support.binance):
                         if (U <= orderbook['nonce']) or (pu == orderbook['nonce']):
                             self.handle_order_book_message(client, message, orderbook)
                             if nonce <= orderbook['nonce']:
+                                self.stream_produce('orderbooks', orderbook)
                                 client.resolve(orderbook, messageHash)
                         else:
                             checksum = self.handle_option('watchOrderBook', 'checksum', True)
@@ -990,6 +997,8 @@ class binance(ccxt.async_support.binance):
                 del self.orderbooks[symbol]
                 del client.subscriptions[messageHash]
                 client.reject(e, messageHash)
+                self.stream_produce('orderbooks', None, e)
+                self.stream_produce('orderbooks::' + symbol, None, e)
 
     def handle_order_book_subscription(self, client: Client, message, subscription):
         defaultLimit = self.safe_integer(self.options, 'watchOrderBookLimit', 1000)
@@ -1075,7 +1084,7 @@ class binance(ccxt.async_support.binance):
             subParams.append(rawHash)
         query = self.omit(params, 'type')
         subParamsLength = len(subParams)
-        url = self.get_ws_url(type, self.get_future_ws_category(name)) + '/' + self.stream(type, streamHash, subParamsLength)
+        url = self.get_ws_url(type, self.get_future_ws_category(name)) + '/' + self.stream_id(type, streamHash, subParamsLength)
         requestId = self.request_id(url)
         request: dict = {
             'method': 'SUBSCRIBE',
@@ -1133,7 +1142,7 @@ class binance(ccxt.async_support.binance):
             subParams.append(rawHash)
         query = self.omit(params, 'type')
         subParamsLength = len(subParams)
-        url = self.get_ws_url(type, self.get_future_ws_category(name)) + '/' + self.stream(type, streamHash, subParamsLength)
+        url = self.get_ws_url(type, self.get_future_ws_category(name)) + '/' + self.stream_id(type, streamHash, subParamsLength)
         requestId = self.request_id(url)
         request: dict = {
             'method': 'UNSUBSCRIBE',
@@ -1356,6 +1365,7 @@ class binance(ccxt.async_support.binance):
             limit = self.safe_integer(self.options, 'tradesLimit', 1000)
             tradesArray = ArrayCache(limit)
         tradesArray.append(trade)
+        self.stream_produce('trades', trade)
         self.trades[symbol] = tradesArray
         client.resolve(tradesArray, messageHash)
 
@@ -1427,7 +1437,7 @@ class binance(ccxt.async_support.binance):
             utcSuffix = suffix if shouldUseUTC8 else ''
             rawHashes.append(marketId + '@' + klineType + '_' + interval + utcSuffix)
             messageHashes.append('ohlcv::' + market['symbol'] + '::' + timeframeString)
-        url = self.get_ws_url(type, self.get_future_ws_category(klineType)) + '/' + self.stream(type, 'multipleOHLCV')
+        url = self.get_ws_url(type, self.get_future_ws_category(klineType)) + '/' + self.stream_id(type, 'multipleOHLCV')
         requestId = self.request_id(url)
         request = {
             'method': 'SUBSCRIBE',
@@ -1490,7 +1500,7 @@ class binance(ccxt.async_support.binance):
             rawHashes.append(marketId + '@' + klineType + '_' + interval + utcSuffix)
             subMessageHashes.append('ohlcv::' + market['symbol'] + '::' + timeframeString)
             messageHashes.append('unsubscribe::ohlcv::' + market['symbol'] + '::' + timeframeString)
-        url = self.get_ws_url(type, self.get_future_ws_category(klineType)) + '/' + self.stream(type, 'multipleOHLCV')
+        url = self.get_ws_url(type, self.get_future_ws_category(klineType)) + '/' + self.stream_id(type, 'multipleOHLCV')
         requestId = self.request_id(url)
         request = {
             'method': 'UNSUBSCRIBE',
@@ -1590,6 +1600,8 @@ class binance(ccxt.async_support.binance):
             self.ohlcvs[symbol][unifiedTimeframe] = stored
         stored.append(parsed)
         resolveData = [symbol, unifiedTimeframe, stored]
+        ohlcvs = self.create_stream_ohlcv(symbol, unifiedTimeframe, parsed)
+        self.stream_produce('ohlcvs', ohlcvs)
         client.resolve(resolveData, messageHash)
 
     async def fetch_ticker_ws(self, symbol: str, params={}) -> Ticker:
@@ -1944,7 +1956,7 @@ class binance(ccxt.async_support.binance):
         streamHash = channelName
         if symbolsDefined:
             streamHash = channelName + '::' + ','.join(symbols)
-        url = self.get_ws_url(rawMarketType, self.get_future_ws_category(channelName)) + '/' + self.stream(rawMarketType, streamHash)
+        url = self.get_ws_url(rawMarketType, self.get_future_ws_category(channelName)) + '/' + self.stream_id(rawMarketType, streamHash)
         requestId = self.request_id(url)
         request: dict = {
             'method': 'UNSUBSCRIBE' if isUnsubscribe else 'SUBSCRIBE',
@@ -2204,6 +2216,7 @@ class binance(ccxt.async_support.binance):
             if channelName is None:
                 continue
             parsedTicker = self.parse_ws_ticker(ticker, marketType)
+            self.stream_produce('tickers', parsedTicker)
             symbol = parsedTicker['symbol']
             newTickers[symbol] = parsedTicker
             if isBidAsk:
@@ -2473,6 +2486,7 @@ class binance(ccxt.async_support.binance):
             for i in range(0, len(messageHashes)):
                 messageHash = messageHashes[i]
                 client.reject(error, messageHash)
+                self.stream_produce('errors', None, error)
             self.options[type] = self.extend(options, {
                 'listenKey': None,
                 'lastAuthenticatedTime': 0,
@@ -2519,6 +2533,7 @@ class binance(ccxt.async_support.binance):
         if messageHash in client.futures:
             future = client.futures[messageHash]
             future.resolve()
+            self.stream_produce('balances', self.balance[type])
             client.resolve(self.balance[type], type + ':balance')
 
     async def fetch_balance_ws(self, params={}) -> Balances:
@@ -2625,6 +2640,7 @@ class binance(ccxt.async_support.binance):
         messageHash = self.safe_string(message, 'id')
         result = self.safe_dict(message, 'result', {})
         parsedBalances = self.parseBalanceCustom(result)
+        self.stream_produce('balances', parsedBalances)
         client.resolve(parsedBalances, messageHash)
 
     async def fetch_position_ws(self, symbol: str, params={}) -> List[Position]:
@@ -2725,6 +2741,7 @@ class binance(ccxt.async_support.binance):
             parsed = self.parse_position_risk(result[i])
             entryPrice = self.safe_string(parsed, 'entryPrice')
             if (entryPrice != '0') and (entryPrice != '0.0') and (entryPrice != '0.00000000'):
+                self.stream_produce('positions', parsed)
                 positions.append(parsed)
         client.resolve(positions, messageHash)
 
@@ -2873,6 +2890,7 @@ class binance(ccxt.async_support.binance):
         self.balance[accountType]['timestamp'] = timestamp
         self.balance[accountType]['datetime'] = self.iso8601(timestamp)
         self.balance[accountType] = self.safe_balance(self.balance[accountType])
+        self.stream_produce('balances', self.balance[accountType])
         client.resolve(self.balance[accountType], messageHash)
 
     def get_account_type_from_subscriptions(self, subscriptions: List[str]) -> str:
@@ -3010,6 +3028,7 @@ class binance(ccxt.async_support.binance):
         messageHash = self.safe_string(message, 'id')
         result = self.safe_dict(message, 'result', {})
         order = self.parse_order(result)
+        self.stream_produce('orders', order)
         client.resolve(order, messageHash)
 
     def handle_orders_ws(self, client: Client, message):
@@ -3873,6 +3892,7 @@ class binance(ccxt.async_support.binance):
             contracts = self.safe_number(position, 'contracts', 0)
             if contracts > 0:
                 cache.append(position)
+                self.stream_produce('positions', position)
         # don't remove the future from the .futures cache
         if messageHash in client.futures:
             future = client.futures[messageHash]
@@ -3928,6 +3948,7 @@ class binance(ccxt.async_support.binance):
             position['datetime'] = self.iso8601(timestamp)
             newPositions.append(position)
             cache.append(position)
+            self.stream_produce('positions', position)
         messageHashes = self.find_message_hashes(client, accountType + ':positions::')
         for i in range(0, len(messageHashes)):
             messageHash = messageHashes[i]
@@ -4129,6 +4150,8 @@ class binance(ccxt.async_support.binance):
         messageHash = self.safe_string(message, 'id')
         result = self.safe_list(message, 'result', [])
         trades = self.parse_trades(result)
+        for i in range(0, len(trades)):
+            self.stream_produce('myTrades', trades[i])
         client.resolve(trades, messageHash)
 
     async def watch_my_trades(self, symbol: Str = None, since: Int = None, limit: Int = None, params={}) -> List[Trade]:
@@ -4232,6 +4255,7 @@ class binance(ccxt.async_support.binance):
                 self.myTrades = ArrayCacheBySymbolById(limit)
             myTrades = self.myTrades
             myTrades.append(trade)
+            self.stream_produce('myTrades', trade)
             client.resolve(self.myTrades, messageHash)
             messageHashSymbol = messageHash + ':' + symbol
             client.resolve(self.myTrades, messageHashSymbol)
@@ -4262,6 +4286,7 @@ class binance(ccxt.async_support.binance):
             cachedOrders.append(parsed)
             messageHash = 'orders'
             symbolSpecificMessageHash = 'orders:' + symbol
+            self.stream_produce('orders', parsed)
             client.resolve(cachedOrders, messageHash)
             client.resolve(cachedOrders, symbolSpecificMessageHash)
 
@@ -4290,6 +4315,7 @@ class binance(ccxt.async_support.binance):
             rejected = True
             # private endpoint uses id
             client.reject(e, id)
+            self.stream_produce('errors', None, error)
             # public endpoint stores messageHash in subscriptions
             subscriptionKeys = list(client.subscriptions.keys())
             for i in range(0, len(subscriptionKeys)):
@@ -4298,14 +4324,17 @@ class binance(ccxt.async_support.binance):
                 subscription = self.safe_string(client.subscriptions[subscriptionHash], 'subscription')
                 if id == subscriptionId:
                     client.reject(e, subscriptionHash)
+                    self.stream_produce('errors', None, error)
                     if subscription is not None:
                         del client.subscriptions[subscription]
         if not rejected:
             client.reject(message, id)
+            self.stream_produce('errors', None, error)
         # reset connection if 5xx error
         codeString = self.safe_string(error, 'code')
         if (codeString is not None) and (codeString[0] == '5'):
             client.reset(message)
+            self.stream_produce('errors', None, message)
 
     def handle_event_stream_terminated(self, client: Client, message):
         #
@@ -4324,6 +4353,7 @@ class binance(ccxt.async_support.binance):
 
     def handle_message(self, client: Client, message):
         # handle WebSocketAPI
+        self.stream_produce('raw', message)
         eventMsg = self.safe_dict(message, 'event')
         if eventMsg is not None:
             message = eventMsg

@@ -120,6 +120,7 @@ class toobit extends \ccxt\async\toobit {
         //       }
         //     ]
         //
+        $this->stream_produce('raw', $message);
         $topic = $this->safe_string($message, 'topic');
         if ($this->handle_error_message($client, $message)) {
             return;
@@ -262,6 +263,7 @@ class toobit extends \ccxt\async\toobit {
             $trade = $parsed[$i];
             $trade['symbol'] = $symbol;
             $stored->append ($trade);
+            $this->stream_produce('trades', $trade);
         }
         $messageHash = 'trade::' . $symbol;
         $client->resolve ($stored, $messageHash);
@@ -383,6 +385,8 @@ class toobit extends \ccxt\async\toobit {
         for ($i = 0; $i < count($data); $i++) {
             $parsed = $this->parse_ws_ohlcv($data[$i], $market);
             $stored->append ($parsed);
+            $ohlcvs = $this->create_stream_ohlcv($symbol, $timeframe, $parsed);
+            $this->stream_produce('ohlcvs', $ohlcvs);
         }
         $messageHash = 'ohlcv::' . $symbol . '::' . $timeframe;
         $resolveData = array( $symbol, $timeframe, $stored );
@@ -508,6 +512,7 @@ class toobit extends \ccxt\async\toobit {
             $symbol = $parsed['symbol'];
             $this->tickers[$symbol] = $parsed;
             $newTickers[$symbol] = $parsed;
+            $this->stream_produce('tickers', $parsed);
             $messageHash = 'ticker::' . $symbol;
             $client->resolve ($parsed, $messageHash);
         }
@@ -617,6 +622,7 @@ class toobit extends \ccxt\async\toobit {
             $this->handle_deltas($orderBook['bids'], $bids);
             $orderBook['timestamp'] = $timestamp;
             $this->orderbooks[$symbol] = $orderBook;
+            $this->stream_produce('orderbooks', $orderBook);
             $client->resolve ($orderBook, $messageHash);
         }
     }
@@ -671,6 +677,7 @@ class toobit extends \ccxt\async\toobit {
             $timestamp = $this->safe_integer($entry, 't');
             $snapshot = $this->parse_order_book($entry, $symbol, $timestamp, 'b', 'a');
             $orderbook->reset ($snapshot);
+            $this->stream_produce('orderbooks', $orderbook);
             $client->resolve ($orderbook, $messageHash);
         }
     }
@@ -772,6 +779,7 @@ class toobit extends \ccxt\async\toobit {
             $this->balance[$type][$code] = $account;
         }
         $this->balance[$type] = $this->safe_balance($this->balance[$type]);
+        $this->stream_produce('balances', $this->balance[$type]);
         $client->resolve ($this->balance[$type], $type . ':balance');
     }
 
@@ -859,6 +867,7 @@ class toobit extends \ccxt\async\toobit {
         $orders = $this->orders;
         $order = $this->parse_ws_order($message);
         $orders->append ($order);
+        $this->stream_produce('orders', $order);
         $messageHash = 'orders';
         $client->resolve ($orders, $messageHash);
         $messageHash = 'orders:' . $this->safe_string($order, 'symbol');
@@ -966,6 +975,7 @@ class toobit extends \ccxt\async\toobit {
         }
         $trade = $this->parse_my_trade($message);
         $myTrades->append ($trade);
+        $this->stream_produce('myTrades', $trade);
         $messageHash = 'myTrades:' . $trade['symbol'];
         $client->resolve ($myTrades, $messageHash);
         $messageHash = 'myTrades';
@@ -1112,6 +1122,7 @@ class toobit extends \ccxt\async\toobit {
             $position['datetime'] = $this->iso8601($timestamp);
             $newPositions[] = $position;
             $cache->append ($position);
+            $this->stream_produce('positions', $position);
         }
         $messageHashes = $this->find_message_hashes($client, $accountType . ':$positions::');
         for ($i = 0; $i < count($messageHashes); $i++) {
@@ -1236,6 +1247,7 @@ class toobit extends \ccxt\async\toobit {
             $desc = $this->safe_string($message, 'desc');
             $msg = $this->id . ' $code => ' . $code . ' $message => ' . $desc;
             $exception = new ExchangeError ($msg); // c# fix
+            $this->stream_produce('errors', null, $exception);
             $client->reject ($exception);
             return true;
         }

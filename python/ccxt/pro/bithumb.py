@@ -124,6 +124,7 @@ class bithumb(ccxt.async_support.bithumb):
         ticker = self.parse_ws_ticker(content)
         messageHash = 'ticker:' + symbol
         self.tickers[symbol] = ticker
+        self.stream_produce('tickers', ticker)
         client.resolve(self.tickers[symbol], messageHash)
 
     def parse_ws_ticker(self, ticker, market=None):
@@ -237,6 +238,7 @@ class bithumb(ccxt.async_support.bithumb):
         orderbook['timestamp'] = timestamp
         orderbook['datetime'] = self.iso8601(timestamp)
         messageHash = 'orderbook' + ':' + symbol
+        self.stream_produce('orderbooks', orderbook)
         client.resolve(orderbook, messageHash)
 
     def handle_delta(self, orderbook, delta):
@@ -318,6 +320,7 @@ class bithumb(ccxt.async_support.bithumb):
             parsed = self.parse_ws_trade(rawTrade)
             trades.append(parsed)
             messageHash = 'trade' + ':' + symbol
+            self.stream_produce('trades', parsed)
             client.resolve(trades, messageHash)
 
     def parse_ws_trade(self, trade, market=None):
@@ -370,6 +373,7 @@ class bithumb(ccxt.async_support.bithumb):
             return True
         except Exception as e:
             client.reject(e)
+            self.stream_produce('errors', None, e)
         return True
 
     async def watch_balance(self, params={}) -> Balances:
@@ -425,6 +429,7 @@ class bithumb(ccxt.async_support.bithumb):
         self.balance['timestamp'] = timestamp
         self.balance['datetime'] = self.iso8601(timestamp)
         self.balance = self.safe_balance(self.balance)
+        self.stream_produce('balances', self.balance)
         client.resolve(self.balance, messageHash)
 
     async def authenticate(self, params={}):
@@ -514,6 +519,7 @@ class bithumb(ccxt.async_support.bithumb):
             self.orders = ArrayCacheBySymbolById(limit)
         cachedOrders = self.orders
         cachedOrders.append(parsed)
+        self.stream_produce('orders', parsed)
         client.resolve(cachedOrders, messageHash)
         symbolSpecificMessageHash = messageHash + ':' + symbol
         client.resolve(cachedOrders, symbolSpecificMessageHash)
@@ -606,6 +612,7 @@ class bithumb(ccxt.async_support.bithumb):
         }, market)
 
     def handle_message(self, client: Client, message):
+        self.stream_produce('raw', message)
         if not self.handle_error_message(client, message):
             return
         topic = self.safe_string(message, 'type')

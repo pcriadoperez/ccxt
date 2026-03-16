@@ -144,7 +144,7 @@ class xt(ccxt.async_support.xt):
         # self.handleBidAsks(storedBids, bids)
         # self.handleBidAsks(storedAsks, asks)
 
-    async def subscribe(self, name: str, access: str, methodName: str, market: Market = None, symbols: List[str] = None, params={}):
+    async def subscribe(self, name: str, access: str, methodName: str, market=None, symbols: List[str] = None, params={}):
         """
  @ignore
         Connects to a websocket channel
@@ -706,6 +706,7 @@ class xt(ccxt.async_support.xt):
             event = self.safe_string(message, 'event')
             messageHashTail = 'spot' if isSpot else 'contract'
             messageHash = event + '::' + messageHashTail
+            self.stream_produce('tickers', ticker)
             client.resolve(ticker, messageHash)
         return message
 
@@ -788,6 +789,7 @@ class xt(ccxt.async_support.xt):
             symbol = ticker['symbol']
             self.tickers[symbol] = ticker
             newTickers.append(ticker)
+            self.stream_produce('tickers', ticker)
         messageHashStart = self.safe_string(message, 'topic') + '::' + tradeType
         messageHashes = self.find_message_hashes(client, messageHashStart + '::')
         for i in range(0, len(messageHashes)):
@@ -856,6 +858,8 @@ class xt(ccxt.async_support.xt):
                 stored = ArrayCacheByTimestamp(limit)
                 self.ohlcvs[symbol][timeframe] = stored
             stored.append(parsed)
+            ohlcvs = self.create_stream_ohlcv(symbol, timeframe, parsed)
+            self.stream_produce('ohlcvs', ohlcvs)
             event = self.safe_string(message, 'event')
             messageHash = event + '::' + tradeType
             client.resolve(stored, messageHash)
@@ -907,6 +911,7 @@ class xt(ccxt.async_support.xt):
                 tradesArray = ArrayCache(tradesLimit)
                 self.trades[symbol] = tradesArray
             tradesArray.append(trade)
+            self.stream_produce('trades', trade)
             messageHash = event + '::' + tradeType
             client.resolve(tradesArray, messageHash)
         return message
@@ -1015,6 +1020,7 @@ class xt(ccxt.async_support.xt):
             orderbook['timestamp'] = timestamp
             orderbook['datetime'] = self.iso8601(timestamp)
             orderbook['symbol'] = symbol
+            self.stream_produce('orderbooks', orderbook)
             client.resolve(orderbook, messageHash)
 
     def parse_ws_order_trade(self, trade: dict, market: Market = None):
@@ -1205,6 +1211,7 @@ class xt(ccxt.async_support.xt):
             market = self.safe_market(marketId, None, None, tradeType)
             parsed = self.parse_ws_order(order, market)
             orders.append(parsed)
+            self.stream_produce('orders', parsed)
             client.resolve(orders, 'order::' + tradeType)
         return message
 
@@ -1253,6 +1260,7 @@ class xt(ccxt.async_support.xt):
         self.balance[code] = account
         self.balance = self.safe_balance(self.balance)
         tradeType = 'contract' if ('coin' in data) else 'spot'
+        self.stream_produce('balances', self.balance)
         client.resolve(self.balance, 'balance::' + tradeType)
 
     def handle_my_trades(self, client: Client, message: dict):
@@ -1299,10 +1307,12 @@ class xt(ccxt.async_support.xt):
         parsedTrade = self.parse_trade(data)
         market = self.market(parsedTrade['symbol'])
         stored.append(parsedTrade)
+        self.stream_produce('myTrades', parsedTrade)
         tradeType = 'contract' if market['contract'] else 'spot'
         client.resolve(stored, 'trade::' + tradeType)
 
     def handle_message(self, client: Client, message):
+        self.stream_produce('raw', message)
         event = self.safe_string(message, 'event')
         if event == 'pong':
             client.onPong()
@@ -1384,4 +1394,5 @@ class xt(ccxt.async_support.xt):
             client.subscriptions['token'] = None
             self.get_listen_key(True)
             return
+        self.stream_produce('errors', None, message)
         client.reject(message)

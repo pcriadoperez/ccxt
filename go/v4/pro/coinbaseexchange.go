@@ -618,6 +618,7 @@ func  (this *CoinbaseexchangeCore) HandleTrade(client interface{}, message inter
             ccxt.AddElementToObject(this.Trades, symbol, tradesArray)
         }
         tradesArray.(ccxt.Appender).Append(trade)
+        this.StreamProduce("trades", trade)
         client.(ccxt.ClientInterface).Resolve(tradesArray, messageHash)
     }
     return message
@@ -635,6 +636,7 @@ func  (this *CoinbaseexchangeCore) HandleMyTrade(client interface{}, message int
             this.MyTrades = tradesArray
         }
         tradesArray.(ccxt.Appender).Append(trade)
+        this.StreamProduce("myTrades", trade)
         client.(ccxt.ClientInterface).Resolve(tradesArray, messageHash)
     }
     return message
@@ -835,6 +837,7 @@ func  (this *CoinbaseexchangeCore) HandleOrder(client interface{}, message inter
         if ccxt.IsTrue(ccxt.IsEqual(previousOrder, nil)) {
             var parsed interface{} = this.ParseWsOrder(message)
             orders.(ccxt.Appender).Append(parsed)
+            this.StreamProduce("orders", parsed)
             client.(ccxt.ClientInterface).Resolve(orders, messageHash)
         } else {
             var sequence interface{} = this.SafeInteger(message, "sequence")
@@ -846,8 +849,8 @@ func  (this *CoinbaseexchangeCore) HandleOrder(client interface{}, message inter
                     if ccxt.IsTrue(ccxt.IsEqual(ccxt.GetValue(previousOrder, "trades"), nil)) {
                         ccxt.AddElementToObject(previousOrder, "trades", []interface{}{})
                     }
-                    retRes64624 := ccxt.GetValue(previousOrder, "trades")
-                    ccxt.AppendToArray(&retRes64624, trade)
+                    retRes64924 := ccxt.GetValue(previousOrder, "trades")
+                    ccxt.AppendToArray(&retRes64924, trade)
                     ccxt.AddElementToObject(previousOrder, "lastTradeTimestamp", ccxt.GetValue(trade, "timestamp"))
                     var totalCost interface{} = "0"
                     var totalAmount interface{} = "0"
@@ -898,6 +901,7 @@ func  (this *CoinbaseexchangeCore) HandleOrder(client interface{}, message inter
                     orders.(ccxt.Appender).Append(previousOrder)
                     client.(ccxt.ClientInterface).Resolve(orders, messageHash)
                 }
+                this.StreamProduce("orders", previousOrder)
             }
         }
     }
@@ -980,6 +984,7 @@ func  (this *CoinbaseexchangeCore) HandleTicker(client interface{}, message inte
         ccxt.AddElementToObject(this.Tickers, symbol, ticker)
         var messageHash interface{} = ccxt.Add("ticker:", symbol)
         var idMessageHash interface{} = ccxt.Add("ticker:", marketId)
+        this.StreamProduce("tickers", ticker)
         client.(ccxt.ClientInterface).Resolve(ticker, messageHash)
         client.(ccxt.ClientInterface).Resolve(ticker, idMessageHash)
     }
@@ -1092,6 +1097,7 @@ func  (this *CoinbaseexchangeCore) HandleOrderBook(client interface{}, message i
         ccxt.AddElementToObject(orderbook, "timestamp", nil)
         ccxt.AddElementToObject(orderbook, "datetime", nil)
         ccxt.AddElementToObject(orderbook, "symbol", symbol)
+        this.StreamProduce("orderbooks", orderbook)
         client.(ccxt.ClientInterface).Resolve(orderbook, messageHash)
     } else if ccxt.IsTrue(ccxt.IsEqual(typeVar, "l2update")) {
         var orderbook interface{} = ccxt.GetValue(this.Orderbooks, symbol)
@@ -1112,6 +1118,7 @@ func  (this *CoinbaseexchangeCore) HandleOrderBook(client interface{}, message i
         }
         ccxt.AddElementToObject(orderbook, "timestamp", timestamp)
         ccxt.AddElementToObject(orderbook, "datetime", this.Iso8601(timestamp))
+        this.StreamProduce("orderbooks", orderbook)
         client.(ccxt.ClientInterface).Resolve(orderbook, messageHash)
     }
 }
@@ -1158,6 +1165,7 @@ func  (this *CoinbaseexchangeCore) HandleErrorMessage(client interface{}, messag
                         ret_ = func(this *CoinbaseexchangeCore) interface{} {
                             // catch block:
                                     client.(ccxt.ClientInterface).Reject(error)
+            this.StreamProduce("errors", nil, error)
             return true
                             
                         }(this)
@@ -1179,6 +1187,7 @@ func  (this *CoinbaseexchangeCore) HandleErrorMessage(client interface{}, messag
             }
 }
 func  (this *CoinbaseexchangeCore) HandleMessage(client interface{}, message interface{})  {
+    this.StreamProduce("raw", message)
     var typeVar interface{} = this.SafeString(message, "type")
     var methods interface{} = map[string]interface{} {
         "snapshot": this.HandleOrderBook,
