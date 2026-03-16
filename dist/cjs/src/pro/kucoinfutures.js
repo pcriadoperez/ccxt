@@ -262,7 +262,10 @@ class kucoinfutures extends kucoinfutures$1["default"] {
         const market = this.safeMarket(marketId, undefined, '-');
         const ticker = this.parseTicker(data, market);
         this.tickers[market['symbol']] = ticker;
-        client.resolve(ticker, this.getMessageHash('ticker', market['symbol']));
+        const messageHash = this.getMessageHash('ticker', market['symbol']);
+        this.streamProduce('tickers', ticker);
+        client.resolve(ticker, messageHash);
+        return message;
     }
     /**
      * @method
@@ -412,6 +415,7 @@ class kucoinfutures extends kucoinfutures$1["default"] {
         if (messageHash in client.futures) {
             const future = client.futures[messageHash];
             future.resolve(cache);
+            this.streamProduce('positions', position);
             client.resolve(position, 'position:' + symbol);
         }
     }
@@ -526,6 +530,7 @@ class kucoinfutures extends kucoinfutures$1["default"] {
         }
         const position = this.extend(currentPosition, newPosition);
         cache.append(position);
+        this.streamProduce('positions', position);
         client.resolve(position, messageHash);
     }
     /**
@@ -653,6 +658,7 @@ class kucoinfutures extends kucoinfutures$1["default"] {
             this.trades[symbol] = trades;
         }
         trades.append(trade);
+        this.streamProduce('trades', trade);
         const messageHash = 'trades:' + symbol;
         client.resolve(trades, messageHash);
         return message;
@@ -730,6 +736,8 @@ class kucoinfutures extends kucoinfutures$1["default"] {
         }
         const stored = this.ohlcvs[symbol][timeframe];
         stored.append(parsed);
+        const ohlcvs = this.createStreamOHLCV(symbol, timeframe, parsed);
+        this.streamProduce('ohlcvs', ohlcvs);
         client.resolve(stored, messageHash);
     }
     /**
@@ -914,6 +922,7 @@ class kucoinfutures extends kucoinfutures$1["default"] {
             return;
         }
         this.handleDelta(storedOrderBook, data);
+        this.streamProduce('orderbooks', storedOrderBook);
         client.resolve(storedOrderBook, messageHash);
     }
     getCacheIndex(orderbook, cache) {
@@ -1065,6 +1074,7 @@ class kucoinfutures extends kucoinfutures$1["default"] {
                 }
             }
             cachedOrders.append(parsed);
+            this.streamProduce('orders', parsed);
             client.resolve(this.orders, messageHash);
             const symbolSpecificMessageHash = messageHash + ':' + symbol;
             client.resolve(this.orders, symbolSpecificMessageHash);
@@ -1117,6 +1127,7 @@ class kucoinfutures extends kucoinfutures$1["default"] {
         account['used'] = this.safeString(data, 'holdBalance');
         this.balance[code] = account;
         this.balance = this.safeBalance(this.balance);
+        this.streamProduce('balances', this.balance);
         client.resolve(this.balance, 'balance');
     }
     handleBalanceSubscription(client, message, subscription) {
@@ -1172,6 +1183,7 @@ class kucoinfutures extends kucoinfutures$1["default"] {
             }
         }
         this.balance['info'] = this.safeValue(snapshot, 'info', {});
+        this.streamProduce('balances', this.balance);
         client.resolve(this.balance, messageHash);
     }
     handleSubject(client, message) {
@@ -1247,7 +1259,13 @@ class kucoinfutures extends kucoinfutures$1["default"] {
             }
             this.options['urls'][type] = undefined;
         }
-        this.handleErrors(1, '', client.url, '', {}, data, message, {}, {});
+        try {
+            this.handleErrors(1, '', client.url, '', {}, data, message, {}, {});
+        }
+        catch (e) {
+            this.streamProduce('errors', undefined, e);
+            client.reject(e);
+        }
         return true;
     }
     handleSubscriptionStatus(client, message) {
@@ -1281,6 +1299,7 @@ class kucoinfutures extends kucoinfutures$1["default"] {
         }
     }
     handleMessage(client, message) {
+        this.streamProduce('raw', message);
         const type = this.safeString(message, 'type');
         const methods = {
             // 'heartbeat': this.handleHeartbeat,

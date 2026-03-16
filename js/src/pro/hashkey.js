@@ -138,6 +138,7 @@ export default class hashkey extends hashkeyRest {
         for (let i = 0; i < data.length; i++) {
             const candle = this.safeDict(data, i, {});
             const parsed = this.parseWsOHLCV(candle, market);
+            this.streamProduce('ohlcvs', parsed);
             stored.append(parsed);
         }
         const messageHash = 'ohlcv:' + symbol + ':' + timeframe;
@@ -217,6 +218,7 @@ export default class hashkey extends hashkeyRest {
         const symbol = ticker['symbol'];
         const messageHash = 'ticker:' + symbol;
         this.tickers[symbol] = ticker;
+        this.streamProduce('tickers', ticker);
         client.resolve(this.tickers[symbol], messageHash);
     }
     /**
@@ -283,6 +285,7 @@ export default class hashkey extends hashkeyRest {
                 const trade = this.safeDict(data, i);
                 const parsed = this.parseWsTrade(trade, market);
                 stored.append(parsed);
+                this.streamProduce('trades', parsed);
             }
         }
         const messageHash = 'trades' + ':' + symbol;
@@ -351,6 +354,7 @@ export default class hashkey extends hashkeyRest {
         orderbook.reset(snapshot);
         orderbook['nonce'] = this.safeInteger(message, 'id');
         this.orderbooks[symbol] = orderbook;
+        this.streamProduce('orderbooks', orderbook);
         client.resolve(orderbook, messageHash);
     }
     /**
@@ -421,6 +425,7 @@ export default class hashkey extends hashkeyRest {
         const orders = this.orders;
         orders.append(parsed);
         const messageHash = 'orders';
+        this.streamProduce('orders', parsed);
         client.resolve(orders, messageHash);
         const symbol = parsed['symbol'];
         const symbolSpecificMessageHash = messageHash + ':' + symbol;
@@ -522,6 +527,7 @@ export default class hashkey extends hashkeyRest {
         tradesArray.append(parsed);
         this.myTrades = tradesArray;
         const messageHash = 'myTrades';
+        this.streamProduce('myTrades', parsed);
         client.resolve(tradesArray, messageHash);
         const symbol = parsed['symbol'];
         const symbolSpecificMessageHash = messageHash + ':' + symbol;
@@ -645,6 +651,7 @@ export default class hashkey extends hashkeyRest {
         const parsed = this.parseWsPosition(message);
         positions.append(parsed);
         const messageHash = 'positions';
+        this.streamProduce('positions', parsed);
         client.resolve(parsed, messageHash);
         const symbol = parsed['symbol'];
         client.resolve(parsed, messageHash + ':' + symbol);
@@ -773,6 +780,7 @@ export default class hashkey extends hashkeyRest {
         this.balance[type][code] = account;
         this.balance[type] = this.safeBalance(this.balance[type]);
         const messageHash = 'balance:' + type;
+        this.streamProduce('balances', this.balance[type]);
         client.resolve(this.balance[type], messageHash);
     }
     async authenticate(params = {}) {
@@ -813,6 +821,7 @@ export default class hashkey extends hashkeyRest {
         }
     }
     handleMessage(client, message) {
+        this.streamProduce('raw', message);
         if (Array.isArray(message)) {
             message = this.safeDict(message, 0, {});
         }

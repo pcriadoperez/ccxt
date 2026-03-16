@@ -117,6 +117,7 @@ export default class blockchaincom extends blockchaincomRest {
         }
         const messageHash = 'balance';
         this.balance = this.safeBalance(result);
+        this.streamProduce('balances', this.balance);
         client.resolve(this.balance, messageHash);
     }
     /**
@@ -192,6 +193,8 @@ export default class blockchaincom extends blockchaincomRest {
                 this.ohlcvs[symbol][timeframe] = stored;
             }
             stored.append(ohlcv);
+            const ohlcvs = this.createStreamOHLCV(symbol, timeframe, ohlcv);
+            this.streamProduce('ohlcvs', ohlcvs);
             client.resolve(stored, messageHash);
         }
         else if (event !== 'subscribed') {
@@ -267,6 +270,7 @@ export default class blockchaincom extends blockchaincomRest {
         }
         const messageHash = 'ticker:' + symbol;
         this.tickers[symbol] = ticker;
+        this.streamProduce('tickers', ticker);
         client.resolve(ticker, messageHash);
     }
     parseWsUpdatedTicker(ticker, lastTicker = undefined, market = undefined) {
@@ -369,6 +373,7 @@ export default class blockchaincom extends blockchaincomRest {
         }
         const parsed = this.parseWsTrade(message, market);
         stored.append(parsed);
+        this.streamProduce('trades', parsed);
         this.trades[symbol] = stored;
         client.resolve(this.trades[symbol], messageHash);
     }
@@ -535,6 +540,7 @@ export default class blockchaincom extends blockchaincomRest {
             cachedOrders.append(parsedOrder);
         }
         this.orders = cachedOrders;
+        this.streamProduce('orders', this.orders);
         client.resolve(this.orders, messageHash);
     }
     parseWsOrder(order, market = undefined) {
@@ -709,6 +715,7 @@ export default class blockchaincom extends blockchaincomRest {
         else {
             throw new NotSupported(this.id + ' watchOrderBook() does not support ' + event + ' yet');
         }
+        this.streamProduce('orderbooks', orderbook);
         client.resolve(orderbook, messageHash);
     }
     handleDelta(bookside, delta) {
@@ -721,6 +728,7 @@ export default class blockchaincom extends blockchaincomRest {
         }
     }
     handleMessage(client, message) {
+        this.streamProduce('raw', message);
         const channel = this.safeString(message, 'channel');
         const handlers = {
             'ticker': this.handleTicker,

@@ -132,6 +132,7 @@ class bithumb extends \ccxt\async\bithumb {
         $ticker = $this->parse_ws_ticker($content);
         $messageHash = 'ticker:' . $symbol;
         $this->tickers[$symbol] = $ticker;
+        $this->stream_produce('tickers', $ticker);
         $client->resolve ($this->tickers[$symbol], $messageHash);
     }
 
@@ -251,6 +252,7 @@ class bithumb extends \ccxt\async\bithumb {
         $orderbook['timestamp'] = $timestamp;
         $orderbook['datetime'] = $this->iso8601($timestamp);
         $messageHash = 'orderbook' . ':' . $symbol;
+        $this->stream_produce('orderbooks', $orderbook);
         $client->resolve ($orderbook, $messageHash);
     }
 
@@ -341,6 +343,7 @@ class bithumb extends \ccxt\async\bithumb {
             $parsed = $this->parse_ws_trade($rawTrade);
             $trades->append ($parsed);
             $messageHash = 'trade' . ':' . $symbol;
+            $this->stream_produce('trades', $parsed);
             $client->resolve ($trades, $messageHash);
         }
     }
@@ -398,6 +401,7 @@ class bithumb extends \ccxt\async\bithumb {
             return true;
         } catch (Exception $e) {
             $client->reject ($e);
+            $this->stream_produce('errors', null, $e);
         }
         return true;
     }
@@ -460,6 +464,7 @@ class bithumb extends \ccxt\async\bithumb {
         $this->balance['timestamp'] = $timestamp;
         $this->balance['datetime'] = $this->iso8601($timestamp);
         $this->balance = $this->safe_balance($this->balance);
+        $this->stream_produce('balances', $this->balance);
         $client->resolve ($this->balance, $messageHash);
     }
 
@@ -558,6 +563,7 @@ class bithumb extends \ccxt\async\bithumb {
         }
         $cachedOrders = $this->orders;
         $cachedOrders->append ($parsed);
+        $this->stream_produce('orders', $parsed);
         $client->resolve ($cachedOrders, $messageHash);
         $symbolSpecificMessageHash = $messageHash . ':' . $symbol;
         $client->resolve ($cachedOrders, $symbolSpecificMessageHash);
@@ -655,6 +661,7 @@ class bithumb extends \ccxt\async\bithumb {
     }
 
     public function handle_message(Client $client, $message) {
+        $this->stream_produce('raw', $message);
         if (!$this->handle_error_message($client, $message)) {
             return;
         }

@@ -225,6 +225,7 @@ class htx extends htx$1["default"] {
         ticker['datetime'] = this.iso8601(timestamp);
         const symbol = ticker['symbol'];
         this.tickers[symbol] = ticker;
+        this.streamProduce('tickers', ticker);
         client.resolve(ticker, ch);
         return message;
     }
@@ -310,6 +311,7 @@ class htx extends htx$1["default"] {
         for (let i = 0; i < data.length; i++) {
             const trade = this.parseTrade(data[i], market);
             tradesCache.append(trade);
+            this.streamProduce('trades', trade);
         }
         client.resolve(tradesCache, ch);
         return message;
@@ -396,6 +398,8 @@ class htx extends htx$1["default"] {
         }
         const tick = this.safeValue(message, 'tick');
         const parsed = this.parseOHLCV(tick, market);
+        const ohlcvs = this.createStreamOHLCV(symbol, timeframe, parsed);
+        this.streamProduce('ohlcvs', ohlcvs);
         stored.append(parsed);
         client.resolve(stored, ch);
     }
@@ -514,6 +518,7 @@ class htx extends htx$1["default"] {
             subscription['lastTimestamp'] = snapshotTimestamp;
             const snapshotLimit = this.safeInteger(subscription, 'limit');
             const snapshotOrderBook = this.orderBook(snapshot, snapshotLimit);
+            this.streamProduce('orderbooks', snapshotOrderBook);
             client.resolve(snapshotOrderBook, id);
             if ((sequence === undefined) || (nonce < sequence)) {
                 const maxAttempts = this.handleOption('watchOrderBook', 'maxRetries', 3);
@@ -542,12 +547,14 @@ class htx extends htx$1["default"] {
                 }
                 orderbook.cache = [];
                 this.orderbooks[symbol] = orderbook;
+                this.streamProduce('orderbooks', orderbook);
                 client.resolve(orderbook, messageHash);
             }
         }
         catch (e) {
             delete client.subscriptions[messageHash];
             delete this.orderbooks[symbol];
+            this.streamProduce('errors', undefined, e);
             client.reject(e, messageHash);
         }
     }
@@ -583,6 +590,7 @@ class htx extends htx$1["default"] {
         }
         catch (e) {
             delete client.subscriptions[messageHash];
+            this.streamProduce('errors', undefined, e);
             client.reject(e, messageHash);
         }
         return undefined;
@@ -764,6 +772,7 @@ class htx extends htx$1["default"] {
         }
         else {
             this.handleOrderBookMessage(client, message);
+            this.streamProduce('orderbooks', orderbook);
             client.resolve(orderbook, messageHash);
         }
     }
@@ -1116,6 +1125,7 @@ class htx extends htx$1["default"] {
         }
         const cachedOrders = this.orders;
         cachedOrders.append(parsedOrder);
+        this.streamProduce('orders', parsedOrder);
         client.resolve(this.orders, messageHash);
         // when we make a global subscription (for contracts only) our message hash can't have a symbol/currency attached
         // so we're removing it here
@@ -1462,6 +1472,7 @@ class htx extends htx$1["default"] {
             position['datetime'] = this.iso8601(timestamp);
             newPositions.push(position);
             cache.append(position);
+            this.streamProduce('positions', position);
         }
         const messageHashes = this.findMessageHashes(client, marginMode + ':positions::');
         for (let i = 0; i < messageHashes.length; i++) {
@@ -1712,6 +1723,7 @@ class htx extends htx$1["default"] {
             account['total'] = this.safeString(data, 'balance');
             this.balance[code] = account;
             this.balance = this.safeBalance(this.balance);
+            this.streamProduce('balances', this.balance);
             client.resolve(this.balance, channel);
         }
         else {
@@ -1760,6 +1772,7 @@ class htx extends htx$1["default"] {
                 this.balance[code] = unifiedAccount;
                 this.balance = this.safeBalance(this.balance);
                 client.resolve(this.balance, 'accounts_unify');
+                this.streamProduce('balances', this.balance);
             }
             else if (subType === 'linear') {
                 const margin = this.safeString(subscription, 'margin');
@@ -1817,6 +1830,7 @@ class htx extends htx$1["default"] {
                     this.balance = this.safeBalance(this.balance);
                 }
             }
+            this.streamProduce('balances', this.balance);
             client.resolve(this.balance, messageHash);
         }
     }
@@ -2034,6 +2048,7 @@ class htx extends htx$1["default"] {
         }
         catch (e) {
             const error = new errors.NetworkError(this.id + ' pong failed ' + this.exceptionMessage(e));
+            this.streamProduce('errors', undefined, error);
             client.reset(error);
         }
     }
@@ -2109,6 +2124,7 @@ class htx extends htx$1["default"] {
                 }
                 catch (e) {
                     const messageHash = this.safeString(subscription, 'messageHash');
+                    this.streamProduce('errors', undefined, e);
                     client.reject(e, messageHash);
                     client.reject(e, id);
                     if (id in client.subscriptions) {
@@ -2137,11 +2153,13 @@ class htx extends htx$1["default"] {
                 else {
                     client.reject(e);
                 }
+                this.streamProduce('errors', undefined, e);
             }
         }
         return true;
     }
     handleMessage(client, message) {
+        this.streamProduce('raw', message);
         if (this.handleErrorMessage(client, message)) {
             //
             //     {"id":1583414227,"status":"ok","subbed":"market.btcusdt.mbp.150","ts":1583414229143}
@@ -2302,6 +2320,7 @@ class htx extends htx$1["default"] {
                 const symbol = this.safeString(parsed, 'symbol');
                 if (symbol !== undefined) {
                     cachedTrades.append(parsed);
+                    this.streamProduce('myTrades', parsed);
                     client.resolve(this.myTrades, messageHash);
                 }
             }
@@ -2317,6 +2336,7 @@ class htx extends htx$1["default"] {
                     // add extra params (side, type, ...) coming from the order
                     parsedTrade = this.extend(parsedTrade, extendParams);
                     cachedTrades.append(parsedTrade);
+                    this.streamProduce('myTrades', parsedTrade);
                 }
                 // messageHash here is the orders one, so
                 // we have to recreate the trades messageHash = orderMessageHash + ':' + 'trade'

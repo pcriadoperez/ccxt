@@ -173,6 +173,7 @@ class coinex(ccxt.async_support.coinex):
             parsedTicker = self.parse_ws_ticker(entry, market)
             self.tickers[symbol] = parsedTicker
             newTickers[symbol] = parsedTicker
+            self.stream_produce('tickers', parsedTicker)
         messageHashes = self.find_message_hashes(client, 'tickers::')
         for i in range(0, len(messageHashes)):
             messageHash = messageHashes[i]
@@ -357,6 +358,7 @@ class coinex(ccxt.async_support.coinex):
             self.balance[account]['info'] = info
             self.balance[account] = self.safe_balance(self.balance[account])
             messageHash = 'balances:' + account
+            self.stream_produce('balances', self.balance)
             client.resolve(self.balance[account], messageHash)
 
     def parse_ws_balance(self, balance, accountType=None):
@@ -474,6 +476,7 @@ class coinex(ccxt.async_support.coinex):
         parsed = self.parse_ws_trade(data, market)
         stored.append(parsed)
         self.trades[symbol] = stored
+        self.stream_produce('myTrades', parsed)
         client.resolve(self.trades[symbol], messageWithType)
         client.resolve(self.trades[symbol], messageHash)
 
@@ -534,6 +537,7 @@ class coinex(ccxt.async_support.coinex):
             trade = trades[i]
             parsed = self.parse_ws_trade(trade, market)
             stored.append(parsed)
+            self.stream_produce('trades', parsed)
         self.trades[symbol] = stored
         client.resolve(self.trades[symbol], messageHash)
 
@@ -849,6 +853,7 @@ class coinex(ccxt.async_support.coinex):
             currentOrderBook['datetime'] = self.iso8601(timestamp)
             self.orderbooks[symbol] = currentOrderBook
         # self.checkOrderBookChecksum(self.orderbooks[symbol])
+        self.stream_produce('orderbooks', self.orderbooks[symbol])
         client.resolve(self.orderbooks[symbol], messageHash)
 
     async def watch_orders(self, symbol: Str = None, since: Int = None, limit: Int = None, params={}) -> List[Order]:
@@ -1031,6 +1036,7 @@ class coinex(ccxt.async_support.coinex):
         orders = self.orders
         orders.append(parsedOrder)
         messageHash = 'orders'
+        self.stream_produce('orders', parsedOrder)
         messageWithType = messageHash + ':' + market['type']
         client.resolve(self.orders, messageWithType)
         messageHash += ':' + symbol
@@ -1258,6 +1264,7 @@ class coinex(ccxt.async_support.coinex):
         }, market)
 
     def handle_message(self, client: Client, message):
+        self.stream_produce('raw', message)
         method = self.safe_string(message, 'method')
         error = self.safe_string(message, 'message')
         if error is not None:
@@ -1323,6 +1330,7 @@ class coinex(ccxt.async_support.coinex):
             future.resolve(True)
         else:
             error = AuthenticationError(self.json(message))
+            self.stream_produce('errors', None, error)
             client.reject(error, messageHash)
             if messageHash in client.subscriptions:
                 del client.subscriptions[messageHash]

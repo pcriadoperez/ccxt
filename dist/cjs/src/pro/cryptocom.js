@@ -295,6 +295,7 @@ class cryptocom extends cryptocom$1["default"] {
         orderbook['nonce'] = nonce;
         this.orderbooks[symbol] = orderbook;
         const messageHash = 'orderbook:' + symbol;
+        this.streamProduce('orderbooks', orderbook);
         client.resolve(orderbook, messageHash);
     }
     /**
@@ -417,6 +418,7 @@ class cryptocom extends cryptocom$1["default"] {
         const parsedTrades = this.parseTrades(data, market);
         for (let j = 0; j < parsedTrades.length; j++) {
             stored.append(parsedTrades[j]);
+            this.streamProduce('trades', parsedTrades[j]);
         }
         const channelReplaced = channel.replace('.' + marketId, '');
         client.resolve(stored, symbolSpecificMessageHash);
@@ -572,6 +574,7 @@ class cryptocom extends cryptocom$1["default"] {
             const parsed = this.parseWsTicker(ticker, market);
             const symbol = parsed['symbol'];
             this.tickers[symbol] = parsed;
+            this.streamProduce('tickers', parsed);
             client.resolve(parsed, messageHash);
         }
     }
@@ -757,6 +760,8 @@ class cryptocom extends cryptocom$1["default"] {
         for (let i = 0; i < data.length; i++) {
             const tick = data[i];
             const parsed = this.parseOHLCV(tick, market);
+            const ohlcvs = this.createStreamOHLCV(symbol, timeframe, parsed);
+            this.streamProduce('ohlcvs', ohlcvs);
             stored.append(parsed);
         }
         client.resolve(stored, messageHash);
@@ -831,6 +836,7 @@ class cryptocom extends cryptocom$1["default"] {
             const parsed = this.parseOrders(orders);
             for (let i = 0; i < parsed.length; i++) {
                 stored.append(parsed[i]);
+                this.streamProduce('orders', parsed[i]);
             }
             client.resolve(stored, symbolSpecificMessageHash);
             // non-symbol specific
@@ -950,6 +956,7 @@ class cryptocom extends cryptocom$1["default"] {
             const rawPosition = rawPositions[i];
             const position = this.parsePosition(rawPosition);
             newPositions.push(position);
+            this.streamProduce('positions', position);
             cache.append(position);
         }
         const messageHashes = this.findMessageHashes(client, 'positions::');
@@ -1039,6 +1046,7 @@ class cryptocom extends cryptocom$1["default"] {
         }
         client.resolve(this.balance, messageHash);
         const messageHashRequest = this.safeString(message, 'id');
+        this.streamProduce('balances', this.balance);
         client.resolve(this.balance, messageHashRequest);
     }
     /**
@@ -1104,6 +1112,7 @@ class cryptocom extends cryptocom$1["default"] {
         const messageHash = this.safeString(message, 'id');
         const rawOrder = this.safeValue(message, 'result', {});
         const order = this.parseOrder(rawOrder);
+        this.streamProduce('orders', order);
         client.resolve(order, messageHash);
     }
     /**
@@ -1267,6 +1276,7 @@ class cryptocom extends cryptocom$1["default"] {
             else {
                 client.reject(e, id);
             }
+            this.streamProduce('errors', undefined, e);
             return true;
         }
     }
@@ -1331,6 +1341,7 @@ class cryptocom extends cryptocom$1["default"] {
         // handle unsubscribe
         // {"id":1725448572836,"method":"unsubscribe","code":0}
         //
+        this.streamProduce('raw', message);
         if (this.handleErrorMessage(client, message)) {
             return;
         }

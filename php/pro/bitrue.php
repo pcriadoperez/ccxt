@@ -131,6 +131,7 @@ class bitrue extends \ccxt\async\bitrue {
         $balances = $this->safe_value($message, 'B', array());
         $this->parse_ws_balances($balances);
         $messageHash = 'balance';
+        $this->stream_produce('balances', $this->balance);
         $client->resolve ($this->balance, $messageHash);
     }
 
@@ -243,6 +244,7 @@ class bitrue extends \ccxt\async\bitrue {
         $orders = $this->orders;
         $orders->append ($parsed);
         $messageHash = 'orders';
+        $this->stream_produce('orders', $parsed);
         $client->resolve ($this->orders, $messageHash);
     }
 
@@ -374,6 +376,7 @@ class bitrue extends \ccxt\async\bitrue {
         $snapshot = $this->parse_order_book($tick, $symbol, $timestamp, 'buys', 'asks');
         $orderbook->reset ($snapshot);
         $messageHash = 'orderbook:' . $symbol;
+        $this->stream_produce('orderbooks', $orderbook);
         $client->resolve ($orderbook, $messageHash);
     }
 
@@ -418,6 +421,7 @@ class bitrue extends \ccxt\async\bitrue {
     }
 
     public function handle_message(Client $client, $message) {
+        $this->stream_produce('raw', $message);
         if (is_array($message) && array_key_exists('channel', $message)) {
             $this->handle_order_book($client, $message);
         } elseif (is_array($message) && array_key_exists('ping', $message)) {
@@ -478,6 +482,7 @@ class bitrue extends \ccxt\async\bitrue {
             } catch (Exception $error) {
                 $this->options['listenKey'] = null;
                 $this->options['listenKeyUrl'] = null;
+                $this->stream_produce('errors', null, $error);
                 return;
             }
             $refreshTimeout = $this->safe_integer($this->options, 'listenKeyRefreshRate', 1800000);

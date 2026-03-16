@@ -184,6 +184,7 @@ func  (this *BlofinCore) HandleTrades(client interface{}, message interface{})  
         }
         stored.(ccxt.Appender).Append(trade)
         var messageHash interface{} = ccxt.Add(ccxt.Add(channelName, ":"), symbol)
+        this.StreamProduce("trades", trade)
         client.(ccxt.ClientInterface).Resolve(stored, messageHash)
     }
 }
@@ -213,9 +214,9 @@ func  (this *BlofinCore) WatchOrderBook(symbol interface{}, optionalArgs ...inte
             _ = params
             ccxt.AddElementToObject(params, "callerMethodName", "watchOrderBook")
         
-                retRes17115 :=  (<-this.WatchOrderBookForSymbols([]interface{}{symbol}, limit, params))
-                ccxt.PanicOnError(retRes17115)
-                ch <- retRes17115
+                retRes17215 :=  (<-this.WatchOrderBookForSymbols([]interface{}{symbol}, limit, params))
+                ccxt.PanicOnError(retRes17215)
+                ch <- retRes17215
                 return nil
         
             }()
@@ -242,8 +243,8 @@ func  (this *BlofinCore) WatchOrderBookForSymbols(symbols interface{}, optionalA
             params := ccxt.GetArg(optionalArgs, 1, map[string]interface{} {})
             _ = params
         
-            retRes1868 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes1868)
+            retRes1878 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes1878)
             var callerMethodName interface{} = nil
             callerMethodNameparamsVariable := this.HandleParamString(params, "callerMethodName", "watchOrderBookForSymbols")
             callerMethodName = ccxt.GetValue(callerMethodNameparamsVariable,0)
@@ -309,6 +310,7 @@ func  (this *BlofinCore) HandleOrderBook(client interface{}, message interface{}
         ccxt.AddElementToObject(orderbook, "datetime", this.Iso8601(timestamp))
     }
     ccxt.AddElementToObject(this.Orderbooks, symbol, orderbook)
+    this.StreamProduce("orderbooks", orderbook)
     client.(ccxt.ClientInterface).Resolve(orderbook, messageHash)
 }
 /**
@@ -401,6 +403,7 @@ func  (this *BlofinCore) HandleTicker(client interface{}, message interface{})  
         var symbol interface{} = ccxt.GetValue(ticker, "symbol")
         var messageHash interface{} = ccxt.Add(ccxt.Add(channelName, ":"), symbol)
         ccxt.AddElementToObject(this.Tickers, symbol, ticker)
+        this.StreamProduce("tickers", ticker)
         client.(ccxt.ClientInterface).Resolve(ccxt.GetValue(this.Tickers, symbol), messageHash)
     }
 }
@@ -428,8 +431,8 @@ func  (this *BlofinCore) WatchBidsAsks(optionalArgs ...interface{}) <- chan inte
             params := ccxt.GetArg(optionalArgs, 1, map[string]interface{} {})
             _ = params
         
-            retRes3258 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes3258)
+            retRes3288 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes3288)
             symbols = this.MarketSymbols(symbols, nil, false)
             var firstMarket interface{} = this.Market(ccxt.GetValue(symbols, 0))
             var channel interface{} = "tickers"
@@ -556,8 +559,8 @@ func  (this *BlofinCore) WatchOHLCVForSymbols(symbolsAndTimeframes interface{}, 
                 panic(ccxt.ArgumentsRequired(ccxt.Add(this.Id, " watchOHLCVForSymbols() requires a an array of symbols and timeframes, like  [[\\'BTC/USDT\\', \\'1m\\'], [\\'LTC/USDT\\', \\'5m\\']]")))
             }
         
-            retRes4138 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes4138)
+            retRes4168 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes4168)
             symboltimeframecandlesVariable := (<-this.WatchMultipleWrapper(true, "candle", "watchOHLCVForSymbols", symbolsAndTimeframes, params))
             symbol := ccxt.GetValue(symboltimeframecandlesVariable,0)
             timeframe := ccxt.GetValue(symboltimeframecandlesVariable,1)
@@ -605,6 +608,8 @@ func  (this *BlofinCore) HandleOHLCV(client interface{}, message interface{})  {
     for i := 0; ccxt.IsLessThan(i, ccxt.GetArrayLength(data)); i++ {
         var candle interface{} = ccxt.GetValue(data, i)
         var parsed interface{} = this.ParseOHLCV(candle, market)
+        var ohlcvs interface{} = this.CreateOHLCVObject(symbol, unifiedTimeframe, parsed)
+        this.StreamProduce("ohlcvs", ohlcvs)
         stored.(ccxt.Appender).Append(parsed)
     }
     var resolveData interface{} = []interface{}{symbol, unifiedTimeframe, stored}
@@ -627,11 +632,11 @@ func  (this *BlofinCore) WatchBalance(optionalArgs ...interface{}) <- chan inter
                     params := ccxt.GetArg(optionalArgs, 0, map[string]interface{} {})
             _ = params
         
-            retRes4708 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes4708)
+            retRes4758 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes4758)
         
-            retRes4718 := (<-this.Authenticate())
-            ccxt.PanicOnError(retRes4718)
+            retRes4768 := (<-this.Authenticate())
+            ccxt.PanicOnError(retRes4768)
             var marketType interface{} = nil
             marketTypeparamsVariable := this.HandleMarketTypeAndParams("watchBalance", nil, params)
             marketType = ccxt.GetValue(marketTypeparamsVariable,0)
@@ -646,9 +651,9 @@ func  (this *BlofinCore) WatchBalance(optionalArgs ...interface{}) <- chan inter
             var request interface{} = this.GetSubscriptionRequest([]interface{}{sub})
             var url interface{} = this.ImplodeHostname(ccxt.GetValue(ccxt.GetValue(ccxt.GetValue(ccxt.GetValue(this.Urls, "api"), "ws"), marketType), "private"))
         
-                retRes48315 :=  (<-this.Watch(url, messageHash, this.DeepExtend(request, params), messageHash))
-                ccxt.PanicOnError(retRes48315)
-                ch <- retRes48315
+                retRes48815 :=  (<-this.Watch(url, messageHash, this.DeepExtend(request, params), messageHash))
+                ccxt.PanicOnError(retRes48815)
+                ch <- retRes48815
                 return nil
         
             }()
@@ -669,6 +674,7 @@ func  (this *BlofinCore) HandleBalance(client interface{}, message interface{}) 
     }
     ccxt.AddElementToObject(this.Balance, marketType, this.ParseWsBalance(message))
     var messageHash interface{} = ccxt.Add(marketType, ":balance")
+    this.StreamProduce("balances", ccxt.GetValue(this.Balance, marketType))
     client.(ccxt.ClientInterface).Resolve(ccxt.GetValue(this.Balance, marketType), messageHash)
 }
 func  (this *BlofinCore) ParseWsBalance(message interface{}) interface{}  {
@@ -703,9 +709,9 @@ func  (this *BlofinCore) WatchOrders(optionalArgs ...interface{}) <- chan interf
             ccxt.AddElementToObject(params, "callerMethodName", "watchOrders")
             var symbolsArray interface{} = ccxt.Ternary(ccxt.IsTrue((!ccxt.IsEqual(symbol, nil))), []interface{}{symbol}, []interface{}{})
         
-                retRes52415 :=  (<-this.WatchOrdersForSymbols(symbolsArray, since, limit, params))
-                ccxt.PanicOnError(retRes52415)
-                ch <- retRes52415
+                retRes53015 :=  (<-this.WatchOrdersForSymbols(symbolsArray, since, limit, params))
+                ccxt.PanicOnError(retRes53015)
+                ch <- retRes53015
                 return nil
         
             }()
@@ -736,11 +742,11 @@ func  (this *BlofinCore) WatchOrdersForSymbols(symbols interface{}, optionalArgs
             params := ccxt.GetArg(optionalArgs, 2, map[string]interface{} {})
             _ = params
         
-            retRes5418 := (<-this.Authenticate())
-            ccxt.PanicOnError(retRes5418)
+            retRes5478 := (<-this.Authenticate())
+            ccxt.PanicOnError(retRes5478)
         
-            retRes5428 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes5428)
+            retRes5488 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes5488)
             var trigger interface{} = this.SafeValue2(params, "stop", "trigger")
             params = this.Omit(params, []interface{}{"stop", "trigger"})
             var channel interface{} = ccxt.Ternary(ccxt.IsTrue(trigger), "orders-algo", "orders")
@@ -782,6 +788,7 @@ func  (this *BlofinCore) HandleOrders(client interface{}, message interface{})  
         var symbol interface{} = ccxt.GetValue(order, "symbol")
         var messageHash interface{} = ccxt.Add(ccxt.Add(channelName, ":"), symbol)
         orders.(ccxt.Appender).Append(order)
+        this.StreamProduce("orders", order)
         client.(ccxt.ClientInterface).Resolve(orders, messageHash)
         client.(ccxt.ClientInterface).Resolve(orders, channelName)
     }
@@ -816,11 +823,11 @@ func  (this *BlofinCore) WatchPositions(optionalArgs ...interface{}) <- chan int
             params := ccxt.GetArg(optionalArgs, 3, map[string]interface{} {})
             _ = params
         
-            retRes5998 := (<-this.Authenticate())
-            ccxt.PanicOnError(retRes5998)
+            retRes6068 := (<-this.Authenticate())
+            ccxt.PanicOnError(retRes6068)
         
-            retRes6008 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes6008)
+            retRes6078 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes6078)
         
             newPositions:= (<-this.WatchMultipleWrapper(false, "positions", "watchPositions", symbols, params))
             ccxt.PanicOnError(newPositions)
@@ -858,6 +865,7 @@ func  (this *BlofinCore) HandlePositions(client interface{}, message interface{}
         ccxt.AppendToArray(&newPositions, position)
         cache.(ccxt.Appender).Append(position)
         var messageHash interface{} = ccxt.Add(ccxt.Add(channelName, ":"), ccxt.GetValue(position, "symbol"))
+        this.StreamProduce("positions", position)
         client.(ccxt.ClientInterface).Resolve(position, messageHash)
     }
 }
@@ -883,8 +891,8 @@ func  (this *BlofinCore) WatchFundingRate(symbol interface{}, optionalArgs ...in
                     params := ccxt.GetArg(optionalArgs, 0, map[string]interface{} {})
             _ = params
         
-            retRes6488 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes6488)
+            retRes6568 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes6568)
             var market interface{} = this.Market(symbol)
             var marketType interface{} = nil
             marketTypeparamsVariable := this.HandleMarketTypeAndParams("watchFundingRate", market, params)
@@ -898,9 +906,9 @@ func  (this *BlofinCore) WatchFundingRate(symbol interface{}, optionalArgs ...in
             var request interface{} = this.GetSubscriptionRequest([]interface{}{requestParams})
             var url interface{} = this.ImplodeHostname(ccxt.GetValue(ccxt.GetValue(ccxt.GetValue(ccxt.GetValue(this.Urls, "api"), "ws"), marketType), "public"))
         
-                retRes65915 :=  (<-this.Watch(url, messageHash, this.DeepExtend(request, params), messageHash))
-                ccxt.PanicOnError(retRes65915)
-                ch <- retRes65915
+                retRes66715 :=  (<-this.Watch(url, messageHash, this.DeepExtend(request, params), messageHash))
+                ccxt.PanicOnError(retRes66715)
+                ch <- retRes66715
                 return nil
         
             }()
@@ -941,8 +949,8 @@ func  (this *BlofinCore) WatchMultipleWrapper(isPublic interface{}, channelName 
             params := ccxt.GetArg(optionalArgs, 1, map[string]interface{} {})
             _ = params
         
-            retRes6898 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes6898)
+            retRes6978 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes6978)
             callerMethodNameparamsVariable := this.HandleParamString(params, "callerMethodName", callerMethodName)
             callerMethodName = ccxt.GetValue(callerMethodNameparamsVariable,0)
             params = ccxt.GetValue(callerMethodNameparamsVariable,1)
@@ -1005,9 +1013,9 @@ func  (this *BlofinCore) WatchMultipleWrapper(isPublic interface{}, channelName 
             var privateOrPublic interface{} = ccxt.Ternary(ccxt.IsTrue(isPublic), "public", "private")
             var url interface{} = this.ImplodeHostname(ccxt.GetValue(ccxt.GetValue(ccxt.GetValue(ccxt.GetValue(this.Urls, "api"), "ws"), marketType), privateOrPublic))
         
-                retRes74315 :=  (<-this.WatchMultiple(url, messageHashes, this.DeepExtend(request, params), messageHashes))
-                ccxt.PanicOnError(retRes74315)
-                ch <- retRes74315
+                retRes75115 :=  (<-this.WatchMultiple(url, messageHashes, this.DeepExtend(request, params), messageHashes))
+                ccxt.PanicOnError(retRes75115)
+                ch <- retRes75115
                 return nil
         
             }()
@@ -1033,6 +1041,7 @@ func  (this *BlofinCore) HandleMessage(client interface{}, message interface{}) 
     //
     // incoming data updates' examples can be seen under each handler method
     //
+    this.StreamProduce("raw", message)
     var methods interface{} = map[string]interface{} {
         "pong": this.HandlePong,
         "trades": this.HandleTrades,
@@ -1097,8 +1106,8 @@ func  (this *BlofinCore) Authenticate(optionalArgs ...interface{}) <- chan inter
             var marketType interface{} = "swap" // for now
             var url interface{} = this.ImplodeHostname(ccxt.GetValue(ccxt.GetValue(ccxt.GetValue(ccxt.GetValue(this.Urls, "api"), "ws"), marketType), "private"))
         
-            retRes8298 := (<-this.Watch(url, messageHash, this.DeepExtend(request, params), messageHash))
-            ccxt.PanicOnError(retRes8298)
+            retRes8388 := (<-this.Watch(url, messageHash, this.DeepExtend(request, params), messageHash))
+            ccxt.PanicOnError(retRes8388)
                 return nil
             }()
             return ch

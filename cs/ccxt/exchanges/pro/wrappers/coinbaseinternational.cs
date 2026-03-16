@@ -6,6 +6,16 @@ namespace ccxt.pro;
 public class  Coinbaseinternational: coinbaseinternational { public Coinbaseinternational(object args = null) : base(args) { } }
 public partial class coinbaseinternational
 {
+    public async Task<Dictionary<string, object>> Subscribe(string name, List<String> symbols = null, Dictionary<string, object> parameters = null)
+    {
+        var res = await this.subscribe(name, symbols, parameters);
+        return ((Dictionary<string, object>)res);
+    }
+    public async Task<Dictionary<string, object>> SubscribeMultiple(string name, List<String> symbols = null, Dictionary<string, object> parameters = null)
+    {
+        var res = await this.subscribeMultiple(name, symbols, parameters);
+        return ((Dictionary<string, object>)res);
+    }
     /// <summary>
     /// watch the current funding rate
     /// </summary>

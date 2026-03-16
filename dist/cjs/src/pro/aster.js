@@ -366,6 +366,7 @@ class aster extends aster$1["default"] {
         const symbol = parsed['symbol'];
         const messageHash = 'ticker:' + symbol;
         this.tickers[symbol] = parsed;
+        this.streamProduce('tickers', parsed);
         client.resolve(this.tickers[symbol], messageHash);
     }
     parseWsTicker(message, marketType) {
@@ -670,6 +671,7 @@ class aster extends aster$1["default"] {
             this.trades[symbol] = stored;
         }
         stored.append(parsed);
+        this.streamProduce('trades', parsed);
         const messageHash = 'trade' + ':' + symbol;
         client.resolve(stored, messageHash);
     }
@@ -994,6 +996,7 @@ class aster extends aster$1["default"] {
         orderbook.reset(snapshot);
         const messageHash = 'orderbook' + ':' + symbol;
         this.orderbooks[symbol] = orderbook;
+        this.streamProduce('orderbooks', orderbook);
         client.resolve(orderbook, messageHash);
     }
     /**
@@ -1173,6 +1176,8 @@ class aster extends aster$1["default"] {
         const stored = this.ohlcvs[symbol][timeframe];
         const parsed = this.parseWsOHLCV(kline);
         stored.append(parsed);
+        const ohlcvs = this.createStreamOHLCV(symbol, timeframe, parsed);
+        this.streamProduce('ohlcvs', ohlcvs);
         const messageHash = 'ohlcv:' + symbol + ':' + timeframe;
         const resolveData = [symbol, timeframe, stored];
         client.resolve(resolveData, messageHash);
@@ -1377,6 +1382,7 @@ class aster extends aster$1["default"] {
         this.balance[accountType]['timestamp'] = timestamp;
         this.balance[accountType]['datetime'] = this.iso8601(timestamp);
         this.balance[accountType] = this.safeBalance(this.balance[accountType]);
+        this.streamProduce('balances', this.balance[accountType]);
         client.resolve(this.balance[accountType], messageHash);
     }
     /**
@@ -1504,6 +1510,7 @@ class aster extends aster$1["default"] {
             position['datetime'] = this.iso8601(timestamp);
             newPositions.push(position);
             cache.append(position);
+            this.streamProduce('positions', position);
         }
         const messageHashes = this.findMessageHashes(client, messageHash);
         if (!this.isEmpty(messageHashes)) {
@@ -1719,6 +1726,7 @@ class aster extends aster$1["default"] {
             }
             const myTrades = this.myTrades;
             myTrades.append(trade);
+            this.streamProduce('myTrades', trade);
             client.resolve(this.myTrades, messageHash);
             const messageHashSymbol = messageHash + '::' + symbol;
             client.resolve(this.myTrades, messageHashSymbol);
@@ -1809,6 +1817,7 @@ class aster extends aster$1["default"] {
         const parsed = this.parseWsOrder(message, market);
         const symbol = market['symbol'];
         cache.append(parsed);
+        this.streamProduce('orders', parsed);
         const messageHashes = this.findMessageHashes(client, messageHash);
         if (!this.isEmpty(messageHashes)) {
             const symbolMessageHash = messageHash + '::' + symbol;
@@ -1889,6 +1898,7 @@ class aster extends aster$1["default"] {
         return this.safeMarket(marketId, undefined, undefined, marketType);
     }
     handleMessage(client, message) {
+        this.streamProduce('raw', message);
         const stream = this.safeString(message, 'stream');
         if (stream !== undefined) {
             const part = stream.split('@');

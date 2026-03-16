@@ -110,6 +110,7 @@ class hollaex extends hollaex$1["default"] {
             orderbook.reset(snapshot);
         }
         const messageHash = channel + ':' + marketId;
+        this.streamProduce('orderbooks', orderbook);
         client.resolve(orderbook, messageHash);
     }
     /**
@@ -164,6 +165,7 @@ class hollaex extends hollaex$1["default"] {
         const parsedTrades = this.parseTrades(data, market);
         for (let j = 0; j < parsedTrades.length; j++) {
             stored.append(parsedTrades[j]);
+            this.streamProduce('trades', parsedTrades[j]);
         }
         const messageHash = channel + ':' + marketId;
         client.resolve(stored, messageHash);
@@ -240,6 +242,7 @@ class hollaex extends hollaex$1["default"] {
             const market = this.market(symbol);
             const marketId = market['id'];
             marketIds[marketId] = true;
+            this.streamProduce('myTrades', parsed);
         }
         // non-symbol specific
         client.resolve(this.myTrades, channel);
@@ -362,6 +365,7 @@ class hollaex extends hollaex$1["default"] {
             const market = this.market(symbol);
             const marketId = market['id'];
             marketIds[marketId] = true;
+            this.streamProduce('orders', parsed);
         }
         // non-symbol specific
         client.resolve(this.orders, channel);
@@ -420,6 +424,7 @@ class hollaex extends hollaex$1["default"] {
             this.balance[code] = account;
         }
         this.balance = this.safeBalance(this.balance);
+        this.streamProduce('balances', this.balance);
         client.resolve(this.balance, messageHash);
     }
     async watchPublic(messageHash, params = {}) {
@@ -468,12 +473,16 @@ class hollaex extends hollaex$1["default"] {
             if (error !== undefined) {
                 const feedback = this.id + ' ' + this.json(message);
                 this.throwExactlyMatchedException(this.exceptions['ws']['exact'], error, feedback);
+                this.throwBroadlyMatchedException(this.exceptions['ws']['broad'], error, feedback);
+                throw new errors.ExchangeError(feedback);
             }
         }
         catch (e) {
             if (e instanceof errors.AuthenticationError) {
                 return false;
             }
+            client.reject(e);
+            this.streamProduce('errors', undefined, e);
         }
         return message;
     }
@@ -563,6 +572,7 @@ class hollaex extends hollaex$1["default"] {
         //         }
         //     }
         //
+        this.streamProduce('raw', message);
         if (!this.handleErrorMessage(client, message)) {
             return;
         }

@@ -207,6 +207,8 @@ export default class lbank extends lbankRest {
             }
             stored.append(parsed);
             const messageHash = 'fetchOHLCV:' + symbol + ':' + timeframeId;
+            const ohlcvs = this.createStreamOHLCV(symbol, timeframe, parsed);
+            this.streamProduce('ohlcvs', ohlcvs);
             client.resolve(stored, messageHash);
         }
         else { // from subscription
@@ -231,6 +233,8 @@ export default class lbank extends lbankRest {
             }
             stored.append(parsed);
             const messageHash = 'ohlcv:' + symbol + ':' + timeframeId;
+            const ohlcvs = this.createStreamOHLCV(symbol, timeframe, parsed);
+            this.streamProduce('ohlcvs', ohlcvs);
             client.resolve(stored, messageHash);
         }
     }
@@ -309,6 +313,7 @@ export default class lbank extends lbankRest {
         let messageHash = 'ticker:' + symbol;
         client.resolve(parsedTicker, messageHash);
         messageHash = 'fetchTicker:' + symbol;
+        this.streamProduce('tickers', parsedTicker);
         client.resolve(parsedTicker, messageHash);
     }
     parseWsTicker(ticker, market = undefined) {
@@ -457,6 +462,7 @@ export default class lbank extends lbankRest {
             const trade = this.parseWsTrade(rawTrades[i], market);
             trade['symbol'] = symbol;
             stored.append(trade);
+            this.streamProduce('trades', trade);
         }
         this.trades[symbol] = stored;
         let messageHash = 'trades:' + symbol;
@@ -574,6 +580,7 @@ export default class lbank extends lbankRest {
         }
         const order = this.parseWsOrder(message);
         myOrders.append(order);
+        this.streamProduce('orders', order);
         this.orders = myOrders;
         client.resolve(myOrders, 'orders');
         const messageHash = 'orders:' + symbol;
@@ -723,6 +730,7 @@ export default class lbank extends lbankRest {
         account['total'] = this.safeString(data, 'asset');
         this.balance[code] = account;
         this.balance = this.safeBalance(this.balance);
+        this.streamProduce('balances', this.balance);
         client.resolve(this.balance, 'balance');
     }
     /**
@@ -852,6 +860,7 @@ export default class lbank extends lbankRest {
         const snapshot = this.parseOrderBook(orderBook, symbol, timestamp, 'bids', 'asks');
         orderbook.reset(snapshot);
         let messageHash = 'orderbook:' + symbol;
+        this.streamProduce('orderbooks', orderbook);
         client.resolve(orderbook, messageHash);
         messageHash = 'fetchOrderbook:' + symbol;
         client.resolve(orderbook, messageHash);
@@ -867,6 +876,7 @@ export default class lbank extends lbankRest {
         //
         const errMsg = this.safeString(message, 'message', '');
         const error = new ExchangeError(this.id + ' ' + errMsg);
+        this.streamProduce('errors', undefined, error);
         client.reject(error);
     }
     async handlePing(client, message) {
@@ -885,6 +895,7 @@ export default class lbank extends lbankRest {
         }
     }
     handleMessage(client, message) {
+        this.streamProduce('raw', message);
         const status = this.safeString(message, 'status');
         if (status === 'error') {
             this.handleErrorMessage(client, message);

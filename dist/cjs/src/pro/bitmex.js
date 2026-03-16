@@ -352,6 +352,7 @@ class bitmex extends bitmex$1["default"] {
             const fullParsedTicker = this.deepExtend(this.tickers[symbol], updatedTicker);
             this.tickers[symbol] = fullParsedTicker;
             const messageHash = 'ticker:' + symbol;
+            this.streamProduce('tickers', fullParsedTicker);
             client.resolve(fullParsedTicker, messageHash);
             client.resolve(fullParsedTicker, 'alltickers');
         }
@@ -449,6 +450,7 @@ class bitmex extends bitmex$1["default"] {
             const liquidation = this.parseLiquidation(rawLiquidation);
             cache.append(liquidation);
             newLiquidations.push(liquidation);
+            this.streamProduce('liquidations', liquidation);
         }
         client.resolve(newLiquidations, 'liquidations');
         const liquidationsBySymbol = this.indexBy(newLiquidations, 'symbol');
@@ -582,6 +584,7 @@ class bitmex extends bitmex$1["default"] {
         const balance = this.parseBalance(data);
         this.balance = this.extend(this.balance, balance);
         const messageHash = this.safeString(message, 'table');
+        this.streamProduce('balances', this.balance);
         client.resolve(this.balance, messageHash);
     }
     handleTrades(client, message) {
@@ -662,6 +665,7 @@ class bitmex extends bitmex$1["default"] {
             }
             for (let j = 0; j < trades.length; j++) {
                 stored.append(trades[j]);
+                this.streamProduce('trades', trades[j]);
             }
             client.resolve(stored, messageHash);
         }
@@ -912,6 +916,7 @@ class bitmex extends bitmex$1["default"] {
             const position = this.parsePosition(rawPosition);
             newPositions.push(position);
             cache.append(position);
+            this.streamProduce('positions', position);
         }
         const messageHashes = this.findMessageHashes(client, 'positions::');
         for (let i = 0; i < messageHashes.length; i++) {
@@ -1131,6 +1136,7 @@ class bitmex extends bitmex$1["default"] {
                 }
                 const order = this.parseOrder(rawOrder);
                 stored.append(order);
+                this.streamProduce('orders', order);
                 const symbol = order['symbol'];
                 symbols[symbol] = true;
             }
@@ -1249,6 +1255,7 @@ class bitmex extends bitmex$1["default"] {
             const trade = trades[j];
             const symbol = trade['symbol'];
             stored.append(trade);
+            this.streamProduce('myTrades', trade);
             symbols[symbol] = trade;
         }
         const numTrades = trades.length;
@@ -1480,6 +1487,8 @@ class bitmex extends bitmex$1["default"] {
                 this.ohlcvs[symbol][timeframe] = stored;
             }
             stored.append(result);
+            const ohlcvs = this.createStreamOHLCV(symbol, timeframe, result);
+            this.streamProduce('ohlcvs', ohlcvs);
             results[messageHash] = stored;
         }
         const messageHashes = Object.keys(results);
@@ -1583,6 +1592,7 @@ class bitmex extends bitmex$1["default"] {
                 orderbook['datetime'] = datetime;
             }
             const messageHash = table + ':' + symbol;
+            this.streamProduce('orderbooks', orderbook);
             client.resolve(orderbook, messageHash);
         }
         else {
@@ -1617,6 +1627,7 @@ class bitmex extends bitmex$1["default"] {
                 const symbol = market['symbol'];
                 const messageHash = table + ':' + symbol;
                 const orderbook = this.orderbooks[symbol];
+                this.streamProduce('orderbooks', orderbook);
                 client.resolve(orderbook, messageHash);
             }
         }
@@ -1680,6 +1691,7 @@ class bitmex extends bitmex$1["default"] {
                 else {
                     exception = new broad[broadKey](error);
                 }
+                this.streamProduce('errors', undefined, exception);
                 client.reject(exception, messageHash);
                 return false;
             }
@@ -1721,6 +1733,7 @@ class bitmex extends bitmex$1["default"] {
         //         ]
         //     }
         //
+        this.streamProduce('raw', message);
         if (this.handleErrorMessage(client, message)) {
             const table = this.safeString(message, 'table');
             const methods = {

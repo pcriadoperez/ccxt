@@ -254,7 +254,10 @@ class kucoinfutures(ccxt.async_support.kucoinfutures):
         market = self.safe_market(marketId, None, '-')
         ticker = self.parse_ticker(data, market)
         self.tickers[market['symbol']] = ticker
-        client.resolve(ticker, self.get_message_hash('ticker', market['symbol']))
+        messageHash = self.get_message_hash('ticker', market['symbol'])
+        self.stream_produce('tickers', ticker)
+        client.resolve(ticker, messageHash)
+        return message
 
     async def watch_bids_asks(self, symbols: Strings = None, params={}) -> Tickers:
         """
@@ -396,6 +399,7 @@ class kucoinfutures(ccxt.async_support.kucoinfutures):
         if messageHash in client.futures:
             future = client.futures[messageHash]
             future.resolve(cache)
+            self.stream_produce('positions', position)
             client.resolve(position, 'position:' + symbol)
 
     def handle_position(self, client: Client, message):
@@ -507,6 +511,7 @@ class kucoinfutures(ccxt.async_support.kucoinfutures):
                 del newPosition[key]
         position = self.extend(currentPosition, newPosition)
         cache.append(position)
+        self.stream_produce('positions', position)
         client.resolve(position, messageHash)
 
     async def watch_trades(self, symbol: str, since: Int = None, limit: Int = None, params={}) -> List[Trade]:
@@ -625,6 +630,7 @@ class kucoinfutures(ccxt.async_support.kucoinfutures):
             trades = ArrayCache(limit)
             self.trades[symbol] = trades
         trades.append(trade)
+        self.stream_produce('trades', trade)
         messageHash = 'trades:' + symbol
         client.resolve(trades, messageHash)
         return message
@@ -700,6 +706,8 @@ class kucoinfutures(ccxt.async_support.kucoinfutures):
             self.ohlcvs[symbol][timeframe] = ArrayCacheByTimestamp(limit)
         stored = self.ohlcvs[symbol][timeframe]
         stored.append(parsed)
+        ohlcvs = self.create_stream_ohlcv(symbol, timeframe, parsed)
+        self.stream_produce('ohlcvs', ohlcvs)
         client.resolve(stored, messageHash)
 
     async def watch_order_book(self, symbol: str, limit: Int = None, params={}) -> OrderBook:
@@ -868,6 +876,7 @@ class kucoinfutures(ccxt.async_support.kucoinfutures):
         elif nonce >= deltaEnd:
             return
         self.handle_delta(storedOrderBook, data)
+        self.stream_produce('orderbooks', storedOrderBook)
         client.resolve(storedOrderBook, messageHash)
 
     def get_cache_index(self, orderbook, cache):
@@ -1010,6 +1019,7 @@ class kucoinfutures(ccxt.async_support.kucoinfutures):
                 if order['status'] == 'closed':
                     parsed['status'] = 'closed'
             cachedOrders.append(parsed)
+            self.stream_produce('orders', parsed)
             client.resolve(self.orders, messageHash)
             symbolSpecificMessageHash = messageHash + ':' + symbol
             client.resolve(self.orders, symbolSpecificMessageHash)
@@ -1061,6 +1071,7 @@ class kucoinfutures(ccxt.async_support.kucoinfutures):
         account['used'] = self.safe_string(data, 'holdBalance')
         self.balance[code] = account
         self.balance = self.safe_balance(self.balance)
+        self.stream_produce('balances', self.balance)
         client.resolve(self.balance, 'balance')
 
     def handle_balance_subscription(self, client: Client, message, subscription):
@@ -1114,6 +1125,7 @@ class kucoinfutures(ccxt.async_support.kucoinfutures):
             if code != 'free' and code != 'used' and code != 'total' and code != 'timestamp' and code != 'datetime' and code != 'info':
                 self.balance[code] = snapshot[code]
         self.balance['info'] = self.safe_value(snapshot, 'info', {})
+        self.stream_produce('balances', self.balance)
         client.resolve(self.balance, messageHash)
 
     def handle_subject(self, client: Client, message):
@@ -1184,7 +1196,11 @@ class kucoinfutures(ccxt.async_support.kucoinfutures):
             if client.url.find('connectId=private') >= 0:
                 type = 'private'
             self.options['urls'][type] = None
-        self.handle_errors(1, '', client.url, '', {}, data, message, {}, {})
+        try:
+            self.handle_errors(1, '', client.url, '', {}, data, message, {}, {})
+        except Exception as e:
+            self.stream_produce('errors', None, e)
+            client.reject(e)
         return True
 
     def handle_subscription_status(self, client: Client, message):
@@ -1214,6 +1230,7 @@ class kucoinfutures(ccxt.async_support.kucoinfutures):
             self.clean_cache(subscription)
 
     def handle_message(self, client: Client, message):
+        self.stream_produce('raw', message)
         type = self.safe_string(message, 'type')
         methods: dict = {
             # 'heartbeat': self.handleHeartbeat,

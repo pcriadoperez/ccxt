@@ -51,6 +51,7 @@ func  (this *ArkhamCore) Describe() interface{}  {
     })
 }
 func  (this *ArkhamCore) HandleMessage(client interface{}, message interface{})  {
+    this.StreamProduce("raw", message)
     //
     // confirmation
     //
@@ -96,9 +97,9 @@ func  (this *ArkhamCore) Subscribe(messageHash interface{}, rawChannel interface
                 "method": "subscribe",
             }
         
-                retRes8915 :=  (<-this.Watch(ccxt.GetValue(ccxt.GetValue(this.Urls, "api"), "ws"), messageHash, request, subscriptionHash))
-                ccxt.PanicOnError(retRes8915)
-                ch <- retRes8915
+                retRes9015 :=  (<-this.Watch(ccxt.GetValue(ccxt.GetValue(this.Urls, "api"), "ws"), messageHash, request, subscriptionHash))
+                ccxt.PanicOnError(retRes9015)
+                ch <- retRes9015
                 return nil
         
             }()
@@ -121,17 +122,17 @@ func  (this *ArkhamCore) WatchTicker(symbol interface{}, optionalArgs ...interfa
                     params := ccxt.GetArg(optionalArgs, 0, map[string]interface{} {})
             _ = params
         
-            retRes1028 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes1028)
+            retRes1038 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes1038)
             var market interface{} = this.Market(symbol)
             var requestArg interface{} = map[string]interface{} {
                 "symbol": ccxt.GetValue(market, "id"),
             }
             var messageHash interface{} = ccxt.Add("ticker::", ccxt.GetValue(market, "symbol"))
         
-                retRes10815 :=  (<-this.Subscribe(messageHash, "ticker", this.Extend(params, requestArg)))
-                ccxt.PanicOnError(retRes10815)
-                ch <- retRes10815
+                retRes10915 :=  (<-this.Subscribe(messageHash, "ticker", this.Extend(params, requestArg)))
+                ccxt.PanicOnError(retRes10915)
+                ch <- retRes10915
                 return nil
         
             }()
@@ -171,6 +172,7 @@ func  (this *ArkhamCore) HandleTicker(client interface{}, message interface{})  
     var symbol interface{} = ccxt.GetValue(market, "symbol")
     var ticker interface{} = this.ParseWsTicker(data, market)
     ccxt.AddElementToObject(this.Tickers, symbol, ticker)
+    this.StreamProduce("tickers", ticker)
     client.(ccxt.ClientInterface).Resolve(ticker, ccxt.Add("ticker::", symbol))
 }
 func  (this *ArkhamCore) ParseWsTicker(message interface{}, optionalArgs ...interface{}) interface{}  {
@@ -205,8 +207,8 @@ func  (this *ArkhamCore) WatchOHLCV(symbol interface{}, optionalArgs ...interfac
             params := ccxt.GetArg(optionalArgs, 3, map[string]interface{} {})
             _ = params
         
-            retRes1698 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes1698)
+            retRes1718 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes1718)
             var market interface{} = this.Market(symbol)
             var rawTimeframe interface{} = this.SafeString(this.Timeframes, timeframe, timeframe)
             var requestArg interface{} = map[string]interface{} {
@@ -261,6 +263,8 @@ func  (this *ArkhamCore) HandleOHLCV(client interface{}, message interface{}) in
     var stored interface{} = ccxt.GetValue(ccxt.GetValue(this.Ohlcvs, symbol), timeframe)
     var parsed interface{} = this.ParseWsOHLCV(data, market)
     stored.(ccxt.Appender).Append(parsed)
+    var ohlcvs interface{} = this.CreateStreamOHLCV(symbol, timeframe, parsed)
+    this.StreamProduce("ohlcvs", ohlcvs)
     client.(ccxt.ClientInterface).Resolve(stored, messageHash)
     return message
 }
@@ -290,8 +294,8 @@ func  (this *ArkhamCore) WatchOrderBook(symbol interface{}, optionalArgs ...inte
             params := ccxt.GetArg(optionalArgs, 1, map[string]interface{} {})
             _ = params
         
-            retRes2388 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes2388)
+            retRes2428 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes2428)
             var market interface{} = this.Market(symbol)
             var requestArg interface{} = map[string]interface{} {
                 "symbol": ccxt.GetValue(market, "id"),
@@ -365,6 +369,7 @@ func  (this *ArkhamCore) HandleOrderBook(client interface{}, message interface{}
         ccxt.AddElementToObject(orderbook, "datetime", this.Iso8601(timestamp))
     }
     ccxt.AddElementToObject(this.Orderbooks, symbol, orderbook)
+    this.StreamProduce("orderbooks", orderbook)
     client.(ccxt.ClientInterface).Resolve(ccxt.GetValue(this.Orderbooks, symbol), messageHash)
 }
 func  (this *ArkhamCore) HandleDelta(bookside interface{}, delta interface{})  {
@@ -394,8 +399,8 @@ func  (this *ArkhamCore) WatchTrades(symbol interface{}, optionalArgs ...interfa
             params := ccxt.GetArg(optionalArgs, 2, map[string]interface{} {})
             _ = params
         
-            retRes3268 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes3268)
+            retRes3318 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes3318)
             var market interface{} = this.Market(symbol)
             var requestArg interface{} = map[string]interface{} {
                 "symbol": ccxt.GetValue(market, "id"),
@@ -439,6 +444,7 @@ func  (this *ArkhamCore) HandleTrades(client interface{}, message interface{})  
     var parsed interface{} = this.ParseWsTrade(data)
     var stored interface{} = ccxt.GetValue(this.Trades, symbol)
     stored.(ccxt.Appender).Append(parsed)
+    this.StreamProduce("trades", parsed)
     client.(ccxt.ClientInterface).Resolve(stored, ccxt.Add("trade::", symbol))
 }
 func  (this *ArkhamCore) ParseWsTrade(trade interface{}, optionalArgs ...interface{}) interface{}  {
@@ -502,11 +508,11 @@ func  (this *ArkhamCore) WatchBalance(optionalArgs ...interface{}) <- chan inter
                     params := ccxt.GetArg(optionalArgs, 0, map[string]interface{} {})
             _ = params
         
-            retRes4128 := (<-this.Authenticate())
-            ccxt.PanicOnError(retRes4128)
+            retRes4188 := (<-this.Authenticate())
+            ccxt.PanicOnError(retRes4188)
         
-            retRes4138 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes4138)
+            retRes4198 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes4198)
             var requestArg interface{} = map[string]interface{} {
                 "snapshot": true,
             }
@@ -595,7 +601,9 @@ func  (this *ArkhamCore) HandleBalance(client interface{}, message interface{}) 
         ccxt.AddElementToObject(this.Balance, code, ccxt.GetValue(parsed, code))
     }
     var messageHash interface{} = "balances"
-    client.(ccxt.ClientInterface).Resolve(this.SafeBalance(this.Balance), messageHash)
+    var balance interface{} = this.SafeBalance(this.Balance)
+    this.StreamProduce("balances", balance)
+    client.(ccxt.ClientInterface).Resolve(balance, messageHash)
 }
 func  (this *ArkhamCore) ParseWsBalance(balance interface{}) interface{}  {
     // same as REST api
@@ -626,11 +634,11 @@ func  (this *ArkhamCore) WatchPositions(optionalArgs ...interface{}) <- chan int
             params := ccxt.GetArg(optionalArgs, 3, map[string]interface{} {})
             _ = params
         
-            retRes5168 := (<-this.Authenticate())
-            ccxt.PanicOnError(retRes5168)
+            retRes5248 := (<-this.Authenticate())
+            ccxt.PanicOnError(retRes5248)
         
-            retRes5178 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes5178)
+            retRes5258 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes5258)
             var messageHash interface{} = "positions"
             if !ccxt.IsTrue(this.IsEmpty(symbols)) {
                 symbols = this.MarketSymbols(symbols)
@@ -708,6 +716,7 @@ func  (this *ArkhamCore) HandlePositions(client interface{}, message interface{}
         var position interface{} = this.ParseWsPosition(data)
         var symbol interface{} = this.SafeString(position, "symbol")
         ccxt.AddElementToObject(this.Positions, symbol, position)
+        this.StreamProduce("positions", position)
         ccxt.AppendToArray(&newPositions, position)
     }
     var messageHashes interface{} = this.FindMessageHashes(client.(*ccxt.Client), "positions::")
@@ -771,11 +780,11 @@ func  (this *ArkhamCore) WatchOrders(optionalArgs ...interface{}) <- chan interf
             params := ccxt.GetArg(optionalArgs, 3, map[string]interface{} {})
             _ = params
         
-            retRes6348 := (<-this.Authenticate())
-            ccxt.PanicOnError(retRes6348)
+            retRes6438 := (<-this.Authenticate())
+            ccxt.PanicOnError(retRes6438)
         
-            retRes6358 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes6358)
+            retRes6448 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes6448)
             var market interface{} = nil
             if ccxt.IsTrue(!ccxt.IsEqual(symbol, nil)) {
                 market = this.Market(symbol)
@@ -852,6 +861,7 @@ func  (this *ArkhamCore) HandleOrder(client interface{}, message interface{})  {
     var orders interface{} = this.Orders
     var order interface{} = this.ParseWsOrder(data)
     orders.(ccxt.Appender).Append(order)
+    this.StreamProduce("orders", order)
     client.(ccxt.ClientInterface).Resolve(orders, "orders")
     client.(ccxt.ClientInterface).Resolve(orders, ccxt.Add(ccxt.Add(ccxt.Add("orders::", ccxt.GetValue(order, "symbol")), "::"), channel))
     client.(ccxt.ClientInterface).Resolve(orders, ccxt.Add("orders::", channel))
@@ -880,7 +890,9 @@ func  (this *ArkhamCore) HandleErrorMessage(client interface{}, response interfa
         this.ThrowExactlyMatchedException(ccxt.GetValue(this.Exceptions, "exact"), errorCode, feedback)
         this.ThrowExactlyMatchedException(ccxt.GetValue(this.Exceptions, "exact"), message, feedback)
         this.ThrowBroadlyMatchedException(ccxt.GetValue(this.Exceptions, "broad"), message, feedback)
-        panic(ccxt.ExchangeError(ccxt.Add(ccxt.Add(this.Id, " "), body)))
+        error := ccxt.ExchangeError(ccxt.Add(ccxt.Add(this.Id, " "), body))
+        this.StreamProduce("errors", nil, error)
+        panic(error)
     }
     return false
 }

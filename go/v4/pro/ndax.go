@@ -121,6 +121,7 @@ func  (this *NdaxCore) HandleTicker(client interface{}, message interface{})  {
     ccxt.AddElementToObject(this.Tickers, symbol, ticker)
     var name interface{} = "SubscribeLevel1"
     var messageHash interface{} = ccxt.Add(ccxt.Add(name, ":"), ccxt.GetValue(market, "id"))
+    this.StreamProduce("tickers", ticker)
     client.(ccxt.ClientInterface).Resolve(ticker, messageHash)
 }
 /**
@@ -147,8 +148,8 @@ func  (this *NdaxCore) WatchTrades(symbol interface{}, optionalArgs ...interface
             _ = params
             var omsId interface{} = this.SafeInteger(this.Options, "omsId", 1)
         
-            retRes1248 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes1248)
+            retRes1258 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes1258)
             var market interface{} = this.Market(symbol)
             symbol = ccxt.GetValue(market, "symbol")
             var name interface{} = "SubscribeTrades"
@@ -212,6 +213,7 @@ func  (this *NdaxCore) HandleTrades(client interface{}, message interface{})  {
             tradesArray = ccxt.NewArrayCache(limit)
         }
         tradesArray.(ccxt.Appender).Append(trade)
+        this.StreamProduce("trades", trade)
         ccxt.AddElementToObject(this.Trades, symbol, tradesArray)
         ccxt.AddElementToObject(updates, symbol, true)
     }
@@ -251,8 +253,8 @@ func  (this *NdaxCore) WatchOHLCV(symbol interface{}, optionalArgs ...interface{
             _ = params
             var omsId interface{} = this.SafeInteger(this.Options, "omsId", 1)
         
-            retRes2098 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes2098)
+            retRes2118 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes2118)
             var market interface{} = this.Market(symbol)
             symbol = ccxt.GetValue(market, "symbol")
             var name interface{} = "SubscribeTicker"
@@ -358,6 +360,12 @@ func  (this *NdaxCore) HandleOHLCV(client interface{}, message interface{})  {
             var market interface{} = this.SafeMarket(marketId)
             var symbol interface{} = ccxt.GetValue(market, "symbol")
             var stored interface{} = this.SafeValue(ccxt.GetValue(this.Ohlcvs, symbol), timeframe, []interface{}{})
+            var storedLength interface{} =             ccxt.GetArrayLength(stored)
+            if ccxt.IsTrue(ccxt.IsGreaterThan(storedLength, 0)) {
+                var lastOhlcv interface{} = ccxt.GetValue(stored, ccxt.Subtract(storedLength, 1))
+                var ohlcvs interface{} = this.CreateStreamOHLCV(symbol, timeframe, lastOhlcv)
+                this.StreamProduce("ohlcvs", ohlcvs)
+            }
             client.(ccxt.ClientInterface).Resolve(stored, messageHash)
         }
     }
@@ -383,8 +391,8 @@ func  (this *NdaxCore) WatchOrderBook(symbol interface{}, optionalArgs ...interf
             _ = params
             var omsId interface{} = this.SafeInteger(this.Options, "omsId", 1)
         
-            retRes3408 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes3408)
+            retRes3488 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes3488)
             var market interface{} = this.Market(symbol)
             symbol = ccxt.GetValue(market, "symbol")
             var name interface{} = "SubscribeLevel2"
@@ -497,6 +505,7 @@ func  (this *NdaxCore) HandleOrderBook(client interface{}, message interface{}) 
     var name interface{} = "SubscribeLevel2"
     var messageHash interface{} = ccxt.Add(ccxt.Add(name, ":"), marketId)
     ccxt.AddElementToObject(this.Orderbooks, symbol, orderbook)
+    this.StreamProduce("orderbooks", orderbook)
     client.(ccxt.ClientInterface).Resolve(orderbook, messageHash)
 }
 func  (this *NdaxCore) HandleOrderBookSubscription(client interface{}, message interface{}, subscription interface{})  {
@@ -531,6 +540,7 @@ func  (this *NdaxCore) HandleOrderBookSubscription(client interface{}, message i
     var orderbook interface{} = this.OrderBook(snapshot, limit)
     ccxt.AddElementToObject(this.Orderbooks, symbol, orderbook)
     var messageHash interface{} = this.SafeString(subscription, "messageHash")
+    this.StreamProduce("orderbooks", orderbook)
     client.(ccxt.ClientInterface).Resolve(orderbook, messageHash)
 }
 func  (this *NdaxCore) HandleSubscriptionStatus(client interface{}, message interface{})  {
@@ -575,6 +585,7 @@ func  (this *NdaxCore) HandleMessage(client interface{}, message interface{})  {
     //         "o": "[[2,1,1608208308265,0,20782.49,1,25000,8,1,1]]"
     //     }
     //
+    this.StreamProduce("raw", message)
     var payload interface{} = this.SafeString(message, "o")
     if ccxt.IsTrue(ccxt.IsEqual(payload, nil)) {
         return

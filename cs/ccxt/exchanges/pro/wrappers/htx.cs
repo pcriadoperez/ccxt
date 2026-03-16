@@ -238,4 +238,14 @@ public partial class htx
         var res = await this.watchBalance(parameters);
         return new Balances(res);
     }
+    public async Task<Dictionary<string, object>> SubscribePublic(object url, object symbol, object messageHash, object method = null, Dictionary<string, object> parameters = null)
+    {
+        var res = await this.subscribePublic(url, symbol, messageHash, method, parameters);
+        return ((Dictionary<string, object>)res);
+    }
+    public async Task<Dictionary<string, object>> SubscribePrivate(object channel, object messageHash, object type, object subtype, Dictionary<string, object> parameters = null, Dictionary<string, object> subscriptionParams = null)
+    {
+        var res = await this.subscribePrivate(channel, messageHash, type, subtype, parameters, subscriptionParams);
+        return ((Dictionary<string, object>)res);
+    }
 }

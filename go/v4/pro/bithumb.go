@@ -165,6 +165,7 @@ func  (this *BithumbCore) HandleTicker(client interface{}, message interface{}) 
     var ticker interface{} = this.ParseWsTicker(content)
     var messageHash interface{} = ccxt.Add("ticker:", symbol)
     ccxt.AddElementToObject(this.Tickers, symbol, ticker)
+    this.StreamProduce("tickers", ticker)
     client.(ccxt.ClientInterface).Resolve(ccxt.GetValue(this.Tickers, symbol), messageHash)
 }
 func  (this *BithumbCore) ParseWsTicker(ticker interface{}, optionalArgs ...interface{}) interface{}  {
@@ -237,8 +238,8 @@ func  (this *BithumbCore) WatchOrderBook(symbol interface{}, optionalArgs ...int
             params := ccxt.GetArg(optionalArgs, 1, map[string]interface{} {})
             _ = params
         
-            retRes1938 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes1938)
+            retRes1948 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes1948)
             var url interface{} = ccxt.GetValue(ccxt.GetValue(ccxt.GetValue(this.Urls, "api"), "ws"), "public")
             var market interface{} = this.Market(symbol)
             symbol = ccxt.GetValue(market, "symbol")
@@ -298,6 +299,7 @@ func  (this *BithumbCore) HandleOrderBook(client interface{}, message interface{
     ccxt.AddElementToObject(orderbook, "timestamp", timestamp)
     ccxt.AddElementToObject(orderbook, "datetime", this.Iso8601(timestamp))
     var messageHash interface{} = ccxt.Add(ccxt.Add("orderbook", ":"), symbol)
+    this.StreamProduce("orderbooks", orderbook)
     client.(ccxt.ClientInterface).Resolve(orderbook, messageHash)
 }
 func  (this *BithumbCore) HandleDelta(orderbook interface{}, delta interface{})  {
@@ -344,8 +346,8 @@ func  (this *BithumbCore) WatchTrades(symbol interface{}, optionalArgs ...interf
             params := ccxt.GetArg(optionalArgs, 2, map[string]interface{} {})
             _ = params
         
-            retRes2858 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes2858)
+            retRes2878 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes2878)
             var url interface{} = ccxt.GetValue(ccxt.GetValue(ccxt.GetValue(this.Urls, "api"), "ws"), "public")
             var market interface{} = this.Market(symbol)
             symbol = ccxt.GetValue(market, "symbol")
@@ -401,6 +403,7 @@ func  (this *BithumbCore) HandleTrades(client interface{}, message interface{}) 
         var parsed interface{} = this.ParseWsTrade(rawTrade)
         trades.(ccxt.Appender).Append(parsed)
         var messageHash interface{} = ccxt.Add(ccxt.Add("trade", ":"), symbol)
+        this.StreamProduce("trades", parsed)
         client.(ccxt.ClientInterface).Resolve(trades, messageHash)
     }
 }
@@ -461,6 +464,7 @@ func  (this *BithumbCore) HandleErrorMessage(client interface{}, message interfa
                         ret_ = func(this *BithumbCore) interface{} {
                             // catch block:
                                     client.(ccxt.ClientInterface).Reject(e)
+            this.StreamProduce("errors", nil, e)
                             return nil
                         }(this)
                     }
@@ -493,11 +497,11 @@ func  (this *BithumbCore) WatchBalance(optionalArgs ...interface{}) <- chan inte
                     params := ccxt.GetArg(optionalArgs, 0, map[string]interface{} {})
             _ = params
         
-            retRes4058 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes4058)
+            retRes4098 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes4098)
         
-            retRes4068 := (<-this.Authenticate())
-            ccxt.PanicOnError(retRes4068)
+            retRes4108 := (<-this.Authenticate())
+            ccxt.PanicOnError(retRes4108)
             var url interface{} = ccxt.GetValue(ccxt.GetValue(ccxt.GetValue(this.Urls, "api"), "ws"), "privateV2")
             var messageHash interface{} = "myAsset"
             var request interface{} = []interface{}{map[string]interface{} {
@@ -550,6 +554,7 @@ func  (this *BithumbCore) HandleBalance(client interface{}, message interface{})
     ccxt.AddElementToObject(this.Balance, "timestamp", timestamp)
     ccxt.AddElementToObject(this.Balance, "datetime", this.Iso8601(timestamp))
     this.Balance = this.SafeBalance(this.Balance)
+    this.StreamProduce("balances", this.Balance)
     client.(ccxt.ClientInterface).Resolve(this.Balance, messageHash)
 }
 func  (this *BithumbCore) Authenticate(optionalArgs ...interface{}) <- chan interface{} {
@@ -612,11 +617,11 @@ func  (this *BithumbCore) WatchOrders(optionalArgs ...interface{}) <- chan inter
             params := ccxt.GetArg(optionalArgs, 3, map[string]interface{} {})
             _ = params
         
-            retRes4928 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes4928)
+            retRes4978 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes4978)
         
-            retRes4938 := (<-this.Authenticate())
-            ccxt.PanicOnError(retRes4938)
+            retRes4988 := (<-this.Authenticate())
+            ccxt.PanicOnError(retRes4988)
             var url interface{} = ccxt.GetValue(ccxt.GetValue(ccxt.GetValue(this.Urls, "api"), "ws"), "privateV2")
             var messageHash interface{} = "myOrder"
             var codes interface{} = this.SafeList(params, "codes", []interface{}{})
@@ -679,6 +684,7 @@ func  (this *BithumbCore) HandleOrders(client interface{}, message interface{}) 
     }
     var cachedOrders interface{} = this.Orders
     cachedOrders.(ccxt.Appender).Append(parsed)
+    this.StreamProduce("orders", parsed)
     client.(ccxt.ClientInterface).Resolve(cachedOrders, messageHash)
     var symbolSpecificMessageHash interface{} = ccxt.Add(ccxt.Add(messageHash, ":"), symbol)
     client.(ccxt.ClientInterface).Resolve(cachedOrders, symbolSpecificMessageHash)
@@ -776,6 +782,7 @@ func  (this *BithumbCore) ParseWsOrder(order interface{}, optionalArgs ...interf
     }, market)
 }
 func  (this *BithumbCore) HandleMessage(client interface{}, message interface{})  {
+    this.StreamProduce("raw", message)
     if !ccxt.IsTrue(this.HandleErrorMessage(client, message)) {
         return
     }

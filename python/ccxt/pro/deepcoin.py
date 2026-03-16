@@ -256,6 +256,7 @@ class deepcoin(ccxt.async_support.deepcoin):
         parsedTicker = self.parse_ws_ticker(data, market)
         messageHash = 'ticker' + '::' + symbol
         self.tickers[symbol] = parsedTicker
+        self.stream_produce('tickers', parsedTicker)
         client.resolve(parsedTicker, messageHash)
 
     def parse_ws_ticker(self, ticker: dict, market: Market = None) -> Ticker:
@@ -389,6 +390,7 @@ class deepcoin(ccxt.async_support.deepcoin):
         if data is not None:
             trade = self.parse_ws_trade(data, market)
             strored.append(trade)
+            self.stream_produce('trades', trade)
         messageHash = 'trades' + '::' + symbol
         client.resolve(strored, messageHash)
 
@@ -556,6 +558,8 @@ class deepcoin(ccxt.async_support.deepcoin):
         if data is not None:
             ohlcv = self.parse_ws_ohlcv(data, market)
             stored.append(ohlcv)
+            ohlcvs = self.create_stream_ohlcv(symbol, timeframe, ohlcv)
+            self.stream_produce('ohlcvs', ohlcvs)
         messageHash = 'ohlcv' + '::' + symbol + '::' + timeframe
         client.resolve(stored, messageHash)
 
@@ -656,6 +660,7 @@ class deepcoin(ccxt.async_support.deepcoin):
         else:
             self.handle_order_book_message(client, message, orderbook)
             messageHash = 'orderbook' + '::' + symbol
+            self.stream_produce('orderbooks', orderbook)
             client.resolve(orderbook, messageHash)
 
     def handle_order_book_snapshot(self, client: Client, message):
@@ -691,6 +696,7 @@ class deepcoin(ccxt.async_support.deepcoin):
             self.handle_order_book_message(client, cachedMessage, orderbook)
         orderbook.cache = []
         messageHash = 'orderbook' + '::' + symbol
+        self.stream_produce('orderbooks', orderbook)
         client.resolve(orderbook, messageHash)
 
     def handle_order_book_message(self, client: Client, message, orderbook):
@@ -798,6 +804,7 @@ class deepcoin(ccxt.async_support.deepcoin):
             stored = self.myTrades
             parsed = self.parse_ws_trade(data, market)
             stored.append(parsed)
+            self.stream_produce('myTrades', parsed)
             client.resolve(stored, messageHash)
             client.resolve(stored, symbolMessageHash)
 
@@ -868,6 +875,7 @@ class deepcoin(ccxt.async_support.deepcoin):
                 self.orders = ArrayCacheBySymbolById(limit)
             parsed = self.parse_ws_order(data, market)
             self.orders.append(parsed)
+            self.stream_produce('orders', parsed)
             client.resolve(self.orders, messageHash)
             client.resolve(self.orders, symbolMessageHash)
 
@@ -1000,6 +1008,7 @@ class deepcoin(ccxt.async_support.deepcoin):
                 self.positions = ArrayCacheBySymbolBySide()
             parsed = self.parse_ws_position(data, market)
             self.positions.append(parsed)
+            self.stream_produce('positions', parsed)
             client.resolve(self.positions, messageHash)
             client.resolve(self.positions, symbolMessageHash)
 
@@ -1072,6 +1081,7 @@ class deepcoin(ccxt.async_support.deepcoin):
         return self.safe_string(modes, marginMode, marginMode)
 
     def handle_message(self, client: Client, message):
+        self.stream_produce('raw', message)
         if message == 'pong':
             self.handle_pong(client, message)
         else:
@@ -1165,4 +1175,5 @@ class deepcoin(ccxt.async_support.deepcoin):
             self.throw_broadly_matched_exception(self.exceptions['broad'], messageText, feedback)
             raise ExchangeError(feedback)
         except Exception as e:
+            self.stream_produce('errors', None, e)
             client.reject(e, messageHash)

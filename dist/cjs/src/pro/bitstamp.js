@@ -119,6 +119,7 @@ class bitstamp extends bitstamp$1["default"] {
             return;
         }
         this.handleDelta(storedOrderBook, delta);
+        this.streamProduce('orderbooks', storedOrderBook);
         client.resolve(storedOrderBook, messageHash);
     }
     handleDelta(orderbook, delta) {
@@ -261,6 +262,7 @@ class bitstamp extends bitstamp$1["default"] {
             this.trades[symbol] = tradesArray;
         }
         tradesArray.append(trade);
+        this.streamProduce('trades', trade);
         client.resolve(tradesArray, messageHash);
     }
     /**
@@ -325,6 +327,7 @@ class bitstamp extends bitstamp$1["default"] {
         order['event'] = this.safeString(message, 'event');
         const parsed = this.parseWsOrder(order, market);
         stored.append(parsed);
+        this.streamProduce('orders', parsed);
         client.resolve(this.orders, channel);
     }
     parseWsOrder(order, market = undefined) {
@@ -495,14 +498,23 @@ class bitstamp extends bitstamp$1["default"] {
         // }
         const event = this.safeString(message, 'event');
         if (event === 'bts:error') {
-            const feedback = this.id + ' ' + this.json(message);
-            const data = this.safeValue(message, 'data', {});
-            const code = this.safeNumber(data, 'code');
-            this.throwExactlyMatchedException(this.exceptions['exact'], code, feedback);
+            try {
+                const feedback = this.id + ' ' + this.json(message);
+                const data = this.safeValue(message, 'data', {});
+                const code = this.safeNumber(data, 'code');
+                const msg = this.safeString(data, 'message');
+                this.throwExactlyMatchedException(this.exceptions['exact'], code, feedback);
+                this.throwBroadlyMatchedException(this.exceptions['broad'], msg, feedback);
+                throw new errors.ExchangeError(feedback);
+            }
+            catch (e) {
+                this.streamProduce('errors', undefined, e);
+            }
         }
         return true;
     }
     handleMessage(client, message) {
+        this.streamProduce('raw', message);
         if (!this.handleErrorMessage(client, message)) {
             return;
         }

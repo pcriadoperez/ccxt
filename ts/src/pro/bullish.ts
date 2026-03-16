@@ -761,10 +761,9 @@ export default class bullish extends bullishRest {
             const errorCodeName = this.safeString (data, 'errorCodeName');
             this.throwExactlyMatchedException (this.exceptions['exact'], errorCode, feedback);
             this.throwBroadlyMatchedException (this.exceptions['broad'], errorCodeName, feedback);
-            const error = new ExchangeError (feedback); // unknown message
-            this.streamProduce ('errors', undefined, error);
-            throw error;
+            throw new ExchangeError (feedback); // unknown message
         } catch (e) {
+            this.streamProduce ('errors', undefined, e);
             client.reject (e);
         }
     }

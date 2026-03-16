@@ -99,6 +99,7 @@ class alpaca extends alpaca$1["default"] {
         const symbol = ticker['symbol'];
         const messageHash = 'ticker:' + symbol;
         this.tickers[symbol] = ticker;
+        this.streamProduce('tickers', ticker);
         client.resolve(this.tickers[symbol], messageHash);
     }
     parseTicker(ticker, market = undefined) {
@@ -193,6 +194,7 @@ class alpaca extends alpaca$1["default"] {
         const parsed = this.parseOHLCV(message);
         stored.append(parsed);
         const messageHash = 'ohlcv:' + symbol;
+        this.streamProduce('ohlcvs', parsed);
         client.resolve(stored, messageHash);
     }
     /**
@@ -264,6 +266,7 @@ class alpaca extends alpaca$1["default"] {
         }
         const messageHash = 'orderbook' + ':' + symbol;
         this.orderbooks[symbol] = orderbook;
+        this.streamProduce('orderbooks', orderbook);
         client.resolve(orderbook, messageHash);
     }
     handleDelta(bookside, delta) {
@@ -325,6 +328,7 @@ class alpaca extends alpaca$1["default"] {
         }
         const parsed = this.parseTrade(message);
         stored.append(parsed);
+        this.streamProduce('trades', parsed);
         const messageHash = 'trade' + ':' + symbol;
         client.resolve(stored, messageHash);
     }
@@ -453,6 +457,7 @@ class alpaca extends alpaca$1["default"] {
         const order = this.parseOrder(rawOrder);
         orders.append(order);
         let messageHash = 'orders';
+        this.streamProduce('orders', order);
         client.resolve(orders, messageHash);
         messageHash = 'orders:' + order['symbol'];
         client.resolve(orders, messageHash);
@@ -516,6 +521,7 @@ class alpaca extends alpaca$1["default"] {
         }
         const trade = this.parseMyTrade(rawOrder);
         myTrades.append(trade);
+        this.streamProduce('myTrades', trade);
         let messageHash = 'myTrades:' + trade['symbol'];
         client.resolve(myTrades, messageHash);
         messageHash = 'myTrades';
@@ -618,7 +624,9 @@ class alpaca extends alpaca$1["default"] {
         //
         const code = this.safeString(message, 'code');
         const msg = this.safeValue(message, 'msg', {});
-        throw new errors.ExchangeError(this.id + ' code: ' + code + ' message: ' + msg);
+        const error = new errors.ExchangeError(this.id + ' code: ' + code + ' message: ' + msg);
+        this.streamProduce('errors', undefined, error);
+        throw error;
     }
     handleConnected(client, message) {
         //
@@ -672,6 +680,7 @@ class alpaca extends alpaca$1["default"] {
         }
     }
     handleMessage(client, message) {
+        this.streamProduce('raw', message);
         if (Array.isArray(message)) {
             this.handleCryptoMessage(client, message);
             return;
@@ -712,7 +721,9 @@ class alpaca extends alpaca$1["default"] {
             promise.resolve(message);
             return;
         }
-        throw new errors.AuthenticationError(this.id + ' failed to authenticate.');
+        const err = new errors.AuthenticationError(this.id + ' failed to authenticate.');
+        this.streamProduce('errors', undefined, err);
+        throw err;
     }
     handleSubscription(client, message) {
         //

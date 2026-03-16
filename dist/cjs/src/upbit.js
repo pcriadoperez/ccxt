@@ -1507,7 +1507,7 @@ class upbit extends upbit$1["default"] {
         //             "amount": "100000.0",
         //             "fee": "0.0"
         //         },
-        //         ...,
+        //         ...
         //     ]
         //
         return this.parseTransactions(response, currency, since, limit);
@@ -1592,7 +1592,7 @@ class upbit extends upbit$1["default"] {
         //             "fee": "0.0",
         //             "krw_amount": "80420.0"
         //         },
-        //         ...,
+        //         ...
         //     ]
         //
         return this.parseTransactions(response, currency, since, limit);

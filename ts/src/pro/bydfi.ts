@@ -1045,9 +1045,8 @@ export default class bydfi extends bydfiRest {
         this.throwExactlyMatchedException (this.exceptions['exact'], msg, feedback);
         this.throwBroadlyMatchedException (this.exceptions['broad'], msg, feedback);
         this.throwExactlyMatchedException (this.exceptions['exact'], code, feedback);
-        const error = new ExchangeError (feedback);
-        this.streamProduce ('errors', undefined, error);
-        throw error;
+        this.streamProduce ('errors', undefined, feedback);
+        throw new ExchangeError (feedback);
     }
 
     handleMessage (client: Client, message) {

@@ -601,6 +601,7 @@ class bybit extends bybit$1["default"] {
         parsed['datetime'] = this.iso8601(timestamp);
         this.tickers[symbol] = parsed;
         const messageHash = 'ticker:' + symbol;
+        this.streamProduce('tickers', parsed);
         client.resolve(this.tickers[symbol], messageHash);
     }
     /**
@@ -800,6 +801,8 @@ class bybit extends bybit$1["default"] {
         for (let i = 0; i < data.length; i++) {
             const parsed = this.parseWsOHLCV(data[i], market);
             stored.append(parsed);
+            const ohlcvs = this.createStreamOHLCV(symbol, timeframe, parsed);
+            this.streamProduce('ohlcvs', ohlcvs);
         }
         const messageHash = 'ohlcv::' + symbol + '::' + timeframe;
         const resolveData = [symbol, timeframe, stored];
@@ -1010,6 +1013,7 @@ class bybit extends bybit$1["default"] {
         }
         const messageHash = 'orderbook' + ':' + symbol;
         this.orderbooks[symbol] = orderbook;
+        this.streamProduce('orderbooks', orderbook);
         client.resolve(orderbook, messageHash);
         if (limit === '1') {
             const bidask = this.parseWsBidAsk(this.orderbooks[symbol], market);
@@ -1158,6 +1162,7 @@ class bybit extends bybit$1["default"] {
         for (let j = 0; j < trades.length; j++) {
             const parsed = this.parseWsTrade(trades[j], market);
             stored.append(parsed);
+            this.streamProduce('trades', parsed);
         }
         const messageHash = 'trade' + ':' + symbol;
         client.resolve(stored, messageHash);
@@ -1439,6 +1444,7 @@ class bybit extends bybit$1["default"] {
             const symbol = parsed['symbol'];
             symbols[symbol] = true;
             trades.append(parsed);
+            this.streamProduce('myTrades', parsed);
         }
         const keys = Object.keys(symbols);
         for (let i = 0; i < keys.length; i++) {
@@ -1518,6 +1524,7 @@ class bybit extends bybit$1["default"] {
             for (let ii = 0; ii < positions.length; ii++) {
                 const position = positions[ii];
                 cache.append(position);
+                this.streamProduce('positions', position);
             }
         }
         // don't remove the future from the .futures cache
@@ -1584,13 +1591,16 @@ class bybit extends bybit$1["default"] {
                 // closing update, adding both sides to "reset" both sides
                 // since we don't know which side is being closed
                 position['side'] = 'long';
+                this.streamProduce('positions', position);
                 cache.append(position);
                 position['side'] = 'short';
+                this.streamProduce('positions', position);
                 cache.append(position);
                 position['side'] = undefined;
             }
             else {
                 // regular update
+                this.streamProduce('positions', position);
                 cache.append(position);
             }
         }
@@ -1701,6 +1711,7 @@ class bybit extends bybit$1["default"] {
                 }
                 const cache = this.liquidations;
                 cache.append(liquidation);
+                this.streamProduce('liquidations', liquidation);
                 client.resolve([liquidation], 'liquidations');
                 client.resolve([liquidation], 'liquidations::' + symbol);
             }
@@ -1717,6 +1728,7 @@ class bybit extends bybit$1["default"] {
             }
             const cache = this.liquidations;
             cache.append(liquidation);
+            this.streamProduce('liquidations', liquidation);
             client.resolve([liquidation], 'liquidations');
             client.resolve([liquidation], 'liquidations::' + symbol);
         }
@@ -1948,6 +1960,7 @@ class bybit extends bybit$1["default"] {
             // }
             const symbol = parsed['symbol'];
             symbols[symbol] = true;
+            this.streamProduce('orders', parsed);
             orders.append(parsed);
         }
         const symbolsArray = Object.keys(symbols);
@@ -2200,6 +2213,7 @@ class bybit extends bybit$1["default"] {
             this.balance[account]['datetime'] = this.iso8601(timestamp);
             this.balance[account] = this.safeBalance(this.balance[account]);
             messageHash = 'balances:' + account;
+            this.streamProduce('balances', this.balance[account]);
             client.resolve(this.balance[account], messageHash);
         }
         else {
@@ -2209,6 +2223,7 @@ class bybit extends bybit$1["default"] {
             this.balance['datetime'] = this.iso8601(timestamp);
             this.balance = this.safeBalance(this.balance);
             messageHash = 'balances';
+            this.streamProduce('balances', this.balance);
             client.resolve(this.balance, messageHash);
         }
     }
@@ -2382,10 +2397,12 @@ class bybit extends bybit$1["default"] {
                 const messageHash = this.safeString(message, 'reqId');
                 client.reject(error, messageHash);
             }
+            this.streamProduce('errors', undefined, error);
             return true;
         }
     }
     handleMessage(client, message) {
+        this.streamProduce('raw', message);
         const topic = this.safeString2(message, 'topic', 'op', '');
         if (this.handleErrorMessage(client, message)) {
             return;
@@ -2513,6 +2530,7 @@ class bybit extends bybit$1["default"] {
         }
         else {
             const error = new errors.AuthenticationError(this.id + ' ' + this.json(message));
+            this.streamProduce('errors', undefined, error);
             client.reject(error, messageHash);
             if (messageHash in client.subscriptions) {
                 delete client.subscriptions[messageHash];

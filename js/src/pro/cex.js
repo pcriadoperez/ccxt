@@ -115,6 +115,7 @@ export default class cex extends cexRest {
         }
         this.balance = this.safeBalance(result);
         const messageHash = this.safeString(message, 'oid');
+        this.streamProduce('balances', this.balance);
         client.resolve(this.balance, messageHash);
     }
     /**
@@ -234,6 +235,7 @@ export default class cex extends cexRest {
             const rawTrade = data[index];
             const parsed = this.parseWsOldTrade(rawTrade, market);
             stored.append(parsed);
+            this.streamProduce('trades', parsed);
         }
         const messageHash = 'trades';
         this.trades[symbol] = stored;
@@ -355,6 +357,7 @@ export default class cex extends cexRest {
         client.resolve(ticker, messageHash);
         client.resolve(ticker, 'tickers');
         messageHash = this.safeString(message, 'oid');
+        this.streamProduce('tickers', ticker);
         if (messageHash !== undefined) {
             client.resolve(ticker, messageHash);
         }
@@ -575,6 +578,7 @@ export default class cex extends cexRest {
         }
         const trade = this.parseWsTrade(data);
         stored.append(trade);
+        this.streamProduce('myTrades', trade);
         const messageHash = 'myTrades:' + trade['symbol'];
         client.resolve(stored, messageHash);
     }
@@ -757,6 +761,7 @@ export default class cex extends cexRest {
         order = this.safeOrder(order);
         storedOrders.append(order);
         const messageHash = 'orders:' + symbol;
+        this.streamProduce('orders', order);
         client.resolve(storedOrders, messageHash);
     }
     parseWsOrderUpdate(order, market = undefined) {
@@ -908,6 +913,7 @@ export default class cex extends cexRest {
             const order = this.parseOrder(rawOrder, market);
             order['status'] = 'open';
             myOrders.append(order);
+            this.streamProduce('orders', order);
         }
         this.orders = myOrders;
         const messageHash = 'orders:' + symbol;
@@ -987,6 +993,7 @@ export default class cex extends cexRest {
             'incrementalId': incrementalId,
         };
         this.orderbooks[symbol] = orderbook;
+        this.streamProduce('orderbooks', orderbook);
         client.resolve(orderbook, messageHash);
     }
     pairToSymbol(pair) {
@@ -1032,6 +1039,7 @@ export default class cex extends cexRest {
         storedOrderBook['timestamp'] = timestamp;
         storedOrderBook['datetime'] = this.iso8601(timestamp);
         storedOrderBook['nonce'] = incrementalId;
+        this.streamProduce('orderbooks', storedOrderBook);
         client.resolve(storedOrderBook, messageHash);
     }
     handleDelta(bookside, delta) {
@@ -1103,10 +1111,14 @@ export default class cex extends cexRest {
         const messageHash = 'ohlcv:' + symbol;
         const data = this.safeValue(message, 'data', []);
         const limit = this.safeInteger(this.options, 'OHLCVLimit', 1000);
-        const stored = new ArrayCacheByTimestamp(limit);
+        let stored = undefined;
+        stored = new ArrayCacheByTimestamp(limit);
         const sorted = this.sortBy(data, 0);
         for (let i = 0; i < sorted.length; i++) {
-            stored.append(this.parseOHLCV(sorted[i], market));
+            const parsed = this.parseOHLCV(sorted[i], market);
+            stored.append(parsed);
+            const ohlcvs = this.createStreamOHLCV(symbol, 'unknown', parsed);
+            this.streamProduce('ohlcvs', ohlcvs);
         }
         if (!(symbol in this.ohlcvs)) {
             this.ohlcvs[symbol] = {};
@@ -1154,6 +1166,8 @@ export default class cex extends cexRest {
         ];
         const stored = this.safeValue(this.ohlcvs, symbol);
         stored.append(ohlcv);
+        const ohlcvs = this.createStreamOHLCV(symbol, '1m', ohlcv);
+        this.streamProduce('ohlcvs', ohlcvs);
         client.resolve(stored, messageHash);
     }
     handleOHLCV(client, message) {
@@ -1182,6 +1196,8 @@ export default class cex extends cexRest {
                 this.safeNumber(data[i], 5),
             ];
             stored.append(ohlcv);
+            const ohlcvs = this.createStreamOHLCV(symbol, undefined, ohlcv);
+            this.streamProduce('ohlcvs', ohlcvs);
         }
         const dataLength = data.length;
         if (dataLength > 0) {
@@ -1448,6 +1464,7 @@ export default class cex extends cexRest {
         catch (error) {
             const messageHash = this.safeString(message, 'oid');
             const future = this.safeValue(client['futures'], messageHash);
+            this.streamProduce('errors', undefined, error);
             if (future !== undefined) {
                 client.reject(error, messageHash);
                 return true;
@@ -1458,6 +1475,7 @@ export default class cex extends cexRest {
         }
     }
     handleMessage(client, message) {
+        this.streamProduce('raw', message);
         const ok = this.safeString(message, 'ok');
         if (ok === 'error') {
             this.handleErrorMessage(client, message);

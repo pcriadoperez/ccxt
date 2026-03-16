@@ -592,6 +592,8 @@ export default class poloniex extends poloniexRest {
                 this.ohlcvs[symbol][timeframe] = stored;
             }
             stored.append(parsed);
+            const ohlcvs = this.createStreamOHLCV(symbol, timeframe, stored);
+            this.streamProduce('ohlcvs', ohlcvs);
             client.resolve(stored, messageHash);
         }
         return message;
@@ -630,6 +632,7 @@ export default class poloniex extends poloniexRest {
                     this.trades[symbol] = tradesArray;
                 }
                 tradesArray.append(trade);
+                this.streamProduce('trades', trade);
                 client.resolve(tradesArray, messageHash);
             }
         }
@@ -820,6 +823,7 @@ export default class poloniex extends poloniexRest {
                 if (eventType === 'place' || eventType === 'canceled') {
                     const parsed = this.parseWsOrder(order);
                     orders.append(parsed);
+                    this.streamProduce('orders', parsed);
                 }
                 else {
                     const previousOrders = this.safeValue(orders.hashmap, symbol, {});
@@ -872,6 +876,7 @@ export default class poloniex extends poloniexRest {
                     previousOrder['status'] = state;
                     // update the newUpdates count
                     orders.append(previousOrder);
+                    this.streamProduce('orders', previousOrder);
                 }
                 marketIds.push(marketId);
             }
@@ -989,6 +994,7 @@ export default class poloniex extends poloniexRest {
                 const symbol = ticker['symbol'];
                 this.tickers[symbol] = ticker;
                 newTickers[symbol] = ticker;
+                this.streamProduce('tickers', ticker);
             }
         }
         const messageHashes = this.findMessageHashes(client, 'ticker::');
@@ -1095,6 +1101,7 @@ export default class poloniex extends poloniexRest {
                 orderbook['symbol'] = symbol;
                 orderbook['timestamp'] = timestamp;
                 orderbook['datetime'] = this.iso8601(timestamp);
+                this.streamProduce('orderbooks', orderbook);
                 client.resolve(orderbook, messageHash);
             }
         }
@@ -1122,6 +1129,7 @@ export default class poloniex extends poloniexRest {
         const data = this.safeValue(message, 'data', []);
         const messageHash = 'balances';
         this.balance = this.parseWsBalance(data);
+        this.streamProduce('balances', this.balance);
         client.resolve(this.balance, messageHash);
     }
     parseWsBalance(response) {
@@ -1169,6 +1177,7 @@ export default class poloniex extends poloniexRest {
         }
         const trades = this.myTrades;
         trades.append(parsedTrade);
+        this.streamProduce('myTrades', parsedTrade);
         client.resolve(trades, messageHash);
         const symbolMessageHash = messageHash + ':' + symbol;
         client.resolve(trades, symbolMessageHash);
@@ -1177,6 +1186,7 @@ export default class poloniex extends poloniexRest {
         client.lastPong = this.milliseconds();
     }
     handleMessage(client, message) {
+        this.streamProduce('raw', message);
         if (this.handleErrorMessage(client, message)) {
             return;
         }
@@ -1271,6 +1281,7 @@ export default class poloniex extends poloniexRest {
                 throw new ExchangeError(feedback);
             }
             catch (e) {
+                this.streamProduce('errors', undefined, e);
                 if (e instanceof AuthenticationError) {
                     const messageHash = 'authenticated';
                     client.reject(e, messageHash);
@@ -1303,6 +1314,7 @@ export default class poloniex extends poloniexRest {
         }
         else {
             const error = new AuthenticationError(this.id + ' ' + this.json(message));
+            this.streamProduce('errors', undefined, error);
             client.reject(error, messageHash);
             if (messageHash in client.subscriptions) {
                 delete client.subscriptions[messageHash];

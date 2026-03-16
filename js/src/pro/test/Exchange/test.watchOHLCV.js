@@ -7,6 +7,7 @@
 import assert from 'assert';
 import testOHLCV from '../../../test/Exchange/base/test.ohlcv.js';
 import testSharedMethods from '../../../test/Exchange/base/test.sharedMethods.js';
+import { ExchangeError } from '../../../../ccxt.js';
 async function testWatchOHLCV(exchange, skippedProperties, symbol) {
     const method = 'watchOHLCV';
     let now = exchange.milliseconds();
@@ -21,6 +22,23 @@ async function testWatchOHLCV(exchange, skippedProperties, symbol) {
     const limit = 10;
     const duration = exchange.parseTimeframe(chosenTimeframeKey);
     const since = exchange.milliseconds() - duration * limit * 1000 - 1000;
+    const consumer = function consumer(message) {
+        if (message.error) {
+            throw new ExchangeError(message.error);
+        }
+        if (!message.payload) {
+            throw new ExchangeError("received null or undefined payload");
+        }
+        // TODO: add payload test
+    };
+    try {
+        await exchange.subscribeOHLCV(symbol, chosenTimeframeKey, consumer, true);
+    }
+    catch (e) {
+        if (!testSharedMethods.isTemporaryFailure(e)) {
+            throw e;
+        }
+    }
     while (now < ends) {
         let response = undefined;
         let success = true;

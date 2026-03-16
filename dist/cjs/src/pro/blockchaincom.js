@@ -116,6 +116,7 @@ class blockchaincom extends blockchaincom$1["default"] {
         }
         const messageHash = 'balance';
         this.balance = this.safeBalance(result);
+        this.streamProduce('balances', this.balance);
         client.resolve(this.balance, messageHash);
     }
     /**
@@ -191,6 +192,8 @@ class blockchaincom extends blockchaincom$1["default"] {
                 this.ohlcvs[symbol][timeframe] = stored;
             }
             stored.append(ohlcv);
+            const ohlcvs = this.createStreamOHLCV(symbol, timeframe, ohlcv);
+            this.streamProduce('ohlcvs', ohlcvs);
             client.resolve(stored, messageHash);
         }
         else if (event !== 'subscribed') {
@@ -266,6 +269,7 @@ class blockchaincom extends blockchaincom$1["default"] {
         }
         const messageHash = 'ticker:' + symbol;
         this.tickers[symbol] = ticker;
+        this.streamProduce('tickers', ticker);
         client.resolve(ticker, messageHash);
     }
     parseWsUpdatedTicker(ticker, lastTicker = undefined, market = undefined) {
@@ -368,6 +372,7 @@ class blockchaincom extends blockchaincom$1["default"] {
         }
         const parsed = this.parseWsTrade(message, market);
         stored.append(parsed);
+        this.streamProduce('trades', parsed);
         this.trades[symbol] = stored;
         client.resolve(this.trades[symbol], messageHash);
     }
@@ -534,6 +539,7 @@ class blockchaincom extends blockchaincom$1["default"] {
             cachedOrders.append(parsedOrder);
         }
         this.orders = cachedOrders;
+        this.streamProduce('orders', this.orders);
         client.resolve(this.orders, messageHash);
     }
     parseWsOrder(order, market = undefined) {
@@ -708,6 +714,7 @@ class blockchaincom extends blockchaincom$1["default"] {
         else {
             throw new errors.NotSupported(this.id + ' watchOrderBook() does not support ' + event + ' yet');
         }
+        this.streamProduce('orderbooks', orderbook);
         client.resolve(orderbook, messageHash);
     }
     handleDelta(bookside, delta) {
@@ -720,6 +727,7 @@ class blockchaincom extends blockchaincom$1["default"] {
         }
     }
     handleMessage(client, message) {
+        this.streamProduce('raw', message);
         const channel = this.safeString(message, 'channel');
         const handlers = {
             'ticker': this.handleTicker,

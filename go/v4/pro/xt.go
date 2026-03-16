@@ -1069,6 +1069,7 @@ func  (this *XtCore) HandleTicker(client interface{}, message interface{}) inter
         var event interface{} = this.SafeString(message, "event")
         var messageHashTail interface{} = ccxt.Ternary(ccxt.IsTrue(isSpot), "spot", "contract")
         var messageHash interface{} = ccxt.Add(ccxt.Add(event, "::"), messageHashTail)
+        this.StreamProduce("tickers", ticker)
         client.(ccxt.ClientInterface).Resolve(ticker, messageHash)
     }
     return message
@@ -1152,6 +1153,7 @@ func  (this *XtCore) HandleTickers(client interface{}, message interface{}) inte
         var symbol interface{} = ccxt.GetValue(ticker, "symbol")
         ccxt.AddElementToObject(this.Tickers, symbol, ticker)
         ccxt.AppendToArray(&newTickers, ticker)
+        this.StreamProduce("tickers", ticker)
     }
     var messageHashStart interface{} = ccxt.Add(ccxt.Add(this.SafeString(message, "topic"), "::"), tradeType)
     var messageHashes interface{} = this.FindMessageHashes(client.(*ccxt.Client), ccxt.Add(messageHashStart, "::"))
@@ -1224,6 +1226,8 @@ func  (this *XtCore) HandleOHLCV(client interface{}, message interface{}) interf
             ccxt.AddElementToObject(ccxt.GetValue(this.Ohlcvs, symbol), timeframe, stored)
         }
         stored.(ccxt.Appender).Append(parsed)
+        var ohlcvs interface{} = this.CreateStreamOHLCV(symbol, timeframe, parsed)
+        this.StreamProduce("ohlcvs", ohlcvs)
         var event interface{} = this.SafeString(message, "event")
         var messageHash interface{} = ccxt.Add(ccxt.Add(event, "::"), tradeType)
         client.(ccxt.ClientInterface).Resolve(stored, messageHash)
@@ -1277,6 +1281,7 @@ func  (this *XtCore) HandleTrade(client interface{}, message interface{}) interf
             ccxt.AddElementToObject(this.Trades, symbol, tradesArray)
         }
         tradesArray.(ccxt.Appender).Append(trade)
+        this.StreamProduce("trades", trade)
         var messageHash interface{} = ccxt.Add(ccxt.Add(event, "::"), tradeType)
         client.(ccxt.ClientInterface).Resolve(tradesArray, messageHash)
     }
@@ -1393,6 +1398,7 @@ func  (this *XtCore) HandleOrderBook(client interface{}, message interface{})  {
         ccxt.AddElementToObject(orderbook, "timestamp", timestamp)
         ccxt.AddElementToObject(orderbook, "datetime", this.Iso8601(timestamp))
         ccxt.AddElementToObject(orderbook, "symbol", symbol)
+        this.StreamProduce("orderbooks", orderbook)
         client.(ccxt.ClientInterface).Resolve(orderbook, messageHash)
     }
 }
@@ -1589,6 +1595,7 @@ func  (this *XtCore) HandleOrder(client interface{}, message interface{}) interf
         var market interface{} = this.SafeMarket(marketId, nil, nil, tradeType)
         var parsed interface{} = this.ParseWsOrder(order, market)
         orders.(ccxt.Appender).Append(parsed)
+        this.StreamProduce("orders", parsed)
         client.(ccxt.ClientInterface).Resolve(orders, ccxt.Add("order::", tradeType))
     }
     return message
@@ -1638,6 +1645,7 @@ func  (this *XtCore) HandleBalance(client interface{}, message interface{})  {
     ccxt.AddElementToObject(this.Balance, code, account)
     this.Balance = this.SafeBalance(this.Balance)
     var tradeType interface{} = ccxt.Ternary(ccxt.IsTrue((ccxt.InOp(data, "coin"))), "contract", "spot")
+    this.StreamProduce("balances", this.Balance)
     client.(ccxt.ClientInterface).Resolve(this.Balance, ccxt.Add("balance::", tradeType))
 }
 func  (this *XtCore) HandleMyTrades(client interface{}, message interface{})  {
@@ -1685,10 +1693,12 @@ func  (this *XtCore) HandleMyTrades(client interface{}, message interface{})  {
     var parsedTrade interface{} = this.ParseTrade(data)
     var market interface{} = this.Market(ccxt.GetValue(parsedTrade, "symbol"))
     stored.(ccxt.Appender).Append(parsedTrade)
+    this.StreamProduce("myTrades", parsedTrade)
     var tradeType interface{} = ccxt.Ternary(ccxt.IsTrue(ccxt.GetValue(market, "contract")), "contract", "spot")
     client.(ccxt.ClientInterface).Resolve(stored, ccxt.Add("trade::", tradeType))
 }
 func  (this *XtCore) HandleMessage(client interface{}, message interface{})  {
+    this.StreamProduce("raw", message)
     var event interface{} = this.SafeString(message, "event")
     if ccxt.IsTrue(ccxt.IsEqual(event, "pong")) {
         client.(ccxt.ClientInterface).OnPong()
@@ -1778,6 +1788,7 @@ func  (this *XtCore) HandleErrorMessage(client interface{}, message interface{})
         this.GetListenKey(true)
         return
     }
+    this.StreamProduce("errors", nil, message)
     client.(ccxt.ClientInterface).Reject(message)
 }
 

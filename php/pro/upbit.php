@@ -237,6 +237,7 @@ class upbit extends \ccxt\async\upbit {
         $ticker = $this->parse_ticker($message);
         $symbol = $ticker['symbol'];
         $this->tickers[$symbol] = $ticker;
+        $this->stream_produce('tickers', $ticker);
         $messageHash = 'ticker:' . $symbol;
         $client->resolve ($ticker, $messageHash);
     }
@@ -293,6 +294,7 @@ class upbit extends \ccxt\async\upbit {
         $orderbook['timestamp'] = $timestamp;
         $orderbook['datetime'] = $datetime;
         $messageHash = 'orderbook:' . $symbol;
+        $this->stream_produce('orderbooks', $orderbook);
         $client->resolve ($orderbook, $messageHash);
     }
 
@@ -320,6 +322,7 @@ class upbit extends \ccxt\async\upbit {
             $this->trades[$symbol] = $stored;
         }
         $stored->append ($trade);
+        $this->stream_produce('trades', $trade);
         $messageHash = 'trade:' . $symbol;
         $client->resolve ($stored, $messageHash);
     }
@@ -343,6 +346,7 @@ class upbit extends \ccxt\async\upbit {
         $symbol = $this->safe_symbol($marketId, null);
         $messageHash = 'candle.1s:' . $symbol;
         $ohlcv = $this->parse_ohlcv($message);
+        $this->stream_produce('ohlcvs', $ohlcv);
         $client->resolve ($ohlcv, $messageHash);
     }
 
@@ -605,6 +609,7 @@ class upbit extends \ccxt\async\upbit {
         }
         $trade = $this->parse_ws_trade($message);
         $myTrades->append ($trade);
+        $this->stream_produce('myTrades', $trade);
         $messageHash = 'myTrades';
         $client->resolve ($myTrades, $messageHash);
         $messageHash = 'myTrades:' . $trade['symbol'];
@@ -636,6 +641,7 @@ class upbit extends \ccxt\async\upbit {
             $parsed['datetime'] = $this->safe_string($order, 'datetime');
         }
         $cachedOrders->append ($parsed);
+        $this->stream_produce('orders', $parsed);
         $messageHash = 'myOrder';
         $client->resolve ($this->orders, $messageHash);
         $messageHash = $messageHash . ':' . $symbol;
@@ -693,10 +699,12 @@ class upbit extends \ccxt\async\upbit {
             $this->balance = $this->safe_balance($this->balance);
         }
         $messageHash = $this->safe_string($message, 'type');
+        $this->stream_produce('balances', $this->balance);
         $client->resolve ($this->balance, $messageHash);
     }
 
     public function handle_message(Client $client, $message) {
+        $this->stream_produce('raw', $message);
         $methods = array(
             'ticker' => array($this, 'handle_ticker'),
             'orderbook' => array($this, 'handle_order_book'),

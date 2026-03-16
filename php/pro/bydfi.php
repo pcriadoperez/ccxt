@@ -305,6 +305,7 @@ class bydfi extends \ccxt\async\bydfi {
         $symbol = $ticker['symbol'];
         $messageHash = 'ticker::' . $symbol;
         $this->tickers[$symbol] = $ticker;
+        $this->stream_produce('tickers', $ticker);
         $client->resolve ($this->tickers[$symbol], $messageHash);
         $client->resolve ($this->tickers, 'ticker::all');
     }
@@ -451,6 +452,8 @@ class bydfi extends \ccxt\async\bydfi {
         $ohlcv = $this->ohlcvs[$symbol][$timeframe];
         $parsed = $this->parse_ws_ohlcv($message);
         $ohlcv->append ($parsed);
+        $ohlcvs = $this->create_stream_ohlcv($symbol, $timeframe, $parsed);
+        $this->stream_produce('ohlcvs', $ohlcvs);
         $messageHash = 'ohlcv::' . $symbol . '::' . $timeframe;
         $client->resolve (array( $symbol, $timeframe, $ohlcv ), $messageHash);
     }
@@ -581,6 +584,7 @@ class bydfi extends \ccxt\async\bydfi {
         $orderbook->reset ($parsed);
         $messageHash = 'orderbook::' . $symbol;
         $this->orderbooks[$symbol] = $orderbook;
+        $this->stream_produce('orderbooks', $orderbook);
         $client->resolve ($orderbook, $messageHash);
     }
 
@@ -683,6 +687,7 @@ class bydfi extends \ccxt\async\bydfi {
         $lastUpdateTimestamp = $this->safe_integer($message, 'T');
         $order['lastUpdateTimestamp'] = $lastUpdateTimestamp;
         $orders->append ($order);
+        $this->stream_produce('orders', $order);
         $client->resolve ($orders, $messageHash);
         $client->resolve ($orders, $symbolMessageHash);
     }
@@ -843,6 +848,7 @@ class bydfi extends \ccxt\async\bydfi {
         $parsedPosition['timestamp'] = $timestamp;
         $parsedPosition['datetime'] = $this->iso8601($timestamp);
         $cache->append ($parsedPosition);
+        $this->stream_produce('positions', $parsedPosition);
         $client->resolve (array( $parsedPosition ), $messageHash);
         $client->resolve (array( $parsedPosition ), $symbolMessageHash);
     }
@@ -1023,6 +1029,7 @@ class bydfi extends \ccxt\async\bydfi {
             }
             $parsedBalance = $this->safe_balance($result);
             $this->balance = $this->extend($this->balance, $parsedBalance);
+            $this->stream_produce('balances', $this->balance);
             $client->resolve ($this->balance, $messageHash);
         }
     }
@@ -1069,7 +1076,7 @@ class bydfi extends \ccxt\async\bydfi {
     public function handle_error_message(Client $client, $message) {
         //
         //     {
-        //         "msg" => "Service error",
+        //         "msg" => "Service $error",
         //         "code" => "-1"
         //     }
         //
@@ -1079,10 +1086,13 @@ class bydfi extends \ccxt\async\bydfi {
         $this->throw_exactly_matched_exception($this->exceptions['exact'], $msg, $feedback);
         $this->throw_broadly_matched_exception($this->exceptions['broad'], $msg, $feedback);
         $this->throw_exactly_matched_exception($this->exceptions['exact'], $code, $feedback);
-        throw new ExchangeError($feedback);
+        $error = new ExchangeError ($feedback);
+        $this->stream_produce('errors', null, $error);
+        throw $error;
     }
 
     public function handle_message(Client $client, $message) {
+        $this->stream_produce('raw', $message);
         $code = $this->safe_string($message, 'code');
         if ($code !== null && ($code !== '0')) {
             $this->handle_error_message($client, $message);

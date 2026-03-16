@@ -358,6 +358,7 @@ class aster(ccxt.async_support.aster):
         symbol = parsed['symbol']
         messageHash = 'ticker:' + symbol
         self.tickers[symbol] = parsed
+        self.stream_produce('tickers', parsed)
         client.resolve(self.tickers[symbol], messageHash)
 
     def parse_ws_ticker(self, message, marketType):
@@ -650,6 +651,7 @@ class aster(ccxt.async_support.aster):
             stored = ArrayCache(limit)
             self.trades[symbol] = stored
         stored.append(parsed)
+        self.stream_produce('trades', parsed)
         messageHash = 'trade' + ':' + symbol
         client.resolve(stored, messageHash)
 
@@ -960,6 +962,7 @@ class aster(ccxt.async_support.aster):
         orderbook.reset(snapshot)
         messageHash = 'orderbook' + ':' + symbol
         self.orderbooks[symbol] = orderbook
+        self.stream_produce('orderbooks', orderbook)
         client.resolve(orderbook, messageHash)
 
     async def watch_ohlcv(self, symbol: str, timeframe='1m', since: Int = None, limit: Int = None, params={}) -> List[list]:
@@ -1132,6 +1135,8 @@ class aster(ccxt.async_support.aster):
         stored = self.ohlcvs[symbol][timeframe]
         parsed = self.parse_ws_ohlcv(kline)
         stored.append(parsed)
+        ohlcvs = self.create_stream_ohlcv(symbol, timeframe, parsed)
+        self.stream_produce('ohlcvs', ohlcvs)
         messageHash = 'ohlcv:' + symbol + ':' + timeframe
         resolveData = [symbol, timeframe, stored]
         client.resolve(resolveData, messageHash)
@@ -1321,6 +1326,7 @@ class aster(ccxt.async_support.aster):
         self.balance[accountType]['timestamp'] = timestamp
         self.balance[accountType]['datetime'] = self.iso8601(timestamp)
         self.balance[accountType] = self.safe_balance(self.balance[accountType])
+        self.stream_produce('balances', self.balance[accountType])
         client.resolve(self.balance[accountType], messageHash)
 
     async def watch_positions(self, symbols: Strings = None, since: Int = None, limit: Int = None, params={}) -> List[Position]:
@@ -1435,6 +1441,7 @@ class aster(ccxt.async_support.aster):
             position['datetime'] = self.iso8601(timestamp)
             newPositions.append(position)
             cache.append(position)
+            self.stream_produce('positions', position)
         messageHashes = self.find_message_hashes(client, messageHash)
         if not self.is_empty(messageHashes):
             for i in range(0, len(newPositions)):
@@ -1623,6 +1630,7 @@ class aster(ccxt.async_support.aster):
                 self.myTrades = ArrayCacheBySymbolById(limit)
             myTrades = self.myTrades
             myTrades.append(trade)
+            self.stream_produce('myTrades', trade)
             client.resolve(self.myTrades, messageHash)
             messageHashSymbol = messageHash + '::' + symbol
             client.resolve(self.myTrades, messageHashSymbol)
@@ -1711,6 +1719,7 @@ class aster(ccxt.async_support.aster):
         parsed = self.parse_ws_order(message, market)
         symbol = market['symbol']
         cache.append(parsed)
+        self.stream_produce('orders', parsed)
         messageHashes = self.find_message_hashes(client, messageHash)
         if not self.is_empty(messageHashes):
             symbolMessageHash = messageHash + '::' + symbol
@@ -1784,6 +1793,7 @@ class aster(ccxt.async_support.aster):
         return self.safe_market(marketId, None, None, marketType)
 
     def handle_message(self, client: Client, message):
+        self.stream_produce('raw', message)
         stream = self.safe_string(message, 'stream')
         if stream is not None:
             part = stream.split('@')

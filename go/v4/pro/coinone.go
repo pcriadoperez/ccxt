@@ -148,6 +148,7 @@ func  (this *CoinoneCore) HandleOrderBook(client interface{}, message interface{
     ccxt.AddElementToObject(orderbook, "datetime", this.Iso8601(timestamp))
     var messageHash interface{} = ccxt.Add("orderbook:", symbol)
     ccxt.AddElementToObject(this.Orderbooks, symbol, orderbook)
+    this.StreamProduce("orderbooks", orderbook)
     client.(ccxt.ClientInterface).Resolve(orderbook, messageHash)
 }
 func  (this *CoinoneCore) HandleDelta(bookside interface{}, delta interface{})  {
@@ -171,8 +172,8 @@ func  (this *CoinoneCore) WatchTicker(symbol interface{}, optionalArgs ...interf
                     params := ccxt.GetArg(optionalArgs, 0, map[string]interface{} {})
             _ = params
         
-            retRes1458 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes1458)
+            retRes1468 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes1468)
             var market interface{} = this.Market(symbol)
             var messageHash interface{} = ccxt.Add("ticker:", ccxt.GetValue(market, "symbol"))
             var url interface{} = ccxt.GetValue(ccxt.GetValue(this.Urls, "api"), "ws")
@@ -186,9 +187,9 @@ func  (this *CoinoneCore) WatchTicker(symbol interface{}, optionalArgs ...interf
             }
             var message interface{} = this.Extend(request, params)
         
-                retRes15815 :=  (<-this.Watch(url, messageHash, message, messageHash))
-                ccxt.PanicOnError(retRes15815)
-                ch <- retRes15815
+                retRes15915 :=  (<-this.Watch(url, messageHash, message, messageHash))
+                ccxt.PanicOnError(retRes15915)
+                ch <- retRes15915
                 return nil
         
             }()
@@ -229,6 +230,7 @@ func  (this *CoinoneCore) HandleTicker(client interface{}, message interface{}) 
     var symbol interface{} = ccxt.GetValue(ticker, "symbol")
     ccxt.AddElementToObject(this.Tickers, symbol, ticker)
     var messageHash interface{} = ccxt.Add("ticker:", symbol)
+    this.StreamProduce("tickers", ticker)
     client.(ccxt.ClientInterface).Resolve(ccxt.GetValue(this.Tickers, symbol), messageHash)
 }
 func  (this *CoinoneCore) ParseWsTicker(ticker interface{}, optionalArgs ...interface{}) interface{}  {
@@ -312,8 +314,8 @@ func  (this *CoinoneCore) WatchTrades(symbol interface{}, optionalArgs ...interf
             params := ccxt.GetArg(optionalArgs, 2, map[string]interface{} {})
             _ = params
         
-            retRes2688 := (<-this.LoadMarkets())
-            ccxt.PanicOnError(retRes2688)
+            retRes2708 := (<-this.LoadMarkets())
+            ccxt.PanicOnError(retRes2708)
             var market interface{} = this.Market(symbol)
             var messageHash interface{} = ccxt.Add("trade:", ccxt.GetValue(market, "symbol"))
             var url interface{} = ccxt.GetValue(ccxt.GetValue(this.Urls, "api"), "ws")
@@ -365,6 +367,7 @@ func  (this *CoinoneCore) HandleTrades(client interface{}, message interface{}) 
         ccxt.AddElementToObject(this.Trades, symbol, stored)
     }
     stored.(ccxt.Appender).Append(trade)
+    this.StreamProduce("trades", trade)
     var messageHash interface{} = ccxt.Add("trade:", symbol)
     client.(ccxt.ClientInterface).Resolve(stored, messageHash)
 }
@@ -422,11 +425,39 @@ func  (this *CoinoneCore) HandleErrorMessage(client interface{}, message interfa
     //
     var typeVar interface{} = this.SafeString(message, "response_type", "")
     if ccxt.IsTrue(ccxt.IsEqual(typeVar, "ERROR")) {
+        var code interface{} = this.SafeString(message, "error_code")
+        var msg interface{} = this.SafeString(message, "message")
+        var feedback interface{} = ccxt.Add(ccxt.Add(this.Id, " "), this.Json(message))
+        
+            {
+                 func(this *CoinoneCore) (ret_ interface{}) {
+        		    defer func() {
+                        if e := recover(); e != nil {
+                            if e == "break" {
+                                return
+                            }
+                            ret_ = func(this *CoinoneCore) interface{} {
+                                // catch block:
+                                            this.StreamProduce("errors", nil, e)
+                    client.(ccxt.ClientInterface).Reject(e)
+                                return nil
+                            }(this)
+                        }
+                    }()
+        		    // try block:
+                                this.ThrowExactlyMatchedException(ccxt.GetValue(this.Exceptions, "exact"), code, feedback)
+                    this.ThrowBroadlyMatchedException(ccxt.GetValue(this.Exceptions, "broad"), msg, feedback)
+                    panic(ccxt.ExchangeError(feedback))
+        		    
+        	    }(this)
+            
+                }
         return true
     }
     return false
 }
 func  (this *CoinoneCore) HandleMessage(client interface{}, message interface{})  {
+    this.StreamProduce("raw", message)
     if ccxt.IsTrue(this.HandleErrorMessage(client, message)) {
         return
     }

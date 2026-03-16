@@ -286,6 +286,8 @@ class p2b extends p2b$1["default"] {
                 this.ohlcvs[symbol][timeframe] = stored;
             }
             stored.append(parsed);
+            const ohlcvs = this.createStreamOHLCV(symbol, timeframe, parsed);
+            this.streamProduce('ohlcvs', ohlcvs);
             client.resolve(stored, messageHash);
         }
         return message;
@@ -325,6 +327,7 @@ class p2b extends p2b$1["default"] {
             const item = trades[i];
             const trade = this.parseTrade(item, market);
             tradesArray.append(trade);
+            this.streamProduce('trades', trade);
         }
         const messageHash = 'deals::' + symbol;
         client.resolve(tradesArray, messageHash);
@@ -385,6 +388,7 @@ class p2b extends p2b$1["default"] {
         const symbol = ticker['symbol'];
         this.tickers[symbol] = ticker;
         const messageHash = messageHashStart + '::' + symbol;
+        this.streamProduce('tickers', ticker);
         client.resolve(ticker, messageHash);
         return message;
     }
@@ -441,9 +445,11 @@ class p2b extends p2b$1["default"] {
             }
         }
         orderbook['symbol'] = symbol;
+        this.streamProduce('orderbooks', orderbook);
         client.resolve(orderbook, messageHash);
     }
     handleMessage(client, message) {
+        this.streamProduce('raw', message);
         if (this.handleErrorMessage(client, message)) {
             return;
         }
@@ -468,7 +474,10 @@ class p2b extends p2b$1["default"] {
     handleErrorMessage(client, message) {
         const error = this.safeString(message, 'error');
         if (error !== undefined) {
-            throw new errors.ExchangeError(this.id + ' error: ' + this.json(error));
+            const err = new errors.ExchangeError(this.id + ' error: ' + this.json(error));
+            this.streamProduce('errors', undefined, err);
+            client.reject(err);
+            return true;
         }
         return false;
     }

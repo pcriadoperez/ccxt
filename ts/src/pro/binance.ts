@@ -317,7 +317,7 @@ export default class binance extends binanceRest {
             type = 'delivery';
         }
         const numSubscriptions = subscriptionHashes.length;
-const url = this.getWsUrl (type, this.getFutureWsCategory ('forceOrder')) + '/' + this.streamId (type, streamHash, numSubscriptions);
+        const url = this.getWsUrl (type, this.getFutureWsCategory ('forceOrder')) + '/' + this.streamId (type, streamHash, numSubscriptions);
         const requestId = this.requestId (url);
         const request = {
             'method': 'SUBSCRIBE',
@@ -716,7 +716,7 @@ const url = this.getWsUrl (type, this.getFutureWsCategory ('forceOrder')) + '/' 
             subParams.push (symbolHash);
         }
         const messageHashesLength = messageHashes.length;
-const url = this.getWsUrl (type, this.getFutureWsCategory (name)) + '/' + this.streamId (type, streamHash, messageHashesLength);
+        const url = this.getWsUrl (type, this.getFutureWsCategory (name)) + '/' + this.streamId (type, streamHash, messageHashesLength);
         const requestId = this.requestId (url);
         const request: Dict = {
             'method': 'SUBSCRIBE',
@@ -777,7 +777,7 @@ const url = this.getWsUrl (type, this.getFutureWsCategory (name)) + '/' + this.s
             subParams.push (symbolHash);
         }
         const messageHashesLength = subMessageHashes.length;
-const url = this.getWsUrl (type, this.getFutureWsCategory ('depth')) + '/' + this.streamId (type, streamHash, messageHashesLength);
+        const url = this.getWsUrl (type, this.getFutureWsCategory ('depth')) + '/' + this.streamId (type, streamHash, messageHashesLength);
         const requestId = this.requestId (url);
         const request: Dict = {
             'method': 'UNSUBSCRIBE',
@@ -1169,7 +1169,7 @@ const url = this.getWsUrl (type, this.getFutureWsCategory ('depth')) + '/' + thi
         }
         const query = this.omit (params, 'type');
         const subParamsLength = subParams.length;
-const url = this.getWsUrl (type, this.getFutureWsCategory (name)) + '/' + this.streamId (type, streamHash, subParamsLength);
+        const url = this.getWsUrl (type, this.getFutureWsCategory (name)) + '/' + this.streamId (type, streamHash, subParamsLength);
         const requestId = this.requestId (url);
         const request: Dict = {
             'method': 'SUBSCRIBE',
@@ -1233,7 +1233,7 @@ const url = this.getWsUrl (type, this.getFutureWsCategory (name)) + '/' + this.s
         }
         const query = this.omit (params, 'type');
         const subParamsLength = subParams.length;
-const url = this.getWsUrl (type, this.getFutureWsCategory (name)) + '/' + this.streamId (type, streamHash, subParamsLength);
+        const url = this.getWsUrl (type, this.getFutureWsCategory (name)) + '/' + this.streamId (type, streamHash, subParamsLength);
         const requestId = this.requestId (url);
         const request: Dict = {
             'method': 'UNSUBSCRIBE',
@@ -1545,7 +1545,7 @@ const url = this.getWsUrl (type, this.getFutureWsCategory (name)) + '/' + this.s
             rawHashes.push (marketId + '@' + klineType + '_' + interval + utcSuffix);
             messageHashes.push ('ohlcv::' + market['symbol'] + '::' + timeframeString);
         }
-const url = this.getWsUrl (type, this.getFutureWsCategory (klineType)) + '/' + this.streamId (type, 'multipleOHLCV');
+        const url = this.getWsUrl (type, this.getFutureWsCategory (klineType)) + '/' + this.streamId (type, 'multipleOHLCV');
         const requestId = this.requestId (url);
         const request = {
             'method': 'SUBSCRIBE',
@@ -1613,7 +1613,7 @@ const url = this.getWsUrl (type, this.getFutureWsCategory (klineType)) + '/' + t
             subMessageHashes.push ('ohlcv::' + market['symbol'] + '::' + timeframeString);
             messageHashes.push ('unsubscribe::ohlcv::' + market['symbol'] + '::' + timeframeString);
         }
-const url = this.getWsUrl (type, this.getFutureWsCategory (klineType)) + '/' + this.streamId (type, 'multipleOHLCV');
+        const url = this.getWsUrl (type, this.getFutureWsCategory (klineType)) + '/' + this.streamId (type, 'multipleOHLCV');
         const requestId = this.requestId (url);
         const request = {
             'method': 'UNSUBSCRIBE',
@@ -2109,7 +2109,7 @@ const url = this.getWsUrl (type, this.getFutureWsCategory (klineType)) + '/' + t
         if (symbolsDefined) {
             streamHash = channelName + '::' + symbols.join (',');
         }
-const url = this.getWsUrl (rawMarketType, this.getFutureWsCategory (channelName)) + '/' + this.streamId (rawMarketType, streamHash);
+        const url = this.getWsUrl (rawMarketType, this.getFutureWsCategory (channelName)) + '/' + this.streamId (rawMarketType, streamHash);
         const requestId = this.requestId (url);
         const request: Dict = {
             'method': isUnsubscribe ? 'UNSUBSCRIBE' : 'SUBSCRIBE',

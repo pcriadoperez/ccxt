@@ -5,6 +5,7 @@ import FastQueue from "./FastQueue.js";
 interface ConsumerOptions {
     synchronous?: boolean;
     maxBacklogSize?: number;
+    log?: (...args: any[]) => void;
 }
 
 export default class Consumer {
@@ -21,6 +22,8 @@ export default class Consumer {
 
     public maxBacklogSize: number;
 
+    public log: (...args: any[]) => void;
+
     private static readonly DEFAULT_MAX_BACKLOG_SIZE = 1000; // Default maximum number of messages in backlog
 
     constructor (fn: ConsumerFunction, currentIndex: Int, options: ConsumerOptions = {}) {
@@ -30,12 +33,13 @@ export default class Consumer {
         this.running = false;
         this.maxBacklogSize = options.maxBacklogSize ?? Consumer.DEFAULT_MAX_BACKLOG_SIZE;
         this.backlog = new FastQueue<Message> ();
+        this.log = options.log ?? console.log;
     }
 
     publish (message: Message) {
         this.backlog.enqueue (message);
         if (this.backlog.getLength () > this.maxBacklogSize) {
-            console.warn (`WebSocket consumer backlog is too large (${this.backlog.getLength ()} messages). This might indicate a performance issue or message processing bottleneck. Dropping oldest message.`);
+            this.log (`WebSocket consumer backlog is too large (${this.backlog.getLength ()} messages). This might indicate a performance issue or message processing bottleneck. Dropping oldest message.`);
             this.backlog.dequeue ();
         }
         this._run ();

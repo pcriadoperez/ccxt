@@ -629,6 +629,7 @@ class bybit extends \ccxt\async\bybit {
         $parsed['datetime'] = $this->iso8601($timestamp);
         $this->tickers[$symbol] = $parsed;
         $messageHash = 'ticker:' . $symbol;
+        $this->stream_produce('tickers', $parsed);
         $client->resolve ($this->tickers[$symbol], $messageHash);
     }
 
@@ -845,6 +846,8 @@ class bybit extends \ccxt\async\bybit {
         for ($i = 0; $i < count($data); $i++) {
             $parsed = $this->parse_ws_ohlcv($data[$i], $market);
             $stored->append ($parsed);
+            $ohlcvs = $this->create_stream_ohlcv($symbol, $timeframe, $parsed);
+            $this->stream_produce('ohlcvs', $ohlcvs);
         }
         $messageHash = 'ohlcv::' . $symbol . '::' . $timeframe;
         $resolveData = array( $symbol, $timeframe, $stored );
@@ -1066,6 +1069,7 @@ class bybit extends \ccxt\async\bybit {
         }
         $messageHash = 'orderbook' . ':' . $symbol;
         $this->orderbooks[$symbol] = $orderbook;
+        $this->stream_produce('orderbooks', $orderbook);
         $client->resolve ($orderbook, $messageHash);
         if ($limit === '1') {
             $bidask = $this->parse_ws_bid_ask($this->orderbooks[$symbol], $market);
@@ -1229,6 +1233,7 @@ class bybit extends \ccxt\async\bybit {
         for ($j = 0; $j < count($trades); $j++) {
             $parsed = $this->parse_ws_trade($trades[$j], $market);
             $stored->append ($parsed);
+            $this->stream_produce('trades', $parsed);
         }
         $messageHash = 'trade' . ':' . $symbol;
         $client->resolve ($stored, $messageHash);
@@ -1515,6 +1520,7 @@ class bybit extends \ccxt\async\bybit {
             $symbol = $parsed['symbol'];
             $symbols[$symbol] = true;
             $trades->append ($parsed);
+            $this->stream_produce('myTrades', $parsed);
         }
         $keys = is_array($symbols) ? array_keys($symbols) : array();
         for ($i = 0; $i < count($keys); $i++) {
@@ -1599,6 +1605,7 @@ class bybit extends \ccxt\async\bybit {
                 for ($ii = 0; $ii < count($positions); $ii++) {
                     $position = $positions[$ii];
                     $cache->append ($position);
+                    $this->stream_produce('positions', $position);
                 }
             }
             // don't remove the $future from the .futures $cache
@@ -1667,12 +1674,15 @@ class bybit extends \ccxt\async\bybit {
                 // closing update, adding both sides to "reset" both sides
                 // since we don't know which $side is being closed
                 $position['side'] = 'long';
+                $this->stream_produce('positions', $position);
                 $cache->append ($position);
                 $position['side'] = 'short';
+                $this->stream_produce('positions', $position);
                 $cache->append ($position);
                 $position['side'] = null;
             } else {
                 // regular update
+                $this->stream_produce('positions', $position);
                 $cache->append ($position);
             }
         }
@@ -1790,6 +1800,7 @@ class bybit extends \ccxt\async\bybit {
                 }
                 $cache = $this->liquidations;
                 $cache->append ($liquidation);
+                $this->stream_produce('liquidations', $liquidation);
                 $client->resolve (array( $liquidation ), 'liquidations');
                 $client->resolve (array( $liquidation ), 'liquidations::' . $symbol);
             }
@@ -1805,6 +1816,7 @@ class bybit extends \ccxt\async\bybit {
             }
             $cache = $this->liquidations;
             $cache->append ($liquidation);
+            $this->stream_produce('liquidations', $liquidation);
             $client->resolve (array( $liquidation ), 'liquidations');
             $client->resolve (array( $liquidation ), 'liquidations::' . $symbol);
         }
@@ -2045,6 +2057,7 @@ class bybit extends \ccxt\async\bybit {
             // }
             $symbol = $parsed['symbol'];
             $symbols[$symbol] = true;
+            $this->stream_produce('orders', $parsed);
             $orders->append ($parsed);
         }
         $symbolsArray = is_array($symbols) ? array_keys($symbols) : array();
@@ -2297,6 +2310,7 @@ class bybit extends \ccxt\async\bybit {
             $this->balance[$account]['datetime'] = $this->iso8601($timestamp);
             $this->balance[$account] = $this->safe_balance($this->balance[$account]);
             $messageHash = 'balances:' . $account;
+            $this->stream_produce('balances', $this->balance[$account]);
             $client->resolve ($this->balance[$account], $messageHash);
         } else {
             $this->balance['info'] = $info;
@@ -2305,6 +2319,7 @@ class bybit extends \ccxt\async\bybit {
             $this->balance['datetime'] = $this->iso8601($timestamp);
             $this->balance = $this->safe_balance($this->balance);
             $messageHash = 'balances';
+            $this->stream_produce('balances', $this->balance);
             $client->resolve ($this->balance, $messageHash);
         }
     }
@@ -2485,11 +2500,13 @@ class bybit extends \ccxt\async\bybit {
                 $messageHash = $this->safe_string($message, 'reqId');
                 $client->reject ($error, $messageHash);
             }
+            $this->stream_produce('errors', null, $error);
             return true;
         }
     }
 
     public function handle_message(Client $client, $message) {
+        $this->stream_produce('raw', $message);
         $topic = $this->safe_string_2($message, 'topic', 'op', '');
         if ($this->handle_error_message($client, $message)) {
             return;
@@ -2619,6 +2636,7 @@ class bybit extends \ccxt\async\bybit {
             $future->resolve (true);
         } else {
             $error = new AuthenticationError ($this->id . ' ' . $this->json($message));
+            $this->stream_produce('errors', null, $error);
             $client->reject ($error, $messageHash);
             if (is_array($client->subscriptions) && array_key_exists($messageHash, $client->subscriptions)) {
                 unset($client->subscriptions[$messageHash]);

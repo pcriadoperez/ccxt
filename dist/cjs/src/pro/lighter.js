@@ -166,6 +166,7 @@ class lighter extends lighter$1["default"] {
             this.handleOrderBookMessage(client, message, orderbook);
         }
         const messageHash = this.getMessageHash('orderbook', symbol);
+        this.streamProduce('orderbooks', orderbook);
         client.resolve(orderbook, messageHash);
     }
     /**
@@ -268,6 +269,7 @@ class lighter extends lighter$1["default"] {
                 const symbol = market['symbol'];
                 const ticker = this.parseTicker(data[marketId], market);
                 this.tickers[symbol] = ticker;
+                this.streamProduce('tickers', ticker);
                 client.resolve(ticker, this.getMessageHash('ticker', symbol));
                 client.resolve(ticker, this.getMessageHash('ticker'));
             }
@@ -278,6 +280,7 @@ class lighter extends lighter$1["default"] {
             const symbol = market['symbol'];
             const ticker = this.parseTicker(data, market);
             this.tickers[symbol] = ticker;
+            this.streamProduce('tickers', ticker);
             client.resolve(ticker, this.getMessageHash('ticker', symbol));
         }
     }
@@ -529,6 +532,7 @@ class lighter extends lighter$1["default"] {
         for (let i = 0; i < data.length; i++) {
             const trade = this.parseWsTrade(data[i], market);
             stored.append(trade);
+            this.streamProduce('trades', trade);
         }
         const messageHash = this.getMessageHash('trade', symbol);
         client.resolve(stored, messageHash);
@@ -784,6 +788,7 @@ class lighter extends lighter$1["default"] {
         for (let i = 0; i < data.length; i++) {
             const liquidation = this.parseWsLiquidation(data[i], market);
             stored.append(liquidation);
+            this.streamProduce('liquidations', liquidation);
         }
         const messageHash = this.getMessageHash('liquidations', symbol);
         client.resolve(stored, messageHash);
@@ -828,11 +833,13 @@ class lighter extends lighter$1["default"] {
             }
         }
         catch (e) {
+            this.streamProduce('errors', undefined, e);
             client.reject(e);
         }
         return true;
     }
     handleMessage(client, message) {
+        this.streamProduce('raw', message);
         if (!this.handleErrorMessage(client, message)) {
             return;
         }

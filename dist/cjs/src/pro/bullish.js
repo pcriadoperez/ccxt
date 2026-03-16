@@ -175,6 +175,7 @@ class bullish extends bullish$1["default"] {
         const tradesArray = this.trades[symbol];
         for (let i = 0; i < trades.length; i++) {
             tradesArray.append(trades[i]);
+            this.streamProduce('trades', trades[i]);
         }
         this.trades[symbol] = tradesArray;
         const messageHash = 'trades::' + market['symbol'];
@@ -258,6 +259,7 @@ class bullish extends bullish$1["default"] {
             parsed = this.parseTicker(merged, market);
         }
         this.tickers[symbol] = parsed;
+        this.streamProduce('tickers', parsed);
         const messageHash = 'ticker::' + symbol;
         client.resolve(this.tickers[symbol], messageHash);
     }
@@ -329,6 +331,7 @@ class bullish extends bullish$1["default"] {
         }
         orderbook.reset(parsed);
         this.orderbooks[symbol] = orderbook;
+        this.streamProduce('orderbooks', orderbook);
         client.resolve(orderbook, messageHash);
     }
     separateBidsOrAsks(entry) {
@@ -445,6 +448,7 @@ class bullish extends bullish$1["default"] {
                 const rawOrder = rawOrders[i];
                 const parsedOrder = this.parseOrder(rawOrder);
                 orders.append(parsedOrder);
+                this.streamProduce('orders', parsedOrder);
                 const symbol = this.safeString(parsedOrder, 'symbol');
                 symbols[symbol] = true;
             }
@@ -550,6 +554,7 @@ class bullish extends bullish$1["default"] {
                 const rawTrade = rawTrades[i];
                 const parsedTrade = this.parseTrade(rawTrade);
                 trades.append(parsedTrade);
+                this.streamProduce('myTrades', parsedTrade);
                 const symbol = this.safeString(parsedTrade, 'symbol');
                 symbols[symbol] = true;
             }
@@ -650,6 +655,7 @@ class bullish extends bullish$1["default"] {
         }
         const messageHash = 'balance';
         const tradingAccountIdHash = '::' + tradingAccountId;
+        this.streamProduce('balances', this.balance[tradingAccountId]);
         client.resolve(this.balance[tradingAccountId], messageHash);
         client.resolve(this.balance[tradingAccountId], messageHash + tradingAccountIdHash);
     }
@@ -703,6 +709,7 @@ class bullish extends bullish$1["default"] {
             const rawPosition = rawPositions[i];
             const position = this.parsePosition(rawPosition);
             positions.append(position);
+            this.streamProduce('positions', position);
             newPositions.push(position);
         }
         const messageHashes = this.findMessageHashes(client, 'positions::');
@@ -737,13 +744,16 @@ class bullish extends bullish$1["default"] {
             const errorCodeName = this.safeString(data, 'errorCodeName');
             this.throwExactlyMatchedException(this.exceptions['exact'], errorCode, feedback);
             this.throwBroadlyMatchedException(this.exceptions['broad'], errorCodeName, feedback);
-            throw new errors.ExchangeError(feedback); // unknown message
+            const error = new errors.ExchangeError(feedback); // unknown message
+            this.streamProduce('errors', undefined, error);
+            throw error;
         }
         catch (e) {
             client.reject(e);
         }
     }
     handleMessage(client, message) {
+        this.streamProduce('raw', message);
         const dataType = this.safeString(message, 'dataType');
         const result = this.safeDict(message, 'result');
         if (result !== undefined) {

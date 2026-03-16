@@ -113,6 +113,7 @@ export default class toobit extends toobitRest {
         //       }
         //     ]
         //
+        this.streamProduce('raw', message);
         const topic = this.safeString(message, 'topic');
         if (this.handleErrorMessage(client, message)) {
             return;
@@ -248,6 +249,7 @@ export default class toobit extends toobitRest {
             const trade = parsed[i];
             trade['symbol'] = symbol;
             stored.append(trade);
+            this.streamProduce('trades', trade);
         }
         const messageHash = 'trade::' + symbol;
         client.resolve(stored, messageHash);
@@ -362,6 +364,8 @@ export default class toobit extends toobitRest {
         for (let i = 0; i < data.length; i++) {
             const parsed = this.parseWsOHLCV(data[i], market);
             stored.append(parsed);
+            const ohlcvs = this.createStreamOHLCV(symbol, timeframe, parsed);
+            this.streamProduce('ohlcvs', ohlcvs);
         }
         const messageHash = 'ohlcv::' + symbol + '::' + timeframe;
         const resolveData = [symbol, timeframe, stored];
@@ -479,6 +483,7 @@ export default class toobit extends toobitRest {
             const symbol = parsed['symbol'];
             this.tickers[symbol] = parsed;
             newTickers[symbol] = parsed;
+            this.streamProduce('tickers', parsed);
             const messageHash = 'ticker::' + symbol;
             client.resolve(parsed, messageHash);
         }
@@ -580,6 +585,7 @@ export default class toobit extends toobitRest {
             this.handleDeltas(orderBook['bids'], bids);
             orderBook['timestamp'] = timestamp;
             this.orderbooks[symbol] = orderBook;
+            this.streamProduce('orderbooks', orderBook);
             client.resolve(orderBook, messageHash);
         }
     }
@@ -631,6 +637,7 @@ export default class toobit extends toobitRest {
             const timestamp = this.safeInteger(entry, 't');
             const snapshot = this.parseOrderBook(entry, symbol, timestamp, 'b', 'a');
             orderbook.reset(snapshot);
+            this.streamProduce('orderbooks', orderbook);
             client.resolve(orderbook, messageHash);
         }
     }
@@ -727,6 +734,7 @@ export default class toobit extends toobitRest {
             this.balance[type][code] = account;
         }
         this.balance[type] = this.safeBalance(this.balance[type]);
+        this.streamProduce('balances', this.balance[type]);
         client.resolve(this.balance[type], type + ':balance');
     }
     async loadBalanceSnapshot(client, messageHash, marketType) {
@@ -807,6 +815,7 @@ export default class toobit extends toobitRest {
         const orders = this.orders;
         const order = this.parseWsOrder(message);
         orders.append(order);
+        this.streamProduce('orders', order);
         let messageHash = 'orders';
         client.resolve(orders, messageHash);
         messageHash = 'orders:' + this.safeString(order, 'symbol');
@@ -910,6 +919,7 @@ export default class toobit extends toobitRest {
         }
         const trade = this.parseMyTrade(message);
         myTrades.append(trade);
+        this.streamProduce('myTrades', trade);
         let messageHash = 'myTrades:' + trade['symbol'];
         client.resolve(myTrades, messageHash);
         messageHash = 'myTrades';
@@ -1048,6 +1058,7 @@ export default class toobit extends toobitRest {
             position['datetime'] = this.iso8601(timestamp);
             newPositions.push(position);
             cache.append(position);
+            this.streamProduce('positions', position);
         }
         const messageHashes = this.findMessageHashes(client, accountType + ':positions::');
         for (let i = 0; i < messageHashes.length; i++) {
@@ -1165,6 +1176,7 @@ export default class toobit extends toobitRest {
             const desc = this.safeString(message, 'desc');
             const msg = this.id + ' code: ' + code + ' message: ' + desc;
             const exception = new ExchangeError(msg); // c# fix
+            this.streamProduce('errors', undefined, exception);
             client.reject(exception);
             return true;
         }

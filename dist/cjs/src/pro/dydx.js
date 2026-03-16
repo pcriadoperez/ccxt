@@ -119,6 +119,7 @@ class dydx extends dydx$1["default"] {
         for (let i = 0; i < parsedTrades.length; i++) {
             const parsed = parsedTrades[i];
             stored.append(parsed);
+            this.streamProduce('trades', parsed);
         }
         const messageHash = 'trade' + ':' + symbol;
         client.resolve(stored, messageHash);
@@ -236,6 +237,7 @@ class dydx extends dydx$1["default"] {
         orderbook['nonce'] = this.safeInteger(message, 'message_id');
         const messageHash = 'orderbook:' + symbol;
         this.orderbooks[symbol] = orderbook;
+        this.streamProduce('orderbooks', orderbook);
         client.resolve(orderbook, messageHash);
     }
     handleDelta(bookside, delta) {
@@ -374,6 +376,8 @@ class dydx extends dydx$1["default"] {
             this.ohlcvs[symbol][timeframe] = stored;
         }
         stored.append(parsed);
+        const ohlcvs = this.createStreamOHLCV(symbol, timeframe, parsed);
+        this.streamProduce('ohlcvs', ohlcvs);
         client.resolve(stored, messageHash);
     }
     handleErrorMessage(client, message) {
@@ -390,11 +394,13 @@ class dydx extends dydx$1["default"] {
             throw new errors.ExchangeError(this.id + ' ' + msg);
         }
         catch (e) {
+            this.streamProduce('errors', undefined, e);
             client.reject(e);
         }
         return true;
     }
     handleMessage(client, message) {
+        this.streamProduce('raw', message);
         const type = this.safeString(message, 'type');
         if (type === 'error') {
             this.handleErrorMessage(client, message);

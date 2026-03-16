@@ -216,6 +216,7 @@ export default class defx extends defxRest {
         const ohlcv = this.ohlcvs[symbol][timeframe];
         const parsed = this.parseOHLCV(data);
         ohlcv.append(parsed);
+        this.streamProduce('ohlcvs', parsed);
         const messageHash = 'candles:' + timeframe + ':' + symbol;
         client.resolve([symbol, timeframe, ohlcv], messageHash);
     }
@@ -332,6 +333,7 @@ export default class defx extends defxRest {
         parsedTicker['datetime'] = this.iso8601(timestamp);
         this.tickers[symbol] = parsedTicker;
         const messageHash = 'ticker:' + symbol;
+        this.streamProduce('tickers', parsedTicker);
         client.resolve(parsedTicker, messageHash);
     }
     /**
@@ -366,6 +368,7 @@ export default class defx extends defxRest {
         parsedTicker['datetime'] = this.iso8601(timestamp);
         this.bidsasks[symbol] = parsedTicker;
         const messageHash = 'bidask:' + symbol;
+        this.streamProduce('tickers', parsedTicker);
         client.resolve(parsedTicker, messageHash);
     }
     parseWsBidAsk(ticker, market = undefined) {
@@ -493,6 +496,7 @@ export default class defx extends defxRest {
             this.trades[symbol] = stored;
         }
         const trades = this.trades[symbol];
+        this.streamProduce('trades', parsedTrade);
         trades.append(parsedTrade);
         const messageHash = 'trade:' + symbol;
         client.resolve(trades, messageHash);
@@ -615,6 +619,7 @@ export default class defx extends defxRest {
         }
         const orderbook = this.orderbooks[symbol];
         orderbook.reset(snapshot);
+        this.streamProduce('orderbooks', orderbook);
         const messageHash = 'orderbook:' + symbol;
         client.resolve(orderbook, messageHash);
     }
@@ -695,6 +700,7 @@ export default class defx extends defxRest {
         account['free'] = this.safeString(data, 'balance');
         this.balance[code] = account;
         this.balance = this.safeBalance(this.balance);
+        this.streamProduce('balances', this.balance);
         client.resolve(this.balance, messageHash);
     }
     /**
@@ -765,6 +771,7 @@ export default class defx extends defxRest {
         }
         const orders = this.orders;
         const parsedOrder = this.parseOrder(data);
+        this.streamProduce('orders', parsedOrder);
         orders.append(parsedOrder);
         const messageHash = channel + ':' + parsedOrder['symbol'];
         client.resolve(orders, channel);
@@ -834,15 +841,18 @@ export default class defx extends defxRest {
         const timestamp = this.safeInteger(message, 'timestamp');
         parsedPosition['timestamp'] = timestamp;
         parsedPosition['datetime'] = this.iso8601(timestamp);
+        this.streamProduce('positions', parsedPosition);
         cache.append(parsedPosition);
         const messageHash = channel + ':' + parsedPosition['symbol'];
         client.resolve([parsedPosition], channel);
         client.resolve([parsedPosition], messageHash);
     }
     handleMessage(client, message) {
+        this.streamProduce('raw', message);
         const error = this.safeString(message, 'code');
         if (error !== undefined) {
             const errorMsg = this.safeString(message, 'msg');
+            this.streamProduce('errors', undefined, errorMsg);
             throw new ExchangeError(this.id + ' ' + errorMsg);
         }
         const event = this.safeString(message, 'event');

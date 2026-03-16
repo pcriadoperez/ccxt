@@ -746,8 +746,8 @@ func (this *Binance) FetchOHLCVWs(symbol string, options ...ccxt.FetchOHLCVWsOpt
  * @see https://developers.binance.com/docs/binance-spot-api-docs/web-socket-streams#individual-symbol-mini-ticker-stream
  * @see https://developers.binance.com/docs/binance-spot-api-docs/web-socket-streams#all-market-mini-tickers-stream
  * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/Individual-Symbol-ccxt.Ticker-Streams
- * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/All-ccxt.Market-Mini-ccxt.Tickers-Stream
- * @see https://developers.binance.com/docs/derivatives/coin-margined-futures/websocket-market-streams/All-ccxt.Market-Mini-ccxt.Tickers-Stream
+ * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/All-ccxt.Market-Mini-ccxt.Tickers-ccxt.Stream
+ * @see https://developers.binance.com/docs/derivatives/coin-margined-futures/websocket-market-streams/All-ccxt.Market-Mini-ccxt.Tickers-ccxt.Stream
  * @see https://developers.binance.com/docs/derivatives/coin-margined-futures/websocket-market-streams/Individual-Symbol-ccxt.Ticker-Streams
  * @param {string} symbol unified symbol of the market to fetch the ticker for
  * @param {object} [params] extra parameters specific to the exchange API endpoint
@@ -776,7 +776,7 @@ func (this *Binance) WatchTicker(symbol string, options ...ccxt.WatchTickerOptio
  * @method
  * @name binance#watchMarkPrice
  * @description watches a mark price for a specific market
- * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/Mark-Price-Stream
+ * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/Mark-Price-ccxt.Stream
  * @param {string} symbol unified symbol of the market to fetch the ticker for
  * @param {object} [params] extra parameters specific to the exchange API endpoint
  * @param {boolean} [params.use1sFreq] *default is true* if set to true, the mark price will be updated every second, otherwise every 3 seconds
@@ -804,7 +804,7 @@ func (this *Binance) WatchMarkPrice(symbol string, options ...ccxt.WatchMarkPric
  * @method
  * @name binance#watchMarkPrices
  * @description watches the mark price for all markets
- * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/Mark-Price-Stream-for-All-market
+ * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/Mark-Price-ccxt.Stream-for-All-market
  * @param {string[]} symbols unified symbol of the market to fetch the ticker for
  * @param {object} [params] extra parameters specific to the exchange API endpoint
  * @param {boolean} [params.use1sFreq] *default is true* if set to true, the mark price will be updated every second, otherwise every 3 seconds
@@ -840,8 +840,8 @@ func (this *Binance) WatchMarkPrices(options ...ccxt.WatchMarkPricesOptions) (cc
  * @see https://developers.binance.com/docs/binance-spot-api-docs/web-socket-streams#individual-symbol-mini-ticker-stream
  * @see https://developers.binance.com/docs/binance-spot-api-docs/web-socket-streams#all-market-mini-tickers-stream
  * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/Individual-Symbol-ccxt.Ticker-Streams
- * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/All-ccxt.Market-Mini-ccxt.Tickers-Stream
- * @see https://developers.binance.com/docs/derivatives/coin-margined-futures/websocket-market-streams/All-ccxt.Market-Mini-ccxt.Tickers-Stream
+ * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/All-ccxt.Market-Mini-ccxt.Tickers-ccxt.Stream
+ * @see https://developers.binance.com/docs/derivatives/coin-margined-futures/websocket-market-streams/All-ccxt.Market-Mini-ccxt.Tickers-ccxt.Stream
  * @see https://developers.binance.com/docs/derivatives/coin-margined-futures/websocket-market-streams/Individual-Symbol-ccxt.Ticker-Streams
  * @param {string[]} symbols unified symbol of the market to fetch the ticker for
  * @param {object} [params] extra parameters specific to the exchange API endpoint
@@ -877,8 +877,8 @@ func (this *Binance) WatchTickers(options ...ccxt.WatchTickersOptions) (ccxt.Tic
  * @see https://developers.binance.com/docs/binance-spot-api-docs/web-socket-streams#individual-symbol-mini-ticker-stream
  * @see https://developers.binance.com/docs/binance-spot-api-docs/web-socket-streams#all-market-mini-tickers-stream
  * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/Individual-Symbol-ccxt.Ticker-Streams
- * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/All-ccxt.Market-Mini-ccxt.Tickers-Stream
- * @see https://developers.binance.com/docs/derivatives/coin-margined-futures/websocket-market-streams/All-ccxt.Market-Mini-ccxt.Tickers-Stream
+ * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/All-ccxt.Market-Mini-ccxt.Tickers-ccxt.Stream
+ * @see https://developers.binance.com/docs/derivatives/coin-margined-futures/websocket-market-streams/All-ccxt.Market-Mini-ccxt.Tickers-ccxt.Stream
  * @see https://developers.binance.com/docs/derivatives/coin-margined-futures/websocket-market-streams/Individual-Symbol-ccxt.Ticker-Streams
  * @param {string[]} symbols unified symbol of the market to fetch the ticker for
  * @param {object} [params] extra parameters specific to the exchange API endpoint
@@ -911,7 +911,7 @@ func (this *Binance) UnWatchTickers(options ...ccxt.UnWatchTickersOptions) (inte
  * @method
  * @name binance#unWatchMarkPrices
  * @description unWatches a price ticker, a statistical calculation with the information calculated over the past 24 hours for all markets of a specific list
- * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/Mark-Price-Stream
+ * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/Mark-Price-ccxt.Stream
  * @param {string[]} symbols unified symbol of the market to fetch the ticker for
  * @param {object} [params] extra parameters specific to the exchange API endpoint
  * @returns {object} a [ticker structure]{@link https://docs.ccxt.com/?id=ticker-structure}
@@ -943,7 +943,7 @@ func (this *Binance) UnWatchMarkPrices(options ...ccxt.UnWatchMarkPricesOptions)
  * @method
  * @name binance#unWatchMarkPrice
  * @description unWatches a price ticker, a statistical calculation with the information calculated over the past 24 hours for all markets of a specific list
- * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/Mark-Price-Stream
+ * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/Mark-Price-ccxt.Stream
  * @param {string} symbol unified symbol of the market to fetch the ticker for
  * @param {object} [params] extra parameters specific to the exchange API endpoint
  * @returns {object} a [ticker structure]{@link https://docs.ccxt.com/?id=ticker-structure}
@@ -973,8 +973,8 @@ func (this *Binance) UnWatchMarkPrice(symbol string, options ...ccxt.UnWatchMark
  * @see https://developers.binance.com/docs/binance-spot-api-docs/web-socket-streams#individual-symbol-mini-ticker-stream
  * @see https://developers.binance.com/docs/binance-spot-api-docs/web-socket-streams#all-market-mini-tickers-stream
  * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/Individual-Symbol-ccxt.Ticker-Streams
- * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/All-ccxt.Market-Mini-ccxt.Tickers-Stream
- * @see https://developers.binance.com/docs/derivatives/coin-margined-futures/websocket-market-streams/All-ccxt.Market-Mini-ccxt.Tickers-Stream
+ * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/All-ccxt.Market-Mini-ccxt.Tickers-ccxt.Stream
+ * @see https://developers.binance.com/docs/derivatives/coin-margined-futures/websocket-market-streams/All-ccxt.Market-Mini-ccxt.Tickers-ccxt.Stream
  * @see https://developers.binance.com/docs/derivatives/coin-margined-futures/websocket-market-streams/Individual-Symbol-ccxt.Ticker-Streams
  * @param {string} symbol unified symbol of the market to fetch the ticker for
  * @param {object} [params] extra parameters specific to the exchange API endpoint
@@ -1003,8 +1003,8 @@ func (this *Binance) UnWatchTicker(symbol string, options ...ccxt.UnWatchTickerO
  * @name binance#watchBidsAsks
  * @description watches best bid & ask for symbols
  * @see https://developers.binance.com/docs/binance-spot-api-docs/websocket-api/market-data-requests#symbol-order-book-ticker
- * @see https://developers.binance.com/docs/derivatives/coin-margined-futures/websocket-market-streams/All-Book-ccxt.Tickers-Stream
- * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/All-Book-ccxt.Tickers-Stream
+ * @see https://developers.binance.com/docs/derivatives/coin-margined-futures/websocket-market-streams/All-Book-ccxt.Tickers-ccxt.Stream
+ * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/All-Book-ccxt.Tickers-ccxt.Stream
  * @param {string[]} symbols unified symbol of the market to fetch the ticker for
  * @param {object} [params] extra parameters specific to the exchange API endpoint
  * @returns {object} a [ticker structure]{@link https://docs.ccxt.com/?id=ticker-structure}

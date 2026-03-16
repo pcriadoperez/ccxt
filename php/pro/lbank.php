@@ -220,6 +220,8 @@ class lbank extends \ccxt\async\lbank {
             }
             $stored->append ($parsed);
             $messageHash = 'fetchOHLCV:' . $symbol . ':' . $timeframeId;
+            $ohlcvs = $this->create_stream_ohlcv($symbol, $timeframe, $parsed);
+            $this->stream_produce('ohlcvs', $ohlcvs);
             $client->resolve ($stored, $messageHash);
         } else {  // from subscription
             $rawOHLCV = $this->safe_value($message, 'kbar', array());
@@ -243,6 +245,8 @@ class lbank extends \ccxt\async\lbank {
             }
             $stored->append ($parsed);
             $messageHash = 'ohlcv:' . $symbol . ':' . $timeframeId;
+            $ohlcvs = $this->create_stream_ohlcv($symbol, $timeframe, $parsed);
+            $this->stream_produce('ohlcvs', $ohlcvs);
             $client->resolve ($stored, $messageHash);
         }
     }
@@ -328,6 +332,7 @@ class lbank extends \ccxt\async\lbank {
         $messageHash = 'ticker:' . $symbol;
         $client->resolve ($parsedTicker, $messageHash);
         $messageHash = 'fetchTicker:' . $symbol;
+        $this->stream_produce('tickers', $parsedTicker);
         $client->resolve ($parsedTicker, $messageHash);
     }
 
@@ -484,6 +489,7 @@ class lbank extends \ccxt\async\lbank {
             $trade = $this->parse_ws_trade($rawTrades[$i], $market);
             $trade['symbol'] = $symbol;
             $stored->append ($trade);
+            $this->stream_produce('trades', $trade);
         }
         $this->trades[$symbol] = $stored;
         $messageHash = 'trades:' . $symbol;
@@ -604,6 +610,7 @@ class lbank extends \ccxt\async\lbank {
         }
         $order = $this->parse_ws_order($message);
         $myOrders->append ($order);
+        $this->stream_produce('orders', $order);
         $this->orders = $myOrders;
         $client->resolve ($myOrders, 'orders');
         $messageHash = 'orders:' . $symbol;
@@ -759,6 +766,7 @@ class lbank extends \ccxt\async\lbank {
         $account['total'] = $this->safe_string($data, 'asset');
         $this->balance[$code] = $account;
         $this->balance = $this->safe_balance($this->balance);
+        $this->stream_produce('balances', $this->balance);
         $client->resolve ($this->balance, 'balance');
     }
 
@@ -895,6 +903,7 @@ class lbank extends \ccxt\async\lbank {
         $snapshot = $this->parse_order_book($orderBook, $symbol, $timestamp, 'bids', 'asks');
         $orderbook->reset ($snapshot);
         $messageHash = 'orderbook:' . $symbol;
+        $this->stream_produce('orderbooks', $orderbook);
         $client->resolve ($orderbook, $messageHash);
         $messageHash = 'fetchOrderbook:' . $symbol;
         $client->resolve ($orderbook, $messageHash);
@@ -911,6 +920,7 @@ class lbank extends \ccxt\async\lbank {
         //
         $errMsg = $this->safe_string($message, 'message', '');
         $error = new ExchangeError ($this->id . ' ' . $errMsg);
+        $this->stream_produce('errors', null, $error);
         $client->reject ($error);
     }
 
@@ -932,6 +942,7 @@ class lbank extends \ccxt\async\lbank {
     }
 
     public function handle_message($client, $message) {
+        $this->stream_produce('raw', $message);
         $status = $this->safe_string($message, 'status');
         if ($status === 'error') {
             $this->handle_error_message($client, $message);

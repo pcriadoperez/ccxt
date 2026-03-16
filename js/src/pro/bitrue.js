@@ -125,6 +125,7 @@ export default class bitrue extends bitrueRest {
         const balances = this.safeValue(message, 'B', []);
         this.parseWSBalances(balances);
         const messageHash = 'balance';
+        this.streamProduce('balances', this.balance);
         client.resolve(this.balance, messageHash);
     }
     parseWSBalances(balances) {
@@ -232,6 +233,7 @@ export default class bitrue extends bitrueRest {
         const orders = this.orders;
         orders.append(parsed);
         const messageHash = 'orders';
+        this.streamProduce('orders', parsed);
         client.resolve(this.orders, messageHash);
     }
     parseWsOrder(order, market = undefined) {
@@ -358,6 +360,7 @@ export default class bitrue extends bitrueRest {
         const snapshot = this.parseOrderBook(tick, symbol, timestamp, 'buys', 'asks');
         orderbook.reset(snapshot);
         const messageHash = 'orderbook:' + symbol;
+        this.streamProduce('orderbooks', orderbook);
         client.resolve(orderbook, messageHash);
     }
     parseWsOrderType(typeId) {
@@ -395,6 +398,7 @@ export default class bitrue extends bitrueRest {
         await client.send(pong);
     }
     handleMessage(client, message) {
+        this.streamProduce('raw', message);
         if ('channel' in message) {
             this.handleOrderBook(client, message);
         }
@@ -453,6 +457,7 @@ export default class bitrue extends bitrueRest {
         catch (error) {
             this.options['listenKey'] = undefined;
             this.options['listenKeyUrl'] = undefined;
+            this.streamProduce('errors', undefined, error);
             return;
         }
         const refreshTimeout = this.safeInteger(this.options, 'listenKeyRefreshRate', 1800000);

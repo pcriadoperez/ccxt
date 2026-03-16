@@ -154,6 +154,7 @@ class deribit extends deribit$1["default"] {
         const balance = this.parseBalance(data);
         this.balance[currencyCode] = balance;
         const messageHash = 'balance';
+        this.streamProduce('balances', this.balance);
         client.resolve(this.balance, messageHash);
     }
     /**
@@ -267,6 +268,7 @@ class deribit extends deribit$1["default"] {
         const ticker = this.parseTicker(data);
         const messageHash = this.safeString(params, 'channel');
         this.tickers[symbol] = ticker;
+        this.streamProduce('tickers', ticker);
         client.resolve(ticker, messageHash);
     }
     /**
@@ -426,6 +428,7 @@ class deribit extends deribit$1["default"] {
             const trade = trades[i];
             const parsed = this.parseTrade(trade, market);
             stored.append(parsed);
+            this.streamProduce('trades', parsed);
         }
         this.trades[symbol] = stored;
         const messageHash = 'trades|' + symbol + '|' + interval;
@@ -510,7 +513,7 @@ class deribit extends deribit$1["default"] {
         for (let i = 0; i < parsed.length; i++) {
             const trade = parsed[i];
             cachedTrades.append(trade);
-            trade['symbol'];
+            this.streamProduce('myTrades', trade);
         }
         client.resolve(cachedTrades, channel);
     }
@@ -641,6 +644,7 @@ class deribit extends deribit$1["default"] {
         storedOrderBook['symbol'] = symbol;
         this.orderbooks[symbol] = storedOrderBook;
         const messageHash = 'book|' + symbol + '|' + descriptor;
+        this.streamProduce('orderbooks', storedOrderBook);
         client.resolve(storedOrderBook, messageHash);
     }
     cleanOrderBook(data) {
@@ -763,6 +767,7 @@ class deribit extends deribit$1["default"] {
         }
         const cachedOrders = this.orders;
         for (let i = 0; i < orders.length; i++) {
+            this.streamProduce('orders', orders[i]);
             cachedOrders.append(orders[i]);
         }
         client.resolve(this.orders, channel);
@@ -847,6 +852,8 @@ class deribit extends deribit$1["default"] {
         // data contains a single OHLCV candle
         const parsed = this.parseWsOHLCV(ohlcv, market);
         stored.append(parsed);
+        const ohlcvs = this.createStreamOHLCV(symbol, unifiedTimeframe, parsed);
+        this.streamProduce('ohlcvs', ohlcvs);
         this.ohlcvs[symbol][unifiedTimeframe] = stored;
         const resolveData = [symbol, unifiedTimeframe, stored];
         const messageHash = 'chart.trades|' + symbol + '|' + rawTimeframe;
@@ -973,9 +980,12 @@ class deribit extends deribit$1["default"] {
         //         }
         //     }
         //
+        this.streamProduce('raw', message);
         const error = this.safeValue(message, 'error');
         if (error !== undefined) {
-            throw new errors.ExchangeError(this.id + ' ' + this.json(error));
+            const err = new errors.ExchangeError(this.id + ' ' + this.json(error));
+            this.streamProduce('errors', undefined, err);
+            client.reject(err);
         }
         const params = this.safeValue(message, 'params');
         const channel = this.safeString(params, 'channel');
@@ -1000,7 +1010,9 @@ class deribit extends deribit$1["default"] {
                 handler.call(this, client, message);
                 return;
             }
-            throw new errors.NotSupported(this.id + ' no handler found for this message ' + this.json(message));
+            const err = new errors.NotSupported(this.id + ' no handler found for this message ' + this.json(message));
+            this.streamProduce('errors', undefined, err);
+            client.reject(err);
         }
         const result = this.safeValue(message, 'result', {});
         const accessToken = this.safeString(result, 'access_token');

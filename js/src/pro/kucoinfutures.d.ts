@@ -28,7 +28,7 @@ export default class kucoinfutures extends kucoinfuturesRest {
      * @returns {object} a [ticker structure]{@link https://docs.ccxt.com/?id=ticker-structure}
      */
     watchTickers(symbols?: Strings, params?: {}): Promise<Tickers>;
-    handleTicker(client: Client, message: any): void;
+    handleTicker(client: Client, message: any): any;
     /**
      * @method
      * @name kucoinfutures#watchBidsAsks

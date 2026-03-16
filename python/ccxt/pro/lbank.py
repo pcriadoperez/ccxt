@@ -210,6 +210,8 @@ class lbank(ccxt.async_support.lbank):
                 self.ohlcvs[symbol][timeframe] = stored
             stored.append(parsed)
             messageHash = 'fetchOHLCV:' + symbol + ':' + timeframeId
+            ohlcvs = self.create_stream_ohlcv(symbol, timeframe, parsed)
+            self.stream_produce('ohlcvs', ohlcvs)
             client.resolve(stored, messageHash)
         else:  # from subscription
             rawOHLCV = self.safe_value(message, 'kbar', {})
@@ -232,6 +234,8 @@ class lbank(ccxt.async_support.lbank):
                 self.ohlcvs[symbol][timeframe] = stored
             stored.append(parsed)
             messageHash = 'ohlcv:' + symbol + ':' + timeframeId
+            ohlcvs = self.create_stream_ohlcv(symbol, timeframe, parsed)
+            self.stream_produce('ohlcvs', ohlcvs)
             client.resolve(stored, messageHash)
 
     async def fetch_ticker_ws(self, symbol: str, params={}) -> Ticker:
@@ -309,6 +313,7 @@ class lbank(ccxt.async_support.lbank):
         messageHash = 'ticker:' + symbol
         client.resolve(parsedTicker, messageHash)
         messageHash = 'fetchTicker:' + symbol
+        self.stream_produce('tickers', parsedTicker)
         client.resolve(parsedTicker, messageHash)
 
     def parse_ws_ticker(self, ticker, market=None):
@@ -455,6 +460,7 @@ class lbank(ccxt.async_support.lbank):
             trade = self.parse_ws_trade(rawTrades[i], market)
             trade['symbol'] = symbol
             stored.append(trade)
+            self.stream_produce('trades', trade)
         self.trades[symbol] = stored
         messageHash = 'trades:' + symbol
         client.resolve(self.trades[symbol], messageHash)
@@ -565,6 +571,7 @@ class lbank(ccxt.async_support.lbank):
             myOrders = self.orders
         order = self.parse_ws_order(message)
         myOrders.append(order)
+        self.stream_produce('orders', order)
         self.orders = myOrders
         client.resolve(myOrders, 'orders')
         messageHash = 'orders:' + symbol
@@ -712,6 +719,7 @@ class lbank(ccxt.async_support.lbank):
         account['total'] = self.safe_string(data, 'asset')
         self.balance[code] = account
         self.balance = self.safe_balance(self.balance)
+        self.stream_produce('balances', self.balance)
         client.resolve(self.balance, 'balance')
 
     async def fetch_order_book_ws(self, symbol: str, limit: Int = None, params={}) -> OrderBook:
@@ -838,6 +846,7 @@ class lbank(ccxt.async_support.lbank):
         snapshot = self.parse_order_book(orderBook, symbol, timestamp, 'bids', 'asks')
         orderbook.reset(snapshot)
         messageHash = 'orderbook:' + symbol
+        self.stream_produce('orderbooks', orderbook)
         client.resolve(orderbook, messageHash)
         messageHash = 'fetchOrderbook:' + symbol
         client.resolve(orderbook, messageHash)
@@ -853,6 +862,7 @@ class lbank(ccxt.async_support.lbank):
         #
         errMsg = self.safe_string(message, 'message', '')
         error = ExchangeError(self.id + ' ' + errMsg)
+        self.stream_produce('errors', None, error)
         client.reject(error)
 
     async def handle_ping(self, client: Client, message):
@@ -869,6 +879,7 @@ class lbank(ccxt.async_support.lbank):
             self.on_error(client, e)
 
     def handle_message(self, client, message):
+        self.stream_produce('raw', message)
         status = self.safe_string(message, 'status')
         if status == 'error':
             self.handle_error_message(client, message)

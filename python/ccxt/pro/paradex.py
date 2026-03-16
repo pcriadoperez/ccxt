@@ -8,6 +8,7 @@ from ccxt.async_support.base.ws.cache import ArrayCache, ArrayCacheBySymbolById
 from ccxt.base.types import Any, Bool, Int, Market, Order, OrderBook, Str, Strings, Ticker, Tickers, FundingRate, FundingRates, Trade
 from ccxt.async_support.base.ws.client import Client
 from typing import List
+from ccxt.base.errors import ExchangeError
 
 
 class paradex(ccxt.async_support.paradex):
@@ -144,6 +145,7 @@ class paradex(ccxt.async_support.paradex):
             stored = ArrayCache(self.safe_integer(self.options, 'tradesLimit', 1000))
             self.trades[symbol] = stored
         stored.append(parsedTrade)
+        self.stream_produce('trades', parsedTrade)
         client.resolve(stored, messageHash)
         return message
 
@@ -229,6 +231,7 @@ class paradex(ccxt.async_support.paradex):
         snapshot['nonce'] = self.safe_integer(data, 'seq_no')
         orderbook.reset(snapshot)
         messageHash = self.safe_string(params, 'channel')
+        self.stream_produce('orderbooks', orderbook)
         client.resolve(orderbook, messageHash)
 
     async def watch_ticker(self, symbol: str, params={}) -> Ticker:
@@ -402,6 +405,7 @@ class paradex(ccxt.async_support.paradex):
         messageHash = channel + '.' + symbol
         ticker = self.parse_ticker(data, market)
         self.tickers[symbol] = ticker
+        self.stream_produce('tickers', ticker)
         client.resolve(ticker, channel)
         client.resolve(ticker, messageHash)
         return message
@@ -554,15 +558,21 @@ class paradex(ccxt.async_support.paradex):
             return True
         else:
             errorCode = self.safe_string(error, 'code')
-            if errorCode is not None:
-                feedback = self.id + ' ' + self.json(error)
-                self.throw_exactly_matched_exception(self.exceptions['exact'], '-32600', feedback)
-                messageString = self.safe_value(error, 'message')
-                if messageString is not None:
-                    self.throw_broadly_matched_exception(self.exceptions['broad'], messageString, feedback)
+            try:
+                if errorCode is not None:
+                    feedback = self.id + ' ' + self.json(error)
+                    self.throw_exactly_matched_exception(self.exceptions['exact'], '-32600', feedback)
+                    messageString = self.safe_value(error, 'message')
+                    if messageString is not None:
+                        self.throw_broadly_matched_exception(self.exceptions['broad'], messageString, feedback)
+                    raise ExchangeError(feedback)
+            except Exception as e:
+                self.stream_produce('errors', None, e)
+                client.reject(e)
             return False
 
     def handle_message(self, client: Client, message):
+        self.stream_produce('raw', message)
         if not self.handle_error_message(client, message):
             return
         #

@@ -296,6 +296,7 @@ class phemex extends phemex$1["default"] {
             ticker['timestamp'] = timestamp;
             ticker['datetime'] = this.iso8601(timestamp);
             this.tickers[symbol] = ticker;
+            this.streamProduce('tickers', ticker);
             client.resolve(ticker, messageHash);
         }
     }
@@ -391,6 +392,7 @@ class phemex extends phemex$1["default"] {
             this.balance = this.safeBalance(this.balance);
         }
         const messageHash = type + ':balance';
+        this.streamProduce('balances', this.balance);
         client.resolve(this.balance, messageHash);
     }
     handleTrades(client, message) {
@@ -435,6 +437,7 @@ class phemex extends phemex$1["default"] {
         const parsed = this.parseTrades(trades, market);
         for (let i = 0; i < parsed.length; i++) {
             stored.append(parsed[i]);
+            this.streamProduce('trades', parsed[i]);
         }
         client.resolve(stored, messageHash);
     }
@@ -490,6 +493,8 @@ class phemex extends phemex$1["default"] {
             for (let i = 0; i < ohlcvs.length; i++) {
                 const candle = ohlcvs[i];
                 stored.append(candle);
+                const ohlcvObj = this.createStreamOHLCV(symbol, timeframe, candle);
+                this.streamProduce('ohlcvs', ohlcvObj);
             }
             client.resolve(stored, messageHash);
         }
@@ -752,6 +757,7 @@ class phemex extends phemex$1["default"] {
             snapshot['nonce'] = nonce;
             const orderbook = this.orderBook(snapshot, depth);
             this.orderbooks[symbol] = orderbook;
+            this.streamProduce('orderbooks', orderbook);
             client.resolve(orderbook, messageHash);
         }
         else {
@@ -766,6 +772,7 @@ class phemex extends phemex$1["default"] {
                 orderbook['timestamp'] = timestamp;
                 orderbook['datetime'] = this.iso8601(timestamp);
                 this.orderbooks[symbol] = orderbook;
+                this.streamProduce('orderbooks', orderbook);
                 client.resolve(orderbook, messageHash);
             }
         }
@@ -917,6 +924,7 @@ class phemex extends phemex$1["default"] {
             const market = this.safeMarket(marketId);
             const parsed = this.parseTrade(rawTrade);
             cachedTrades.append(parsed);
+            this.streamProduce('myTrades', parsed);
             const symbol = parsed['symbol'];
             if (type === undefined) {
                 type = (market['settle'] === 'USDT') ? 'perpetual' : market['type'];
@@ -1171,6 +1179,7 @@ class phemex extends phemex$1["default"] {
         for (let i = 0; i < parsedOrders.length; i++) {
             const parsed = parsedOrders[i];
             stored.append(parsed);
+            this.streamProduce('orders', parsed);
             const symbol = parsed['symbol'];
             const market = this.market(symbol);
             if (type === undefined) {
@@ -1361,6 +1370,7 @@ class phemex extends phemex$1["default"] {
         }, market);
     }
     handleMessage(client, message) {
+        this.streamProduce('raw', message);
         // private spot update
         // {
         //     "orders": { closed: [ ], fills: [ ], open: [] },
@@ -1513,6 +1523,7 @@ class phemex extends phemex$1["default"] {
         }
         else {
             const error = new errors.AuthenticationError(this.id + ' ' + this.json(message));
+            this.streamProduce('errors', undefined, error);
             client.reject(error, messageHash);
             if (messageHash in client.subscriptions) {
                 delete client.subscriptions[messageHash];

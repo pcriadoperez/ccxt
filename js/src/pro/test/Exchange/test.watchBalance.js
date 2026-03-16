@@ -4,12 +4,30 @@
 // https://github.com/ccxt/ccxt/blob/master/CONTRIBUTING.md#how-to-contribute-code
 // EDIT THE CORRESPONDENT .ts FILE INSTEAD
 
+import { ExchangeError } from '../../../base/errors.js';
 import testBalance from '../../../test/Exchange/base/test.balance.js';
 import testSharedMethods from '../../../test/Exchange/base/test.sharedMethods.js';
 async function testWatchBalance(exchange, skippedProperties, code) {
     const method = 'watchBalance';
     let now = exchange.milliseconds();
     const ends = now + 15000;
+    const consumer = function consumer(message) {
+        if (message.error) {
+            throw new ExchangeError(message.error);
+        }
+        if (!message.payload) {
+            throw new ExchangeError("received null or undefined payload");
+        }
+        // TODO: add payload test
+    };
+    try {
+        await exchange.subscribeBalance(consumer);
+    }
+    catch (e) {
+        if (!testSharedMethods.isTemporaryFailure(e)) {
+            throw e;
+        }
+    }
     while (now < ends) {
         let response = undefined;
         let success = true;

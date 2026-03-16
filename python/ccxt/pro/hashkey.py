@@ -138,6 +138,7 @@ class hashkey(ccxt.async_support.hashkey):
         for i in range(0, len(data)):
             candle = self.safe_dict(data, i, {})
             parsed = self.parse_ws_ohlcv(candle, market)
+            self.stream_produce('ohlcvs', parsed)
             stored.append(parsed)
         messageHash = 'ohlcv:' + symbol + ':' + timeframe
         client.resolve(stored, messageHash)
@@ -216,6 +217,7 @@ class hashkey(ccxt.async_support.hashkey):
         symbol = ticker['symbol']
         messageHash = 'ticker:' + symbol
         self.tickers[symbol] = ticker
+        self.stream_produce('tickers', ticker)
         client.resolve(self.tickers[symbol], messageHash)
 
     async def watch_trades(self, symbol: str, since: Int = None, limit: Int = None, params={}) -> List[Trade]:
@@ -280,6 +282,7 @@ class hashkey(ccxt.async_support.hashkey):
                 trade = self.safe_dict(data, i)
                 parsed = self.parse_ws_trade(trade, market)
                 stored.append(parsed)
+                self.stream_produce('trades', parsed)
         messageHash = 'trades' + ':' + symbol
         client.resolve(stored, messageHash)
 
@@ -345,6 +348,7 @@ class hashkey(ccxt.async_support.hashkey):
         orderbook.reset(snapshot)
         orderbook['nonce'] = self.safe_integer(message, 'id')
         self.orderbooks[symbol] = orderbook
+        self.stream_produce('orderbooks', orderbook)
         client.resolve(orderbook, messageHash)
 
     async def watch_orders(self, symbol: Str = None, since: Int = None, limit: Int = None, params={}) -> List[Order]:
@@ -412,6 +416,7 @@ class hashkey(ccxt.async_support.hashkey):
         orders = self.orders
         orders.append(parsed)
         messageHash = 'orders'
+        self.stream_produce('orders', parsed)
         client.resolve(orders, messageHash)
         symbol = parsed['symbol']
         symbolSpecificMessageHash = messageHash + ':' + symbol
@@ -509,6 +514,7 @@ class hashkey(ccxt.async_support.hashkey):
         tradesArray.append(parsed)
         self.myTrades = tradesArray
         messageHash = 'myTrades'
+        self.stream_produce('myTrades', parsed)
         client.resolve(tradesArray, messageHash)
         symbol = parsed['symbol']
         symbolSpecificMessageHash = messageHash + ':' + symbol
@@ -624,6 +630,7 @@ class hashkey(ccxt.async_support.hashkey):
         parsed = self.parse_ws_position(message)
         positions.append(parsed)
         messageHash = 'positions'
+        self.stream_produce('positions', parsed)
         client.resolve(parsed, messageHash)
         symbol = parsed['symbol']
         client.resolve(parsed, messageHash + ':' + symbol)
@@ -746,6 +753,7 @@ class hashkey(ccxt.async_support.hashkey):
         self.balance[type][code] = account
         self.balance[type] = self.safe_balance(self.balance[type])
         messageHash = 'balance:' + type
+        self.stream_produce('balances', self.balance[type])
         client.resolve(self.balance[type], messageHash)
 
     async def authenticate(self, params={}):
@@ -782,6 +790,7 @@ class hashkey(ccxt.async_support.hashkey):
             del self.clients[url]
 
     def handle_message(self, client: Client, message):
+        self.stream_produce('raw', message)
         if isinstance(message, list):
             message = self.safe_dict(message, 0, {})
         topic = self.safe_string_2(message, 'topic', 'e')

@@ -17,6 +17,35 @@ export declare type NullableDict = Dict | undefined;
 export declare type List = Array<any>;
 export declare type NullableList = List | undefined;
 /** Request parameters */
+export declare type Topic = string;
+export interface BaseStream {
+    maxMessagesPerTopic: number;
+    produce: (topic: Topic, payload: any, error?: any) => void;
+    close(): void;
+}
+export interface Message {
+    payload: any;
+    error: any;
+    metadata: {
+        stream: BaseStream;
+        topic: Topic;
+        index: number;
+    };
+}
+export declare type ConsumerFunction = (message: Message) => Promise<void> | void;
+export interface Stream extends BaseStream {
+    topics: Map<Topic, Message[]>;
+    subscribe: (topic: Topic, consumerFn: ConsumerFunction, synchronous?: boolean) => void;
+    unsubscribe: (topic: Topic, consumerFn: ConsumerFunction) => void;
+    getMessageHistory: (topic: Topic) => Message[];
+}
+export interface Consumer {
+    fn: ConsumerFunction;
+    synchronous: boolean;
+    currentIndex: number;
+    running: boolean;
+    publish: (message: Message) => void;
+}
 export interface MinMax {
     min: Num;
     max: Num;

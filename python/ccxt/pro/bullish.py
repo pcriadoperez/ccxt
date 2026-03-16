@@ -177,6 +177,7 @@ class bullish(ccxt.async_support.bullish):
         tradesArray = self.trades[symbol]
         for i in range(0, len(trades)):
             tradesArray.append(trades[i])
+            self.stream_produce('trades', trades[i])
         self.trades[symbol] = tradesArray
         messageHash = 'trades::' + market['symbol']
         client.resolve(tradesArray, messageHash)
@@ -257,6 +258,7 @@ class bullish(ccxt.async_support.bullish):
             merged = self.extend(rawTicker, data)
             parsed = self.parse_ticker(merged, market)
         self.tickers[symbol] = parsed
+        self.stream_produce('tickers', parsed)
         messageHash = 'ticker::' + symbol
         client.resolve(self.tickers[symbol], messageHash)
 
@@ -326,6 +328,7 @@ class bullish(ccxt.async_support.bullish):
             parsed['nonce'] = self.safe_integer(sequenceNumberRange, lastIndex)
         orderbook.reset(parsed)
         self.orderbooks[symbol] = orderbook
+        self.stream_produce('orderbooks', orderbook)
         client.resolve(orderbook, messageHash)
 
     def separate_bids_or_asks(self, entry):
@@ -378,7 +381,7 @@ class bullish(ccxt.async_support.bullish):
         #         "type": "snapshot",
         #         "tradingAccountId": "111309424211255",
         #         "dataType": "V1TAOrder",
-        #         "data": [...]  # could be an empty list or a list of orders
+        #         "data": [*]  # could be an empty list or a list of orders
         #     }
         #
         # update
@@ -434,6 +437,7 @@ class bullish(ccxt.async_support.bullish):
                 rawOrder = rawOrders[i]
                 parsedOrder = self.parse_order(rawOrder)
                 orders.append(parsedOrder)
+                self.stream_produce('orders', parsedOrder)
                 symbol = self.safe_string(parsedOrder, 'symbol')
                 symbols[symbol] = True
             messageHash = 'orders'
@@ -482,7 +486,7 @@ class bullish(ccxt.async_support.bullish):
         #         "type": "snapshot",
         #         "tradingAccountId": "111309424211255",
         #         "dataType": "V1TATrade",
-        #         "data": [...]  # could be an empty list or a list of trades
+        #         "data": [*]  # could be an empty list or a list of trades
         #     }
         #
         # update
@@ -530,6 +534,7 @@ class bullish(ccxt.async_support.bullish):
                 rawTrade = rawTrades[i]
                 parsedTrade = self.parse_trade(rawTrade)
                 trades.append(parsedTrade)
+                self.stream_produce('myTrades', parsedTrade)
                 symbol = self.safe_string(parsedTrade, 'symbol')
                 symbols[symbol] = True
             messageHash = 'myTrades'
@@ -623,6 +628,7 @@ class bullish(ccxt.async_support.bullish):
             self.balance[tradingAccountId] = self.safe_balance(self.balance[tradingAccountId])
         messageHash = 'balance'
         tradingAccountIdHash = '::' + tradingAccountId
+        self.stream_produce('balances', self.balance[tradingAccountId])
         client.resolve(self.balance[tradingAccountId], messageHash)
         client.resolve(self.balance[tradingAccountId], messageHash + tradingAccountIdHash)
 
@@ -671,6 +677,7 @@ class bullish(ccxt.async_support.bullish):
             rawPosition = rawPositions[i]
             position = self.parse_position(rawPosition)
             positions.append(position)
+            self.stream_produce('positions', position)
             newPositions.append(position)
         messageHashes = self.find_message_hashes(client, 'positions::')
         for i in range(0, len(messageHashes)):
@@ -702,11 +709,14 @@ class bullish(ccxt.async_support.bullish):
             errorCodeName = self.safe_string(data, 'errorCodeName')
             self.throw_exactly_matched_exception(self.exceptions['exact'], errorCode, feedback)
             self.throw_broadly_matched_exception(self.exceptions['broad'], errorCodeName, feedback)
-            raise ExchangeError(feedback)  # unknown message
+            error = ExchangeError(feedback)  # unknown message
+            self.stream_produce('errors', None, error)
+            raise error
         except Exception as e:
             client.reject(e)
 
     def handle_message(self, client: Client, message):
+        self.stream_produce('raw', message)
         dataType = self.safe_string(message, 'dataType')
         result = self.safe_dict(message, 'result')
         if result is not None:

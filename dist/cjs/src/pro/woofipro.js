@@ -147,6 +147,7 @@ class woofipro extends woofipro$1["default"] {
         const timestamp = this.safeInteger(message, 'ts');
         const snapshot = this.parseOrderBook(data, symbol, timestamp, 'bids', 'asks');
         orderbook.reset(snapshot);
+        this.streamProduce('orderbooks', orderbook);
         client.resolve(orderbook, topic);
     }
     /**
@@ -233,6 +234,7 @@ class woofipro extends woofipro$1["default"] {
         const ticker = this.parseWsTicker(data, market);
         ticker['symbol'] = market['symbol'];
         this.tickers[market['symbol']] = ticker;
+        this.streamProduce('tickers', ticker);
         client.resolve(ticker, topic);
         return message;
     }
@@ -288,6 +290,7 @@ class woofipro extends woofipro$1["default"] {
             const ticker = this.parseWsTicker(this.extend(data[i], { 'date': timestamp }), market);
             this.tickers[market['symbol']] = ticker;
             result.push(ticker);
+            this.streamProduce('tickers', ticker);
         }
         client.resolve(result, topic);
     }
@@ -431,6 +434,8 @@ class woofipro extends woofipro$1["default"] {
         }
         const ohlcvCache = this.ohlcvs[symbol][timeframe];
         ohlcvCache.append(parsed);
+        const ohlcvs = this.createStreamOHLCV(symbol, timeframe, parsed);
+        this.streamProduce('ohlcvs', ohlcvs);
         client.resolve(ohlcvCache, topic);
     }
     /**
@@ -487,6 +492,7 @@ class woofipro extends woofipro$1["default"] {
         }
         const trades = this.trades[symbol];
         trades.append(trade);
+        this.streamProduce('trades', trade);
         this.trades[symbol] = trades;
         client.resolve(trades, topic);
     }
@@ -905,6 +911,7 @@ class woofipro extends woofipro$1["default"] {
                 parsed['datetime'] = this.safeString(order, 'datetime');
             }
             cachedOrders.append(parsed);
+            this.streamProduce('orders', parsed);
             client.resolve(this.orders, topic);
             const messageHashSymbol = topic + ':' + symbol;
             client.resolve(this.orders, messageHashSymbol);
@@ -951,6 +958,7 @@ class woofipro extends woofipro$1["default"] {
             this.myTrades = trades;
         }
         trades.append(trade);
+        this.streamProduce('myTrades', trade);
         client.resolve(trades, messageHash);
         const symbolSpecificMessageHash = messageHash + ':' + symbol;
         client.resolve(trades, symbolSpecificMessageHash);
@@ -1020,6 +1028,7 @@ class woofipro extends woofipro$1["default"] {
             const contracts = this.safeString(position, 'contracts', '0');
             if (Precise["default"].stringGt(contracts, '0')) {
                 cache.append(position);
+                this.streamProduce('positions', position);
             }
         }
         // don't remove the future from the .futures cache
@@ -1076,6 +1085,7 @@ class woofipro extends woofipro$1["default"] {
             const position = this.parseWsPosition(rawPosition, market);
             newPositions.push(position);
             cache.append(position);
+            this.streamProduce('positions', position);
             const messageHash = 'positions::' + market['symbol'];
             client.resolve(position, messageHash);
         }
@@ -1221,6 +1231,7 @@ class woofipro extends woofipro$1["default"] {
             this.balance[code] = account;
         }
         this.balance = this.safeBalance(this.balance);
+        this.streamProduce('balances', this.balance);
         client.resolve(this.balance, 'balance');
     }
     handleErrorMessage(client, message) {
@@ -1251,12 +1262,14 @@ class woofipro extends woofipro$1["default"] {
                 }
             }
             else {
+                this.streamProduce('errors', undefined, error);
                 client.reject(error);
             }
             return true;
         }
     }
     handleMessage(client, message) {
+        this.streamProduce('raw', message);
         if (this.handleErrorMessage(client, message)) {
             return;
         }

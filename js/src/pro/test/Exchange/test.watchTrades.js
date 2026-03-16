@@ -6,10 +6,28 @@
 
 import testTrade from '../../../test/Exchange/base/test.trade.js';
 import testSharedMethods from '../../../test/Exchange/base/test.sharedMethods.js';
+import { ExchangeError } from '../../../../ccxt.js';
 async function testWatchTrades(exchange, skippedProperties, symbol) {
     const method = 'watchTrades';
     let now = exchange.milliseconds();
     const ends = now + 15000;
+    const consumer = function consumer(message) {
+        if (message.error) {
+            throw new ExchangeError(message.error);
+        }
+        if (!message.payload) {
+            throw new ExchangeError("received null or undefined payload");
+        }
+        // TODO: add payload test
+    };
+    try {
+        await exchange.subscribeTrades(symbol, consumer);
+    }
+    catch (e) {
+        if (!testSharedMethods.isTemporaryFailure(e)) {
+            throw e;
+        }
+    }
     while (now < ends) {
         let response = undefined;
         let success = true;

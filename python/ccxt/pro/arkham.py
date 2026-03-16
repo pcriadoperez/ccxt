@@ -47,6 +47,7 @@ class arkham(ccxt.async_support.arkham):
         })
 
     def handle_message(self, client: Client, message):
+        self.stream_produce('raw', message)
         #
         # confirmation
         #
@@ -139,6 +140,7 @@ class arkham(ccxt.async_support.arkham):
         symbol = market['symbol']
         ticker = self.parse_ws_ticker(data, market)
         self.tickers[symbol] = ticker
+        self.stream_produce('tickers', ticker)
         client.resolve(ticker, 'ticker::' + symbol)
         # if self.safe_string(message, 'dataType') == 'all@ticker':
         #     client.resolve(ticker, self.getMessageHash('ticker'))
@@ -207,6 +209,8 @@ class arkham(ccxt.async_support.arkham):
         stored = self.ohlcvs[symbol][timeframe]
         parsed = self.parse_ws_ohlcv(data, market)
         stored.append(parsed)
+        ohlcvs = self.create_stream_ohlcv(symbol, timeframe, parsed)
+        self.stream_produce('ohlcvs', ohlcvs)
         client.resolve(stored, messageHash)
         return message
 
@@ -245,8 +249,8 @@ class arkham(ccxt.async_support.arkham):
         #     data: {
         #         symbol: 'BTC_USDT',
         #         group: '0.01',
-        #         asks: [ [Object], [Object], ...],
-        #         bids: [ [Object], [Object], ...],
+        #         asks: [ [Object], [Object], *],
+        #         bids: [ [Object], [Object], *],
         #         lastTime: 1755115180608299
         #     }
         # }
@@ -290,6 +294,7 @@ class arkham(ccxt.async_support.arkham):
             orderbook['timestamp'] = timestamp
             orderbook['datetime'] = self.iso8601(timestamp)
         self.orderbooks[symbol] = orderbook
+        self.stream_produce('orderbooks', orderbook)
         client.resolve(self.orderbooks[symbol], messageHash)
 
     def handle_delta(self, bookside, delta):
@@ -343,6 +348,7 @@ class arkham(ccxt.async_support.arkham):
         parsed = self.parse_ws_trade(data)
         stored = self.trades[symbol]
         stored.append(parsed)
+        self.stream_produce('trades', parsed)
         client.resolve(stored, 'trade::' + symbol)
 
     def parse_ws_trade(self, trade, market=None):
@@ -469,7 +475,9 @@ class arkham(ccxt.async_support.arkham):
             code = self.safe_currency_code(currencyId)
             self.balance[code] = parsed[code]
         messageHash = 'balances'
-        client.resolve(self.safe_balance(self.balance), messageHash)
+        balance = self.safe_balance(self.balance)
+        self.stream_produce('balances', balance)
+        client.resolve(balance, messageHash)
 
     def parse_ws_balance(self, balance):
         # same api
@@ -552,6 +560,7 @@ class arkham(ccxt.async_support.arkham):
             position = self.parse_ws_position(data)
             symbol = self.safe_string(position, 'symbol')
             self.positions[symbol] = position
+            self.stream_produce('positions', position)
             newPositions.append(position)
         messageHashes = self.find_message_hashes(client, 'positions::')
         for i in range(0, len(messageHashes)):
@@ -656,6 +665,7 @@ class arkham(ccxt.async_support.arkham):
         orders = self.orders
         order = self.parse_ws_order(data)
         orders.append(order)
+        self.stream_produce('orders', order)
         client.resolve(orders, 'orders')
         client.resolve(orders, 'orders::' + order['symbol'] + '::' + channel)
         client.resolve(orders, 'orders::' + channel)
@@ -682,5 +692,7 @@ class arkham(ccxt.async_support.arkham):
             self.throw_exactly_matched_exception(self.exceptions['exact'], errorCode, feedback)
             self.throw_exactly_matched_exception(self.exceptions['exact'], message, feedback)
             self.throw_broadly_matched_exception(self.exceptions['broad'], message, feedback)
-            raise ExchangeError(self.id + ' ' + body)
+            error = ExchangeError(self.id + ' ' + body)
+            self.stream_produce('errors', None, error)
+            raise error
         return False

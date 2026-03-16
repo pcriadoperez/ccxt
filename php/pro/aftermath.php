@@ -128,6 +128,7 @@ class aftermath extends \ccxt\async\aftermath {
         $messageHash = $market['id'] . '@trade';
         $trades = $this->trades[$symbol];
         $trades->append ($trade);
+        $this->stream_produce('trades', $trade);
         $this->trades[$symbol] = $trades;
         $client->resolve ($trades, $messageHash);
     }
@@ -188,6 +189,7 @@ class aftermath extends \ccxt\async\aftermath {
             $nonce = $this->safe_integer($message, 'nonce');
             if ($nonce === ($prevNonce + 1)) {
                 $this->handle_order_book_message($client, $message, $orderbook);
+                $this->stream_produce('orderbooks', $orderbook);
                 $client->resolve ($orderbook, $topic);
             }
         }
@@ -210,8 +212,10 @@ class aftermath extends \ccxt\async\aftermath {
                 $orderbook = $this->orderbooks[$symbol];
                 $orderbook->reset ($snapshot);
                 $this->orderbooks[$symbol] = $orderbook;
+                $this->stream_produce('orderbooks', $orderbook);
                 $client->resolve ($orderbook, $messageHash);
             } catch (Exception $e) {
+                $this->stream_produce('orderbooks', null, $e);
                 unset($client->subscriptions[$messageHash]);
                 $client->reject ($e, $messageHash);
             }
@@ -350,6 +354,7 @@ class aftermath extends \ccxt\async\aftermath {
         $market = $this->safe_market($symbol);
         $position = $this->parse_position($message, $market);
         $cache->append ($position);
+        $this->stream_produce('positions', $position);
         $messageHash = 'positions::' . $market['symbol'];
         $client->resolve ($position, $messageHash);
         $client->resolve (array( $position ), 'positions');
@@ -366,6 +371,7 @@ class aftermath extends \ccxt\async\aftermath {
                     $this->throw_exactly_matched_exception($this->exceptions['exact'], $message, $feedback);
                     throw new ExchangeError($message);
                 } catch (Exception $error) {
+                    $this->stream_produce('errors', null, $error);
                     if ($error instanceof AuthenticationError) {
                         $messageHash = 'authenticated';
                         $client->reject ($error, $messageHash);
@@ -383,6 +389,7 @@ class aftermath extends \ccxt\async\aftermath {
     }
 
     public function handle_message(Client $client, $message) {
+        $this->stream_produce('raw', $message);
         if ($this->handle_error_message($client, $message)) {
             return;
         }

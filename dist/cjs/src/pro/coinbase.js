@@ -443,6 +443,7 @@ class coinbase extends coinbase$1["default"] {
                 result['datetime'] = datetime;
                 const symbol = result['symbol'];
                 this.tickers[symbol] = result;
+                this.streamProduce('tickers', result);
                 const messageHash = channel + '::' + symbol;
                 client.resolve(result, messageHash);
                 this.tryResolveUsdc(client, messageHash, result);
@@ -690,7 +691,9 @@ class coinbase extends coinbase$1["default"] {
             const currentTrades = this.safeList(currentEvent, 'trades');
             for (let j = 0; j < currentTrades.length; j++) {
                 const item = currentTrades[i];
-                tradesArray.append(this.parseTrade(item));
+                const parsedTrade = this.parseTrade(item);
+                tradesArray.append(parsedTrade);
+                this.streamProduce('trades', parsedTrade);
             }
         }
         client.resolve(tradesArray, messageHash);
@@ -742,6 +745,7 @@ class coinbase extends coinbase$1["default"] {
                 if (!(marketId in marketIds)) {
                     marketIds.push(marketId);
                 }
+                this.streamProduce('orders', parsed);
                 cachedOrders.append(parsed);
             }
         }
@@ -869,6 +873,7 @@ class coinbase extends coinbase$1["default"] {
             orderbook['timestamp'] = this.parse8601(datetime);
             orderbook['datetime'] = datetime;
             orderbook['symbol'] = symbol;
+            this.streamProduce('orderbooks', orderbook);
             client.resolve(orderbook, messageHash);
             this.tryResolveUsdc(client, messageHash, orderbook);
         }
@@ -937,6 +942,7 @@ class coinbase extends coinbase$1["default"] {
         return message;
     }
     handleMessage(client, message) {
+        this.streamProduce('raw', message);
         const channel = this.safeString(message, 'channel');
         const methods = {
             'subscriptions': this.handleSubscriptionStatus,
@@ -949,8 +955,10 @@ class coinbase extends coinbase$1["default"] {
         };
         const type = this.safeString(message, 'type');
         if (type === 'error') {
-            const errorMessage = this.safeString(message, 'message');
-            throw new errors.ExchangeError(errorMessage);
+            const errorMessage = this.safeString(message, 'message', '');
+            const err = new errors.ExchangeError(this.id + errorMessage);
+            this.streamProduce('errors', undefined, err);
+            throw err;
         }
         const method = this.safeValue(methods, channel);
         if (method) {

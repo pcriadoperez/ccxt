@@ -395,6 +395,7 @@ class aster extends \ccxt\async\aster {
         $symbol = $parsed['symbol'];
         $messageHash = 'ticker:' . $symbol;
         $this->tickers[$symbol] = $parsed;
+        $this->stream_produce('tickers', $parsed);
         $client->resolve ($this->tickers[$symbol], $messageHash);
     }
 
@@ -721,6 +722,7 @@ class aster extends \ccxt\async\aster {
             $this->trades[$symbol] = $stored;
         }
         $stored->append ($parsed);
+        $this->stream_produce('trades', $parsed);
         $messageHash = 'trade' . ':' . $symbol;
         $client->resolve ($stored, $messageHash);
     }
@@ -1058,6 +1060,7 @@ class aster extends \ccxt\async\aster {
         $orderbook->reset ($snapshot);
         $messageHash = 'orderbook' . ':' . $symbol;
         $this->orderbooks[$symbol] = $orderbook;
+        $this->stream_produce('orderbooks', $orderbook);
         $client->resolve ($orderbook, $messageHash);
     }
 
@@ -1250,6 +1253,8 @@ class aster extends \ccxt\async\aster {
         $stored = $this->ohlcvs[$symbol][$timeframe];
         $parsed = $this->parse_ws_ohlcv($kline);
         $stored->append ($parsed);
+        $ohlcvs = $this->create_stream_ohlcv($symbol, $timeframe, $parsed);
+        $this->stream_produce('ohlcvs', $ohlcvs);
         $messageHash = 'ohlcv:' . $symbol . ':' . $timeframe;
         $resolveData = array( $symbol, $timeframe, $stored );
         $client->resolve ($resolveData, $messageHash);
@@ -1467,6 +1472,7 @@ class aster extends \ccxt\async\aster {
         $this->balance[$accountType]['timestamp'] = $timestamp;
         $this->balance[$accountType]['datetime'] = $this->iso8601($timestamp);
         $this->balance[$accountType] = $this->safe_balance($this->balance[$accountType]);
+        $this->stream_produce('balances', $this->balance[$accountType]);
         $client->resolve ($this->balance[$accountType], $messageHash);
     }
 
@@ -1600,6 +1606,7 @@ class aster extends \ccxt\async\aster {
             $position['datetime'] = $this->iso8601($timestamp);
             $newPositions[] = $position;
             $cache->append ($position);
+            $this->stream_produce('positions', $position);
         }
         $messageHashes = $this->find_message_hashes($client, $messageHash);
         if (!$this->is_empty($messageHashes)) {
@@ -1819,6 +1826,7 @@ class aster extends \ccxt\async\aster {
             }
             $myTrades = $this->myTrades;
             $myTrades->append ($trade);
+            $this->stream_produce('myTrades', $trade);
             $client->resolve ($this->myTrades, $messageHash);
             $messageHashSymbol = $messageHash . '::' . $symbol;
             $client->resolve ($this->myTrades, $messageHashSymbol);
@@ -1910,6 +1918,7 @@ class aster extends \ccxt\async\aster {
         $parsed = $this->parse_ws_order($message, $market);
         $symbol = $market['symbol'];
         $cache->append ($parsed);
+        $this->stream_produce('orders', $parsed);
         $messageHashes = $this->find_message_hashes($client, $messageHash);
         if (!$this->is_empty($messageHashes)) {
             $symbolMessageHash = $messageHash . '::' . $symbol;
@@ -1992,6 +2001,7 @@ class aster extends \ccxt\async\aster {
     }
 
     public function handle_message(Client $client, $message) {
+        $this->stream_produce('raw', $message);
         $stream = $this->safe_string($message, 'stream');
         if ($stream !== null) {
             $part = explode('@', $stream);

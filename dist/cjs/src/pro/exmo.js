@@ -126,6 +126,7 @@ class exmo extends exmo$1["default"] {
             this.parseMarginBalance(message);
         }
         const messageHash = 'balance:' + type;
+        this.streamProduce('balances', this.balance);
         client.resolve(this.balance, messageHash);
     }
     parseSpotBalance(message) {
@@ -282,6 +283,7 @@ class exmo extends exmo$1["default"] {
         const parsedTicker = this.parseTicker(ticker, market);
         const messageHash = 'ticker:' + symbol;
         this.tickers[symbol] = parsedTicker;
+        this.streamProduce('tickers', parsedTicker);
         client.resolve(parsedTicker, messageHash);
     }
     /**
@@ -344,6 +346,7 @@ class exmo extends exmo$1["default"] {
             const trade = trades[i];
             const parsed = this.parseTrade(trade, market);
             stored.append(parsed);
+            this.streamProduce('trades', parsed);
         }
         this.trades[symbol] = stored;
         client.resolve(this.trades[symbol], messageHash);
@@ -468,6 +471,7 @@ class exmo extends exmo$1["default"] {
         for (let j = 0; j < trades.length; j++) {
             const trade = trades[j];
             myTrades.append(trade);
+            this.streamProduce('myTrades', trade);
             symbols[trade['symbol']] = true;
         }
         const symbolKeys = Object.keys(symbols);
@@ -563,6 +567,7 @@ class exmo extends exmo$1["default"] {
             orderbook['timestamp'] = timestamp;
             orderbook['datetime'] = this.iso8601(timestamp);
         }
+        this.streamProduce('orderbooks', orderbook);
         client.resolve(orderbook, messageHash);
     }
     handleDelta(bookside, delta) {
@@ -689,6 +694,7 @@ class exmo extends exmo$1["default"] {
         for (let j = 0; j < rawOrders.length; j++) {
             const order = this.parseWsOrder(rawOrders[j]);
             cachedOrders.append(order);
+            this.streamProduce('orders', order);
             symbols[order['symbol']] = true;
         }
         const symbolKeys = Object.keys(symbols);
@@ -803,6 +809,7 @@ class exmo extends exmo$1["default"] {
         //     "id": 1,
         //     "topic": "spot/ticker:BTC_USDT"
         // }
+        this.streamProduce('raw', message);
         const event = this.safeString(message, 'event');
         const events = {
             'logged_in': this.handleAuthenticationMessage,
@@ -839,7 +846,9 @@ class exmo extends exmo$1["default"] {
                 }
             }
         }
-        throw new errors.NotSupported(this.id + ' received an unsupported message: ' + this.json(message));
+        const err = new errors.NotSupported(this.id + ' received an unsupported message: ' + this.json(message));
+        this.streamProduce('errors', undefined, err);
+        client.reject(err);
     }
     handleSubscribed(client, message) {
         //

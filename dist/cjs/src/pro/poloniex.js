@@ -591,6 +591,8 @@ class poloniex extends poloniex$1["default"] {
                 this.ohlcvs[symbol][timeframe] = stored;
             }
             stored.append(parsed);
+            const ohlcvs = this.createStreamOHLCV(symbol, timeframe, stored);
+            this.streamProduce('ohlcvs', ohlcvs);
             client.resolve(stored, messageHash);
         }
         return message;
@@ -629,6 +631,7 @@ class poloniex extends poloniex$1["default"] {
                     this.trades[symbol] = tradesArray;
                 }
                 tradesArray.append(trade);
+                this.streamProduce('trades', trade);
                 client.resolve(tradesArray, messageHash);
             }
         }
@@ -819,6 +822,7 @@ class poloniex extends poloniex$1["default"] {
                 if (eventType === 'place' || eventType === 'canceled') {
                     const parsed = this.parseWsOrder(order);
                     orders.append(parsed);
+                    this.streamProduce('orders', parsed);
                 }
                 else {
                     const previousOrders = this.safeValue(orders.hashmap, symbol, {});
@@ -871,6 +875,7 @@ class poloniex extends poloniex$1["default"] {
                     previousOrder['status'] = state;
                     // update the newUpdates count
                     orders.append(previousOrder);
+                    this.streamProduce('orders', previousOrder);
                 }
                 marketIds.push(marketId);
             }
@@ -988,6 +993,7 @@ class poloniex extends poloniex$1["default"] {
                 const symbol = ticker['symbol'];
                 this.tickers[symbol] = ticker;
                 newTickers[symbol] = ticker;
+                this.streamProduce('tickers', ticker);
             }
         }
         const messageHashes = this.findMessageHashes(client, 'ticker::');
@@ -1094,6 +1100,7 @@ class poloniex extends poloniex$1["default"] {
                 orderbook['symbol'] = symbol;
                 orderbook['timestamp'] = timestamp;
                 orderbook['datetime'] = this.iso8601(timestamp);
+                this.streamProduce('orderbooks', orderbook);
                 client.resolve(orderbook, messageHash);
             }
         }
@@ -1121,6 +1128,7 @@ class poloniex extends poloniex$1["default"] {
         const data = this.safeValue(message, 'data', []);
         const messageHash = 'balances';
         this.balance = this.parseWsBalance(data);
+        this.streamProduce('balances', this.balance);
         client.resolve(this.balance, messageHash);
     }
     parseWsBalance(response) {
@@ -1168,6 +1176,7 @@ class poloniex extends poloniex$1["default"] {
         }
         const trades = this.myTrades;
         trades.append(parsedTrade);
+        this.streamProduce('myTrades', parsedTrade);
         client.resolve(trades, messageHash);
         const symbolMessageHash = messageHash + ':' + symbol;
         client.resolve(trades, symbolMessageHash);
@@ -1176,6 +1185,7 @@ class poloniex extends poloniex$1["default"] {
         client.lastPong = this.milliseconds();
     }
     handleMessage(client, message) {
+        this.streamProduce('raw', message);
         if (this.handleErrorMessage(client, message)) {
             return;
         }
@@ -1270,6 +1280,7 @@ class poloniex extends poloniex$1["default"] {
                 throw new errors.ExchangeError(feedback);
             }
             catch (e) {
+                this.streamProduce('errors', undefined, e);
                 if (e instanceof errors.AuthenticationError) {
                     const messageHash = 'authenticated';
                     client.reject(e, messageHash);
@@ -1302,6 +1313,7 @@ class poloniex extends poloniex$1["default"] {
         }
         else {
             const error = new errors.AuthenticationError(this.id + ' ' + this.json(message));
+            this.streamProduce('errors', undefined, error);
             client.reject(error, messageHash);
             if (messageHash in client.subscriptions) {
                 delete client.subscriptions[messageHash];

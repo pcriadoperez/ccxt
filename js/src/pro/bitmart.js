@@ -310,6 +310,7 @@ export default class bitmart extends bitmartRest {
         }
         this.balance[type] = this.safeBalance(this.balance[type]);
         const messageHash = 'balance:' + type;
+        this.streamProduce('balances', this.balance[type]);
         client.resolve(this.balance[type], messageHash);
     }
     /**
@@ -719,6 +720,7 @@ export default class bitmart extends bitmartRest {
                 stored.append(order);
                 newOrders.push(order);
                 const symbol = order['symbol'];
+                this.streamProduce('orders', order);
                 symbols[symbol] = true;
             }
         }
@@ -988,6 +990,7 @@ export default class bitmart extends bitmartRest {
         for (let i = 0; i < data.length; i++) {
             const rawPosition = data[i];
             const position = this.parseWsPosition(rawPosition);
+            this.streamProduce('positions', position);
             newPositions.push(position);
             cache.append(position);
         }
@@ -1122,6 +1125,7 @@ export default class bitmart extends bitmartRest {
         }
         const stored = this.trades[symbol];
         stored.append(trade);
+        this.streamProduce('trades', trade);
         return symbol;
     }
     parseWsTrade(trade, market = undefined) {
@@ -1239,6 +1243,7 @@ export default class bitmart extends bitmartRest {
             const symbol = ticker['symbol'];
             this.tickers[symbol] = ticker;
             const messageHash = 'ticker:' + symbol;
+            this.streamProduce('tickers', ticker);
             client.resolve(ticker, messageHash);
         }
     }
@@ -1416,6 +1421,8 @@ export default class bitmart extends bitmartRest {
                 }
                 stored.append(parsed);
                 const messageHash = channel + ':' + marketId;
+                const resolvedData = this.createStreamOHLCV(symbol, timeframe, parsed);
+                this.streamProduce('ohlcvs', resolvedData);
                 client.resolve(stored, messageHash);
             }
         }
@@ -1435,6 +1442,8 @@ export default class bitmart extends bitmartRest {
                 const candle = items[i];
                 const parsed = this.parseOHLCV(candle, market);
                 stored.append(parsed);
+                const resolvedData = this.createStreamOHLCV(symbol, timeframe, parsed);
+                this.streamProduce('ohlcvs', resolvedData);
             }
             client.resolve(stored, channel);
         }
@@ -1651,6 +1660,7 @@ export default class bitmart extends bitmartRest {
                     orderbook['datetime'] = this.iso8601(timestamp);
                 }
                 const messageHash = channelName + ':' + marketId;
+                this.streamProduce('orderbooks', orderbook);
                 client.resolve(orderbook, messageHash);
                 // resolve ForSymbols
                 const messageHashForMulti = channel + ':' + symbol;
@@ -1697,6 +1707,7 @@ export default class bitmart extends bitmartRest {
             client.resolve(orderbook, messageHash);
             // resolve ForSymbols
             const messageHashForMulti = channel + ':' + symbol;
+            this.streamProduce('orderbooks', orderbook);
             client.resolve(orderbook, messageHashForMulti);
         }
     }
@@ -1901,6 +1912,7 @@ export default class bitmart extends bitmartRest {
                     delete client.subscriptions[messageHash];
                 }
             }
+            this.streamProduce('errors', undefined, e);
             client.reject(e);
             return true;
         }
@@ -2019,6 +2031,7 @@ export default class bitmart extends bitmartRest {
         return this.safeString(types, marketType, marketType);
     }
     handleMessage(client, message) {
+        this.streamProduce('raw', message);
         if (this.handleErrorMessage(client, message)) {
             return;
         }
