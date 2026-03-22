@@ -1126,8 +1126,8 @@ public class Exchange {
         });
     }
 
-    public HashMap<String, Object> createSafeDictionary() {
-        return new HashMap<String, Object>();
+    public java.util.concurrent.ConcurrentHashMap<String, Object> createSafeDictionary() {
+        return new java.util.concurrent.ConcurrentHashMap<String, Object>();
     }
 
     public Map<String, Object> convertToSafeDictionary(Object obj) {
@@ -1448,13 +1448,23 @@ public class Exchange {
         return CompletableFuture.completedFuture(new ArrayList<>(((Map<String, Object>)this.markets).values()));
     }
 
+    public Throttler throttler = null;
+
     public void initThrottler() {
-        // to do
+        this.throttler = new Throttler(this.tokenBucket);
     }
 
     public java.util.concurrent.CompletableFuture<Void> throttle(Object... args) {
-        // to do
-        return CompletableFuture.completedFuture(null);
+        if (this.throttler == null) {
+            return CompletableFuture.completedFuture(null);
+        }
+        double cost = 1.0;
+        if (args.length > 0 && args[0] != null) {
+            if (args[0] instanceof Number n) {
+                cost = n.doubleValue();
+            }
+        }
+        return this.throttler.throttle(cost);
     }
 
     public Object clone(Object s) {
