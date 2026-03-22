@@ -13,7 +13,7 @@ import java.util.stream.Collectors;
 @SuppressWarnings("unchecked")
 public class ExchangeTyped {
 
-    private final Exchange exchange;
+    protected final Exchange exchange;
 
     public ExchangeTyped(Exchange exchange) {
         this.exchange = exchange;
@@ -23,7 +23,7 @@ public class ExchangeTyped {
         return exchange;
     }
 
-    private static <T> List<T> toTypedList(Object raw, java.util.function.Function<Object, T> ctor) {
+    protected static <T> List<T> toTypedList(Object raw, java.util.function.Function<Object, T> ctor) {
         return ((List<Object>) raw).stream().map(ctor).collect(Collectors.toList());
     }
 

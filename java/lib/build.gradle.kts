@@ -51,8 +51,15 @@ tasks.register<JavaExec>("liveTest") {
     javaLauncher = javaToolchains.launcherFor {
         languageVersion = JavaLanguageVersion.of(21)
     }
-    // Pass --args="exchangeId" from command line
     if (project.hasProperty("args")) {
         args = (project.property("args") as String).split(" ").toList()
+    }
+}
+
+tasks.register<JavaExec>("example") {
+    classpath = sourceSets["test"].runtimeClasspath
+    mainClass.set("io.github.ccxt.types.FetchOrderBooksExample")
+    javaLauncher = javaToolchains.launcherFor {
+        languageVersion = JavaLanguageVersion.of(21)
     }
 }
