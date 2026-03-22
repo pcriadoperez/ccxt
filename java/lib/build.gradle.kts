@@ -44,3 +44,15 @@ tasks.named<Test>("test") {
     // Use JUnit Platform for unit tests.
     useJUnitPlatform()
 }
+
+tasks.register<JavaExec>("liveTest") {
+    classpath = sourceSets["test"].runtimeClasspath
+    mainClass.set("io.github.ccxt.types.LiveTest")
+    javaLauncher = javaToolchains.launcherFor {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+    // Pass --args="exchangeId" from command line
+    if (project.hasProperty("args")) {
+        args = (project.property("args") as String).split(" ").toList()
+    }
+}
