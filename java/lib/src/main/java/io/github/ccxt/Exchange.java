@@ -55,7 +55,7 @@ public class Exchange {
     public boolean alias = false;
     public String version = "";
     public String userAgent;                              // null by default
-    public boolean verbose = true;
+    public boolean verbose = false;
     public boolean enableRateLimit = true;
     public long lastRestRequestTimestamp = 0L;
     public String url = "";
