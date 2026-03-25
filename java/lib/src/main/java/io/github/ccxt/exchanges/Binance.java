@@ -9,6 +9,14 @@ import io.github.ccxt.Helpers;
 
 public class Binance extends BinanceApi
 {
+   public Binance () {
+       super();
+   }
+
+   public Binance (Object options) {
+       super(options);
+   }
+
     public Object describe()
     {
         return this.deepExtend(super.describe(), new java.util.HashMap<String, Object>() {{
@@ -234,10 +242,11 @@ public class Binance extends BinanceApi
                     put( "private", "https://api.binance.com/api/v3" );
                     put( "v1", "https://api.binance.com/api/v1" );
                     put( "papi", "https://papi.binance.com/papi/v1" );
+                    put( "papiV2", "https://papi.binance.com/papi/v2" );
                 }} );
                 put( "www", "https://www.binance.com" );
                 put( "referral", new java.util.HashMap<String, Object>() {{
-                    put( "url", "https://accounts.binance.com/en/register?ref=D7YA7CLY" );
+                    put( "url", "https://accounts.binance.com/register?ref=CCXTCOM" );
                     put( "discount", 0.1 );
                 }} );
                 put( "doc", new java.util.ArrayList<Object>(java.util.Arrays.asList("https://developers.binance.com/en")) );
@@ -827,6 +836,7 @@ public class Binance extends BinanceApi
                             put( "cost", 2 );
                             put( "byLimit", new java.util.ArrayList<Object>(java.util.Arrays.asList(new java.util.ArrayList<Object>(java.util.Arrays.asList(50, 2)), new java.util.ArrayList<Object>(java.util.Arrays.asList(100, 5)), new java.util.ArrayList<Object>(java.util.Arrays.asList(500, 10)), new java.util.ArrayList<Object>(java.util.Arrays.asList(1000, 20)))) );
                         }} );
+                        put( "rpiDepth", 20 );
                         put( "trades", 5 );
                         put( "historicalTrades", 20 );
                         put( "aggTrades", 20 );
@@ -879,6 +889,8 @@ public class Binance extends BinanceApi
                         put( "lvtKlines", 1 );
                         put( "convert/exchangeInfo", 4 );
                         put( "insuranceBalance", 1 );
+                        put( "symbolAdlRisk", 1 );
+                        put( "tradingSchedule", 5 );
                     }} );
                 }} );
                 put( "fapiData", new java.util.HashMap<String, Object>() {{
@@ -938,6 +950,13 @@ public class Binance extends BinanceApi
                         put( "symbolConfig", 5 );
                         put( "accountConfig", 5 );
                         put( "convert/orderStatus", 5 );
+                        put( "algoOrder", 1 );
+                        put( "openAlgoOrders", new java.util.HashMap<String, Object>() {{
+                            put( "cost", 1 );
+                            put( "noSymbol", 40 );
+                        }} );
+                        put( "allAlgoOrders", 5 );
+                        put( "stock/contract", 50 );
                     }} );
                     put( "post", new java.util.HashMap<String, Object>() {{
                         put( "batchOrders", 5 );
@@ -945,6 +964,7 @@ public class Binance extends BinanceApi
                         put( "positionMargin", 1 );
                         put( "marginType", 1 );
                         put( "order", 4 );
+                        put( "order/test", 1 );
                         put( "leverage", 1 );
                         put( "listenKey", 1 );
                         put( "countdownCancelAll", 10 );
@@ -954,6 +974,7 @@ public class Binance extends BinanceApi
                         put( "feeBurn", 1 );
                         put( "convert/getQuote", 200 );
                         put( "convert/acceptQuote", 20 );
+                        put( "algoOrder", 1 );
                     }} );
                     put( "put", new java.util.HashMap<String, Object>() {{
                         put( "listenKey", 1 );
@@ -965,6 +986,8 @@ public class Binance extends BinanceApi
                         put( "order", 1 );
                         put( "allOpenOrders", 1 );
                         put( "listenKey", 1 );
+                        put( "algoOrder", 1 );
+                        put( "algoOpenOrders", 1 );
                     }} );
                 }} );
                 put( "fapiPublicV2", new java.util.HashMap<String, Object>() {{
@@ -1264,6 +1287,11 @@ public class Binance extends BinanceApi
                         put( "margin/allOpenOrders", 5 );
                         put( "margin/orderList", 2 );
                         put( "listenKey", 0.2 );
+                    }} );
+                }} );
+                put( "papiV2", new java.util.HashMap<String, Object>() {{
+                    put( "get", new java.util.HashMap<String, Object>() {{
+                        put( "um/account", 1 );
                     }} );
                 }} );
             }} );
@@ -2524,8 +2552,10 @@ public class Binance extends BinanceApi
                 put( "broad", new java.util.HashMap<String, Object>() {{
                     put( "has no operation privilege", PermissionDenied.class );
                     put( "MAX_POSITION", BadRequest.class );
+                    put( "PERCENT_PRICE_BY_SIDE", InvalidOrder.class );
                 }} );
             }} );
+            put( "rollingWindowSize", 60000 );
         }});
     }
 
@@ -2563,8 +2593,8 @@ public class Binance extends BinanceApi
     {
         // support expired option contracts
         Object settle = "USDT";
-        Object optionParts = new java.util.ArrayList<Object>(java.util.Arrays.asList(((String)symbol).split((String)"-")));
-        Object symbolBase = new java.util.ArrayList<Object>(java.util.Arrays.asList(((String)symbol).split((String)"/")));
+        Object optionParts = Helpers.split(symbol, "-");
+        Object symbolBase = Helpers.split(symbol, "/");
         Object base = null;
         if (Helpers.isTrue(Helpers.isGreaterThan(Helpers.getIndexOf(symbol, "/"), Helpers.opNeg(1))))
         {
@@ -2685,7 +2715,7 @@ public class Binance extends BinanceApi
                 if (Helpers.isTrue(Helpers.isTrue((!Helpers.isEqual(defaultType, null))) && Helpers.isTrue((!Helpers.isEqual(defaultType, "spot")))))
                 {
                     // support legacy symbols
-                    var basequoteVariable = new java.util.ArrayList<Object>(java.util.Arrays.asList(((String)symbol).split((String)"/")));
+                    var basequoteVariable = Helpers.split(symbol, "/");
                     var base = ((java.util.List<Object>) basequoteVariable).get(0);
                     var quote = ((java.util.List<Object>) basequoteVariable).get(1);
                     Object settle = ((Helpers.isTrue((Helpers.isEqual(quote, "USD"))))) ? base : quote;
@@ -2791,7 +2821,7 @@ public class Binance extends BinanceApi
                 response = (this.publicGetTime(query)).join();
             }
             return this.safeInteger(response, "serverTime");
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -3057,7 +3087,7 @@ public class Binance extends BinanceApi
     }});
             }
             return result;
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -3391,7 +3421,7 @@ public class Binance extends BinanceApi
                 ((java.util.List<Object>)result).add(this.parseMarket(Helpers.GetValue(markets, i)));
             }
             return result;
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -3402,7 +3432,7 @@ public class Binance extends BinanceApi
         Object option = false;
         Object underlying = this.safeString(market, "underlying");
         Object id = this.safeString(market, "symbol");
-        Object optionParts = new java.util.ArrayList<Object>(java.util.Arrays.asList(((String)id).split((String)"-")));
+        Object optionParts = Helpers.split(id, "-");
         Object optionBase = this.safeString(optionParts, 0);
         Object lowercaseId = this.safeStringLower(market, "symbol");
         Object baseId = this.safeString(market, "baseAsset", optionBase);
@@ -3781,7 +3811,7 @@ public class Binance extends BinanceApi
      * @param {string[]|undefined} [params.symbols] unified market symbols, only used in isolated margin mode
      * @param {boolean} [params.portfolioMargin] set to true if you would like to fetch the balance for a portfolio margin account
      * @param {string} [params.subType] 'linear' or 'inverse'
-     * @returns {object} a [balance structure]{@link https://docs.ccxt.com/#/?id=balance-structure}
+     * @returns {object} a [balance structure]{@link https://docs.ccxt.com/?id=balance-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchBalance(Object... optionalArgs)
     {
@@ -4055,7 +4085,7 @@ public class Binance extends BinanceApi
             //     ]
             //
             return this.parseBalanceCustom(response, type, marginMode, isPortfolioMargin);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -4063,14 +4093,16 @@ public class Binance extends BinanceApi
      * @method
      * @name binance#fetchOrderBook
      * @description fetches information on open orders with bid (buy) and ask (sell) prices, volumes and other data
-     * @see https://developers.binance.com/docs/binance-spot-api-docs/rest-api/market-data-endpoints#order-book     // spot
-     * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api/Order-Book   // swap
-     * @see https://developers.binance.com/docs/derivatives/coin-margined-futures/market-data/rest-api/Order-Book   // future
-     * @see https://developers.binance.com/docs/derivatives/option/market-data/Order-Book                           // option
+     * @see https://developers.binance.com/docs/binance-spot-api-docs/rest-api/market-data-endpoints#order-book       // spot
+     * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api/Order-Book     // swap
+     * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api/Order-Book-RPI // swap rpi
+     * @see https://developers.binance.com/docs/derivatives/coin-margined-futures/market-data/rest-api/Order-Book     // future
+     * @see https://developers.binance.com/docs/derivatives/option/market-data/Order-Book                             // option
      * @param {string} symbol unified symbol of the market to fetch the order book for
      * @param {int} [limit] the maximum amount of order book entries to return
      * @param {object} [params] extra parameters specific to the exchange API endpoint
-     * @returns {object} A dictionary of [order book structures]{@link https://docs.ccxt.com/#/?id=order-book-structure} indexed by market symbols
+     * @param {boolean} [params.rpi] *future only* set to true to use the RPI endpoint
+     * @returns {object} A dictionary of [order book structures]{@link https://docs.ccxt.com/?id=order-book-structure} indexed by market symbols
      */
     public java.util.concurrent.CompletableFuture<Object> fetchOrderBook(Object symbol, Object... optionalArgs)
     {
@@ -4094,7 +4126,17 @@ public class Binance extends BinanceApi
                 response = (this.eapiPublicGetDepth(this.extend(request, parameters))).join();
             } else if (Helpers.isTrue(Helpers.GetValue(market, "linear")))
             {
-                response = (this.fapiPublicGetDepth(this.extend(request, parameters))).join();
+                Object rpi = this.safeValue(parameters, "rpi", false);
+                parameters = this.omit(parameters, "rpi");
+                if (Helpers.isTrue(rpi))
+                {
+                    // rpi limit only supports 1000
+                    Helpers.addElementToObject(request, "limit", 1000);
+                    response = (this.fapiPublicGetRpiDepth(this.extend(request, parameters))).join();
+                } else
+                {
+                    response = (this.fapiPublicGetDepth(this.extend(request, parameters))).join();
+                }
             } else if (Helpers.isTrue(Helpers.GetValue(market, "inverse")))
             {
                 response = (this.dapiPublicGetDepth(this.extend(request, parameters))).join();
@@ -4142,7 +4184,7 @@ public class Binance extends BinanceApi
             Object orderbook = this.parseOrderBook(response, symbol, timestamp);
             Helpers.addElementToObject(orderbook, "nonce", this.safeInteger2(response, "lastUpdateId", "u"));
             return orderbook;
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -4152,7 +4194,7 @@ public class Binance extends BinanceApi
         //
         //     {
         //         "symbol": "BTCUSDT",
-        //         "markPrice": "11793.63104561", // mark price
+        //         "markPrice": "11793.63104562", // mark price
         //         "indexPrice": "11781.80495970", // index price
         //         "estimatedSettlePrice": "11781.16138815", // Estimated Settle Price, only useful in the last hour before the settlement starts
         //         "lastFundingRate": "0.00038246",  // This is the lastest estimated funding rate
@@ -4348,7 +4390,7 @@ public class Binance extends BinanceApi
      * @description the latest known information on the availability of the exchange API
      * @see https://developers.binance.com/docs/wallet/others/system-status
      * @param {object} [params] extra parameters specific to the exchange API endpoint
-     * @returns {object} a [status structure]{@link https://docs.ccxt.com/#/?id=exchange-status-structure}
+     * @returns {object} a [status structure]{@link https://docs.ccxt.com/?id=exchange-status-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchStatus(Object... optionalArgs)
     {
@@ -4374,7 +4416,7 @@ public class Binance extends BinanceApi
                 put( "url", null );
                 put( "info", response );
             }};
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -4390,7 +4432,7 @@ public class Binance extends BinanceApi
      * @param {string} symbol unified symbol of the market to fetch the ticker for
      * @param {object} [params] extra parameters specific to the exchange API endpoint
      * @param {boolean} [params.rolling] (spot only) default false, if true, uses the rolling 24 hour ticker endpoint /api/v3/ticker
-     * @returns {object} a [ticker structure]{@link https://docs.ccxt.com/#/?id=ticker-structure}
+     * @returns {object} a [ticker structure]{@link https://docs.ccxt.com/?id=ticker-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchTicker(Object symbol, Object... optionalArgs)
     {
@@ -4431,7 +4473,7 @@ public class Binance extends BinanceApi
                 return this.parseTicker(firstTicker, market);
             }
             return this.parseTicker(response, market);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -4445,7 +4487,7 @@ public class Binance extends BinanceApi
      * @param {string[]|undefined} symbols unified symbols of the markets to fetch the bids and asks for, all markets are returned if not assigned
      * @param {object} [params] extra parameters specific to the exchange API endpoint
      * @param {string} [params.subType] "linear" or "inverse"
-     * @returns {object} a dictionary of [ticker structures]{@link https://docs.ccxt.com/#/?id=ticker-structure}
+     * @returns {object} a dictionary of [ticker structures]{@link https://docs.ccxt.com/?id=ticker-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchBidsAsks(Object... optionalArgs)
     {
@@ -4485,7 +4527,7 @@ public class Binance extends BinanceApi
                 throw new NotSupported((String)Helpers.add(Helpers.add(Helpers.add(this.id, " fetchBidsAsks() does not support "), type), " markets yet")) ;
             }
             return this.parseTickers(response, symbols);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -4534,7 +4576,7 @@ public class Binance extends BinanceApi
                 throw new NotSupported((String)Helpers.add(Helpers.add(Helpers.add(this.id, " fetchLastPrices() does not support "), type), " markets yet")) ;
             }
             return this.parseLastPrices(response, symbols);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -4595,7 +4637,7 @@ public class Binance extends BinanceApi
      * @param {object} [params] extra parameters specific to the exchange API endpoint
      * @param {string} [params.subType] "linear" or "inverse"
      * @param {string} [params.type] 'spot', 'option', use params["subType"] for swap and future markets
-     * @returns {object} a dictionary of [ticker structures]{@link https://docs.ccxt.com/#/?id=ticker-structure}
+     * @returns {object} a dictionary of [ticker structures]{@link https://docs.ccxt.com/?id=ticker-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchTickers(Object... optionalArgs)
     {
@@ -4653,7 +4695,7 @@ public class Binance extends BinanceApi
                 throw new NotSupported((String)Helpers.add(Helpers.add(Helpers.add(this.id, " fetchTickers() does not support "), type), " markets yet")) ;
             }
             return this.parseTickers(response, symbols);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -4680,7 +4722,7 @@ public class Binance extends BinanceApi
      * @param {string} symbol unified symbol of the market to fetch the ticker for
      * @param {object} [params] extra parameters specific to the exchange API endpoint
      * @param {string} [params.subType] "linear" or "inverse"
-     * @returns {object} a dictionary of [ticker structures]{@link https://docs.ccxt.com/#/?id=ticker-structure}
+     * @returns {object} a dictionary of [ticker structures]{@link https://docs.ccxt.com/?id=ticker-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchMarkPrice(Object symbol, Object... optionalArgs)
     {
@@ -4717,7 +4759,7 @@ public class Binance extends BinanceApi
                 return this.parseTicker(this.safeDict(response, 0, new java.util.HashMap<String, Object>() {{}}), market);
             }
             return this.parseTicker(response, market);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -4730,7 +4772,7 @@ public class Binance extends BinanceApi
      * @param {string[]} [symbols] unified symbols of the markets to fetch the ticker for, all market tickers are returned if not assigned
      * @param {object} [params] extra parameters specific to the exchange API endpoint
      * @param {string} [params.subType] "linear" or "inverse"
-     * @returns {object} a dictionary of [ticker structures]{@link https://docs.ccxt.com/#/?id=ticker-structure}
+     * @returns {object} a dictionary of [ticker structures]{@link https://docs.ccxt.com/?id=ticker-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchMarkPrices(Object... optionalArgs)
     {
@@ -4762,7 +4804,7 @@ public class Binance extends BinanceApi
                 throw new NotSupported((String)Helpers.add(Helpers.add(Helpers.add(this.id, " fetchMarkPrices() does not support "), type), " markets yet")) ;
             }
             return this.parseTickers(response, symbols);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -4888,7 +4930,7 @@ public class Binance extends BinanceApi
             Object marketId = Helpers.GetValue(market, "id");
             if (Helpers.isTrue(Helpers.isEqual(price, "index")))
             {
-                Object parts = new java.util.ArrayList<Object>(java.util.Arrays.asList(((String)marketId).split((String)"_")));
+                Object parts = Helpers.split(marketId, "_");
                 Object pair = this.safeString(parts, 0);
                 Helpers.addElementToObject(request, "pair", pair); // Index price takes this argument instead of symbol
             } else
@@ -4987,7 +5029,7 @@ public class Binance extends BinanceApi
             //
             Object candles = this.parseOHLCVs(response, market, timeframe, since, limit);
             return candles;
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -5305,7 +5347,7 @@ public class Binance extends BinanceApi
      *
      * EXCHANGE SPECIFIC PARAMETERS
      * @param {int} [params.fromId] trade id to fetch from, default gets most recent trades, not used when fetchTradesMethod is 'publicGetTrades', 'fapiPublicGetTrades', 'dapiPublicGetTrades', or 'eapiPublicGetTrades'
-     * @returns {Trade[]} a list of [trade structures]{@link https://docs.ccxt.com/#/?id=public-trades}
+     * @returns {Trade[]} a list of [trade structures]{@link https://docs.ccxt.com/?id=public-trades}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchTrades(Object symbol, Object... optionalArgs)
     {
@@ -5434,7 +5476,7 @@ public class Binance extends BinanceApi
             //     ]
             //
             return this.parseTrades(response, market, since, limit);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -5452,7 +5494,7 @@ public class Binance extends BinanceApi
      * @param {float} [price] the price at which the order is to be fulfilled, in units of the quote currency, ignored in market orders
      * @param {object} [params] extra parameters specific to the exchange API endpoint
      * @param {string} [params.marginMode] 'cross' or 'isolated', for spot margin trading
-     * @returns {object} an [order structure]{@link https://docs.ccxt.com/#/?id=order-structure}
+     * @returns {object} an [order structure]{@link https://docs.ccxt.com/?id=order-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> editSpotOrder(Object id, Object symbol, Object type, Object side, Object amount, Object... optionalArgs)
     {
@@ -5510,7 +5552,7 @@ public class Binance extends BinanceApi
             //
             Object data = this.safeDict(response, "newOrderResponse");
             return this.parseOrder(data, market);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -5718,7 +5760,7 @@ public class Binance extends BinanceApi
      * @param {float} [price] the price at which the order is to be fulfilled, in units of the quote currency, ignored in market orders
      * @param {object} [params] extra parameters specific to the exchange API endpoint
      * @param {boolean} [params.portfolioMargin] set to true if you would like to edit an order in a portfolio margin account
-     * @returns {object} an [order structure]{@link https://docs.ccxt.com/#/?id=order-structure}
+     * @returns {object} an [order structure]{@link https://docs.ccxt.com/?id=order-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> editContractOrder(Object id, Object symbol, Object type, Object side, Object amount, Object... optionalArgs)
     {
@@ -5789,7 +5831,7 @@ public class Binance extends BinanceApi
             //     }
             //
             return this.parseOrder(response, market);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -5807,7 +5849,7 @@ public class Binance extends BinanceApi
      * @param {float} amount how much of currency you want to trade in units of base currency
      * @param {float} [price] the price at which the order is to be fulfilled, in units of the quote currency, ignored in market orders
      * @param {object} [params] extra parameters specific to the exchange API endpoint
-     * @returns {object} an [order structure]{@link https://docs.ccxt.com/#/?id=order-structure}
+     * @returns {object} an [order structure]{@link https://docs.ccxt.com/?id=order-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> editOrder(Object id, Object symbol, Object type, Object side, Object... optionalArgs)
     {
@@ -5830,7 +5872,7 @@ public class Binance extends BinanceApi
             {
                 return (this.editContractOrder(id, symbol, type, side, amount, price, parameters)).join();
             }
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -5842,7 +5884,7 @@ public class Binance extends BinanceApi
      * @see https://developers.binance.com/docs/derivatives/coin-margined-futures/trade/rest-api/Modify-Multiple-Orders
      * @param {Array} orders list of orders to create, each object should contain the parameters required by createOrder, namely symbol, type, side, amount, price and params
      * @param {object} [params] extra parameters specific to the exchange API endpoint
-     * @returns {object} an [order structure]{@link https://docs.ccxt.com/#/?id=order-structure}
+     * @returns {object} an [order structure]{@link https://docs.ccxt.com/?id=order-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> editOrders(Object orders, Object... optionalArgs)
     {
@@ -5928,7 +5970,7 @@ public class Binance extends BinanceApi
             //   ]
             //
             return this.parseOrders(response);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -5938,7 +5980,10 @@ public class Binance extends BinanceApi
             put( "NEW", "open" );
             put( "PARTIALLY_FILLED", "open" );
             put( "ACCEPTED", "open" );
+            put( "TRIGGERING", "open" );
             put( "FILLED", "closed" );
+            put( "TRIGGERED", "closed" );
+            put( "FINISHED", "closed" );
             put( "CANCELED", "canceled" );
             put( "CANCELLED", "canceled" );
             put( "PENDING_CANCEL", "canceling" );
@@ -5947,6 +5992,19 @@ public class Binance extends BinanceApi
             put( "EXPIRED_IN_MATCH", "expired" );
         }};
         return this.safeString(statuses, status, status);
+    }
+
+    public Object parseOrderType(Object type)
+    {
+        Object types = new java.util.HashMap<String, Object>() {{
+            put( "limit_maker", "limit" );
+            put( "stop", "limit" );
+            put( "stop_market", "market" );
+            put( "take_profit", "limit" );
+            put( "take_profit_market", "market" );
+            put( "trailing_stop_market", "market" );
+        }};
+        return this.safeString(types, type, type);
     }
 
     public Object parseOrder(Object order, Object... optionalArgs)
@@ -6433,17 +6491,58 @@ public class Binance extends BinanceApi
         //         "priceProtect": false
         //     }
         //
+        // createOrder, fetchOrder, fetchOpenOrders, fetchOrders, cancelOrderWs, createOrderWs: linear swap conditional order
+        //
+        //     {
+        //         "algoId": 3358,
+        //         "clientAlgoId": "yT58zmV3DSzMBQxc5tAJXU",
+        //         "algoType": "CONDITIONAL",
+        //         "orderType": "STOP",
+        //         "symbol": "BTCUSDT",
+        //         "side": "BUY",
+        //         "positionSide": "BOTH",
+        //         "timeInForce": "GTC",
+        //         "quantity": "0.002",
+        //         "algoStatus": "NEW",
+        //         "triggerPrice": "100000.00",
+        //         "price": "102000.00",
+        //         "icebergQuantity": null,
+        //         "selfTradePreventionMode": "EXPIRE_MAKER",
+        //         "workingType": "CONTRACT_PRICE",
+        //         "priceMatch": "NONE",
+        //         "closePosition": false,
+        //         "priceProtect": false,
+        //         "reduceOnly": false,
+        //         "createTime": 1763458576201,
+        //         "updateTime": 1763458576201,
+        //         "triggerTime": 0,
+        //         "goodTillDate": 0
+        //     }
+        //
+        // cancelOrder: linear swap conditional
+        //
+        //     {
+        //         "algoId": 3358,
+        //         "clientAlgoId": "yT58zmV3DSzMBQxc5tAJXU",
+        //         "code": "200",
+        //         "msg": "success"
+        //     }
+        //
         Object market = Helpers.getArg(optionalArgs, 0, null);
         Object code = this.safeString(order, "code");
         if (Helpers.isTrue(!Helpers.isEqual(code, null)))
         {
             // cancelOrders/createOrders might have a partial success
-            return this.safeOrder(new java.util.HashMap<String, Object>() {{
-                put( "info", order );
-                put( "status", "rejected" );
-            }}, market);
+            Object msg = this.safeString(order, "msg");
+            if (Helpers.isTrue(Helpers.isTrue((!Helpers.isEqual(code, "200"))) && !Helpers.isTrue((Helpers.isTrue((Helpers.isEqual(msg, "success"))) || Helpers.isTrue((Helpers.isEqual(msg, "The operation of cancel all open order is done.")))))))
+            {
+                return this.safeOrder(new java.util.HashMap<String, Object>() {{
+                    put( "info", order );
+                    put( "status", "rejected" );
+                }}, market);
+            }
         }
-        Object status = this.parseOrderStatus(this.safeString2(order, "status", "strategyStatus"));
+        Object status = this.parseOrderStatus(this.safeStringN(order, new java.util.ArrayList<Object>(java.util.Arrays.asList("status", "strategyStatus", "algoStatus"))));
         Object marketId = this.safeString(order, "symbol");
         Object isContract = Helpers.isTrue((Helpers.inOp(order, "positionSide"))) || Helpers.isTrue((Helpers.inOp(order, "cumQuote")));
         Object marketType = ((Helpers.isTrue(isContract))) ? "contract" : "spot";
@@ -6474,7 +6573,7 @@ public class Binance extends BinanceApi
         //   Note this is not the actual cost, since Binance futures uses leverage to calculate margins.
         Object cost = this.safeString2(order, "cummulativeQuoteQty", "cumQuote");
         cost = this.safeString(order, "cumBase", cost);
-        Object type = this.safeStringLower(order, "type");
+        Object type = this.safeStringLower2(order, "type", "orderType");
         Object side = this.safeStringLower(order, "side");
         Object fills = this.safeList(order, "fills", new java.util.ArrayList<Object>(java.util.Arrays.asList()));
         Object timeInForce = this.safeString(order, "timeInForce");
@@ -6484,11 +6583,7 @@ public class Binance extends BinanceApi
             timeInForce = "PO";
         }
         Object postOnly = Helpers.isTrue((Helpers.isEqual(type, "limit_maker"))) || Helpers.isTrue((Helpers.isEqual(timeInForce, "PO")));
-        if (Helpers.isTrue(Helpers.isEqual(type, "limit_maker")))
-        {
-            type = "limit";
-        }
-        Object stopPriceString = this.safeString(order, "stopPrice");
+        Object stopPriceString = this.safeString2(order, "stopPrice", "triggerPrice");
         Object triggerPrice = this.parseNumber(this.omitZero(stopPriceString));
         Object feeCost = this.safeNumber(order, "fee");
         Object fee = null;
@@ -6509,14 +6604,14 @@ public class Binance extends BinanceApi
         final Object finalFee = fee;
         return this.safeOrder(new java.util.HashMap<String, Object>() {{
             put( "info", order );
-            put( "id", Binance.this.safeString2(order, "strategyId", "orderId") );
-            put( "clientOrderId", Binance.this.safeString2(order, "clientOrderId", "newClientStrategyId") );
+            put( "id", Binance.this.safeStringN(order, new java.util.ArrayList<Object>(java.util.Arrays.asList("strategyId", "orderId", "algoId"))) );
+            put( "clientOrderId", Binance.this.safeStringN(order, new java.util.ArrayList<Object>(java.util.Arrays.asList("clientOrderId", "newClientStrategyId", "clientAlgoId"))) );
             put( "timestamp", timestamp );
             put( "datetime", Binance.this.iso8601(timestamp) );
             put( "lastTradeTimestamp", finalLastTradeTimestamp );
             put( "lastUpdateTimestamp", lastUpdateTimestamp );
             put( "symbol", symbol );
-            put( "type", finalType );
+            put( "type", Binance.this.parseOrderType(finalType) );
             put( "timeInForce", finalTimeInForce );
             put( "postOnly", postOnly );
             put( "reduceOnly", Binance.this.safeBool(order, "reduceOnly") );
@@ -6543,7 +6638,7 @@ public class Binance extends BinanceApi
      * @see https://developers.binance.com/docs/derivatives/option/trade/Place-Multiple-Orders
      * @param {Array} orders list of orders to create, each object should contain the parameters required by createOrder, namely symbol, type, side, amount, price and params
      * @param {object} [params] extra parameters specific to the exchange API endpoint
-     * @returns {object} an [order structure]{@link https://docs.ccxt.com/#/?id=order-structure}
+     * @returns {object} an [order structure]{@link https://docs.ccxt.com/?id=order-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> createOrders(Object orders, Object... optionalArgs)
     {
@@ -6623,7 +6718,7 @@ public class Binance extends BinanceApi
             //   ]
             //
             return this.parseOrders(response);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -6643,6 +6738,7 @@ public class Binance extends BinanceApi
      * @see https://developers.binance.com/docs/derivatives/portfolio-margin/trade/New-Margin-Order
      * @see https://developers.binance.com/docs/derivatives/portfolio-margin/trade/New-UM-Conditional-Order
      * @see https://developers.binance.com/docs/derivatives/portfolio-margin/trade/New-CM-Conditional-Order
+     * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/New-Algo-Order
      * @param {string} symbol unified symbol of the market to create an order in
      * @param {string} type 'market' or 'limit' or 'STOP_LOSS' or 'STOP_LOSS_LIMIT' or 'TAKE_PROFIT' or 'TAKE_PROFIT_LIMIT' or 'STOP'
      * @param {string} side 'buy' or 'sell'
@@ -6664,7 +6760,7 @@ public class Binance extends BinanceApi
      * @param {string} [params.stopLossOrTakeProfit] 'stopLoss' or 'takeProfit', required for spot trailing orders
      * @param {string} [params.positionSide] *swap and portfolio margin only* "BOTH" for one-way mode, "LONG" for buy side of hedged mode, "SHORT" for sell side of hedged mode
      * @param {bool} [params.hedged] *swap and portfolio margin only* true for hedged mode, false for one way mode, default is false
-     * @returns {object} an [order structure]{@link https://docs.ccxt.com/#/?id=order-structure}
+     * @returns {object} an [order structure]{@link https://docs.ccxt.com/?id=order-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> createOrder(Object symbol, Object type, Object side, Object amount, Object... optionalArgs)
     {
@@ -6721,7 +6817,14 @@ public class Binance extends BinanceApi
                     }
                 } else
                 {
-                    response = (this.fapiPrivatePostOrder(request)).join();
+                    if (Helpers.isTrue(isConditional))
+                    {
+                        Helpers.addElementToObject(request, "algoType", "CONDITIONAL");
+                        response = (this.fapiPrivatePostAlgoOrder(request)).join();
+                    } else
+                    {
+                        response = (this.fapiPrivatePostOrder(request)).join();
+                    }
                 }
             } else if (Helpers.isTrue(Helpers.GetValue(market, "inverse")))
             {
@@ -6758,7 +6861,7 @@ public class Binance extends BinanceApi
                 }
             }
             return this.parseOrder(response, market);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -6781,7 +6884,7 @@ public class Binance extends BinanceApi
         Object parameters = Helpers.getArg(optionalArgs, 1, new java.util.HashMap<String, Object>() {{}});
         Object market = this.market(symbol);
         Object marketType = this.safeString(parameters, "type", Helpers.GetValue(market, "type"));
-        Object clientOrderId = this.safeString2(parameters, "newClientOrderId", "clientOrderId");
+        Object clientOrderId = this.safeStringN(parameters, new java.util.ArrayList<Object>(java.util.Arrays.asList("clientAlgoId", "newClientOrderId", "clientOrderId")));
         Object initialUppercaseType = ((String)type).toUpperCase();
         Object isMarketOrder = Helpers.isEqual(initialUppercaseType, "MARKET");
         Object isLimitOrder = Helpers.isEqual(initialUppercaseType, "LIMIT");
@@ -6919,6 +7022,10 @@ public class Binance extends BinanceApi
             }
         }
         Object clientOrderIdRequest = ((Helpers.isTrue(isPortfolioMarginConditional))) ? "newClientStrategyId" : "newClientOrderId";
+        if (Helpers.isTrue(Helpers.isTrue(Helpers.isTrue(Helpers.isTrue(Helpers.GetValue(market, "linear")) && Helpers.isTrue(Helpers.GetValue(market, "swap"))) && Helpers.isTrue(isConditional)) && !Helpers.isTrue(isPortfolioMargin)))
+        {
+            clientOrderIdRequest = "clientAlgoId";
+        }
         if (Helpers.isTrue(Helpers.isEqual(clientOrderId, null)))
         {
             Object broker = this.safeDict(this.options, "broker", new java.util.HashMap<String, Object>() {{}});
@@ -7123,7 +7230,13 @@ public class Binance extends BinanceApi
             }
             if (Helpers.isTrue(!Helpers.isEqual(stopPrice, null)))
             {
-                Helpers.addElementToObject(request, "stopPrice", this.priceToPrecision(symbol, stopPrice));
+                if (Helpers.isTrue(Helpers.isTrue(Helpers.isTrue(Helpers.GetValue(market, "linear")) && Helpers.isTrue(Helpers.GetValue(market, "swap"))) && !Helpers.isTrue(isPortfolioMargin)))
+                {
+                    Helpers.addElementToObject(request, "triggerPrice", this.priceToPrecision(symbol, stopPrice));
+                } else
+                {
+                    Helpers.addElementToObject(request, "stopPrice", this.priceToPrecision(symbol, stopPrice));
+                }
             }
         }
         if (Helpers.isTrue(Helpers.isTrue(Helpers.isTrue(timeInForceIsRequired) && Helpers.isTrue((Helpers.isEqual(this.safeString(parameters, "timeInForce"), null)))) && Helpers.isTrue((Helpers.isEqual(this.safeString(request, "timeInForce"), null)))))
@@ -7183,7 +7296,7 @@ public class Binance extends BinanceApi
      * @param {string} side 'buy' or 'sell'
      * @param {float} cost how much you want to trade in units of the quote currency
      * @param {object} [params] extra parameters specific to the exchange API endpoint
-     * @returns {object} an [order structure]{@link https://docs.ccxt.com/#/?id=order-structure}
+     * @returns {object} an [order structure]{@link https://docs.ccxt.com/?id=order-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> createMarketOrderWithCost(Object symbol, Object side, Object cost, Object... optionalArgs)
     {
@@ -7201,7 +7314,7 @@ public class Binance extends BinanceApi
                 put( "cost", cost );
             }};
             return (this.createOrder(symbol, "market", side, cost, null, this.extend(req, parameters))).join();
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -7213,7 +7326,7 @@ public class Binance extends BinanceApi
      * @param {string} symbol unified symbol of the market to create an order in
      * @param {float} cost how much you want to trade in units of the quote currency
      * @param {object} [params] extra parameters specific to the exchange API endpoint
-     * @returns {object} an [order structure]{@link https://docs.ccxt.com/#/?id=order-structure}
+     * @returns {object} an [order structure]{@link https://docs.ccxt.com/?id=order-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> createMarketBuyOrderWithCost(Object symbol, Object cost, Object... optionalArgs)
     {
@@ -7231,7 +7344,7 @@ public class Binance extends BinanceApi
                 put( "cost", cost );
             }};
             return (this.createOrder(symbol, "market", "buy", cost, null, this.extend(req, parameters))).join();
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -7243,7 +7356,7 @@ public class Binance extends BinanceApi
      * @param {string} symbol unified symbol of the market to create an order in
      * @param {float} cost how much you want to trade in units of the quote currency
      * @param {object} [params] extra parameters specific to the exchange API endpoint
-     * @returns {object} an [order structure]{@link https://docs.ccxt.com/#/?id=order-structure}
+     * @returns {object} an [order structure]{@link https://docs.ccxt.com/?id=order-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> createMarketSellOrderWithCost(Object symbol, Object cost, Object... optionalArgs)
     {
@@ -7259,7 +7372,7 @@ public class Binance extends BinanceApi
             }
             Helpers.addElementToObject(parameters, "quoteOrderQty", cost);
             return (this.createOrder(symbol, "market", "sell", cost, null, parameters)).join();
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -7274,12 +7387,14 @@ public class Binance extends BinanceApi
      * @see https://developers.binance.com/docs/margin_trading/trade/Query-Margin-Account-Order
      * @see https://developers.binance.com/docs/derivatives/portfolio-margin/trade/Query-UM-Order
      * @see https://developers.binance.com/docs/derivatives/portfolio-margin/trade/Query-CM-Order
+     * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/Query-Algo-Order
      * @param {string} id the order id
      * @param {string} symbol unified symbol of the market the order was made in
      * @param {object} [params] extra parameters specific to the exchange API endpoint
      * @param {string} [params.marginMode] 'cross' or 'isolated', for spot margin trading
      * @param {boolean} [params.portfolioMargin] set to true if you would like to fetch an order in a portfolio margin account
-     * @returns {object} An [order structure]{@link https://docs.ccxt.com/#/?id=order-structure}
+     * @param {boolean} [params.trigger] set to true if you would like to fetch a trigger or conditional order
+     * @returns {object} An [order structure]{@link https://docs.ccxt.com/?id=order-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchOrder(Object id, Object... optionalArgs)
     {
@@ -7307,21 +7422,28 @@ public class Binance extends BinanceApi
             Object request = new java.util.HashMap<String, Object>() {{
                 put( "symbol", Helpers.GetValue(market, "id") );
             }};
-            Object clientOrderId = this.safeString2(parameters, "origClientOrderId", "clientOrderId");
+            Object isConditional = this.safeBoolN(parameters, new java.util.ArrayList<Object>(java.util.Arrays.asList("stop", "trigger", "conditional")));
+            Object clientOrderId = this.safeStringN(parameters, new java.util.ArrayList<Object>(java.util.Arrays.asList("origClientOrderId", "clientOrderId", "clientAlgoId")));
             if (Helpers.isTrue(!Helpers.isEqual(clientOrderId, null)))
             {
                 if (Helpers.isTrue(Helpers.GetValue(market, "option")))
                 {
                     Helpers.addElementToObject(request, "clientOrderId", clientOrderId);
+                } else if (Helpers.isTrue(Helpers.isTrue(Helpers.isTrue(Helpers.isTrue(Helpers.GetValue(market, "linear")) && Helpers.isTrue(Helpers.GetValue(market, "swap"))) && Helpers.isTrue(isConditional)) && !Helpers.isTrue(isPortfolioMargin)))
+                {
+                    Helpers.addElementToObject(request, "clientAlgoId", clientOrderId);
                 } else
                 {
                     Helpers.addElementToObject(request, "origClientOrderId", clientOrderId);
                 }
+            } else if (Helpers.isTrue(Helpers.isTrue(Helpers.isTrue(Helpers.isTrue(Helpers.GetValue(market, "linear")) && Helpers.isTrue(Helpers.GetValue(market, "swap"))) && Helpers.isTrue(isConditional)) && !Helpers.isTrue(isPortfolioMargin)))
+            {
+                Helpers.addElementToObject(request, "algoId", id);
             } else
             {
                 Helpers.addElementToObject(request, "orderId", id);
             }
-            parameters = this.omit(parameters, new java.util.ArrayList<Object>(java.util.Arrays.asList("type", "clientOrderId", "origClientOrderId")));
+            parameters = this.omit(parameters, new java.util.ArrayList<Object>(java.util.Arrays.asList("type", "clientOrderId", "origClientOrderId", "stop", "trigger", "conditional", "clientAlgoId")));
             Object response = null;
             if (Helpers.isTrue(Helpers.GetValue(market, "option")))
             {
@@ -7333,7 +7455,13 @@ public class Binance extends BinanceApi
                     response = (this.papiGetUmOrder(this.extend(request, parameters))).join();
                 } else
                 {
-                    response = (this.fapiPrivateGetOrder(this.extend(request, parameters))).join();
+                    if (Helpers.isTrue(isConditional))
+                    {
+                        response = (this.fapiPrivateGetAlgoOrder(this.extend(request, parameters))).join();
+                    } else
+                    {
+                        response = (this.fapiPrivateGetOrder(this.extend(request, parameters))).join();
+                    }
                 }
             } else if (Helpers.isTrue(Helpers.GetValue(market, "inverse")))
             {
@@ -7362,7 +7490,7 @@ public class Binance extends BinanceApi
                 response = (this.privateGetOrder(this.extend(request, parameters))).join();
             }
             return this.parseOrder(response, market);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -7379,6 +7507,7 @@ public class Binance extends BinanceApi
      * @see https://developers.binance.com/docs/derivatives/portfolio-margin/trade/Query-All-CM-Orders
      * @see https://developers.binance.com/docs/derivatives/portfolio-margin/trade/Query-All-UM-Conditional-Orders
      * @see https://developers.binance.com/docs/derivatives/portfolio-margin/trade/Query-All-CM-Conditional-Orders
+     * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/Query-All-Algo-Orders
      * @param {string} symbol unified market symbol of the market orders were made in
      * @param {int} [since] the earliest time in ms to fetch orders for
      * @param {int} [limit] the maximum number of order structures to retrieve
@@ -7388,7 +7517,7 @@ public class Binance extends BinanceApi
      * @param {boolean} [params.paginate] default false, when true will automatically paginate by calling this endpoint multiple times. See in the docs all the [available parameters](https://github.com/ccxt/ccxt/wiki/Manual#pagination-params)
      * @param {boolean} [params.portfolioMargin] set to true if you would like to fetch orders in a portfolio margin account
      * @param {boolean} [params.trigger] set to true if you would like to fetch portfolio margin account trigger or conditional orders
-     * @returns {Order[]} a list of [order structures]{@link https://docs.ccxt.com/#/?id=order-structure}
+     * @returns {Order[]} a list of [order structures]{@link https://docs.ccxt.com/?id=order-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchOrders(Object... optionalArgs)
     {
@@ -7456,7 +7585,13 @@ public class Binance extends BinanceApi
                     }
                 } else
                 {
-                    response = (this.fapiPrivateGetAllOrders(this.extend(request, parameters))).join();
+                    if (Helpers.isTrue(isConditional))
+                    {
+                        response = (this.fapiPrivateGetAllAlgoOrders(this.extend(request, parameters))).join();
+                    } else
+                    {
+                        response = (this.fapiPrivateGetAllOrders(this.extend(request, parameters))).join();
+                    }
                 }
             } else if (Helpers.isTrue(Helpers.GetValue(market, "inverse")))
             {
@@ -7671,7 +7806,7 @@ public class Binance extends BinanceApi
             //     ]
             //
             return this.parseOrders(response, market, since, limit);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -7688,6 +7823,7 @@ public class Binance extends BinanceApi
      * @see https://developers.binance.com/docs/derivatives/portfolio-margin/trade/Query-All-Current-UM-Open-Conditional-Orders
      * @see https://developers.binance.com/docs/derivatives/portfolio-margin/trade/Query-All-Current-CM-Open-Orders
      * @see https://developers.binance.com/docs/derivatives/portfolio-margin/trade/Query-All-Current-CM-Open-Conditional-Orders
+     * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/Current-All-Algo-Open-Orders
      * @param {string} symbol unified market symbol
      * @param {int} [since] the earliest time in ms to fetch open orders for
      * @param {int} [limit] the maximum number of open orders structures to retrieve
@@ -7696,7 +7832,7 @@ public class Binance extends BinanceApi
      * @param {boolean} [params.portfolioMargin] set to true if you would like to fetch open orders in the portfolio margin account
      * @param {boolean} [params.trigger] set to true if you would like to fetch portfolio margin account conditional orders
      * @param {string} [params.subType] "linear" or "inverse"
-     * @returns {Order[]} a list of [order structures]{@link https://docs.ccxt.com/#/?id=order-structure}
+     * @returns {Order[]} a list of [order structures]{@link https://docs.ccxt.com/?id=order-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchOpenOrders(Object... optionalArgs)
     {
@@ -7765,7 +7901,13 @@ public class Binance extends BinanceApi
                     }
                 } else
                 {
-                    response = (this.fapiPrivateGetOpenOrders(this.extend(request, parameters))).join();
+                    if (Helpers.isTrue(isConditional))
+                    {
+                        response = (this.fapiPrivateGetOpenAlgoOrders(this.extend(request, parameters))).join();
+                    } else
+                    {
+                        response = (this.fapiPrivateGetOpenOrders(this.extend(request, parameters))).join();
+                    }
                 }
             } else if (Helpers.isTrue(this.isInverse(type, subType)))
             {
@@ -7804,7 +7946,7 @@ public class Binance extends BinanceApi
                 response = (this.privateGetOpenOrders(this.extend(request, parameters))).join();
             }
             return this.parseOrders(response, market, since, limit);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -7823,7 +7965,7 @@ public class Binance extends BinanceApi
      * @param {object} [params] extra parameters specific to the exchange API endpoint
      * @param {string} [params.trigger] set to true if you would like to fetch portfolio margin account stop or conditional orders
      * @param {boolean} [params.portfolioMargin] set to true if you would like to fetch for a portfolio margin account
-     * @returns {object} an [order structure]{@link https://docs.ccxt.com/#/?id=order-structure}
+     * @returns {object} an [order structure]{@link https://docs.ccxt.com/?id=order-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchOpenOrder(Object id, Object... optionalArgs)
     {
@@ -8040,7 +8182,7 @@ public class Binance extends BinanceApi
             //     }
             //
             return this.parseOrder(response, market);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -8064,7 +8206,7 @@ public class Binance extends BinanceApi
      * @param {boolean} [params.paginate] default false, when true will automatically paginate by calling this endpoint multiple times. See in the docs all the [available parameters](https://github.com/ccxt/ccxt/wiki/Manual#pagination-params)
      * @param {boolean} [params.portfolioMargin] set to true if you would like to fetch orders in a portfolio margin account
      * @param {boolean} [params.trigger] set to true if you would like to fetch portfolio margin account trigger or conditional orders
-     * @returns {Order[]} a list of [order structures]{@link https://docs.ccxt.com/#/?id=order-structure}
+     * @returns {Order[]} a list of [order structures]{@link https://docs.ccxt.com/?id=order-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchClosedOrders(Object... optionalArgs)
     {
@@ -8082,7 +8224,7 @@ public class Binance extends BinanceApi
             Object orders = (this.fetchOrders(symbol, since, null, parameters)).join();
             Object filteredOrders = this.filterBy(orders, "status", "closed");
             return this.filterBySinceLimit(filteredOrders, since, limit);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -8106,7 +8248,7 @@ public class Binance extends BinanceApi
      * @param {boolean} [params.paginate] default false, when true will automatically paginate by calling this endpoint multiple times. See in the docs all the [available parameters](https://github.com/ccxt/ccxt/wiki/Manual#pagination-params)
      * @param {boolean} [params.portfolioMargin] set to true if you would like to fetch orders in a portfolio margin account
      * @param {boolean} [params.trigger] set to true if you would like to fetch portfolio margin account trigger or conditional orders
-     * @returns {object[]} a list of [order structures]{@link https://docs.ccxt.com/#/?id=order-structure}
+     * @returns {object[]} a list of [order structures]{@link https://docs.ccxt.com/?id=order-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchCanceledOrders(Object... optionalArgs)
     {
@@ -8124,7 +8266,7 @@ public class Binance extends BinanceApi
             Object orders = (this.fetchOrders(symbol, since, null, parameters)).join();
             Object filteredOrders = this.filterBy(orders, "status", "canceled");
             return this.filterBySinceLimit(filteredOrders, since, limit);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -8148,7 +8290,7 @@ public class Binance extends BinanceApi
      * @param {boolean} [params.paginate] default false, when true will automatically paginate by calling this endpoint multiple times. See in the docs all the [available parameters](https://github.com/ccxt/ccxt/wiki/Manual#pagination-params)
      * @param {boolean} [params.portfolioMargin] set to true if you would like to fetch orders in a portfolio margin account
      * @param {boolean} [params.trigger] set to true if you would like to fetch portfolio margin account trigger or conditional orders
-     * @returns {object[]} a list of [order structures]{@link https://docs.ccxt.com/#/?id=order-structure}
+     * @returns {object[]} a list of [order structures]{@link https://docs.ccxt.com/?id=order-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchCanceledAndClosedOrders(Object... optionalArgs)
     {
@@ -8169,7 +8311,7 @@ public class Binance extends BinanceApi
             Object filteredOrders = this.arrayConcat(canceledOrders, closedOrders);
             Object sortedOrders = this.sortBy(filteredOrders, "timestamp");
             return this.filterBySinceLimit(sortedOrders, since, limit);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -8187,12 +8329,13 @@ public class Binance extends BinanceApi
      * @see https://developers.binance.com/docs/derivatives/portfolio-margin/trade/Cancel-UM-Conditional-Order
      * @see https://developers.binance.com/docs/derivatives/portfolio-margin/trade/Cancel-CM-Conditional-Order
      * @see https://developers.binance.com/docs/derivatives/portfolio-margin/trade/Cancel-Margin-Account-Order
+     * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/Cancel-Algo-Order
      * @param {string} id order id
      * @param {string} symbol unified symbol of the market the order was made in
      * @param {object} [params] extra parameters specific to the exchange API endpoint
      * @param {boolean} [params.portfolioMargin] set to true if you would like to cancel an order in a portfolio margin account
      * @param {boolean} [params.trigger] set to true if you would like to cancel a portfolio margin account conditional order
-     * @returns {object} An [order structure]{@link https://docs.ccxt.com/#/?id=order-structure}
+     * @returns {object} An [order structure]{@link https://docs.ccxt.com/?id=order-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> cancelOrder(Object id, Object... optionalArgs)
     {
@@ -8221,12 +8364,15 @@ public class Binance extends BinanceApi
             Object request = new java.util.HashMap<String, Object>() {{
                 put( "symbol", Helpers.GetValue(market, "id") );
             }};
-            Object clientOrderId = this.safeStringN(parameters, new java.util.ArrayList<Object>(java.util.Arrays.asList("origClientOrderId", "clientOrderId", "newClientStrategyId")));
+            Object clientOrderId = this.safeStringN(parameters, new java.util.ArrayList<Object>(java.util.Arrays.asList("origClientOrderId", "clientOrderId", "newClientStrategyId", "clientAlgoId")));
             if (Helpers.isTrue(!Helpers.isEqual(clientOrderId, null)))
             {
                 if (Helpers.isTrue(Helpers.GetValue(market, "option")))
                 {
                     Helpers.addElementToObject(request, "clientOrderId", clientOrderId);
+                } else if (Helpers.isTrue(Helpers.isTrue(Helpers.isTrue(Helpers.isTrue(Helpers.GetValue(market, "linear")) && Helpers.isTrue(Helpers.GetValue(market, "swap"))) && Helpers.isTrue(isConditional)) && !Helpers.isTrue(isPortfolioMargin)))
+                {
+                    Helpers.addElementToObject(request, "clientAlgoId", clientOrderId);
                 } else
                 {
                     if (Helpers.isTrue(Helpers.isTrue(isPortfolioMargin) && Helpers.isTrue(isConditional)))
@@ -8242,12 +8388,15 @@ public class Binance extends BinanceApi
                 if (Helpers.isTrue(Helpers.isTrue(isPortfolioMargin) && Helpers.isTrue(isConditional)))
                 {
                     Helpers.addElementToObject(request, "strategyId", id);
+                } else if (Helpers.isTrue(Helpers.isTrue(Helpers.isTrue(Helpers.isTrue(Helpers.GetValue(market, "linear")) && Helpers.isTrue(Helpers.GetValue(market, "swap"))) && Helpers.isTrue(isConditional)) && !Helpers.isTrue(isPortfolioMargin)))
+                {
+                    Helpers.addElementToObject(request, "algoId", id);
                 } else
                 {
                     Helpers.addElementToObject(request, "orderId", id);
                 }
             }
-            parameters = this.omit(parameters, new java.util.ArrayList<Object>(java.util.Arrays.asList("type", "origClientOrderId", "clientOrderId", "newClientStrategyId", "stop", "trigger", "conditional")));
+            parameters = this.omit(parameters, new java.util.ArrayList<Object>(java.util.Arrays.asList("type", "origClientOrderId", "clientOrderId", "newClientStrategyId", "stop", "trigger", "conditional", "clientAlgoId")));
             Object response = null;
             if (Helpers.isTrue(Helpers.GetValue(market, "option")))
             {
@@ -8265,7 +8414,13 @@ public class Binance extends BinanceApi
                     }
                 } else
                 {
-                    response = (this.fapiPrivateDeleteOrder(this.extend(request, parameters))).join();
+                    if (Helpers.isTrue(isConditional))
+                    {
+                        response = (this.fapiPrivateDeleteAlgoOrder(this.extend(request, parameters))).join();
+                    } else
+                    {
+                        response = (this.fapiPrivateDeleteOrder(this.extend(request, parameters))).join();
+                    }
                 }
             } else if (Helpers.isTrue(Helpers.GetValue(market, "inverse")))
             {
@@ -8300,7 +8455,7 @@ public class Binance extends BinanceApi
                 response = (this.privateDeleteOrder(this.extend(request, parameters))).join();
             }
             return this.parseOrder(response, market);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -8318,12 +8473,13 @@ public class Binance extends BinanceApi
      * @see https://developers.binance.com/docs/derivatives/portfolio-margin/trade/Cancel-All-CM-Open-Orders
      * @see https://developers.binance.com/docs/derivatives/portfolio-margin/trade/Cancel-All-CM-Open-Conditional-Orders
      * @see https://developers.binance.com/docs/derivatives/portfolio-margin/trade/Cancel-Margin-Account-All-Open-Orders-on-a-Symbol
+     * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/Cancel-All-Algo-Open-Orders
      * @param {string} symbol unified market symbol of the market to cancel orders in
      * @param {object} [params] extra parameters specific to the exchange API endpoint
      * @param {string} [params.marginMode] 'cross' or 'isolated', for spot margin trading
      * @param {boolean} [params.portfolioMargin] set to true if you would like to cancel orders in a portfolio margin account
      * @param {boolean} [params.trigger] set to true if you would like to cancel portfolio margin account conditional orders
-     * @returns {object[]} a list of [order structures]{@link https://docs.ccxt.com/#/?id=order-structure}
+     * @returns {object[]} a list of [order structures]{@link https://docs.ccxt.com/?id=order-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> cancelAllOrders(Object... optionalArgs)
     {
@@ -8369,7 +8525,13 @@ public class Binance extends BinanceApi
                     }
                 } else
                 {
-                    response = (this.fapiPrivateDeleteAllOpenOrders(this.extend(request, parameters))).join();
+                    if (Helpers.isTrue(isConditional))
+                    {
+                        response = (this.fapiPrivateDeleteAlgoOpenOrders(this.extend(request, parameters))).join();
+                    } else
+                    {
+                        response = (this.fapiPrivateDeleteAllOpenOrders(this.extend(request, parameters))).join();
+                    }
                 }
             } else if (Helpers.isTrue(Helpers.GetValue(market, "inverse")))
             {
@@ -8414,7 +8576,7 @@ public class Binance extends BinanceApi
                 }});
                 return new java.util.ArrayList<Object>(java.util.Arrays.asList(order));
             }
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -8432,7 +8594,7 @@ public class Binance extends BinanceApi
      * EXCHANGE SPECIFIC PARAMETERS
      * @param {string[]} [params.origClientOrderIdList] max length 10 e.g. ["my_id_1","my_id_2"], encode the double quotes. No space after comma
      * @param {int[]} [params.recvWindow]
-     * @returns {object} an list of [order structures]{@link https://docs.ccxt.com/#/?id=order-structure}
+     * @returns {object} an list of [order structures]{@link https://docs.ccxt.com/?id=order-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> cancelOrders(Object ids, Object... optionalArgs)
     {
@@ -8507,7 +8669,7 @@ public class Binance extends BinanceApi
             //    ]
             //
             return this.parseOrders(response, market);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -8524,7 +8686,7 @@ public class Binance extends BinanceApi
      * @param {int} [since] the earliest time in ms to fetch trades for
      * @param {int} [limit] the maximum number of trades to retrieve
      * @param {object} [params] extra parameters specific to the exchange API endpoint
-     * @returns {object[]} a list of [trade structures]{@link https://docs.ccxt.com/#/?id=trade-structure}
+     * @returns {object[]} a list of [trade structures]{@link https://docs.ccxt.com/?id=trade-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchOrderTrades(Object id, Object... optionalArgs)
     {
@@ -8551,7 +8713,7 @@ public class Binance extends BinanceApi
                 put( "orderId", id );
             }};
             return (this.fetchMyTrades(symbol, since, limit, this.extend(request, parameters))).join();
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -8573,7 +8735,7 @@ public class Binance extends BinanceApi
      * @param {boolean} [params.paginate] default false, when true will automatically paginate by calling this endpoint multiple times. See in the docs all the [available parameters](https://github.com/ccxt/ccxt/wiki/Manual#pagination-params)
      * @param {int} [params.until] the latest time in ms to fetch entries for
      * @param {boolean} [params.portfolioMargin] set to true if you would like to fetch trades for a portfolio margin account
-     * @returns {Trade[]} a list of [trade structures]{@link https://docs.ccxt.com/#/?id=trade-structure}
+     * @returns {Trade[]} a list of [trade structures]{@link https://docs.ccxt.com/?id=trade-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchMyTrades(Object... optionalArgs)
     {
@@ -8820,7 +8982,7 @@ public class Binance extends BinanceApi
             //     ]
             //
             return this.parseTrades(response, market, since, limit);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -8834,7 +8996,7 @@ public class Binance extends BinanceApi
      * @param {int} [limit] the maximum number of dust trades to retrieve
      * @param {object} [params] extra parameters specific to the exchange API endpoint
      * @param {string} [params.type] 'spot' or 'margin', default spot
-     * @returns {object[]} a list of [trade structures]{@link https://docs.ccxt.com/#/?id=trade-structure}
+     * @returns {object[]} a list of [trade structures]{@link https://docs.ccxt.com/?id=trade-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchMyDustTrades(Object... optionalArgs)
     {
@@ -8908,7 +9070,7 @@ public class Binance extends BinanceApi
             }
             Object trades = this.parseTrades(data, null, since, limit);
             return this.filterBySinceLimit(trades, since, limit);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -9007,7 +9169,7 @@ public class Binance extends BinanceApi
      * @param {bool} [params.fiat] if true, only fiat deposits will be returned
      * @param {int} [params.until] the latest time in ms to fetch entries for
      * @param {boolean} [params.paginate] default false, when true will automatically paginate by calling this endpoint multiple times. See in the docs all the [available parameters](https://github.com/ccxt/ccxt/wiki/Manual#pagination-params)
-     * @returns {object[]} a list of [transaction structures]{@link https://docs.ccxt.com/#/?id=transaction-structure}
+     * @returns {object[]} a list of [transaction structures]{@link https://docs.ccxt.com/?id=transaction-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchDeposits(Object... optionalArgs)
     {
@@ -9081,7 +9243,7 @@ public class Binance extends BinanceApi
                 Helpers.addElementToObject(Helpers.GetValue(response, i), "type", "deposit");
             }
             return this.parseTransactions(response, currency, since, limit);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -9098,7 +9260,7 @@ public class Binance extends BinanceApi
      * @param {bool} [params.fiat] if true, only fiat withdrawals will be returned
      * @param {int} [params.until] the latest time in ms to fetch withdrawals for
      * @param {boolean} [params.paginate] default false, when true will automatically paginate by calling this endpoint multiple times. See in the docs all the [available parameters](https://github.com/ccxt/ccxt/wiki/Manual#pagination-params)
-     * @returns {object[]} a list of [transaction structures]{@link https://docs.ccxt.com/#/?id=transaction-structure}
+     * @returns {object[]} a list of [transaction structures]{@link https://docs.ccxt.com/?id=transaction-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchWithdrawals(Object... optionalArgs)
     {
@@ -9167,7 +9329,7 @@ public class Binance extends BinanceApi
                 Helpers.addElementToObject(Helpers.GetValue(response, i), "type", "withdrawal");
             }
             return this.parseTransactions(response, currency, since, limit);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -9450,7 +9612,7 @@ public class Binance extends BinanceApi
         Object accountsById = this.safeDict(this.options, "accountsById", new java.util.HashMap<String, Object>() {{}});
         if (Helpers.isTrue(!Helpers.isEqual(type, null)))
         {
-            Object parts = new java.util.ArrayList<Object>(java.util.Arrays.asList(((String)type).split((String)"_")));
+            Object parts = Helpers.split(type, "_");
             fromAccount = this.safeValue(parts, 0);
             toAccount = this.safeValue(parts, 1);
             fromAccount = this.safeString(accountsById, fromAccount, fromAccount);
@@ -9522,7 +9684,7 @@ public class Binance extends BinanceApi
      * @param {object} [params] extra parameters specific to the exchange API endpoint
      * @param {string} [params.type] exchange specific transfer type
      * @param {string} [params.symbol] the unified symbol, required for isolated margin transfers
-     * @returns {object} a [transfer structure]{@link https://docs.ccxt.com/#/?id=transfer-structure}
+     * @returns {object} a [transfer structure]{@link https://docs.ccxt.com/?id=transfer-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> transfer(Object code, Object amount, Object fromAccount, Object toAccount, Object... optionalArgs)
     {
@@ -9634,7 +9796,7 @@ public class Binance extends BinanceApi
             //     }
             //
             return this.parseTransfer(response, currency);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -9650,7 +9812,7 @@ public class Binance extends BinanceApi
      * @param {int} [params.until] the latest time in ms to fetch transfers for
      * @param {boolean} [params.paginate] default false, when true will automatically paginate by calling this endpoint multiple times. See in the docs all the [available parameters](https://github.com/ccxt/ccxt/wiki/Manual#pagination-params)
      * @param {boolean} [params.internal] default false, when true will fetch pay trade history
-     * @returns {object[]} a list of [transfer structures]{@link https://docs.ccxt.com/#/?id=transfer-structure}
+     * @returns {object[]} a list of [transfer structures]{@link https://docs.ccxt.com/?id=transfer-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchTransfers(Object... optionalArgs)
     {
@@ -9730,7 +9892,7 @@ public class Binance extends BinanceApi
             }
             Object rows = this.safeList2(response, "rows", "data", new java.util.ArrayList<Object>(java.util.Arrays.asList()));
             return this.parseTransfers(rows, currency, since, limit);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -9742,7 +9904,7 @@ public class Binance extends BinanceApi
      * @param {string} code unified currency code
      * @param {object} [params] extra parameters specific to the exchange API endpoint
      * @param {string} [params.network] network for fetch deposit address
-     * @returns {object} an [address structure]{@link https://docs.ccxt.com/#/?id=address-structure}
+     * @returns {object} an [address structure]{@link https://docs.ccxt.com/?id=address-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchDepositAddress(Object code, Object... optionalArgs)
     {
@@ -9779,7 +9941,7 @@ public class Binance extends BinanceApi
             //     }
             //
             return this.parseDepositAddress(response, currency);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -9825,7 +9987,7 @@ public class Binance extends BinanceApi
      * @see https://developers.binance.com/docs/wallet/capital/all-coins-info
      * @param {string[]|undefined} codes not used by binance fetchTransactionFees ()
      * @param {object} [params] extra parameters specific to the exchange API endpoint
-     * @returns {object[]} a list of [fee structures]{@link https://docs.ccxt.com/#/?id=fee-structure}
+     * @returns {object[]} a list of [fee structures]{@link https://docs.ccxt.com/?id=fee-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchTransactionFees(Object... optionalArgs)
     {
@@ -9939,7 +10101,7 @@ public class Binance extends BinanceApi
                 put( "deposit", new java.util.HashMap<String, Object>() {{}} );
                 put( "info", response );
             }};
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -9950,7 +10112,7 @@ public class Binance extends BinanceApi
      * @see https://developers.binance.com/docs/wallet/capital/all-coins-info
      * @param {string[]|undefined} codes not used by binance fetchDepositWithdrawFees ()
      * @param {object} [params] extra parameters specific to the exchange API endpoint
-     * @returns {object[]} a list of [fee structures]{@link https://docs.ccxt.com/#/?id=fee-structure}
+     * @returns {object[]} a list of [fee structures]{@link https://docs.ccxt.com/?id=fee-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchDepositWithdrawFees(Object... optionalArgs)
     {
@@ -10004,7 +10166,7 @@ public class Binance extends BinanceApi
             //    ]
             //
             return this.parseDepositWithdrawFees(response, codes, "coin");
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -10091,7 +10253,7 @@ public class Binance extends BinanceApi
      * @param {string} address the address to withdraw to
      * @param {string} tag
      * @param {object} [params] extra parameters specific to the exchange API endpoint
-     * @returns {object} a [transaction structure]{@link https://docs.ccxt.com/#/?id=transaction-structure}
+     * @returns {object} a [transaction structure]{@link https://docs.ccxt.com/?id=transaction-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> withdraw(Object code, Object amount, Object address, Object... optionalArgs)
     {
@@ -10126,7 +10288,7 @@ public class Binance extends BinanceApi
             Object response = (this.sapiPostCapitalWithdrawApply(this.extend(request, parameters))).join();
             //     { id: '9a67628b16ba4988ae20d329333f16bc' }
             return this.parseTransaction(response, currency);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -10175,7 +10337,7 @@ public class Binance extends BinanceApi
      * @param {object} [params] extra parameters specific to the exchange API endpoint
      * @param {boolean} [params.portfolioMargin] set to true if you would like to fetch trading fees in a portfolio margin account
      * @param {string} [params.subType] "linear" or "inverse"
-     * @returns {object} a [fee structure]{@link https://docs.ccxt.com/#/?id=fee-structure}
+     * @returns {object} a [fee structure]{@link https://docs.ccxt.com/?id=fee-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchTradingFee(Object symbol, Object... optionalArgs)
     {
@@ -10248,7 +10410,7 @@ public class Binance extends BinanceApi
                 data = this.safeDict(data, 0, new java.util.HashMap<String, Object>() {{}});
             }
             return this.parseTradingFee(data, market);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -10262,7 +10424,7 @@ public class Binance extends BinanceApi
      * @see https://developers.binance.com/docs/derivatives/usds-margined-futures/account/rest-api/Account-Config
      * @param {object} [params] extra parameters specific to the exchange API endpoint
      * @param {string} [params.subType] "linear" or "inverse"
-     * @returns {object} a dictionary of [fee structures]{@link https://docs.ccxt.com/#/?id=fee-structure} indexed by market symbols
+     * @returns {object} a dictionary of [fee structures]{@link https://docs.ccxt.com/?id=fee-structure} indexed by market symbols
      */
     public java.util.concurrent.CompletableFuture<Object> fetchTradingFees(Object... optionalArgs)
     {
@@ -10447,7 +10609,7 @@ public class Binance extends BinanceApi
                 return result;
             }
             return null;
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -10462,7 +10624,7 @@ public class Binance extends BinanceApi
      * @param {string} type 1 - transfer from spot account to USDT-Ⓜ futures account, 2 - transfer from USDT-Ⓜ futures account to spot account, 3 - transfer from spot account to COIN-Ⓜ futures account, 4 - transfer from COIN-Ⓜ futures account to spot account
      * @param {object} [params] extra parameters specific to the exchange API endpoint
      * @param {float} params.recvWindow
-     * @returns {object} a [transfer structure]{@link https://docs.ccxt.com/#/?id=futures-transfer-structure}
+     * @returns {object} a [transfer structure]{@link https://docs.ccxt.com/?id=futures-transfer-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> futuresTransfer(Object code, Object amount, Object type2, Object... optionalArgs)
     {
@@ -10489,7 +10651,7 @@ public class Binance extends BinanceApi
             //   }
             //
             return this.parseTransfer(response, currency);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -10501,7 +10663,7 @@ public class Binance extends BinanceApi
      * @see https://developers.binance.com/docs/derivatives/coin-margined-futures/market-data/rest-api/Index-Price-and-Mark-Price
      * @param {string} symbol unified market symbol
      * @param {object} [params] extra parameters specific to the exchange API endpoint
-     * @returns {object} a [funding rate structure]{@link https://docs.ccxt.com/#/?id=funding-rate-structure}
+     * @returns {object} a [funding rate structure]{@link https://docs.ccxt.com/?id=funding-rate-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchFundingRate(Object symbol, Object... optionalArgs)
     {
@@ -10542,7 +10704,7 @@ public class Binance extends BinanceApi
             //     }
             //
             return this.parseFundingRate(response, market);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -10554,12 +10716,12 @@ public class Binance extends BinanceApi
      * @see https://developers.binance.com/docs/derivatives/coin-margined-futures/market-data/rest-api/Get-Funding-Rate-History-of-Perpetual-Futures
      * @param {string} symbol unified symbol of the market to fetch the funding rate history for
      * @param {int} [since] timestamp in ms of the earliest funding rate to fetch
-     * @param {int} [limit] the maximum amount of [funding rate structures]{@link https://docs.ccxt.com/#/?id=funding-rate-history-structure} to fetch
+     * @param {int} [limit] the maximum amount of [funding rate structures]{@link https://docs.ccxt.com/?id=funding-rate-history-structure} to fetch
      * @param {object} [params] extra parameters specific to the exchange API endpoint
      * @param {int} [params.until] timestamp in ms of the latest funding rate
      * @param {boolean} [params.paginate] default false, when true will automatically paginate by calling this endpoint multiple times. See in the docs all the [available parameters](https://github.com/ccxt/ccxt/wiki/Manual#pagination-params)
      * @param {string} [params.subType] "linear" or "inverse"
-     * @returns {object[]} a list of [funding rate structures]{@link https://docs.ccxt.com/#/?id=funding-rate-history-structure}
+     * @returns {object[]} a list of [funding rate structures]{@link https://docs.ccxt.com/?id=funding-rate-history-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchFundingRateHistory(Object... optionalArgs)
     {
@@ -10628,7 +10790,7 @@ public class Binance extends BinanceApi
             //     }
             //
             return this.parseFundingRateHistories(response, market, since, limit);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -10661,7 +10823,7 @@ public class Binance extends BinanceApi
      * @param {string[]|undefined} symbols list of unified market symbols
      * @param {object} [params] extra parameters specific to the exchange API endpoint
      * @param {string} [params.subType] "linear" or "inverse"
-     * @returns {object[]} a list of [funding rate structures]{@link https://docs.ccxt.com/#/?id=funding-rates-structure}, indexed by market symbols
+     * @returns {object[]} a list of [funding rate structures]{@link https://docs.ccxt.com/?id=funding-rates-structure}, indexed by market symbols
      */
     public java.util.concurrent.CompletableFuture<Object> fetchFundingRates(Object... optionalArgs)
     {
@@ -10691,7 +10853,7 @@ public class Binance extends BinanceApi
                 throw new NotSupported((String)Helpers.add(this.id, " fetchFundingRates() supports linear and inverse contracts only")) ;
             }
             return this.parseFundingRates(response, symbols);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -11325,7 +11487,7 @@ public class Binance extends BinanceApi
         final Object finalMarginMode = marginMode;
         final Object finalSide = side;
         final Object finalPercentage = percentage;
-        return new java.util.HashMap<String, Object>() {{
+        return this.safePosition(new java.util.HashMap<String, Object>() {{
             put( "info", position );
             put( "id", null );
             put( "symbol", symbol );
@@ -11352,7 +11514,7 @@ public class Binance extends BinanceApi
             put( "percentage", finalPercentage );
             put( "stopLossPrice", null );
             put( "takeProfitPrice", null );
-        }};
+        }});
     }
 
     public java.util.concurrent.CompletableFuture<Object> loadLeverageBrackets(Object... optionalArgs)
@@ -11421,7 +11583,7 @@ public class Binance extends BinanceApi
                 }
             }
             return Helpers.GetValue(this.options, "leverageBrackets");
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -11437,7 +11599,7 @@ public class Binance extends BinanceApi
      * @param {object} [params] extra parameters specific to the exchange API endpoint
      * @param {boolean} [params.portfolioMargin] set to true if you would like to fetch the leverage tiers for a portfolio margin account
      * @param {string} [params.subType] "linear" or "inverse"
-     * @returns {object} a dictionary of [leverage tiers structures]{@link https://docs.ccxt.com/#/?id=leverage-tiers-structure}, indexed by market symbols
+     * @returns {object} a dictionary of [leverage tiers structures]{@link https://docs.ccxt.com/?id=leverage-tiers-structure}, indexed by market symbols
      */
     public java.util.concurrent.CompletableFuture<Object> fetchLeverageTiers(Object... optionalArgs)
     {
@@ -11521,7 +11683,7 @@ public class Binance extends BinanceApi
             //     ]
             //
             return this.parseLeverageTiers(response, symbols, "symbol");
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -11579,7 +11741,7 @@ final Object finalMarket = market;
      * @see https://developers.binance.com/docs/derivatives/option/trade/Option-Position-Information
      * @param {string} symbol unified market symbol of the market the position is held in
      * @param {object} [params] extra parameters specific to the exchange API endpoint
-     * @returns {object} a [position structure]{@link https://docs.ccxt.com/#/?id=position-structure}
+     * @returns {object} a [position structure]{@link https://docs.ccxt.com/?id=position-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchPosition(Object symbol, Object... optionalArgs)
     {
@@ -11620,8 +11782,8 @@ final Object finalMarket = market;
             //         }
             //     ]
             //
-            return this.parsePosition(Helpers.GetValue(response, 0), market);
-        });
+            return this.parseOptionPosition(Helpers.GetValue(response, 0), market);
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -11632,7 +11794,7 @@ final Object finalMarket = market;
      * @see https://developers.binance.com/docs/derivatives/option/trade/Option-Position-Information
      * @param {string[]|undefined} symbols list of unified market symbols
      * @param {object} [params] extra parameters specific to the exchange API endpoint
-     * @returns {object[]} a list of [position structures]{@link https://docs.ccxt.com/#/?id=position-structure}
+     * @returns {object[]} a list of [position structures]{@link https://docs.ccxt.com/?id=position-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchOptionPositions(Object... optionalArgs)
     {
@@ -11690,14 +11852,14 @@ final Object finalMarket = market;
             Object result = new java.util.ArrayList<Object>(java.util.Arrays.asList());
             for (var i = 0; Helpers.isLessThan(i, Helpers.getArrayLength(response)); i++)
             {
-                ((java.util.List<Object>)result).add(this.parsePosition(Helpers.GetValue(response, i), market));
+                ((java.util.List<Object>)result).add(this.parseOptionPosition(Helpers.GetValue(response, i), market));
             }
             return this.filterByArrayPositions(result, "symbol", symbols, false);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
-    public Object parsePosition(Object position, Object... optionalArgs)
+    public Object parseOptionPosition(Object position, Object... optionalArgs)
     {
         //
         //     {
@@ -11774,7 +11936,7 @@ final Object finalMarket = market;
      * @param {object} [params.params] extra parameters specific to the exchange API endpoint
      * @param {string} [params.method] method name to call, "positionRisk", "account" or "option", default is "positionRisk"
      * @param {bool} [params.useV2] set to true if you want to use the obsolete endpoint, where some more additional fields were provided
-     * @returns {object[]} a list of [position structure]{@link https://docs.ccxt.com/#/?id=position-structure}
+     * @returns {object[]} a list of [position structure]{@link https://docs.ccxt.com/?id=position-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchPositions(Object... optionalArgs)
     {
@@ -11811,7 +11973,7 @@ final Object finalMarket = market;
             {
                 throw new NotSupported((String)Helpers.add(Helpers.add(Helpers.add(this.id, ".options[\"fetchPositions\"][\"method\"] or params[\"method\"] = \""), defaultMethod), "\" is invalid, please choose between \"account\", \"positionRisk\" and \"option\"")) ;
             }
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -11865,7 +12027,7 @@ final Object finalMarket = market;
             {
                 if (Helpers.isTrue(isPortfolioMargin))
                 {
-                    response = (this.papiGetUmAccount(parameters)).join();
+                    response = (this.papiV2GetUmAccount(parameters)).join();
                 } else
                 {
                     Object useV2 = null;
@@ -11900,7 +12062,7 @@ final Object finalMarket = market;
             Object result = this.parseAccountPositions(response, filterClosed);
             symbols = this.marketSymbols(symbols);
             return this.filterByArrayPositions(result, "symbol", symbols, false);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -12077,7 +12239,7 @@ final Object finalMarket = market;
             }
             symbols = this.marketSymbols(symbols);
             return this.filterByArrayPositions(result, "symbol", symbols, false);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -12096,7 +12258,7 @@ final Object finalMarket = market;
      * @param {int} [params.until] timestamp in ms of the latest funding history entry
      * @param {boolean} [params.portfolioMargin] set to true if you would like to fetch the funding history for a portfolio margin account
      * @param {string} [params.subType] "linear" or "inverse"
-     * @returns {object} a [funding history structure]{@link https://docs.ccxt.com/#/?id=funding-history-structure}
+     * @returns {object} a [funding history structure]{@link https://docs.ccxt.com/?id=funding-history-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchFundingHistory(Object... optionalArgs)
     {
@@ -12167,7 +12329,7 @@ final Object finalMarket = market;
                 throw new NotSupported((String)Helpers.add(this.id, " fetchFundingHistory() supports linear and inverse contracts only")) ;
             }
             return this.parseIncomes(response, market, since, limit);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -12237,7 +12399,7 @@ final Object finalMarket = market;
                 throw new NotSupported((String)Helpers.add(this.id, " setLeverage() supports linear and inverse contracts only")) ;
             }
             return response;
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -12306,7 +12468,7 @@ final Object finalMarket = market;
                 // https://github.com/ccxt/ccxt/pull/11624
                 // POST https://fapi.binance.com/fapi/v1/marginType 400 Bad Request
                 // binanceusdm
-                if (Helpers.isTrue(e instanceof MarginModeAlreadySet))
+                if (Helpers.isTrue(Helpers.isInstance(e, MarginModeAlreadySet.class)))
                 {
                     Object throwMarginModeAlreadySet = this.safeBool(this.options, "throwMarginModeAlreadySet", false);
                     if (Helpers.isTrue(throwMarginModeAlreadySet))
@@ -12325,7 +12487,7 @@ final Object finalMarket = market;
                 }
             }
             return response;
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -12410,7 +12572,7 @@ final Object finalMarket = market;
             //     }
             //
             return response;
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -12426,7 +12588,7 @@ final Object finalMarket = market;
      * @param {string[]} [symbols] a list of unified market symbols
      * @param {object} [params] extra parameters specific to the exchange API endpoint
      * @param {string} [params.subType] "linear" or "inverse"
-     * @returns {object} a list of [leverage structures]{@link https://docs.ccxt.com/#/?id=leverage-structure}
+     * @returns {object} a list of [leverage structures]{@link https://docs.ccxt.com/?id=leverage-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchLeverages(Object... optionalArgs)
     {
@@ -12478,7 +12640,7 @@ final Object finalMarket = market;
                 leverages = response;
             }
             return this.parseLeverages(leverages, symbols, "symbol");
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -12533,7 +12695,7 @@ final Object finalMarket = market;
      * @param {int} [since] timestamp in ms
      * @param {int} [limit] number of records, default 100, max 100
      * @param {object} [params] exchange specific params
-     * @returns {object[]} a list of [settlement history objects]{@link https://docs.ccxt.com/#/?id=settlement-history-structure}
+     * @returns {object[]} a list of [settlement history objects]{@link https://docs.ccxt.com/?id=settlement-history-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchSettlementHistory(Object... optionalArgs)
     {
@@ -12583,7 +12745,7 @@ final Object finalMarket = market;
             Object settlements = this.parseSettlements(response, market);
             Object sorted = this.sortBy(settlements, "timestamp");
             return this.filterBySymbolSinceLimit(sorted, symbol, since, limit);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -12655,7 +12817,7 @@ final Object finalMarket = market;
             Object settlements = this.parseSettlements(response, market);
             Object sorted = this.sortBy(settlements, "timestamp");
             return this.filterBySymbolSinceLimit(sorted, symbol, since, limit);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -12754,7 +12916,7 @@ final Object finalMarket = market;
      * @param {string} id the identification number of the ledger entry
      * @param {string} code unified currency code
      * @param {object} [params] extra parameters specific to the exchange API endpoint
-     * @returns {object} a [ledger structure]{@link https://docs.ccxt.com/#/?id=ledger}
+     * @returns {object} a [ledger structure]{@link https://docs.ccxt.com/?id=ledger}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchLedgerEntry(Object id, Object... optionalArgs)
     {
@@ -12792,7 +12954,7 @@ final Object finalMarket = market;
             //
             Object first = this.safeDict(response, 0, response);
             return this.parseLedgerEntry(first, currency);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -12813,7 +12975,7 @@ final Object finalMarket = market;
      * @param {boolean} [params.paginate] default false, when true will automatically paginate by calling this endpoint multiple times. See in the docs all the [available parameters](https://github.com/ccxt/ccxt/wiki/Manual#pagination-params)
      * @param {boolean} [params.portfolioMargin] set to true if you would like to fetch the ledger for a portfolio margin account
      * @param {string} [params.subType] "linear" or "inverse"
-     * @returns {object} a [ledger structure]{@link https://docs.ccxt.com/#/?id=ledger}
+     * @returns {object} a [ledger structure]{@link https://docs.ccxt.com/?id=ledger}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchLedger(Object... optionalArgs)
     {
@@ -12922,7 +13084,7 @@ final Object finalMarket = market;
             //     ]
             //
             return this.parseLedger(response, currency, since, limit);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -13047,7 +13209,7 @@ final Object finalMarket = market;
         {
             return null;
         }
-        Object urlParts = new java.util.ArrayList<Object>(java.util.Arrays.asList(((String)url).split((String)"/")));
+        Object urlParts = Helpers.split(url, "/");
         Object scheme = this.safeString(urlParts, 0);
         if (Helpers.isTrue(Helpers.isEqual(scheme, null)))
         {
@@ -13105,7 +13267,7 @@ final Object finalMarket = market;
             {
                 throw new AuthenticationError((String)Helpers.add(this.id, " userDataStream endpoint requires `apiKey` credential")) ;
             }
-        } else if (Helpers.isTrue(Helpers.isTrue(Helpers.isTrue(Helpers.isTrue(Helpers.isTrue(Helpers.isTrue(Helpers.isTrue(Helpers.isTrue(Helpers.isTrue(Helpers.isTrue(Helpers.isTrue(Helpers.isTrue((Helpers.isEqual(api, "private"))) || Helpers.isTrue((Helpers.isEqual(api, "eapiPrivate")))) || Helpers.isTrue((Helpers.isTrue(Helpers.isEqual(api, "sapi")) && Helpers.isTrue(!Helpers.isEqual(path, "system/status"))))) || Helpers.isTrue((Helpers.isEqual(api, "sapiV2")))) || Helpers.isTrue((Helpers.isEqual(api, "sapiV3")))) || Helpers.isTrue((Helpers.isEqual(api, "sapiV4")))) || Helpers.isTrue((Helpers.isEqual(api, "dapiPrivate")))) || Helpers.isTrue((Helpers.isEqual(api, "dapiPrivateV2")))) || Helpers.isTrue((Helpers.isEqual(api, "fapiPrivate")))) || Helpers.isTrue((Helpers.isEqual(api, "fapiPrivateV2")))) || Helpers.isTrue((Helpers.isEqual(api, "fapiPrivateV3")))) || Helpers.isTrue((Helpers.isTrue(Helpers.isEqual(api, "papi")) && Helpers.isTrue(!Helpers.isEqual(path, "ping"))))))
+        } else if (Helpers.isTrue(Helpers.isTrue(Helpers.isTrue(Helpers.isTrue(Helpers.isTrue(Helpers.isTrue(Helpers.isTrue(Helpers.isTrue(Helpers.isTrue(Helpers.isTrue(Helpers.isTrue(Helpers.isTrue((Helpers.isEqual(api, "private"))) || Helpers.isTrue((Helpers.isEqual(api, "eapiPrivate")))) || Helpers.isTrue((Helpers.isTrue(Helpers.isEqual(api, "sapi")) && Helpers.isTrue(!Helpers.isEqual(path, "system/status"))))) || Helpers.isTrue((Helpers.isEqual(api, "sapiV2")))) || Helpers.isTrue((Helpers.isEqual(api, "sapiV3")))) || Helpers.isTrue((Helpers.isEqual(api, "sapiV4")))) || Helpers.isTrue((Helpers.isEqual(api, "dapiPrivate")))) || Helpers.isTrue((Helpers.isEqual(api, "dapiPrivateV2")))) || Helpers.isTrue((Helpers.isEqual(api, "fapiPrivate")))) || Helpers.isTrue((Helpers.isEqual(api, "fapiPrivateV2")))) || Helpers.isTrue((Helpers.isEqual(api, "fapiPrivateV3")))) || Helpers.isTrue((Helpers.isTrue(Helpers.isEqual(api, "papiV2")) || Helpers.isTrue(Helpers.isTrue(Helpers.isEqual(api, "papi")) && Helpers.isTrue(!Helpers.isEqual(path, "ping")))))))
         {
             this.checkRequiredCredentials();
             if (Helpers.isTrue(Helpers.isTrue(Helpers.isTrue((Helpers.isGreaterThan(Helpers.getIndexOf(url, "testnet.binancefuture.com"), Helpers.opNeg(1)))) && Helpers.isTrue(this.isSandboxModeEnabled)) && Helpers.isTrue((!Helpers.isTrue(this.safeBool(this.options, "disableFuturesSandboxWarning"))))))
@@ -13177,6 +13339,10 @@ final Object finalMarket = market;
                     Object orderidlist = this.safeList(extendedParams, "orderidlist", new java.util.ArrayList<Object>(java.util.Arrays.asList()));
                     Object origclientorderidlist = this.safeList2(extendedParams, "origclientorderidlist", "origClientOrderIdList", new java.util.ArrayList<Object>(java.util.Arrays.asList()));
                     extendedParams = this.omit(extendedParams, new java.util.ArrayList<Object>(java.util.Arrays.asList("orderidlist", "origclientorderidlist", "origClientOrderIdList")));
+                    if (Helpers.isTrue(Helpers.inOp(extendedParams, "symbol")))
+                    {
+                        Helpers.addElementToObject(extendedParams, "symbol", this.encodeURIComponent(Helpers.GetValue(extendedParams, "symbol")));
+                    }
                     query = this.rawencode(extendedParams);
                     Object orderidlistLength = Helpers.getArrayLength(orderidlist);
                     Object origclientorderidlistLength = Helpers.getArrayLength(origclientorderidlist);
@@ -13251,13 +13417,13 @@ final Object finalMarket = market;
     {
         Object marketType = null;
         Object hostname = ((Helpers.isTrue((!Helpers.isEqual(this.hostname, null))))) ? this.hostname : "binance.com";
-        if (Helpers.isTrue(Helpers.isTrue(((String)url).startsWith(((String)Helpers.add(Helpers.add("https://api.", hostname), "/")))) || Helpers.isTrue(((String)url).startsWith(((String)"https://testnet.binance.vision")))))
+        if (Helpers.isTrue(Helpers.isTrue(Helpers.isTrue(((String)url).startsWith(((String)Helpers.add(Helpers.add("https://api.", hostname), "/")))) || Helpers.isTrue(((String)url).startsWith(((String)"https://demo-api")))) || Helpers.isTrue(((String)url).startsWith(((String)"https://testnet.binance.vision")))))
         {
             marketType = "spot";
-        } else if (Helpers.isTrue(Helpers.isTrue(((String)url).startsWith(((String)Helpers.add(Helpers.add("https://dapi.", hostname), "/")))) || Helpers.isTrue(((String)url).startsWith(((String)"https://testnet.binancefuture.com/dapi")))))
+        } else if (Helpers.isTrue(Helpers.isTrue(Helpers.isTrue(((String)url).startsWith(((String)Helpers.add(Helpers.add("https://dapi.", hostname), "/")))) || Helpers.isTrue(((String)url).startsWith(((String)"https://demo-dapi")))) || Helpers.isTrue(((String)url).startsWith(((String)"https://testnet.binancefuture.com/dapi")))))
         {
             marketType = "inverse";
-        } else if (Helpers.isTrue(Helpers.isTrue(((String)url).startsWith(((String)Helpers.add(Helpers.add("https://fapi.", hostname), "/")))) || Helpers.isTrue(((String)url).startsWith(((String)"https://testnet.binancefuture.com/fapi")))))
+        } else if (Helpers.isTrue(Helpers.isTrue(Helpers.isTrue(((String)url).startsWith(((String)Helpers.add(Helpers.add("https://fapi.", hostname), "/")))) || Helpers.isTrue(((String)url).startsWith(((String)"https://demo-fapi")))) || Helpers.isTrue(((String)url).startsWith(((String)"https://testnet.binancefuture.com/fapi")))))
         {
             marketType = "linear";
         } else if (Helpers.isTrue(((String)url).startsWith(((String)Helpers.add(Helpers.add("https://eapi.", hostname), "/")))))
@@ -13427,7 +13593,7 @@ final Object finalMarket = market;
                 Helpers.addElementToObject(this.options, "hasAlreadyAuthenticatedSuccessfully", true);
             }
             return response;
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -13480,7 +13646,7 @@ final Object finalMarket = market;
             return this.extend(this.parseMarginModification(response, market), new java.util.HashMap<String, Object>() {{
                 put( "code", finalCode );
             }});
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -13541,7 +13707,7 @@ final Object finalMarket = market;
      * @param {string} symbol unified market symbol
      * @param {float} amount the amount of margin to remove
      * @param {object} [params] extra parameters specific to the exchange API endpoint
-     * @returns {object} a [margin structure]{@link https://docs.ccxt.com/#/?id=reduce-margin-structure}
+     * @returns {object} a [margin structure]{@link https://docs.ccxt.com/?id=reduce-margin-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> reduceMargin(Object symbol, Object amount, Object... optionalArgs)
     {
@@ -13550,7 +13716,7 @@ final Object finalMarket = market;
 
             Object parameters = Helpers.getArg(optionalArgs, 0, new java.util.HashMap<String, Object>() {{}});
             return (this.modifyMarginHelper(symbol, amount, 2, parameters)).join();
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -13563,7 +13729,7 @@ final Object finalMarket = market;
      * @param {string} symbol unified market symbol
      * @param {float} amount amount of margin to add
      * @param {object} [params] extra parameters specific to the exchange API endpoint
-     * @returns {object} a [margin structure]{@link https://docs.ccxt.com/#/?id=add-margin-structure}
+     * @returns {object} a [margin structure]{@link https://docs.ccxt.com/?id=add-margin-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> addMargin(Object symbol, Object amount, Object... optionalArgs)
     {
@@ -13572,7 +13738,7 @@ final Object finalMarket = market;
 
             Object parameters = Helpers.getArg(optionalArgs, 0, new java.util.HashMap<String, Object>() {{}});
             return (this.modifyMarginHelper(symbol, amount, 1, parameters)).join();
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -13583,7 +13749,7 @@ final Object finalMarket = market;
      * @see https://developers.binance.com/docs/margin_trading/borrow-and-repay/Query-Margin-Interest-Rate-History
      * @param {string} code unified currency code
      * @param {object} [params] extra parameters specific to the exchange API endpoint
-     * @returns {object} a [borrow rate structure]{@link https://docs.ccxt.com/#/?id=borrow-rate-structure}
+     * @returns {object} a [borrow rate structure]{@link https://docs.ccxt.com/?id=borrow-rate-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchCrossBorrowRate(Object code, Object... optionalArgs)
     {
@@ -13609,7 +13775,7 @@ final Object finalMarket = market;
             //
             Object rate = this.safeDict(response, 0);
             return this.parseBorrowRate(rate);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -13623,7 +13789,7 @@ final Object finalMarket = market;
      *
      * EXCHANGE SPECIFIC PARAMETERS
      * @param {object} [params.vipLevel] user's current specific margin data will be returned if viplevel is omitted
-     * @returns {object} an [isolated borrow rate structure]{@link https://docs.ccxt.com/#/?id=isolated-borrow-rate-structure}
+     * @returns {object} an [isolated borrow rate structure]{@link https://docs.ccxt.com/?id=isolated-borrow-rate-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchIsolatedBorrowRate(Object symbol, Object... optionalArgs)
     {
@@ -13636,7 +13802,7 @@ final Object finalMarket = market;
             }};
             Object borrowRates = (this.fetchIsolatedBorrowRates(this.extend(request, parameters))).join();
             return this.safeDict(borrowRates, symbol);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -13650,7 +13816,7 @@ final Object finalMarket = market;
      *
      * EXCHANGE SPECIFIC PARAMETERS
      * @param {object} [params.vipLevel] user's current specific margin data will be returned if viplevel is omitted
-     * @returns {object} a [borrow rate structure]{@link https://docs.ccxt.com/#/?id=borrow-rate-structure}
+     * @returns {object} a [borrow rate structure]{@link https://docs.ccxt.com/?id=borrow-rate-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchIsolatedBorrowRates(Object... optionalArgs)
     {
@@ -13690,7 +13856,7 @@ final Object finalMarket = market;
             //    ]
             //
             return this.parseIsolatedBorrowRates(response);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -13701,9 +13867,9 @@ final Object finalMarket = market;
      * @see https://developers.binance.com/docs/margin_trading/borrow-and-repay/Query-Margin-Interest-Rate-History
      * @param {string} code unified currency code
      * @param {int} [since] timestamp for the earliest borrow rate
-     * @param {int} [limit] the maximum number of [borrow rate structures]{@link https://docs.ccxt.com/#/?id=borrow-rate-structure} to retrieve
+     * @param {int} [limit] the maximum number of [borrow rate structures]{@link https://docs.ccxt.com/?id=borrow-rate-structure} to retrieve
      * @param {object} [params] extra parameters specific to the exchange API endpoint
-     * @returns {object[]} an array of [borrow rate structures]{@link https://docs.ccxt.com/#/?id=borrow-rate-structure}
+     * @returns {object[]} an array of [borrow rate structures]{@link https://docs.ccxt.com/?id=borrow-rate-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchBorrowRateHistory(Object code, Object... optionalArgs)
     {
@@ -13746,7 +13912,7 @@ final Object finalMarket = market;
             //     ]
             //
             return this.parseBorrowRateHistory(response, code, since, limit);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -13856,7 +14022,7 @@ final Object finalMarket = market;
                 put( "currency", code );
                 put( "amount", amount );
             }};
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -13891,7 +14057,7 @@ final Object finalMarket = market;
             //     }
             //
             return response;
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -13923,7 +14089,7 @@ final Object finalMarket = market;
             //     }
             //
             return response;
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -13939,7 +14105,7 @@ final Object finalMarket = market;
      * @param {int} [limit] the maximum number of structures to retrieve
      * @param {object} [params] extra parameters specific to the exchange API endpoint
      * @param {boolean} [params.portfolioMargin] set to true if you would like to fetch the borrow interest in a portfolio margin account
-     * @returns {object[]} a list of [borrow interest structures]{@link https://docs.ccxt.com/#/?id=borrow-interest-structure}
+     * @returns {object[]} a list of [borrow interest structures]{@link https://docs.ccxt.com/?id=borrow-interest-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchBorrowInterest(Object... optionalArgs)
     {
@@ -14026,7 +14192,7 @@ final Object finalMarket = market;
             Object rows = this.safeList(response, "rows");
             Object interest = this.parseBorrowInterests(rows, market);
             return this.filterByCurrencySinceLimit(interest, code, since, limit);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -14063,7 +14229,7 @@ final Object finalMarket = market;
      * @param {boolean} [params.portfolioMargin] set to true if you would like to repay margin in a portfolio margin account
      * @param {string} [params.repayCrossMarginMethod] *portfolio margin only* 'papiPostRepayLoan' (default), 'papiPostMarginRepayDebt' (alternative)
      * @param {string} [params.specifyRepayAssets] *portfolio margin papiPostMarginRepayDebt only* specific asset list to repay debt
-     * @returns {object} a [margin loan structure]{@link https://docs.ccxt.com/#/?id=margin-loan-structure}
+     * @returns {object} a [margin loan structure]{@link https://docs.ccxt.com/?id=margin-loan-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> repayCrossMargin(Object code, Object amount, Object... optionalArgs)
     {
@@ -14102,7 +14268,7 @@ final Object finalMarket = market;
                 response = (this.sapiPostMarginBorrowRepay(this.extend(request, parameters))).join();
             }
             return this.parseMarginLoan(response, currency);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -14115,7 +14281,7 @@ final Object finalMarket = market;
      * @param {string} code unified currency code of the currency to repay
      * @param {float} amount the amount to repay
      * @param {object} [params] extra parameters specific to the exchange API endpoint
-     * @returns {object} a [margin loan structure]{@link https://docs.ccxt.com/#/?id=margin-loan-structure}
+     * @returns {object} a [margin loan structure]{@link https://docs.ccxt.com/?id=margin-loan-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> repayIsolatedMargin(Object symbol, Object code, Object amount, Object... optionalArgs)
     {
@@ -14141,7 +14307,7 @@ final Object finalMarket = market;
             //     }
             //
             return this.parseMarginLoan(response, currency);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -14155,7 +14321,7 @@ final Object finalMarket = market;
      * @param {float} amount the amount to borrow
      * @param {object} [params] extra parameters specific to the exchange API endpoint
      * @param {boolean} [params.portfolioMargin] set to true if you would like to borrow margin in a portfolio margin account
-     * @returns {object} a [margin loan structure]{@link https://docs.ccxt.com/#/?id=margin-loan-structure}
+     * @returns {object} a [margin loan structure]{@link https://docs.ccxt.com/?id=margin-loan-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> borrowCrossMargin(Object code, Object amount, Object... optionalArgs)
     {
@@ -14190,7 +14356,7 @@ final Object finalMarket = market;
             //     }
             //
             return this.parseMarginLoan(response, currency);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -14203,7 +14369,7 @@ final Object finalMarket = market;
      * @param {string} code unified currency code of the currency to borrow
      * @param {float} amount the amount to borrow
      * @param {object} [params] extra parameters specific to the exchange API endpoint
-     * @returns {object} a [margin loan structure]{@link https://docs.ccxt.com/#/?id=margin-loan-structure}
+     * @returns {object} a [margin loan structure]{@link https://docs.ccxt.com/?id=margin-loan-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> borrowIsolatedMargin(Object symbol, Object code, Object amount, Object... optionalArgs)
     {
@@ -14229,7 +14395,7 @@ final Object finalMarket = market;
             //     }
             //
             return this.parseMarginLoan(response, currency);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -14278,7 +14444,7 @@ final Object finalMarket = market;
      * @param {object} [params] exchange specific parameters
      * @param {int} [params.until] the time(ms) of the latest record to retrieve as a unix timestamp
      * @param {boolean} [params.paginate] default false, when true will automatically paginate by calling this endpoint multiple times. See in the docs all the [availble parameters](https://github.com/ccxt/ccxt/wiki/Manual#pagination-params)
-     * @returns {object} an array of [open interest structure]{@link https://docs.ccxt.com/#/?id=open-interest-structure}
+     * @returns {object} an array of [open interest structure]{@link https://docs.ccxt.com/?id=open-interest-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchOpenInterestHistory(Object symbol, Object... optionalArgs)
     {
@@ -14356,7 +14522,7 @@ final Object finalMarket = market;
             //  ]
             //
             return this.parseOpenInterestsHistory(response, market, since, limit);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -14369,7 +14535,7 @@ final Object finalMarket = market;
      * @see https://developers.binance.com/docs/derivatives/option/market-data/Open-Interest
      * @param {string} symbol unified CCXT market symbol
      * @param {object} [params] exchange specific parameters
-     * @returns {object} an open interest structure{@link https://docs.ccxt.com/#/?id=open-interest-structure}
+     * @returns {object} an open interest structure{@link https://docs.ccxt.com/?id=open-interest-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchOpenInterest(Object symbol2, Object... optionalArgs)
     {
@@ -14450,7 +14616,7 @@ final Object finalMarket = market;
                 return this.parseOpenInterest(response, market);
             }
             return null;
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -14493,7 +14659,7 @@ final Object finalMarket = market;
      * @param {boolean} [params.portfolioMargin] set to true if you would like to fetch liquidations in a portfolio margin account
      * @param {string} [params.type] "spot"
      * @param {string} [params.subType] "linear" or "inverse"
-     * @returns {object} an array of [liquidation structures]{@link https://docs.ccxt.com/#/?id=liquidation-structure}
+     * @returns {object} an array of [liquidation structures]{@link https://docs.ccxt.com/?id=liquidation-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchMyLiquidations(Object... optionalArgs)
     {
@@ -14671,7 +14837,7 @@ final Object finalMarket = market;
             //
             Object liquidations = this.safeList(response, "rows", response);
             return this.parseLiquidations(liquidations, market, since, limit);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -14769,7 +14935,7 @@ final Object finalMarket = market;
      * @see https://developers.binance.com/docs/derivatives/option/market-data/Option-Mark-Price
      * @param {string} symbol unified symbol of the market to fetch greeks for
      * @param {object} [params] extra parameters specific to the exchange API endpoint
-     * @returns {object} a [greeks structure]{@link https://docs.ccxt.com/#/?id=greeks-structure}
+     * @returns {object} a [greeks structure]{@link https://docs.ccxt.com/?id=greeks-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchGreeks(Object symbol, Object... optionalArgs)
     {
@@ -14801,7 +14967,7 @@ final Object finalMarket = market;
             //     ]
             //
             return this.parseGreeks(Helpers.GetValue(response, 0), market);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -14812,7 +14978,7 @@ final Object finalMarket = market;
      * @see https://developers.binance.com/docs/derivatives/option/market-data/Option-Mark-Price
      * @param {string[]} [symbols] unified symbols of the markets to fetch greeks for, all markets are returned if not assigned
      * @param {object} [params] extra parameters specific to the exchange API endpoint
-     * @returns {object} a [greeks structure]{@link https://docs.ccxt.com/#/?id=greeks-structure}
+     * @returns {object} a [greeks structure]{@link https://docs.ccxt.com/?id=greeks-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchAllGreeks(Object... optionalArgs)
     {
@@ -14853,7 +15019,7 @@ final Object finalMarket = market;
             //     ]
             //
             return this.parseAllGreeks(response, symbols);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -14920,7 +15086,7 @@ final Object finalMarket = market;
                 }
             }
             return tradingLimits;
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -14973,7 +15139,7 @@ final Object finalMarket = market;
                 put( "info", finalResponse );
                 put( "hedged", dualSidePosition );
             }};
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -14987,7 +15153,7 @@ final Object finalMarket = market;
      * @param {string[]} symbols unified market symbols
      * @param {object} [params] extra parameters specific to the exchange API endpoint
      * @param {string} [params.subType] "linear" or "inverse"
-     * @returns {object} a list of [margin mode structures]{@link https://docs.ccxt.com/#/?id=margin-mode-structure}
+     * @returns {object} a list of [margin mode structures]{@link https://docs.ccxt.com/?id=margin-mode-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchMarginModes(Object... optionalArgs)
     {
@@ -15024,7 +15190,7 @@ final Object finalMarket = market;
                 assets = response;
             }
             return this.parseMarginModes(assets, symbols, "symbol", "swap");
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -15037,7 +15203,7 @@ final Object finalMarket = market;
      * @param {string} symbol unified symbol of the market the order was made in
      * @param {object} [params] extra parameters specific to the exchange API endpoint
      * @param {string} [params.subType] "linear" or "inverse"
-     * @returns {object} a [margin mode structure]{@link https://docs.ccxt.com/#/?id=margin-mode-structure}
+     * @returns {object} a [margin mode structure]{@link https://docs.ccxt.com/?id=margin-mode-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchMarginMode(Object symbol, Object... optionalArgs)
     {
@@ -15067,7 +15233,7 @@ final Object finalMarket = market;
                 throw new BadRequest((String)Helpers.add(this.id, " fetchMarginMode () supports linear and inverse subTypes only")) ;
             }
             return this.parseMarginMode(Helpers.GetValue(response, 0), market);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -15103,7 +15269,7 @@ final Object finalMarket = market;
      * @see https://developers.binance.com/docs/derivatives/option/market-data/24hr-Ticker-Price-Change-Statistics
      * @param {string} symbol unified market symbol
      * @param {object} [params] extra parameters specific to the exchange API endpoint
-     * @returns {object} an [option chain structure]{@link https://docs.ccxt.com/#/?id=option-chain-structure}
+     * @returns {object} an [option chain structure]{@link https://docs.ccxt.com/?id=option-chain-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchOption(Object symbol, Object... optionalArgs)
     {
@@ -15143,7 +15309,7 @@ final Object finalMarket = market;
             //
             Object chain = this.safeDict(response, 0, new java.util.HashMap<String, Object>() {{}});
             return this.parseOption(chain, null, market);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -15209,7 +15375,7 @@ final Object finalMarket = market;
      * @param {int} [limit] the maximum amount of changes to fetch
      * @param {object} params extra parameters specific to the exchange api endpoint
      * @param {int} [params.until] timestamp in ms of the latest change to fetch
-     * @returns {object[]} a list of [margin structures]{@link https://docs.ccxt.com/#/?id=margin-loan-structure}
+     * @returns {object[]} a list of [margin structures]{@link https://docs.ccxt.com/?id=margin-loan-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchMarginAdjustmentHistory(Object... optionalArgs)
     {
@@ -15276,7 +15442,7 @@ final Object finalMarket = market;
             //
             Object modifications = this.parseMarginModifications(response);
             return this.filterBySymbolSinceLimit(modifications, symbol, since, limit);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -15340,7 +15506,7 @@ final Object finalMarket = market;
     }});
             }
             return result;
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -15354,7 +15520,7 @@ final Object finalMarket = market;
      * @param {float} amount how much you want to trade in units of the from currency
      * @param {object} [params] extra parameters specific to the exchange API endpoint
      * @param {string} [params.walletType] either 'SPOT' or 'FUNDING', the default is 'SPOT'
-     * @returns {object} a [conversion structure]{@link https://docs.ccxt.com/#/?id=conversion-structure}
+     * @returns {object} a [conversion structure]{@link https://docs.ccxt.com/?id=conversion-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchConvertQuote(Object fromCode, Object toCode, Object... optionalArgs)
     {
@@ -15388,7 +15554,7 @@ final Object finalMarket = market;
             Object fromCurrency = this.currency(fromCode);
             Object toCurrency = this.currency(toCode);
             return this.parseConversion(response, fromCurrency, toCurrency);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -15402,7 +15568,7 @@ final Object finalMarket = market;
      * @param {string} toCode the currency that you want to buy and convert into
      * @param {float} [amount] how much you want to trade in units of the from currency
      * @param {object} [params] extra parameters specific to the exchange API endpoint
-     * @returns {object} a [conversion structure]{@link https://docs.ccxt.com/#/?id=conversion-structure}
+     * @returns {object} a [conversion structure]{@link https://docs.ccxt.com/?id=conversion-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> createConvertTrade(Object id, Object fromCode2, Object toCode2, Object... optionalArgs)
     {
@@ -15435,7 +15601,7 @@ final Object finalMarket = market;
             Object fromCurrency = this.currency(fromCode);
             Object toCurrency = this.currency(toCode);
             return this.parseConversion(response, fromCurrency, toCurrency);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -15447,7 +15613,7 @@ final Object finalMarket = market;
      * @param {string} id the id of the trade that you want to fetch
      * @param {string} [code] the unified currency code of the conversion trade
      * @param {object} [params] extra parameters specific to the exchange API endpoint
-     * @returns {object} a [conversion structure]{@link https://docs.ccxt.com/#/?id=conversion-structure}
+     * @returns {object} a [conversion structure]{@link https://docs.ccxt.com/?id=conversion-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchConvertTrade(Object id, Object... optionalArgs)
     {
@@ -15497,7 +15663,7 @@ final Object finalMarket = market;
                 toCurrency = this.currency(toCurrencyId);
             }
             return this.parseConversion(data, fromCurrency, toCurrency);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -15511,7 +15677,7 @@ final Object finalMarket = market;
      * @param {int} [limit] the maximum number of conversion structures to retrieve
      * @param {object} [params] extra parameters specific to the exchange API endpoint
      * @param {int} [params.until] timestamp in ms of the latest conversion to fetch
-     * @returns {object[]} a list of [conversion structures]{@link https://docs.ccxt.com/#/?id=conversion-structure}
+     * @returns {object[]} a list of [conversion structures]{@link https://docs.ccxt.com/?id=conversion-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchConvertTradeHistory(Object... optionalArgs)
     {
@@ -15575,7 +15741,7 @@ final Object finalMarket = market;
             }
             Object rows = this.safeList(response, responseQuery, new java.util.ArrayList<Object>(java.util.Arrays.asList()));
             return this.parseConversions(rows, code, fromCurrencyKey, toCurrencyKey, since, limit);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -15681,7 +15847,7 @@ final Object finalMarket = market;
      * @param {string[]} [symbols] list of unified market symbols
      * @param {object} [params] extra parameters specific to the exchange API endpoint
      * @param {string} [params.subType] "linear" or "inverse"
-     * @returns {object[]} a list of [funding rate structures]{@link https://docs.ccxt.com/#/?id=funding-rate-structure}
+     * @returns {object[]} a list of [funding rate structures]{@link https://docs.ccxt.com/?id=funding-rate-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchFundingIntervals(Object... optionalArgs)
     {
@@ -15725,7 +15891,7 @@ final Object finalMarket = market;
             //     ]
             //
             return this.parseFundingRates(response, symbols);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -15741,7 +15907,7 @@ final Object finalMarket = market;
      * @param {int} [limit] the maximum number of long short ratio structures to retrieve
      * @param {object} [params] extra parameters specific to the exchange API endpoint
      * @param {int} [params.until] timestamp in ms of the latest ratio to fetch
-     * @returns {object[]} an array of [long short ratio structures]{@link https://docs.ccxt.com/#/?id=long-short-ratio-structure}
+     * @returns {object[]} an array of [long short ratio structures]{@link https://docs.ccxt.com/?id=long-short-ratio-structure}
      */
     public java.util.concurrent.CompletableFuture<Object> fetchLongShortRatioHistory(Object... optionalArgs)
     {
@@ -15792,7 +15958,7 @@ final Object finalMarket = market;
                 throw new BadRequest((String)Helpers.add(this.id, " fetchLongShortRatioHistory() supports linear and inverse subTypes only")) ;
             }
             return this.parseLongShortRatioHistory(response, market);
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
