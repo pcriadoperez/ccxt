@@ -16,7 +16,7 @@ import java.util.Map;
 public class ArrayCache extends ArrayList<Object> {
 
     protected final int maxSize;
-    protected final HashMap<String, Object> hashmap = new HashMap<>();
+    public final HashMap<String, Object> hashmap = new HashMap<>();
     protected final HashMap<String, Integer> newUpdatesBySymbol = new HashMap<>();
     protected int newUpdates = 0;
 
