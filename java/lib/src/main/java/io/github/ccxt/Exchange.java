@@ -63,15 +63,15 @@ public class Exchange {
     public String userAgent;                              // null by default
     public boolean verbose = false;
     public boolean enableRateLimit = true;
-    public long lastRestRequestTimestamp = 0L;
+    public volatile long lastRestRequestTimestamp = 0L;
     public String url = "";
     public String hostname = "";
 
     // Currencies/markets API structures
     public Map<String, Object> baseCurrencies = new HashMap<>();
-    public boolean reloadingMarkets = false;
-    public CompletableFuture<Object> marketsLoading = null;
-    public boolean marketsLoaded = false;
+    public volatile boolean reloadingMarkets = false;
+    public volatile CompletableFuture<Object> marketsLoading = null;
+    public volatile boolean marketsLoaded = false;
 
     public Map<String, Object> quoteCurrencies = new HashMap<>();
     public Map<String, Object> api = new HashMap<>();
@@ -79,11 +79,11 @@ public class Exchange {
 
     public boolean reduceFees = true;
 
-    public Map<String, Object> markets_by_id = null;
+    public volatile Map<String, Object> markets_by_id = null;
 
-    public List<Object> symbols = new ArrayList<>();
-    public List<Object> codes = new ArrayList<>();
-    public List<Object> ids = new ArrayList<>();
+    public volatile List<Object> symbols = new ArrayList<>();
+    public volatile List<Object> codes = new ArrayList<>();
+    public volatile List<Object> ids = new ArrayList<>();
 
     public boolean substituteCommonCurrencyCodes = true;
 
@@ -91,7 +91,7 @@ public class Exchange {
 
     public Object limits = new HashMap<String, Object>();
     public Object precisionMode = DECIMAL_PLACES;
-    public Object currencies_by_id = new HashMap<String, Object>();
+    public volatile Object currencies_by_id = new HashMap<String, Object>();
 
     public Object accounts = new HashMap<String, Object>();
     public Object accountsById = new HashMap<String, Object>();
@@ -102,11 +102,11 @@ public class Exchange {
     public Object number = Float.class;                   // C# typeof(float) → Java Class<?> for Float
     public Map<String, Object> has = new HashMap<>();
     public Map<String, Object> features = new HashMap<>();
-    public Map<String, Object> options = new HashMap<>();
+    public Map<String, Object> options = new java.util.concurrent.ConcurrentHashMap<>();
     public boolean isSandboxModeEnabled = false;
 
-    public Object markets = null;
-    public Object currencies = new HashMap<String, Object>();
+    public volatile Object markets = null;
+    public volatile Object currencies = new HashMap<String, Object>();
     public Object fees = new HashMap<String, Object>();
     public Object requiredCredentials = new HashMap<String, Object>();
     public Object timeframes = new HashMap<String, Object>();
@@ -146,13 +146,13 @@ public class Exchange {
     public String agent;
     // public Object timeout = 10000;                         // Integer by autoboxing
 
-    // Last responses
-    public Object last_response_headers;
-    public Object last_request_headers;
-    public Object last_json_response;
-    public Object last_http_response;
-    public Object last_request_body;
-    public Object last_request_url;
+    // Last responses — volatile for visibility across async callbacks (last-writer-wins)
+    public volatile Object last_response_headers;
+    public volatile Object last_request_headers;
+    public volatile Object last_json_response;
+    public volatile Object last_http_response;
+    public volatile Object last_request_body;
+    public volatile Object last_request_url;
     public boolean returnResponseHeaders = false;
     public Map<String, Object> headers = new HashMap<>();
     public Object httpExceptions;
