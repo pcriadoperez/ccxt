@@ -111,4 +111,44 @@ class ThrottlerTest {
         assertTrue(latch.await(10, TimeUnit.SECONDS), "All requests should complete within 10s");
         assertEquals(count, completed.get());
     }
+
+    @Test
+    void testFirstRequestCompletesImmediately() throws Exception {
+        var throttler = new Throttler(config(50, "leakyBucket"));
+        long start = System.currentTimeMillis();
+        throttler.throttle(1.0).get(5, TimeUnit.SECONDS);
+        long elapsed = System.currentTimeMillis() - start;
+        assertTrue(elapsed < 30, "First request should complete immediately, took " + elapsed + "ms");
+    }
+
+    @Test
+    void testExactRateLimitTiming() throws Exception {
+        // 3 requests at 50ms rate limit should take ~100ms (first is free, 2 waits)
+        var throttler = new Throttler(config(50, "leakyBucket"));
+        long start = System.currentTimeMillis();
+        CompletableFuture<?>[] f = new CompletableFuture[3];
+        for (int i = 0; i < 3; i++) f[i] = throttler.throttle(1.0);
+        CompletableFuture.allOf(f).get(10, TimeUnit.SECONDS);
+        long elapsed = System.currentTimeMillis() - start;
+        // Should be ~100ms (2 * 50ms), not much more (no busy-wait overhead)
+        assertTrue(elapsed >= 80 && elapsed < 300,
+            "3 requests at 50ms rate should take ~100ms, took " + elapsed + "ms");
+    }
+
+    @Test
+    void testHighConcurrencyThrottle() throws Exception {
+        // 100 requests at 10ms rate limit — should complete in ~1s, not hang
+        var throttler = new Throttler(config(10, "leakyBucket"));
+        int count = 100;
+        CompletableFuture<?>[] futures = new CompletableFuture[count];
+        long start = System.currentTimeMillis();
+        for (int i = 0; i < count; i++) {
+            futures[i] = throttler.throttle(1.0);
+        }
+        CompletableFuture.allOf(futures).get(10, TimeUnit.SECONDS);
+        long elapsed = System.currentTimeMillis() - start;
+        // ~990ms expected (99 * 10ms), allow generous range
+        assertTrue(elapsed < 3000,
+            "100 requests at 10ms rate took " + elapsed + "ms — expected ~1s");
+    }
 }
