@@ -1,0 +1,571 @@
+package io.github.ccxt.ws;
+
+import io.netty.bootstrap.Bootstrap;
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
+import io.netty.channel.*;
+import io.netty.channel.nio.NioEventLoopGroup;
+import io.netty.channel.socket.SocketChannel;
+import io.netty.channel.socket.nio.NioSocketChannel;
+import io.netty.handler.codec.http.*;
+import io.netty.handler.codec.http.websocketx.*;
+import io.netty.handler.codec.http.websocketx.extensions.compression.WebSocketClientCompressionHandler;
+import io.netty.handler.proxy.HttpProxyHandler;
+import io.netty.handler.proxy.Socks5ProxyHandler;
+import io.netty.handler.ssl.SslContext;
+import io.netty.handler.ssl.SslContextBuilder;
+import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
+
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.net.InetSocketAddress;
+import java.net.URI;
+import java.nio.charset.StandardCharsets;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.BiConsumer;
+import java.util.function.Function;
+import java.util.zip.GZIPInputStream;
+import java.util.zip.Inflater;
+import java.util.zip.InflaterOutputStream;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.ccxt.Exchange;
+import io.github.ccxt.base.JsonHelper;
+
+/**
+ * Netty-based WebSocket client for CCXT.
+ * Matches the architecture of C# Client.cs and Go exchange_wsclient.go:
+ * - Single async connection per URL
+ * - ConcurrentHashMap for futures and subscriptions
+ * - Ping/pong keep-alive loop
+ * - Reconnection via lazy re-connect on next watch() call
+ */
+public class WsClient {
+
+    private static final ObjectMapper JSON_MAPPER = new ObjectMapper();
+
+    // Shared event loop group across all WsClient instances (one per JVM)
+    private static final EventLoopGroup SHARED_EVENT_LOOP = new NioEventLoopGroup(
+            Math.max(2, Runtime.getRuntime().availableProcessors()));
+
+    // State — typed as Object for compatibility with transpiled code that casts these
+    public String url;
+    public Object futures = new ConcurrentHashMap<String, Future>();
+    public Object subscriptions = new ConcurrentHashMap<String, Object>();
+    public Object rejections = new ConcurrentHashMap<String, Object>();
+    public volatile boolean isConnected = false;
+    public volatile boolean startedConnecting = false;
+    public volatile long connectionEstablished = 0;
+    public volatile CompletableFuture<Boolean> connected;
+    public volatile long lastPong = 0;
+    public boolean error = false;
+
+    // Typed accessors for internal use
+    @SuppressWarnings("unchecked")
+    private ConcurrentHashMap<String, Future> futuresMap() { return (ConcurrentHashMap<String, Future>) futures; }
+    @SuppressWarnings("unchecked")
+    public ConcurrentHashMap<String, Object> subscriptionsMap() { return (ConcurrentHashMap<String, Object>) subscriptions; }
+    @SuppressWarnings("unchecked")
+    private ConcurrentHashMap<String, Object> rejectionsMap() { return (ConcurrentHashMap<String, Object>) rejections; }
+
+    // Config
+    public long keepAlive = 30000;
+    public int maxPingPongMisses = 3;
+    public boolean verbose = false;
+    public boolean decompressBinary = true;
+
+    // Callbacks (set by Exchange)
+    public BiConsumer<WsClient, Object> handleMessageCallback;
+    public Function<WsClient, Object> pingCallback;
+    public BiConsumer<WsClient, Object> onCloseCallback;
+    public BiConsumer<WsClient, Object> onErrorCallback;
+
+    // Netty internals
+    private volatile Channel channel;
+    private String proxy;
+
+    public WsClient(String url, String proxy,
+                    BiConsumer<WsClient, Object> handleMessage,
+                    Function<WsClient, Object> ping,
+                    BiConsumer<WsClient, Object> onClose,
+                    BiConsumer<WsClient, Object> onError,
+                    boolean verbose, long keepAlive, boolean decompressBinary) {
+        this.url = url;
+        this.proxy = proxy;
+        this.handleMessageCallback = handleMessage;
+        this.pingCallback = ping;
+        this.onCloseCallback = onClose;
+        this.onErrorCallback = onError;
+        this.verbose = verbose;
+        this.keepAlive = keepAlive;
+        this.decompressBinary = decompressBinary;
+        this.connected = new CompletableFuture<>();
+    }
+
+    // ─── Future management (matches C# Client.cs lines 77-130) ───
+
+    /**
+     * Get or create a Future for a messageHash.
+     * If a rejection was queued before the future existed, reject it immediately.
+     */
+    public Future future(String messageHash) {
+        Future f = futuresMap().computeIfAbsent(messageHash, k -> new Future());
+        Object rejection = rejectionsMap().remove(messageHash);
+        if (rejection != null) {
+            f.reject(rejection);
+        }
+        return f;
+    }
+
+    public Future reusableFuture(String messageHash) {
+        return this.future(messageHash);
+    }
+
+    /**
+     * Resolve a specific future by messageHash.
+     * Removes it from the map so the next watch() call creates a fresh one.
+     */
+    public void resolve(Object content, Object messageHash2) {
+        if (this.verbose && messageHash2 == null) {
+            System.out.println("resolve received null messageHash");
+            return;
+        }
+        String messageHash = messageHash2.toString();
+        Future f = futuresMap().remove(messageHash);
+        if (f != null) {
+            f.resolve(content);
+        }
+    }
+
+    /**
+     * Reject a specific future, or all futures if messageHash is null.
+     */
+    public void reject(Object error, Object messageHash2) {
+        if (messageHash2 != null) {
+            String messageHash = messageHash2.toString();
+            Future f = futuresMap().remove(messageHash);
+            if (f != null) {
+                f.reject(error);
+            } else {
+                rejectionsMap().put(messageHash, error);
+            }
+        } else {
+            // Reject all pending futures
+            for (String key : futuresMap().keySet()) {
+                Future f = futuresMap().remove(key);
+                if (f != null) {
+                    f.reject(error);
+                }
+            }
+        }
+    }
+
+    public void reject(Object error) {
+        reject(error, (Object) null);
+    }
+
+    // ─── Connection management ───
+
+    /**
+     * Connect to the WebSocket server. Returns a future that completes when connected.
+     * If already connecting/connected, returns the existing future.
+     */
+    public CompletableFuture<Boolean> connect(int backoffDelay) {
+        if (!this.startedConnecting) {
+            this.startedConnecting = true;
+            if (backoffDelay > 0) {
+                CompletableFuture.delayedExecutor(backoffDelay,
+                        java.util.concurrent.TimeUnit.MILLISECONDS)
+                        .execute(this::createConnection);
+            } else {
+                Exchange.VIRTUAL_EXECUTOR.execute(this::createConnection);
+            }
+        }
+        return this.connected;
+    }
+
+    private void createConnection() {
+        try {
+            URI uri = new URI(this.url);
+            String scheme = uri.getScheme();
+            String host = uri.getHost();
+            int port = uri.getPort();
+            if (port == -1) {
+                port = "wss".equalsIgnoreCase(scheme) ? 443 : 80;
+            }
+            boolean ssl = "wss".equalsIgnoreCase(scheme);
+
+            final SslContext sslCtx;
+            if (ssl) {
+                sslCtx = SslContextBuilder.forClient()
+                        .trustManager(InsecureTrustManagerFactory.INSTANCE)
+                        .build();
+            } else {
+                sslCtx = null;
+            }
+
+            WebSocketClientHandshaker handshaker = WebSocketClientHandshakerFactory.newHandshaker(
+                    uri, WebSocketVersion.V13, null, true,
+                    new DefaultHttpHeaders(), 65536 * 100);
+
+            final WsClientHandler handler = new WsClientHandler(handshaker, this);
+            final int finalPort = port;
+
+            Bootstrap bootstrap = new Bootstrap();
+            bootstrap.group(SHARED_EVENT_LOOP)
+                    .channel(NioSocketChannel.class)
+                    .handler(new ChannelInitializer<SocketChannel>() {
+                        @Override
+                        protected void initChannel(SocketChannel ch) {
+                            ChannelPipeline pipeline = ch.pipeline();
+
+                            // Proxy support
+                            if (proxy != null && !proxy.isEmpty()) {
+                                try {
+                                    URI proxyUri = new URI(proxy);
+                                    if ("socks5".equalsIgnoreCase(proxyUri.getScheme())) {
+                                        pipeline.addLast(new Socks5ProxyHandler(
+                                                new InetSocketAddress(proxyUri.getHost(), proxyUri.getPort())));
+                                    } else {
+                                        pipeline.addLast(new HttpProxyHandler(
+                                                new InetSocketAddress(proxyUri.getHost(), proxyUri.getPort())));
+                                    }
+                                } catch (Exception e) {
+                                    if (verbose) System.err.println("Proxy config error: " + e.getMessage());
+                                }
+                            }
+
+                            // SSL
+                            if (sslCtx != null) {
+                                pipeline.addLast(sslCtx.newHandler(ch.alloc(), host, finalPort));
+                            }
+
+                            // HTTP codec for WebSocket handshake
+                            pipeline.addLast(new HttpClientCodec());
+                            pipeline.addLast(new HttpObjectAggregator(65536 * 100));
+
+                            // WebSocket compression (permessage-deflate)
+                            pipeline.addLast(WebSocketClientCompressionHandler.INSTANCE);
+
+                            // WebSocket frame handler
+                            pipeline.addLast(handler);
+                        }
+                    });
+
+            bootstrap.connect(host, port).sync();
+            handler.handshakeFuture().sync();
+
+        } catch (Exception e) {
+            if (this.verbose) {
+                System.err.println("WebSocket connection error: " + e.getMessage());
+            }
+            this.onError(e);
+        }
+    }
+
+    void onOpen() {
+        this.isConnected = true;
+        this.connectionEstablished = System.currentTimeMillis();
+        this.lastPong = this.connectionEstablished;
+        this.connected.complete(true);
+
+        // Start ping loop on a virtual thread
+        Thread.ofVirtual().start(this::pingLoop);
+    }
+
+    void onMessage(Object message) {
+        if (this.handleMessageCallback != null) {
+            // Offload to virtual thread to avoid blocking Netty event loop
+            Exchange.VIRTUAL_EXECUTOR.execute(() -> {
+                try {
+                    this.handleMessageCallback.accept(this, message);
+                } catch (Exception e) {
+                    if (this.verbose) {
+                        System.err.println("handleMessage error: " + e.getMessage());
+                    }
+                    this.reject(e);
+                }
+            });
+        }
+    }
+
+    void onPong() {
+        this.lastPong = System.currentTimeMillis();
+        if (this.verbose) {
+            System.out.println("Pong received: " + this.lastPong);
+        }
+    }
+
+    void onClose(Object reason) {
+        this.isConnected = false;
+        this.startedConnecting = false;
+        this.error = false;
+        if (this.onCloseCallback != null) {
+            this.onCloseCallback.accept(this, reason);
+        }
+    }
+
+    void onError(Object err) {
+        this.isConnected = false;
+        this.startedConnecting = false;
+        this.error = true;
+        // Reset connected future for reconnection
+        if (this.connected.isDone()) {
+            this.connected = new CompletableFuture<>();
+        } else {
+            if (err instanceof Exception ex) {
+                this.connected.completeExceptionally(ex);
+            } else {
+                this.connected.completeExceptionally(new RuntimeException(String.valueOf(err)));
+            }
+        }
+        if (this.onErrorCallback != null) {
+            this.onErrorCallback.accept(this, err);
+        }
+    }
+
+    // ─── Ping/Pong keep-alive ───
+
+    private void pingLoop() {
+        try {
+            Thread.sleep(this.keepAlive);
+            long now = System.currentTimeMillis();
+            if (this.lastPong == 0) {
+                this.lastPong = now;
+            }
+
+            while (this.keepAlive > 0 && this.isConnected) {
+                now = System.currentTimeMillis();
+                if (this.lastPong + this.keepAlive * this.maxPingPongMisses < now) {
+                    this.onError(new RuntimeException(
+                            "Connection to " + this.url + " lost, no pong within " + this.keepAlive + "ms"));
+                    break;
+                }
+
+                if (this.pingCallback != null) {
+                    Object pingResult = this.pingCallback.apply(this);
+                    if (pingResult != null) {
+                        this.send(pingResult);
+                    }
+                } else if (this.channel != null && this.channel.isActive()) {
+                    this.channel.writeAndFlush(new PingWebSocketFrame());
+                }
+
+                Thread.sleep(this.keepAlive);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } catch (Exception e) {
+            if (this.verbose) {
+                System.err.println("PingLoop error: " + e.getMessage());
+            }
+            this.onError(e);
+        }
+    }
+
+    // ─── Send ───
+
+    /**
+     * Send a message over the WebSocket. Accepts String or Object (serialized to JSON).
+     */
+    public CompletableFuture<Void> send(Object message) {
+        String json;
+        if (message instanceof String s) {
+            json = s;
+        } else {
+            try {
+                json = JSON_MAPPER.writeValueAsString(message);
+            } catch (Exception e) {
+                json = String.valueOf(message);
+            }
+        }
+
+        if (this.verbose) {
+            System.out.println("Sending: " + json);
+        }
+
+        if (this.channel != null && this.channel.isActive()) {
+            CompletableFuture<Void> result = new CompletableFuture<>();
+            this.channel.writeAndFlush(new TextWebSocketFrame(json)).addListener(future -> {
+                if (future.isSuccess()) {
+                    result.complete(null);
+                } else {
+                    result.completeExceptionally(future.cause());
+                }
+            });
+            return result;
+        }
+        return CompletableFuture.failedFuture(
+                new RuntimeException("WebSocket not connected: " + this.url));
+    }
+
+    /**
+     * Close the WebSocket connection and reject all pending futures.
+     */
+    public void close() {
+        if (this.channel != null && this.channel.isActive()) {
+            this.channel.writeAndFlush(new CloseWebSocketFrame());
+        }
+        this.isConnected = false;
+        // Reject all pending futures
+        for (String key : futuresMap().keySet()) {
+            Future f = futuresMap().remove(key);
+            if (f != null && !f.isDone()) {
+                f.reject(new RuntimeException("Connection closed by the user"));
+            }
+        }
+    }
+
+    // ─── Binary decompression (matches C# lines 393-471) ───
+
+    static String decompressGzip(byte[] data) {
+        try (ByteArrayInputStream bais = new ByteArrayInputStream(data);
+             GZIPInputStream gis = new GZIPInputStream(bais)) {
+            return new String(gis.readAllBytes(), StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            throw new RuntimeException("GZIP decompression failed", e);
+        }
+    }
+
+    static String decompressDeflate(byte[] data) {
+        try {
+            Inflater inflater = new Inflater(true); // raw deflate (no header)
+            inflater.setInput(data);
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            byte[] buf = new byte[4096];
+            while (!inflater.finished()) {
+                int count = inflater.inflate(buf);
+                if (count == 0 && inflater.needsInput()) break;
+                out.write(buf, 0, count);
+            }
+            inflater.end();
+            return out.toString(StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            throw new RuntimeException("Deflate decompression failed", e);
+        }
+    }
+
+    static boolean looksLikeGzip(byte[] data) {
+        return data.length >= 2 && (data[0] & 0xFF) == 0x1f && (data[1] & 0xFF) == 0x8b;
+    }
+
+    static boolean looksLikeRawDeflate(byte[] data) {
+        if (data.length < 1) return false;
+        int btype = (data[0] >> 1) & 0b11;
+        return btype == 0b01 || btype == 0b10;
+    }
+
+    // ─── Netty WebSocket frame handler ───
+
+    static class WsClientHandler extends SimpleChannelInboundHandler<Object> {
+
+        private final WebSocketClientHandshaker handshaker;
+        private final WsClient wsClient;
+        private ChannelPromise handshakePromise;
+        private final StringBuilder textBuffer = new StringBuilder();
+
+        WsClientHandler(WebSocketClientHandshaker handshaker, WsClient wsClient) {
+            this.handshaker = handshaker;
+            this.wsClient = wsClient;
+        }
+
+        ChannelFuture handshakeFuture() {
+            return handshakePromise;
+        }
+
+        @Override
+        public void handlerAdded(ChannelHandlerContext ctx) {
+            handshakePromise = ctx.newPromise();
+        }
+
+        @Override
+        public void channelActive(ChannelHandlerContext ctx) {
+            handshaker.handshake(ctx.channel());
+            wsClient.channel = ctx.channel();
+        }
+
+        @Override
+        public void channelInactive(ChannelHandlerContext ctx) {
+            wsClient.onClose("Connection closed");
+        }
+
+        @Override
+        protected void channelRead0(ChannelHandlerContext ctx, Object msg) throws Exception {
+            Channel ch = ctx.channel();
+
+            if (!handshaker.isHandshakeComplete()) {
+                try {
+                    handshaker.finishHandshake(ch, (FullHttpResponse) msg);
+                    handshakePromise.setSuccess();
+                    wsClient.onOpen();
+                } catch (WebSocketHandshakeException e) {
+                    handshakePromise.setFailure(e);
+                    wsClient.onError(e);
+                }
+                return;
+            }
+
+            if (msg instanceof FullHttpResponse response) {
+                throw new IllegalStateException(
+                        "Unexpected FullHttpResponse (status=" + response.status() + ")");
+            }
+
+            WebSocketFrame frame = (WebSocketFrame) msg;
+
+            if (frame instanceof TextWebSocketFrame textFrame) {
+                String text = textFrame.text();
+                Object parsed = text;
+                try {
+                    parsed = JsonHelper.deserialize(text);
+                } catch (Exception e) {
+                    // Not JSON — pass raw string
+                }
+                wsClient.onMessage(parsed);
+
+            } else if (frame instanceof BinaryWebSocketFrame binaryFrame) {
+                byte[] data = new byte[binaryFrame.content().readableBytes()];
+                binaryFrame.content().readBytes(data);
+
+                if (!wsClient.decompressBinary) {
+                    wsClient.onMessage(data);
+                    return;
+                }
+
+                // Try decompression
+                String text;
+                if (looksLikeGzip(data)) {
+                    text = decompressGzip(data);
+                } else if (looksLikeRawDeflate(data)) {
+                    text = decompressDeflate(data);
+                } else {
+                    text = new String(data, StandardCharsets.UTF_8);
+                }
+
+                Object parsed = text;
+                try {
+                    parsed = JsonHelper.deserialize(text);
+                } catch (Exception e) {
+                    // Not JSON
+                }
+                wsClient.onMessage(parsed);
+
+            } else if (frame instanceof PongWebSocketFrame) {
+                wsClient.onPong();
+
+            } else if (frame instanceof CloseWebSocketFrame closeFrame) {
+                wsClient.onClose("Server closed: " + closeFrame.statusCode() + " " + closeFrame.reasonText());
+            }
+        }
+
+        @Override
+        public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+            if (!handshakePromise.isDone()) {
+                handshakePromise.setFailure(cause);
+            }
+            wsClient.onError(cause);
+            ctx.close();
+        }
+    }
+}

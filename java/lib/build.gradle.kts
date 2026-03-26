@@ -31,6 +31,9 @@ dependencies {
 
     implementation("org.web3j:crypto:4.12.2")
 
+    // Netty for WebSocket support (high-performance async I/O)
+    implementation("io.netty:netty-codec-http:4.1.116.Final")
+    implementation("io.netty:netty-handler-proxy:4.1.116.Final")
 }
 
 // Apply a specific Java toolchain to ease working on different environments.
