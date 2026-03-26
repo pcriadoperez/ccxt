@@ -46,6 +46,8 @@ java {
 tasks.named<Test>("test") {
     // Use JUnit Platform for unit tests.
     useJUnitPlatform()
+    // Pass environment variables to the test JVM
+    environment("CCXT_LIVE_WS_TESTS", System.getenv("CCXT_LIVE_WS_TESTS") ?: "false")
 }
 
 tasks.register<JavaExec>("liveTest") {
