@@ -47,7 +47,7 @@ public class Exchange {
     // Virtual thread executor for non-blocking async operations.
     // Virtual threads park at zero cost on .join(), enabling hundreds of concurrent
     // requests without exhausting platform threads.
-    protected static final java.util.concurrent.ExecutorService VIRTUAL_EXECUTOR =
+    public static final java.util.concurrent.ExecutorService VIRTUAL_EXECUTOR =
             java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor();
 
     public Object timeout = 10000; // default timeout 10s
@@ -1465,6 +1465,160 @@ public class Exchange {
 
     public Object clone(Object s) {
         return s; // check later
+    }
+
+    // ─── WebSocket Bridge (matches C# Exchange.WsBridge.cs) ───
+
+    @SuppressWarnings("unchecked")
+    public io.github.ccxt.ws.WsClient client(Object url2) {
+        String url = url2.toString();
+        return ((java.util.concurrent.ConcurrentHashMap<String, io.github.ccxt.ws.WsClient>) this.clients)
+                .computeIfAbsent(url, u -> {
+                    Object ws = this.safeValue(this.options, "ws", new java.util.HashMap<String, Object>());
+                    Object wsOptions = this.safeValue(ws, "options", new java.util.HashMap<String, Object>());
+                    long keepAlive = 30000;
+                    Object keepAliveObj = this.safeValue(wsOptions, "keepAlive", null);
+                    if (keepAliveObj instanceof Number n) keepAlive = n.longValue();
+                    boolean decompressBin = true;
+                    Object decompressObj = this.safeValue(this.options, "decompressBinary", null);
+                    if (decompressObj instanceof Boolean b) decompressBin = b;
+
+                    var result = this.checkWsProxySettings();
+                    String proxy = null;
+                    if (result instanceof java.util.List<?> proxies) {
+                        for (Object p : proxies) {
+                            if (p != null) { proxy = p.toString(); break; }
+                        }
+                    }
+
+                    return new Client(u, proxy,
+                            (client, msg) -> this.handleMessage(client, msg),
+                            (client) -> this.ping(client),
+                            (client, err) -> this.onClose(client, err),
+                            (client, err) -> this.onError(client, err),
+                            this.verbose, keepAlive, decompressBin);
+                });
+    }
+
+    public CompletableFuture<Object> watch(Object url, Object messageHash2, Object message, Object subscribeHash2, Object subscription) {
+        String messageHash = messageHash2.toString();
+        String subscribeHash = subscribeHash2 != null ? subscribeHash2.toString() : messageHash;
+        var client = this.client(url);
+
+        io.github.ccxt.ws.Future future = client.future(messageHash);
+
+        if (!client.subscriptionsMap().containsKey(subscribeHash)) {
+            client.subscriptionsMap().put(subscribeHash, subscription != null ? subscription : true);
+            client.connect(0).thenAccept(connected -> {
+                if (message != null) {
+                    try {
+                        client.send(message);
+                    } catch (Exception ex) {
+                        client.subscriptionsMap().remove(subscribeHash);
+                        future.reject(ex);
+                    }
+                }
+            });
+        }
+        return future.getFuture();
+    }
+
+    @SuppressWarnings("unchecked")
+    public CompletableFuture<Object> watchMultiple(Object url, Object messageHashes2, Object message, Object subscribeHashes2, Object subscription) {
+        var client = this.client(url);
+
+        List<Object> messageHashes = (List<Object>) messageHashes2;
+        io.github.ccxt.ws.Future[] futures = new io.github.ccxt.ws.Future[messageHashes.size()];
+        for (int i = 0; i < messageHashes.size(); i++) {
+            futures[i] = client.future(messageHashes.get(i).toString());
+        }
+        var raceFuture = io.github.ccxt.ws.Future.race(futures);
+
+        List<String> missingSubscriptions = new java.util.ArrayList<>();
+        if (subscribeHashes2 instanceof List<?> subscribeHashes) {
+            for (Object sh : subscribeHashes) {
+                if (sh == null) continue;
+                String subHash = sh.toString();
+                if (client.subscriptionsMap().putIfAbsent(subHash, subscription != null ? subscription : true) == null) {
+                    missingSubscriptions.add(subHash);
+                }
+            }
+        }
+
+        if (subscribeHashes2 == null || !missingSubscriptions.isEmpty()) {
+            client.connect(0).thenAccept(connected -> {
+                if (message != null) {
+                    try {
+                        client.send(message);
+                    } catch (Exception ex) {
+                        for (String subHash : missingSubscriptions) {
+                            client.subscriptionsMap().remove(subHash);
+                        }
+                        raceFuture.reject(ex);
+                    }
+                }
+            });
+        }
+
+        return raceFuture.getFuture();
+    }
+
+    public void handleMessage(io.github.ccxt.ws.WsClient client, Object message) {
+        // Base implementation — overridden by pro exchange classes
+    }
+
+    public Object ping(io.github.ccxt.ws.WsClient client) {
+        // Base implementation — overridden by exchanges with custom ping
+        return null;
+    }
+
+    public void onClose(io.github.ccxt.ws.WsClient client, Object error) {
+        if (!client.error) {
+            this.cleanupWsClient(client, error);
+        }
+    }
+
+    public void onError(io.github.ccxt.ws.WsClient client, Object error) {
+        this.cleanupWsClient(client, error);
+    }
+
+    @SuppressWarnings("unchecked")
+    private void cleanupWsClient(io.github.ccxt.ws.WsClient client, Object error) {
+        var clientsMap = (java.util.concurrent.ConcurrentHashMap<String, io.github.ccxt.ws.WsClient>) this.clients;
+        var urlClient = clientsMap.get(client.url);
+        if (urlClient != null) {
+            // Reject all pending futures
+            for (String key : urlClient.subscriptionsMap().keySet()) {
+                urlClient.subscriptionsMap().remove(key);
+            }
+            urlClient.reject(error);
+            clientsMap.remove(client.url);
+        }
+    }
+
+    /**
+     * Fire-and-forget async task (matches JS spawn() / C# Task.Run()).
+     * Used for fetching order book snapshots while WS loop continues.
+     */
+    public void spawn(Runnable task) {
+        VIRTUAL_EXECUTOR.execute(task);
+    }
+
+    // OrderBook factory methods
+    public io.github.ccxt.ws.WsOrderBook orderBook(Object snapshot, Object depth) {
+        return new io.github.ccxt.ws.WsOrderBook(snapshot, depth);
+    }
+
+    public io.github.ccxt.ws.WsOrderBook orderBook() {
+        return new io.github.ccxt.ws.WsOrderBook();
+    }
+
+    public io.github.ccxt.ws.WsOrderBook.IndexedOrderBook indexedOrderBook(Object snapshot, Object depth) {
+        return new io.github.ccxt.ws.WsOrderBook.IndexedOrderBook(snapshot, depth);
+    }
+
+    public io.github.ccxt.ws.WsOrderBook.CountedOrderBook countedOrderBook(Object snapshot, Object depth) {
+        return new io.github.ccxt.ws.WsOrderBook.CountedOrderBook(snapshot, depth);
     }
 
     private void initHttpClient() {
