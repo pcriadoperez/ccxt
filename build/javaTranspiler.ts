@@ -86,43 +86,39 @@ class NewTranspiler {
     }
 
     getWsRegexes() {
-        // hoplefully we won't need this in the future by having everything typed properly in the typescript side
+        // C# WS regexes — kept for reference but not used for Java
+        return [];
+    }
+
+    getJavaWsRegexes() {
+        // Java-specific WS regexes — converts transpiled code for WS exchange classes
         return [
-            [/new (\w+)Rest\(\)/, 'new ccxt.$1()'],
-            [/return await (\w+);/gm, 'return await ($1 as Exchange.Future);'],
-            // [/typeof\(client\)/gm, 'client'],
-            // [/typeof\(orderbook\)/gm, 'orderbook'], // fix this in the transpiler later
-            [/new\sgetValue\((\w+),\s(\w+)\)\((\w+)\)/gm, 'this.newException(getValue($1, $2), $3)'],
-            [/\(object\)client\).subscriptions/gm, '(WebSocketClient)client).subscriptions'],
-            [/client\.subscriptions/gm, '((WebSocketClient)client).subscriptions'],
-            [/Dictionary<string,object>\)client.futures/gm, 'Dictionary<string, ccxt.Exchange.Future>)client.futures'],
-            [/this\.safeValue\(client\.futures,/gm, 'this.safeValue((client as WebSocketClient).futures,'],
-            [/Dictionary<string,object>\)this\.clients/gm, 'Dictionary<string, ccxt.Exchange.WebSocketClient>)this.clients'],
-            [/(object \w+) = client\.futures/, '$1 = (client as WebSocketClient).futures'],
-            [/(orderbook)(\.reset.+)/gm, '($1 as IOrderBook)$2'],
-            [/(\w+)(\.cache)/gm, '($1 as ccxt.pro.OrderBook)$2'],
-            //  [/(\w+)(\.reset)/gm, '($1 as ccxt.OrderBook)$2'],
-            [/((?:this\.)?\w+)(\.hashmap)/gm, '($1 as ArrayCacheBySymbolById)$2'],
-            [/(countedBookSide)\.store\(((.+),(.+),(.+))\)/gm, '($1 as IOrderBookSide).store($2)'],
-            [/(\w+)\.store\(((.+),(.+),(.+))\)/gm, '($1 as IOrderBookSide).store($2)'],
-            [/(\w+)\.store\(((.+),(.+))\)/gm, '($1 as IOrderBookSide).store($2)'],
-            [/(\w+)(\.storeArray\(.+\))/gm, '($1 as IOrderBookSide)$2'],
-            // [/(.+)\.store\((.+),(.+)\)/gm, '($1 as OrderBookSide).store($2,$3)'],
-            [/(\w+)\.call\(this,(.+)\)/gm, 'DynamicInvoker.InvokeMethod($1, new object[] {$2})'],
-            [/(\w+)(\.limit\(\))/gm, '($1 as IOrderBook)$2'],
-            [/(future)\.resolve\((.*)\)/gm, '($1 as Future).resolve($2)'],
-            [/this\.spawn\((this\.\w+),(.+)\)/gm, 'this.spawn($1, new object[] {$2})'],
-            [/this\.delay\(([^,]+),([^,]+),(.+)\)/gm, 'this.delay($1, $2, new object[] {$3})'],
-            // [/(this\.\w+)\.(append|resolve|getLimit)\((.+)\)/gm, 'callDynamically($1, "$2", new object[] {$3})'], // check this.orders
-            [/(((?:this\.)?\w+))\.(append|resolve|getLimit)\((.+)\)/gm, 'callDynamically($1, "$3", new object[] {$4})'],
-            [/future(\.reject.+)/gm, '((Future)future)$1'],
-            [/(\w+)(\.reject.+)/gm, '((WebSocketClient)$1)$2'],
-            [/(client)(\.reset.+)/gm, '((WebSocketClient)$1)$2'],
-            [/\(client,/g, '(client as WebSocketClient,'],
-            [/\(object client,/gm, '(WebSocketClient client,'],
-            [/\(object client\)/gm, '(WebSocketClient client)'],
-            [/object client =/gm, 'var client ='],
-            [/object future =/gm, 'var future ='],
+            // Dynamic exception construction: new getValue(x, key)(msg) → this.newException(getValue(x, key), msg)
+            [/new\sHelpers\.GetValue\((\w+),\s*(\w+)\)\((\w+)\)/gm, 'this.newException(Helpers.GetValue($1, $2), $3)'],
+
+            // Client type casts — transpiled code uses Object client, need to cast to Client
+            [/\(Object client,/gm, '(Client client,'],
+            [/\(Object client\)/gm, '(Client client)'],
+            [/Object client =/gm, 'Client client ='],
+            [/Object future =/gm, 'Object future ='],
+
+            // client.subscriptions / client.futures — these are Object type fields
+            // transpiled code tries to cast them to Map, which works since they're ConcurrentHashMaps
+            [/\(java\.util\.Map<String, Object>\)client\.futures/gm, '(java.util.Map)client.futures'],
+            [/\(java\.util\.Map<String, Object>\)client\.subscriptions/gm, '(java.util.Map)client.subscriptions'],
+            [/\(java\.util\.Map<String, Object>\)this\.clients/gm, '(java.util.Map)this.clients'],
+
+            // new XyzRest() → new Xyz() for instantiating REST parent
+            [/new (\w+)Rest\(\)/g, 'new io.github.ccxt.exchanges.$1()'],
+
+            // OrderBook/OrderBookSide operations — these are already our Java types
+            // .storeArray, .store, .limit, .reset, .cache — these work directly on our ws types
+
+            // spawn — leave as-is, Exchange.spawn accepts method name + args via reflection
+            // The spawn calls will be handled by a Java-side overload
+
+            // Note: .append/.getLimit on cache objects are left as-is
+            // They call methods directly on our ArrayCache/WsOrderBook types
         ]
     }
 
@@ -286,19 +282,24 @@ class NewTranspiler {
     }
 
     getJavaImports(file: any, ws = false) {
+        if (ws) {
+            // For WS pro exchanges — no import of REST parent (use FQN to avoid name clash)
+            return [
+                'package io.github.ccxt.exchanges.pro;',
+                'import io.github.ccxt.base.Precise;',
+                'import io.github.ccxt.errors.*;',
+                'import io.github.ccxt.Helpers;',
+                'import io.github.ccxt.ws.*;',
+                'import io.github.ccxt.Client;',
+            ];
+        }
         const values = [
-            // "using ccxt;",
             'package io.github.ccxt.exchanges;',
             `import io.github.ccxt.api.${this.capitalize(file)}Api;`,
             'import io.github.ccxt.base.Precise;',
             'import io.github.ccxt.errors.*;',
             'import io.github.ccxt.Helpers;'
-            // 'import io.github.ccxt.Exchange;',
-            // 'import io.github.ccxt.Errors;'
         ]
-        // if (ws) {
-        //     values.push("using System.Reflection;");
-        // }
         return values;
     }
 
@@ -842,15 +843,20 @@ class NewTranspiler {
     }
 
     async transpileWS(force = false) {
-        // const tsFolder = './ts/src/pro/';
+        const tsFolder = './ts/src/pro/';
 
-        // let inputExchanges =  process.argv.slice (2).filter (x => !x.startsWith ('--'));
-        // if (inputExchanges === undefined) {
-        //     inputExchanges = exchanges.ws;
-        // }
-        // const options = { csharpFolder: EXCHANGES_WS_FOLDER, exchanges:inputExchanges }
-        // // const options = { csharpFolder: EXCHANGES_WS_FOLDER, exchanges:['bitget'] }
-        // await this.transpileDerivedExchangeFiles (tsFolder, options, '.ts', force, !!(inputExchanges), true )
+        let inputExchanges: string[] =  process.argv.slice (2).filter (x => !x.startsWith ('--'));
+        if (!inputExchanges || inputExchanges.length === 0) {
+            // Only transpile WS exchanges that have a REST parent class already transpiled
+            const restExchanges = fs.readdirSync(EXCHANGES_FOLDER)
+                .filter((f: string) => f.endsWith('.java'))
+                .map((f: string) => f.replace('.java', '').toLowerCase());
+            const wsExchanges = (exchanges as any).ws as string[];
+            inputExchanges = wsExchanges.filter((ws: string) => restExchanges.includes(ws));
+            log.blue('[java-ws] Filtering to exchanges with REST parents:', inputExchanges);
+        }
+        const options = { csharpFolder: EXCHANGES_WS_FOLDER, exchanges: inputExchanges }
+        await this.transpileDerivedExchangeFiles (tsFolder, options, '.ts', force, !!(inputExchanges), true)
     }
 
     async transpileEverything(force = false, child = false, baseOnly = false, examplesOnly = false) {
@@ -1002,13 +1008,14 @@ class NewTranspiler {
         // content = content.replace(/binaryMessage.byteLength/gm, 'getValue(binaryMessage, "byteLength")'); // idex tmp fix
         // WS fixes
         if (ws) {
-            // const wsRegexes = this.getWsRegexes();
-            // content = this.regexAll (content, wsRegexes);
-            // content = this.replaceImportedRestClasses (content, csharpVersion.imports);
-            // const classNameRegex = /public\spartial\sclass\s(\w+)\s:\s(\w+)/gm;
-            // const classNameExec = classNameRegex.exec(content);
-            // const className = classNameExec ? classNameExec[1] : '';
-            // const constructorLine = `\npublic partial class ${className} { public ${className}(object args = null) : base(args) { } }\n`
+            const wsRegexes = this.getJavaWsRegexes();
+            content = this.regexAll (content, wsRegexes);
+            content = this.replaceImportedRestClasses (content, javaVersion.imports);
+            // For WS classes, use FQN for REST parent to avoid same-name conflict
+            const restFqn = `io.github.ccxt.exchanges.${this.capitalize(name)}`;
+            content = content.replace(/extends\s\w+Api/g, `extends ${restFqn}`);
+            content = content.replace(/extends\s(\w+)Rest/g, `extends io.github.ccxt.exchanges.$1`);
+            content = content.replace(/extends\s(\w+)\b(?!\.)/, `extends ${restFqn}`);
             // content = constructorLine  + content;
         }
         content = this.createGeneratedHeader().join('\n') + '\n' + content;
