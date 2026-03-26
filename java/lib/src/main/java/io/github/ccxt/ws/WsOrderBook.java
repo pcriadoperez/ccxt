@@ -96,6 +96,21 @@ public class WsOrderBook {
     }
 
     /**
+     * Get the cache list (used by transpiled code via reflection).
+     */
+    public List<Object> getCache() {
+        return this.cache;
+    }
+
+    /**
+     * Set the cache (used by transpiled code via reflection).
+     */
+    public void setCache(List<Object> newCache) {
+        this.cache.clear();
+        this.cache.addAll(newCache);
+    }
+
+    /**
      * Convert to Map representation (for resolve/return).
      */
     public Map<String, Object> toMap() {

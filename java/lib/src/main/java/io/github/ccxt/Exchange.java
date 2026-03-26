@@ -805,6 +805,10 @@ public class Exchange {
         return io.github.ccxt.base.Generic.deepExtend(objs);
     }
 
+    public Object extend(Object... objs) {
+        return io.github.ccxt.base.Generic.deepExtend(objs);
+    }
+
     // inArray / isArray
     public boolean inArray(Object elem, Object list2) {
         return io.github.ccxt.base.Generic.inArray(elem, list2);
@@ -1493,9 +1497,9 @@ public class Exchange {
     // ─── WebSocket Bridge (matches C# Exchange.WsBridge.cs) ───
 
     @SuppressWarnings("unchecked")
-    public io.github.ccxt.ws.WsClient client(Object url2) {
+    public Client client(Object url2) {
         String url = url2.toString();
-        return ((java.util.concurrent.ConcurrentHashMap<String, io.github.ccxt.ws.WsClient>) this.clients)
+        return ((java.util.concurrent.ConcurrentHashMap<String, Client>) this.clients)
                 .computeIfAbsent(url, u -> {
                     Object ws = this.safeValue(this.options, "ws", new java.util.HashMap<String, Object>());
                     Object wsOptions = this.safeValue(ws, "options", new java.util.HashMap<String, Object>());
@@ -1515,10 +1519,10 @@ public class Exchange {
                     }
 
                     return new Client(u, proxy,
-                            (client, msg) -> this.handleMessage(client, msg),
-                            (client) -> this.ping(client),
-                            (client, err) -> this.onClose(client, err),
-                            (client, err) -> this.onError(client, err),
+                            (client, msg) -> this.handleMessage((Client) client, msg),
+                            (client) -> this.ping((Client) client),
+                            (client, err) -> this.onClose((Client) client, err),
+                            (client, err) -> this.onError((Client) client, err),
                             this.verbose, keepAlive, decompressBin);
                 });
     }
@@ -1586,28 +1590,28 @@ public class Exchange {
         return raceFuture.getFuture();
     }
 
-    public void handleMessage(io.github.ccxt.ws.WsClient client, Object message) {
+    public void handleMessage(Client client, Object message) {
         // Base implementation — overridden by pro exchange classes
     }
 
-    public Object ping(io.github.ccxt.ws.WsClient client) {
+    public Object ping(Client client) {
         // Base implementation — overridden by exchanges with custom ping
         return null;
     }
 
-    public void onClose(io.github.ccxt.ws.WsClient client, Object error) {
+    public void onClose(Client client, Object error) {
         if (!client.error) {
             this.cleanupWsClient(client, error);
         }
     }
 
-    public void onError(io.github.ccxt.ws.WsClient client, Object error) {
+    public void onError(Client client, Object error) {
         this.cleanupWsClient(client, error);
     }
 
     @SuppressWarnings("unchecked")
-    private void cleanupWsClient(io.github.ccxt.ws.WsClient client, Object error) {
-        var clientsMap = (java.util.concurrent.ConcurrentHashMap<String, io.github.ccxt.ws.WsClient>) this.clients;
+    private void cleanupWsClient(Client client, Object error) {
+        var clientsMap = (java.util.concurrent.ConcurrentHashMap<String, Client>) this.clients;
         var urlClient = clientsMap.get(client.url);
         if (urlClient != null) {
             // Reject all pending futures

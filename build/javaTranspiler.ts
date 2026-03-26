@@ -117,8 +117,14 @@ class NewTranspiler {
             // spawn — leave as-is, Exchange.spawn accepts method name + args via reflection
             // The spawn calls will be handled by a Java-side overload
 
-            // Note: .append/.getLimit on cache objects are left as-is
-            // They call methods directly on our ArrayCache/WsOrderBook types
+            // ArrayCache constructor — needs FQN for inner classes + int cast
+            [/new ArrayCache\((\w+)\)/gm, 'new ArrayCache(((Number)$1).intValue())'],
+            [/new ArrayCacheByTimestamp\((\w+)\)/gm, 'new ArrayCache.ArrayCacheByTimestamp(((Number)$1).intValue())'],
+            [/new ArrayCacheByTimestamp\(\)/gm, 'new ArrayCache.ArrayCacheByTimestamp()'],
+            [/new ArrayCacheBySymbolById\((\w+)\)/gm, 'new ArrayCache.ArrayCacheBySymbolById(((Number)$1).intValue())'],
+            [/new ArrayCacheBySymbolById\(\)/gm, 'new ArrayCache.ArrayCacheBySymbolById()'],
+            [/new ArrayCacheBySymbolBySide\((\w+)\)/gm, 'new ArrayCache.ArrayCacheBySymbolBySide(((Number)$1).intValue())'],
+            [/new ArrayCacheBySymbolBySide\(\)/gm, 'new ArrayCache.ArrayCacheBySymbolBySide()'],
         ]
     }
 
@@ -1016,10 +1022,69 @@ class NewTranspiler {
             content = content.replace(/extends\s\w+Api/g, `extends ${restFqn}`);
             content = content.replace(/extends\s(\w+)Rest/g, `extends io.github.ccxt.exchanges.$1`);
             content = content.replace(/extends\s(\w+)\b(?!\.)/, `extends ${restFqn}`);
-            // content = constructorLine  + content;
+            content = this.postProcessWsJava(content, name);
         }
         content = this.createGeneratedHeader().join('\n') + '\n' + content;
         return javaImports + content;
+    }
+
+    postProcessWsJava(content: string, name: string): string {
+        const cap = this.capitalize(name);
+        const dynamicMethods = ['append', 'reset', 'storeArray', 'store'];
+        for (const method of dynamicMethods) {
+            const regex = new RegExp(`(?<!this\\.)(?<!Helpers\\.)(?<![\\w.])([a-z]\\w+)\\.${method}\\(([^;]*?)\\);`, 'gm');
+            content = content.replace(regex, `Helpers.callDynamically($1, "${method}", new Object[]{$2});`);
+        }
+        content = content.replace(/(?<!this\.)(?<!Helpers\.)(?<![\w.])([a-z]\w+)\.limit\(\)/gm, 'Helpers.callDynamically($1, "limit", new Object[]{})');
+        content = content.replace(/(?<!this\.)(?<!Helpers\.)(?<![\w.])([a-z]\w+)\.getLimit\(([^)]*?)\)/gm, 'Helpers.callDynamically($1, "getLimit", new Object[]{$2})');
+        content = content.replace(/(?<![.\w])([a-z]\w+)\.cache\b(?!\()/gm, '((java.util.List<Object>)Helpers.GetValue($1, "cache"))');
+        content = content.replace(/(?<![.\w])([a-z]\w+)\.nonce\b(?!\()/gm, 'Helpers.GetValue($1, "nonce")');
+        content = content.replace(new RegExp(`${cap}\\.this\\.(handle\\w+)\\s*(?=[,;)\\s])`, 'gm'), '"$1"');
+        content = content.replace(/(\w+)\.call\(this,\s*([^)]+)\)/gm, 'Helpers.callDynamically(this, $1, new Object[] {$2})');
+        content = content.replace(/this\.spawn\(this\.(\w+),\s*([^;]+)\);/gm, (match: string, method: string, args: string) => {
+            return `this.spawn(() -> { try { this.${method}(${args}); } catch(Exception _e) { throw new RuntimeException(_e); } });`;
+        });
+        content = content.replace(/this\.watch\(([^)]+)\)/gm, (match: string, args: string) => {
+            const argCount = args.split(',').length;
+            if (argCount === 4) return `this.watch(${args}, null)`;
+            return match;
+        });
+        content = content.replace(/this\.watchMultiple\(([^)]+)\)/gm, (match: string, args: string) => {
+            const argCount = args.split(',').length;
+            if (argCount === 4) return `this.watchMultiple(${args}, null)`;
+            return match;
+        });
+        content = content.replace(/WsClient\b/gm, 'Client');
+        content = content.replace(/\(Object client\)/gm, '(Client client)');
+        content = content.replace(/\(Object client,/gm, '(Client client,');
+        content = content.replace(/Object client =/gm, 'Client client =');
+        content = content.replace(/int (\w+) = (?![\d(])/gm, 'Object $1 = ');
+        content = content.replace(/this\.delay\(([^,]+),\s*this\.(\w+),\s*([^)]+)\)/gm,
+            'this.spawn(() -> { try { Thread.sleep(((Number)$1).longValue()); this.$2($3); } catch(Exception _e) {} })');
+        content = content.replace(/(\w+)\.resolve\(\)/gm, 'Helpers.callDynamically($1, "resolve", new Object[]{null})');
+        content = content.replace(/\(\(Object\)client\)\.subscriptions/gm, '((java.util.Map)client.subscriptions)');
+        content = content.replace(/\(\(Object\)client\)\.futures/gm, '((java.util.Map)client.futures)');
+        content = content.replace(/CompletableFuture<Void>/gm, 'CompletableFuture<Object>');
+        const lines = content.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+            if (lines[i].trim().startsWith('}, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR)')) {
+                let j = i - 1;
+                while (j >= 0 && lines[j].trim() === '') j--;
+                if (j >= 0 && lines[j].trim() === '}') {
+                    let k = j - 1;
+                    while (k >= 0 && lines[k].trim() === '') k--;
+                    if (k >= 0 && !lines[k].trim().startsWith('return ') && !lines[k].trim().startsWith('return(')) {
+                        const indent = lines[j].match(/^\s*/)?.[0] || '';
+                        lines.splice(j, 0, indent + '    return null;');
+                        i++;
+                    }
+                }
+            }
+        }
+        content = lines.join('\n');
+        content = content.replace(/String (\w+) = ((?:this\.\w+\(|Helpers\.)[^;]+);/gm, 'Object $1 = $2;');
+        content = content.replace(/Object client = this\.client\(/gm, 'Client client = this.client(');
+        return content;
     }
 
     replaceImportedRestClasses(content: string, imports: any[]) {
