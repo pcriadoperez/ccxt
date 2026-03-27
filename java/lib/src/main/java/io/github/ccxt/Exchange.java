@@ -1648,6 +1648,62 @@ public class Exchange {
         VIRTUAL_EXECUTOR.execute(task);
     }
 
+    /**
+     * Load order book snapshot from REST and merge with cached deltas.
+     * Matches TS base Exchange.loadOrderBook().
+     */
+    @SuppressWarnings("unchecked")
+    public void loadOrderBook(Client client, Object messageHash, Object symbol, Object limit, Object params) {
+        try {
+            if (!Helpers.inOp(this.orderbooks, symbol)) {
+                client.reject(new ExchangeError(this.id + " loadOrderBook() orderbook is not initiated"), messageHash);
+                return;
+            }
+            int maxRetries = ((Number) this.handleOption("watchOrderBook", "snapshotMaxRetries", 3)).intValue();
+            int tries = 0;
+            try {
+                Object stored = Helpers.GetValue(this.orderbooks, symbol);
+                while (tries < maxRetries) {
+                    java.util.List<Object> cache = (java.util.List<Object>) Helpers.GetValue(stored, "cache");
+                    Object orderBook = this.fetchRestOrderBookSafe(symbol, limit, params != null ? params : new java.util.HashMap<String, Object>()).join();
+                    Object index = this.getCacheIndex(orderBook, cache);
+                    if (Helpers.isGreaterThanOrEqual(index, 0)) {
+                        Helpers.callDynamically(stored, "reset", new Object[]{orderBook});
+                        int idx = ((Number) index).intValue();
+                        this.handleDeltas(stored, cache.subList(idx, cache.size()));
+                        ((java.util.List<Object>) Helpers.GetValue(stored, "cache")).clear();
+                        client.resolve(stored, messageHash);
+                        return;
+                    }
+                    tries++;
+                }
+                client.reject(new ExchangeError(this.id + " nonce is behind the cache after " + maxRetries + " tries."), messageHash);
+                ((java.util.concurrent.ConcurrentHashMap<String, Client>) this.clients).remove(client.url);
+                Helpers.addElementToObject(this.orderbooks, symbol, this.orderBook());
+            } catch (Exception e) {
+                client.reject(e, messageHash);
+                this.loadOrderBook(client, messageHash, symbol, limit, params);
+            }
+        } catch (Exception e) {
+            client.reject(e, messageHash);
+        }
+    }
+
+    /** Overload for 3-arg calls (without limit and params). */
+    public void loadOrderBook(Client client, Object messageHash, Object symbol) {
+        loadOrderBook(client, messageHash, symbol, null, null);
+    }
+
+    /** Check if a message is binary (byte array). */
+    public boolean isBinaryMessage(Object message) {
+        return message instanceof byte[];
+    }
+
+    /** Decode a protobuf message. Override in exchange-specific classes if needed. */
+    public Object decodeProtoMsg(Object data) {
+        throw new RuntimeException(this.id + " decodeProtoMsg is not supported in Java yet");
+    }
+
     // OrderBook factory methods — varargs for flexible calling from transpiled code
     public io.github.ccxt.ws.WsOrderBook orderBook(Object... args) {
         Object snapshot = args.length > 0 ? args[0] : null;

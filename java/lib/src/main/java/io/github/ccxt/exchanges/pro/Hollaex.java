@@ -707,7 +707,7 @@ public class Hollaex extends io.github.ccxt.exchanges.Hollaex
 
     public Object handlePong(Client client, Object message)
     {
-        client.lastPong = this.milliseconds();
+        client.lastPong = ((Number)this.milliseconds()).longValue();
         return message;
     }
 

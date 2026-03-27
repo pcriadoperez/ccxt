@@ -478,7 +478,7 @@ public class Coinone extends io.github.ccxt.exchanges.Coinone
         //         "response_type":"PONG"
         //     }
         //
-        client.lastPong = this.milliseconds();
+        client.lastPong = ((Number)this.milliseconds()).longValue();
         return message;
     }
 }

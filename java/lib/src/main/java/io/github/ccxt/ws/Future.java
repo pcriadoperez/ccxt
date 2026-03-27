@@ -26,6 +26,13 @@ public class Future {
     }
 
     /**
+     * Resolve the future with null. Used when no specific data is needed.
+     */
+    public void resolve() {
+        this.completableFuture.complete(null);
+    }
+
+    /**
      * Reject the future with an error.
      */
     public void reject(Object error) {

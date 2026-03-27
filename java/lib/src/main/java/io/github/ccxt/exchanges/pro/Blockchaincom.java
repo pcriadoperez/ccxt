@@ -905,7 +905,7 @@ final Object finalTradeId = tradeId;
                 }};
                 return this.watch(url, messageHash, this.extend(request, parameters), messageHash, null);
             }
-            return future.getFuture().join();
+            return ((io.github.ccxt.ws.Future)future).getFuture().join();
         }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }

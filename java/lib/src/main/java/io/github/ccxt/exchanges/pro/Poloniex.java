@@ -1412,7 +1412,7 @@ public class Poloniex extends io.github.ccxt.exchanges.Poloniex
 
     public void handlePong(Client client)
     {
-        client.lastPong = this.milliseconds();
+        client.lastPong = ((Number)this.milliseconds()).longValue();
     }
 
     public void handleMessage(Client client, Object message)
@@ -1425,7 +1425,7 @@ public class Poloniex extends io.github.ccxt.exchanges.Poloniex
         Object eventVar = this.safeString(message, "event");
         if (Helpers.isTrue(Helpers.isEqual(eventVar, "pong")))
         {
-            client.lastPong = this.milliseconds();
+            client.lastPong = ((Number)this.milliseconds()).longValue();
         }
         Object methods = new java.util.HashMap<String, Object>() {{
             put( "candles_minute_1", "handleOHLCV");

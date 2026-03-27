@@ -118,7 +118,7 @@ public class Hitbtc extends io.github.ccxt.exchanges.Hitbtc
                 }};
                 this.watch(url, messageHash, request, messageHash, null);
             }
-            return future.getFuture().join();
+            return ((io.github.ccxt.ws.Future)future).getFuture().join();
         }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }

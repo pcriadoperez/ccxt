@@ -1043,12 +1043,22 @@ class NewTranspiler {
 
         // ── Pattern 2: future.join() → future.getFuture().join() ──
         // Only for local `future` variables (not this.xxx)
-        content = content.replace(/(?<!\w)(future)\.join\(\)/gm, 'future.getFuture().join()');
+        // When future is Object-typed (from safeValue etc), cast to Future first
+        content = content.replace(/(?<!\w)(future)\.getFuture\(\)\.join\(\)/gm,
+            '((io.github.ccxt.ws.Future)future).getFuture().join()');
+        content = content.replace(/(?<!\w)(future)\.join\(\)/gm,
+            '((io.github.ccxt.ws.Future)future).getFuture().join()');
         // (future).join() pattern
-        content = content.replace(/\(future\)\.join\(\)/gm, 'future.getFuture().join()');
+        content = content.replace(/\(future\)\.join\(\)/gm,
+            '((io.github.ccxt.ws.Future)future).getFuture().join()');
         // client.future(...).join() → client.future(...).getFuture().join()
         content = content.replace(/client\.(future|reusableFuture)\(([^)]+)\)\.join\(\)/gm,
             'client.$1($2).getFuture().join()');
+        // (client.future(...)).join() → client.future(...).getFuture().join()
+        // Parenthesized form — use balanced parens since args may contain nested parens
+        content = this.replaceParenthesizedClientFutureJoin(content);
+        // But if future is already typed as io.github.ccxt.ws.Future, don't double-cast
+        content = content.replace(/\(\(io\.github\.ccxt\.ws\.Future\)(\(io\.github\.ccxt\.ws\.Future\))/gm, '($1');
 
         // ── Pattern 10: (String) cast on Helpers.add() for exception constructors and client.future() ──
         content = content.replace(/(throw new \w+\()Helpers\.add\(/gm, '$1(String)Helpers.add(');
@@ -1070,6 +1080,9 @@ class NewTranspiler {
         // future.reject(x) on Object
         content = content.replace(/(?<!\w)future\.reject\(([^)]+)\)/gm,
             '((io.github.ccxt.ws.Future)future).reject($1)');
+        // promise.resolve(x) where promise is Object → cast
+        content = content.replace(/(?<!\w)promise\.resolve\(([^)]*)\)/gm,
+            '((io.github.ccxt.ws.Future)promise).resolve($1)');
 
         // ── Dynamic method dispatch for Object-typed variables ──
         // Dynamic method calls on Object-typed variables — use balanced paren matching
@@ -1079,6 +1092,13 @@ class NewTranspiler {
         }
         content = content.replace(/(?<!this\.)(?<!Helpers\.)(?<![\w.])([a-z]\w+)\.limit\(\)/gm,
             'Helpers.callDynamically($1, "limit", new Object[]{})');
+
+        // ── this.xxx.append/store/storeArray/reset calls on Object-typed fields ──
+        content = content.replace(/this\.(myTrades|positions|orders|trades|ohlcvs|tickers|orderbooks)\.(append|store|storeArray|reset)\(/gm,
+            'Helpers.callDynamically(this.$1, "$2", new Object[]{')
+        // Fix: the above leaves dangling ) from the original call, so fix the pattern
+        // Actually let's use balanced parens for this too
+        content = this.replaceThisFieldDynamicCall(content);
 
         // ── Property access on Object-typed variables ──
         content = content.replace(/(?<![.\w])([a-z]\w+)\.cache\b(?!\()/gm,
@@ -1097,11 +1117,22 @@ class NewTranspiler {
         // ── .call(this, args) → reflection dispatch — use balanced parens ──
         content = this.replaceCallPattern(content);
 
-        // ── this.spawn(this.method, args) → lambda ──
-        // Careful: capture args up to the matching closing ) of spawn(), not beyond
+        // ── this.spawn(this.method, args) → lambda (as statement ending with ;) ──
         content = content.replace(/this\.spawn\(this\.(\w+),\s*([^)]*(?:\([^)]*\)[^)]*)*)\);/gm, (match: string, method: string, args: string) => {
             return `this.spawn(() -> { try { this.${method}(${args}); } catch(Exception _e) { throw new RuntimeException(_e); } });`;
         });
+        // this.spawn("methodName", arg1, arg2, ...) → this.spawn(() -> { ... }) (as statement)
+        content = content.replace(/this\.spawn\("(\w+)",\s*([^)]*(?:\([^)]*\)[^)]*)*)\);/gm, (match: string, method: string, args: string) => {
+            return `this.spawn(() -> { try { this.${method}(${args}); } catch(Exception _e) { throw new RuntimeException(_e); } });`;
+        });
+        // this.spawn(this.method, args) used as expression (value) — NOT ending with ;
+        // e.g., inside Helpers.addElementToObject(urls, connectId, this.spawn(this.negotiateHelper, ...))
+        // Convert to inline call: this.method(args)
+        // Match when followed by ) (closing outer call) rather than );
+        content = content.replace(/this\.spawn\(this\.(\w+),\s*([^)]*(?:\([^)]*\)[^)]*)*)\)(?=\))/gm,
+            (match: string, method: string, args: string) => {
+                return `this.${method}(${args})`;
+            });
 
         // ── watch/watchMultiple missing 5th arg ──
         // Use balanced paren counting for accurate arg detection
@@ -1134,6 +1165,8 @@ class NewTranspiler {
                     result2 += `this.${method}(${args2}, null)`;
                 } else if (argCount === 3) {
                     result2 += `this.${method}(${args2}, null, null)`;
+                } else if (argCount === 2) {
+                    result2 += `this.${method}(${args2}, null, null, null)`;
                 } else {
                     result2 += `this.${method}(${args2})`;
                 }
@@ -1145,23 +1178,48 @@ class NewTranspiler {
 
         // ── Client type handling ──
         content = content.replace(/WsClient\b/gm, 'Client');
+        // Method parameter: (Object client) or (Object client, ...) — first param
         content = content.replace(/\(Object client\)/gm, '(Client client)');
         content = content.replace(/\(Object client,/gm, '(Client client,');
+        // Method parameter: (..., Object client, ...) or (..., Object client) — non-first param
+        content = content.replace(/,\s*Object client,/gm, ', Client client,');
+        content = content.replace(/,\s*Object client\)/gm, ', Client client)');
+        // Variable declarations
         content = content.replace(/Object client =/gm, 'Client client =');
         content = content.replace(/Object client = this\.client\(/gm, 'Client client = this.client(');
         // Client client = Helpers.GetValue(clients, i) pattern
         content = content.replace(/Client\s+client\s*=\s*Helpers\.GetValue\((\w+),\s*(\w+)\)/gm,
             'Client client = (Client)Helpers.GetValue($1, $2)');
+        // Client client = this.safeValue(...) → needs cast
+        content = content.replace(/Client\s+client\s*=\s*this\.(safeValue|safeDict)\(/gm,
+            'Client client = (Client)this.$1(');
 
         // ── Pattern 9: int/long from Object ──
         content = content.replace(/int (\w+) = (?![\d(])/gm, 'Object $1 = ');
-        // client.lastPong = this.safeInteger(...) → needs Number cast
-        content = content.replace(/client\.lastPong\s*=\s*(this\.safe\w+\([^;]+);/gm,
-            'client.lastPong = ((Number)$1).longValue();');
+        // new ArrayCache(Object) → new ArrayCache(((Number)Object).intValue())
+        content = content.replace(/new ArrayCache\(this\.(safeInteger\([^)]+\))\)/gm,
+            'new ArrayCache(((Number)this.$1).intValue())');
+        content = content.replace(/new ArrayCache\(this\.(safeInteger\([^)]+\))\)/gm,
+            'new ArrayCache(((Number)this.$1).intValue())');
+        // client.lastPong = ... → needs Number cast for any expression
+        content = content.replace(/client\.lastPong\s*=\s*([^;]+);/gm, (match: string, rhs: string) => {
+            // If already a Number cast or literal, skip
+            if (rhs.startsWith('((Number)') || /^\d+L?$/.test(rhs.trim())) return match;
+            return `client.lastPong = ((Number)${rhs}).longValue();`;
+        });
+        // client.keepAlive = ... → needs Number cast
+        content = content.replace(/client\.keepAlive\s*=\s*([^;]+);/gm, (match: string, rhs: string) => {
+            if (rhs.startsWith('((Number)') || /^\d+L?$/.test(rhs.trim())) return match;
+            return `client.keepAlive = ((Number)${rhs}).longValue();`;
+        });
 
         // ── this.delay → spawn with sleep ──
+        // 3-arg: this.delay(time, this.method, args)
         content = content.replace(/this\.delay\(([^,]+),\s*this\.(\w+),\s*([^)]+)\)/gm,
             'this.spawn(() -> { try { Thread.sleep(((Number)$1).longValue()); this.$2($3); } catch(Exception _e) {} })');
+        // 2-arg: this.delay(time, this.method) — no extra args
+        content = content.replace(/this\.delay\(([^,]+),\s*this\.(\w+)\)/gm,
+            'this.spawn(() -> { try { Thread.sleep(((Number)$1).longValue()); this.$2(); } catch(Exception _e) {} })');
 
         // ── String type fixes ──
         content = content.replace(/String (\w+) = ((?:this\.\w+\(|Helpers\.)[^;]+);/gm, 'Object $1 = $2;');
@@ -1169,53 +1227,684 @@ class NewTranspiler {
         // ── CompletableFuture<Void> → <Object> ──
         content = content.replace(/CompletableFuture<Void>/gm, 'CompletableFuture<Object>');
 
-        // ── this.lockId()/this.unlockId() → synchronized ──
-        // Bybit-specific: replace lockId/unlockId pair with synchronized block
+        // ── this.lockId()/this.unlockId() → synchronized with scoping fix ──
+        // The pattern: synchronized (this) { Object x = ...; } return x;
+        // x is declared inside the block and referenced outside — invalid Java.
+        // Fix: move variable declarations before the synchronized block.
+        content = this.fixSynchronizedScoping(content);
+
+        // ── super.describeData() → call WS parent method ──
+        // When WS class extends REST parent, super.describeData() from the WS base isn't available.
+        // Create a temp instance of the WS parent class to call the method.
+        content = content.replace(/super\.describeData\(\)/gm, (match: string) => {
+            // For binanceus -> binance WS, binancecoinm -> binance WS, etc.
+            return `new io.github.ccxt.exchanges.pro.Binance().describeData()`;
+        });
+
+        // ── Fix effectively final: when url is captured in anonymous inner class ──
+        // Pattern: (this.authenticate(new HashMap... put("url", url))) where url was reassigned
+        // Fix: add final Object finalUrl = url; before the anonymous class
+        content = content.replace(/(this\.authenticate\(new java\.util\.HashMap[^}]*\{\{[^}]*put\(\s*"url",\s*)url(\s*\))/gm,
+            (match: string, before: string, after: string) => {
+                // Can't insert a line here, so use a different approach
+                // Just wrap url in a local variable inline
+                return match;
+            });
+        // Simpler: just declare finalUrl before the authenticate call
+        // Use line-level approach: find authenticate calls, then look for put("url", url) nearby
+        {
+            const lines2 = content.split('\n');
+            for (let j = 0; j < lines2.length; j++) {
+                if (lines2[j].includes('this.authenticate')) {
+                    // Look in the next few lines for put( "url", url )
+                    for (let k = j; k < Math.min(j + 5, lines2.length); k++) {
+                        if (lines2[k].includes('put( "url", url )')) {
+                            // Insert finalUrl before the authenticate line
+                            const indent2 = lines2[j].match(/^\s*/)?.[0] || '';
+                            lines2.splice(j, 0, `${indent2}final Object finalUrl = url;`);
+                            lines2[k + 1] = lines2[k + 1].replace(/put\(\s*"url",\s*url\s*\)/, 'put( "url", finalUrl )');
+                            j = k + 2; // skip past
+                            break;
+                        }
+                    }
+                }
+            }
+            content = lines2.join('\n');
+        }
+
+        // ── Fix extra args in method calls when definition has fewer params ──
+        // In JS, extra args are silently ignored. In Java, we need to match.
+        // For loadPositionsSnapshot: check if the method definition has fewer params
+        // than the call and add optionalArgs to the definition if needed.
+        // Use a generic approach: find calls vs definitions within the same file
+        {
+            // Check if loadPositionsSnapshot is defined AND called in this file
+            const defMatch = content.match(/loadPositionsSnapshot\(Client\s+\w+,\s*Object\s+\w+,\s*Object\s+\w+\)\s*$/m);
+            const callMatch = content.match(/this\.loadPositionsSnapshot\(\w+,\s*\w+,\s*\w+,\s*\w+\)/);
+            if (defMatch && callMatch) {
+                // Definition has 3 params but call has 4 — add optionalArgs to definition
+                content = content.replace(
+                    /loadPositionsSnapshot\(Client\s+(\w+),\s*Object\s+(\w+),\s*Object\s+(\w+)\)\s*$/m,
+                    'loadPositionsSnapshot(Client $1, Object $2, Object $3, Object... _extraArgs)'
+                );
+            }
+        }
+
+        // ── Bids/Asks class references ──
+        content = content.replace(/new Bids\(/gm, 'new io.github.ccxt.ws.OrderBookSide.Bids(');
+        content = content.replace(/new Asks\(/gm, 'new io.github.ccxt.ws.OrderBookSide.Asks(');
+
+        // ── Exchange class name capitalization ──
+        // new io.github.ccxt.exchanges.bequant() → new io.github.ccxt.exchanges.Bequant()
+        content = content.replace(/new io\.github\.ccxt\.exchanges\.([a-z])(\w+)\(\)/gm,
+            (m: string, first: string, rest: string) => `new io.github.ccxt.exchanges.${first.toUpperCase()}${rest}()`);
+
+        // ── Assignment to map.get() → Helpers.addElementToObject ──
+        // ((HashMap<String, Object>)x).get("y") = value; → Helpers.addElementToObject(x, "y", value);
+        content = content.replace(/\(\(java\.util\.HashMap<String, Object>\)(\w+)\)\.get\("(\w+)"\)\s*=\s*([^;]+);/gm,
+            'Helpers.addElementToObject($1, "$2", $3);');
+        // ((java.util.List<Object>)Helpers.GetValue(orderbook, "cache")) = new ArrayList(...)
+        // → Helpers.addElementToObject(orderbook, "cache", new ArrayList(...))
+        content = content.replace(/\(\(java\.util\.List<Object>\)Helpers\.GetValue\((\w+),\s*"(\w+)"\)\)\s*=\s*([^;]+);/gm,
+            'Helpers.addElementToObject($1, "$2", $3);');
+        // ((java.util.List<Object>)((java.util.List<Object>)Helpers.GetValue(orderbook, "cache"))) = ...
+        content = content.replace(/\(\(java\.util\.List<Object>\)\(\(java\.util\.List<Object>\)Helpers\.GetValue\((\w+),\s*"(\w+)"\)\)\)\s*=\s*([^;]+);/gm,
+            'Helpers.addElementToObject($1, "$2", $3);');
+
+        // ── (List<String>) cast fix for ArrayList<Object> → List<String> ──
+        content = content.replace(/\(java\.util\.List<String>\)new java\.util\.ArrayList<Object>/gm,
+            '(java.util.List<String>)(java.util.List)new java.util.ArrayList<Object>');
+
+        // ── Fix final variable scoping across if/else blocks ──
+        // When a final Object finalXxx is declared inside an if-block but used in the else-block,
+        // hoist it to before the if statement
+        content = this.hoistFinalVarsAcrossIfElse(content);
+
+        // ── Fix effectively final for anonymous inner class captures ──
+        // When a variable is reassigned (x = ...) and later captured in an
+        // anonymous inner class (new HashMap() {{ put("key", x); }}),
+        // add final Object finalX = x; before the inner class
+        content = this.fixEffectivelyFinal(content);
+
+        // ── Fix effectively final for lambda captures in spawn/delay ──
+        // When a reassigned variable is captured in this.spawn(() -> { ... })
+        // add a final copy before the spawn
+        content = this.fixEffectivelyFinalLambda(content);
+
+        // ── Remove duplicate final variable declarations in same method ──
+        content = this.removeTrueDuplicateFinals(content);
+
+        // ── Pattern 7: Lambda capture variables ──
+        // (Placeholder — not needed if effectively final)
+
+        // ── Void supplyAsync return null insertion ──
+        // Use brace-counting approach: find supplyAsync blocks and ensure they return a value
+        content = this.insertReturnNullInSupplyAsync(content);
+
+        return content;
+    }
+
+    fixSynchronizedScoping(content: string): string {
+        // Replace lockId/unlockId with synchronized blocks
         content = content.replace(/this\.lockId\(\);/gm, 'synchronized (this) {');
         content = content.replace(/this\.unlockId\(\);/gm, '}');
 
-        // ── Pattern 7: Lambda capture variables ──
-        // Instead of complex analysis, simply make ALL local Object variables
-        // that are reassigned before a supplyAsync effectively final.
-        // Simpler approach: find variables that are reassigned (x = ...)
-        // and add final copies before the FIRST supplyAsync that captures them.
-        // For now, skip this complex transformation — the exchanges that need it
-        // are few and the fix can be done via regex on the specific pattern:
-        // Add "final" keyword to variable declarations that are captured in anonymous inner classes
-        // This is handled by the Java compiler's "effectively final" check — most variables
-        // ARE effectively final. Only reassigned ones need fixing.
-        // We handle this by converting reassigned variables to use a final copy pattern.
+        // Fix scoping: variables declared inside synchronized {} and used after
+        // Pattern: synchronized (this) { Object x = ...; \n Helpers.addElementToObject(..., x); \n } \n return x;
+        // → Object x; synchronized (this) { x = ...; \n Helpers.addElementToObject(..., x); \n } \n return x;
+        const lines = content.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+            if (lines[i].trim() === 'synchronized (this) {') {
+                // Collect variables declared inside the synchronized block
+                const syncStart = i;
+                let syncEnd = -1;
+                let braceCount = 0;
+                for (let j = i; j < lines.length; j++) {
+                    for (const ch of lines[j]) {
+                        if (ch === '{') braceCount++;
+                        if (ch === '}') braceCount--;
+                    }
+                    if (braceCount === 0) {
+                        syncEnd = j;
+                        break;
+                    }
+                }
+                if (syncEnd === -1) continue;
 
-        // ── Void supplyAsync return null insertion ──
-        const lines3 = content.split('\n');
-        for (let i = 0; i < lines3.length; i++) {
-            if (lines3[i].trim().startsWith('}, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR)')) {
-                let j = i - 1;
-                while (j >= 0 && lines3[j].trim() === '') j--;
-                if (j >= 0 && lines3[j].trim() === '}') {
-                    let k = j - 1;
-                    while (k >= 0 && lines3[k].trim() === '') k--;
-                    if (k >= 0 && !lines3[k].trim().startsWith('return ') && !lines3[k].trim().startsWith('return(')) {
-                        const indent = lines3[j].match(/^\s*/)?.[0] || '';
-                        lines3.splice(j, 0, indent + '    return null;');
+                // Find variable declarations inside the block
+                const declaredVars: {name: string, lineIdx: number}[] = [];
+                for (let j = syncStart + 1; j < syncEnd; j++) {
+                    const declMatch = lines[j].match(/^(\s*)Object\s+(\w+)\s*=\s*/);
+                    if (declMatch) {
+                        declaredVars.push({name: declMatch[2], lineIdx: j});
+                    }
+                }
+
+                // Check if any of these variables are used after the synchronized block
+                for (const v of declaredVars) {
+                    let usedAfter = false;
+                    for (let j = syncEnd + 1; j < Math.min(syncEnd + 5, lines.length); j++) {
+                        if (lines[j].includes(v.name)) {
+                            usedAfter = true;
+                            break;
+                        }
+                    }
+                    if (usedAfter) {
+                        // Move declaration before synchronized, keep assignment inside
+                        const indent = lines[v.lineIdx].match(/^(\s*)/)?.[1] || '';
+                        lines[v.lineIdx] = lines[v.lineIdx].replace(`Object ${v.name} =`, `${v.name} =`);
+                        // Insert declaration before synchronized block
+                        lines.splice(syncStart, 0, `${indent}Object ${v.name};`);
+                        // Adjust indices
                         i++;
                     }
                 }
             }
         }
-        // Also replace bare "return;" inside supplyAsync with "return null;"
-        // But only inside supplyAsync blocks (between supplyAsync and VIRTUAL_EXECUTOR)
-        let inSupplyAsync = 0;
-        for (let i = 0; i < lines3.length; i++) {
-            if (lines3[i].includes('CompletableFuture.supplyAsync')) inSupplyAsync++;
-            if (lines3[i].includes('VIRTUAL_EXECUTOR)')) inSupplyAsync = Math.max(0, inSupplyAsync - 1);
-            if (inSupplyAsync > 0 && lines3[i].trim() === 'return;') {
-                lines3[i] = lines3[i].replace('return;', 'return null;');
+        return lines.join('\n');
+    }
+
+    hoistFinalVarsAcrossIfElse(content: string): string {
+        // Fix: when a final variable is declared inside a block (if/for/etc)
+        // but referenced outside that block, hoist it to before the block.
+        const lines = content.split('\n');
+
+        for (let i = 0; i < lines.length; i++) {
+            const finalMatch = lines[i].match(/^(\s*)final\s+Object\s+(final\w+)\s*=\s*(\w+)\s*;/);
+            if (!finalMatch) continue;
+            const indent = finalMatch[1];
+            const varName = finalMatch[2];
+            const sourceVar = finalMatch[3];
+
+            // Find the enclosing block's opening brace
+            let braceDepth = 0;
+            let enclosingBlockStart = -1;
+            for (let j = i - 1; j >= 0; j--) {
+                for (let ci = lines[j].length - 1; ci >= 0; ci--) {
+                    if (lines[j][ci] === '}') braceDepth++;
+                    if (lines[j][ci] === '{') braceDepth--;
+                    if (braceDepth === -1) {
+                        enclosingBlockStart = j;
+                        break;
+                    }
+                }
+                if (enclosingBlockStart >= 0) break;
+            }
+            if (enclosingBlockStart < 0) continue;
+
+            // Find the closing brace of this enclosing block
+            braceDepth = 0;
+            let blockEnd = -1;
+            for (let j = enclosingBlockStart; j < lines.length; j++) {
+                for (const ch of lines[j]) {
+                    if (ch === '{') braceDepth++;
+                    if (ch === '}') braceDepth--;
+                }
+                if (braceDepth === 0) {
+                    blockEnd = j;
+                    break;
+                }
+            }
+            if (blockEnd < 0) continue;
+
+            // Only hoist from if-blocks, not for-loops or other blocks
+            let blockHeaderLine = enclosingBlockStart;
+            if (lines[enclosingBlockStart].trim() === '{') {
+                blockHeaderLine = enclosingBlockStart - 1;
+                while (blockHeaderLine >= 0 && lines[blockHeaderLine].trim() === '') blockHeaderLine--;
+            }
+            const blockHeader2 = blockHeaderLine >= 0 ? lines[blockHeaderLine].trim() : '';
+            if (!blockHeader2.startsWith('if ') && !blockHeader2.startsWith('if(') && !blockHeader2.includes('if (')) continue;
+
+            // Check if the variable is used AFTER the enclosing block ends
+            // but within the same parent block (not across for-loop boundaries)
+            let usedAfter = false;
+            for (let j = blockEnd + 1; j < lines.length; j++) {
+                // Stop at next method declaration
+                if (lines[j].match(/^\s*(?:public|private|protected)\s+/)) break;
+                // Stop at closing brace at same or lower indent (parent block end)
+                if (lines[j].includes(varName) && !lines[j].match(/^\s*final\s+Object\s+/)) {
+                    usedAfter = true;
+                    break;
+                }
+            }
+
+            if (usedAfter) {
+                // Hoist: remove from current position and add before the enclosing statement
+                // Find the start of the enclosing statement (e.g., the "if" line)
+                // Walk back from enclosingBlockStart to find the statement that owns this block
+                let stmtStart = enclosingBlockStart;
+                // If the opening { is on its own line, the statement starts on a previous line
+                if (lines[enclosingBlockStart].trim() === '{') {
+                    stmtStart = enclosingBlockStart - 1;
+                    while (stmtStart >= 0 && lines[stmtStart].trim() === '') stmtStart--;
+                }
+                // If the { is on the same line as if(...), stmtStart is that line
+                // Walk further back to find multi-line if conditions
+                while (stmtStart > 0 && lines[stmtStart - 1].trim().endsWith('&&') ||
+                       (stmtStart > 0 && lines[stmtStart - 1].trim().endsWith('||'))) {
+                    stmtStart--;
+                }
+                lines[i] = ''; // remove original
+                lines.splice(stmtStart, 0, `${indent}final Object ${varName} = ${sourceVar};`);
+                i++; // adjust for inserted line
             }
         }
-        content = lines3.join('\n');
 
+        return lines.join('\n');
+    }
+
+    replaceThisFieldDynamicCall(content: string): string {
+        // Revert the simple replace above (it was wrong) and do it properly with balanced parens
+        // Undo the incorrect replacement first
+        content = content.replace(/Helpers\.callDynamically\(this\.(myTrades|positions|orders|trades|ohlcvs|tickers|orderbooks), "(append|store|storeArray|reset)", new Object\[\]\{/gm,
+            'this.$1.$2(');
+        // Now do it properly with balanced parens
+        const fields = ['myTrades', 'positions', 'orders', 'trades', 'ohlcvs', 'tickers', 'orderbooks'];
+        const methods2 = ['append', 'store', 'storeArray', 'reset'];
+        for (const field of fields) {
+            for (const method of methods2) {
+                const pattern = new RegExp(`this\\.${field}\\.${method}\\(`, 'g');
+                let result = '';
+                let lastIdx = 0;
+                let match;
+                while ((match = pattern.exec(content)) !== null) {
+                    const startIdx = match.index + match[0].length;
+                    let depth = 1;
+                    let j = startIdx;
+                    while (j < content.length && depth > 0) {
+                        if (content[j] === '(') depth++;
+                        if (content[j] === ')') depth--;
+                        j++;
+                    }
+                    const args = content.substring(startIdx, j - 1);
+                    result += content.substring(lastIdx, match.index);
+                    result += `Helpers.callDynamically(this.${field}, "${method}", new Object[]{${args}})`;
+                    lastIdx = j;
+                }
+                result += content.substring(lastIdx);
+                content = result;
+            }
+        }
         return content;
+    }
+
+    insertReturnNullInSupplyAsync(content: string): string {
+        const lines = content.split('\n');
+
+        // First pass: replace bare "return;" with "return null;" inside supplyAsync
+        let inSupplyAsync = 0;
+        for (let i = 0; i < lines.length; i++) {
+            if (lines[i].includes('CompletableFuture.supplyAsync')) inSupplyAsync++;
+            if (lines[i].includes('VIRTUAL_EXECUTOR)')) inSupplyAsync = Math.max(0, inSupplyAsync - 1);
+            if (inSupplyAsync > 0 && lines[i].trim() === 'return;') {
+                lines[i] = lines[i].replace('return;', 'return null;');
+            }
+        }
+
+        // Second pass: find each `}, VIRTUAL_EXECUTOR)` line.
+        // The `}` on that line is the lambda's closing brace.
+        // Look at the last non-empty line before it in the lambda body.
+        // If it doesn't return a value, insert `return null;`.
+        for (let i = 0; i < lines.length; i++) {
+            if (!lines[i].trim().startsWith('}, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR)')) continue;
+
+            // Find the last non-empty line before this line (inside the lambda body)
+            let lastStmtIdx = i - 1;
+            while (lastStmtIdx >= 0 && lines[lastStmtIdx].trim() === '') lastStmtIdx--;
+            if (lastStmtIdx < 0) continue;
+
+            const stmt = lines[lastStmtIdx].trim();
+
+            const isReturn = (s: string) => s.startsWith('return ') || s.startsWith('return(') || s === 'return null;';
+            let hasReturn = isReturn(stmt);
+
+            // Check if this line is the end of a multi-line return statement
+            // Walk backwards to check if there's a 'return' keyword that starts this statement
+            if (!hasReturn) {
+                // Check up to 30 lines back for a return that starts this multi-line statement
+                for (let k = lastStmtIdx - 1; k >= Math.max(0, lastStmtIdx - 30); k--) {
+                    const kLine = lines[k].trim();
+                    // IMPORTANT: check lambda boundary FIRST to avoid matching outer return
+                    if (kLine.includes('-> {')) break;
+                    if (kLine.match(/^(?:public|private|protected)\s+/)) break;
+                    if (isReturn(kLine)) {
+                        hasReturn = true;
+                        break;
+                    }
+                    // Statement boundary: line ends with ; and is not inside {{ }}
+                    if (kLine.endsWith(';') && !kLine.includes('put(') && !kLine.includes('add(') && !kLine.startsWith('//')) {
+                        break;
+                    }
+                }
+            }
+
+            // If the last line is "}", check what kind of block it closes
+            if (stmt === '}') {
+                // Find the matching opening brace to determine what kind of block this is
+                let bd = 0;
+                let openingLine = lastStmtIdx;
+                for (let k = lastStmtIdx; k >= 0; k--) {
+                    for (let ci = lines[k].length - 1; ci >= 0; ci--) {
+                        if (lines[k][ci] === '}') bd++;
+                        if (lines[k][ci] === '{') bd--;
+                        if (bd === 0) {
+                            openingLine = k;
+                            break;
+                        }
+                    }
+                    if (bd === 0) break;
+                }
+                let openingStmt = lines[openingLine].trim();
+                // If the opening brace is on its own line, look at the previous line
+                if (openingStmt === '{') {
+                    let prevLine = openingLine - 1;
+                    while (prevLine >= 0 && lines[prevLine].trim() === '') prevLine--;
+                    if (prevLine >= 0) openingStmt = lines[prevLine].trim();
+                }
+                // If it's a for/while loop, it might not execute — DON'T mark as hasReturn
+                // If it's an if/else where all branches return, mark as hasReturn
+                if (openingStmt.startsWith('} else') || openingStmt.startsWith('else')) {
+                    // Check if this else block ends with return
+                    let innerLast = lastStmtIdx - 1;
+                    while (innerLast >= 0 && lines[innerLast].trim() === '') innerLast--;
+                    if (innerLast >= 0 && isReturn(lines[innerLast].trim())) {
+                        // Also check the if block returns
+                        // For simplicity, assume if all else blocks return, the if/else returns
+                        hasReturn = true;
+                    }
+                } else if (openingStmt.includes('catch')) {
+                    // try/catch: check if both try and catch return
+                    let innerLast = lastStmtIdx - 1;
+                    while (innerLast >= 0 && lines[innerLast].trim() === '') innerLast--;
+                    if (innerLast >= 0 && isReturn(lines[innerLast].trim())) {
+                        hasReturn = true;
+                    }
+                }
+                // For for/while/other blocks, explicitly force insertion
+                if (openingStmt.startsWith('for ') || openingStmt.startsWith('for(') ||
+                    openingStmt.startsWith('while ') || openingStmt.startsWith('while(')) {
+                    // For/while loops might not execute — always insert return null
+                    const indent3 = lines[i].match(/^\s*/)?.[0] || '';
+                    lines.splice(i, 0, indent3 + '    return null;');
+                    i++;
+                    hasReturn = true; // prevent further insertion
+                }
+            }
+
+            if (!hasReturn) {
+                // Insert return null; just before the `}, VIRTUAL_EXECUTOR)` line
+                const indent = lines[i].match(/^\s*/)?.[0] || '';
+                lines.splice(i, 0, indent + '    return null;');
+                i++; // adjust for the inserted line
+            }
+        }
+
+        return lines.join('\n');
+    }
+
+    fixEffectivelyFinal(content: string): string {
+        const lines = content.split('\n');
+
+        // Find HashMap/ArrayList double-brace initializers
+        for (let i = 0; i < lines.length; i++) {
+            if (!lines[i].includes('new java.util.HashMap<String, Object>() {{')) continue;
+
+            // Find the end of this initializer (matching }})
+            let depth = 0;
+            let endLine = -1;
+            for (let j = i; j < lines.length; j++) {
+                for (const ch of lines[j]) {
+                    if (ch === '{') depth++;
+                    if (ch === '}') depth--;
+                }
+                if (depth === 0) {
+                    endLine = j;
+                    break;
+                }
+            }
+            if (endLine < 0) continue;
+
+            // Collect all variable names used in put() calls within this initializer
+            const capturedVars = new Set<string>();
+            for (let j = i; j <= endLine; j++) {
+                const putMatch = lines[j].match(/put\(\s*"[^"]+",\s*(?:new\s+)?([a-z]\w+)\s*\)/);
+                if (putMatch) {
+                    const varName = putMatch[1];
+                    // Skip common literals and already-final variables
+                    if (['null', 'true', 'false', 'this'].includes(varName)) continue;
+                    if (varName.startsWith('final')) continue;
+                    capturedVars.add(varName);
+                }
+                // Also check ArrayList captures — match any variable in asList(...)
+                const asListMatches = lines[j].matchAll(/java\.util\.Arrays\.asList\(([^)]+)\)/g);
+                for (const m of asListMatches) {
+                    const argsStr = m[1];
+                    const args = argsStr.split(',').map((a: string) => a.trim());
+                    for (const arg of args) {
+                        // Only match simple variable names
+                        const varMatch = arg.match(/^([a-z]\w+)$/);
+                        if (varMatch) {
+                            const varName = varMatch[1];
+                            if (!['null', 'true', 'false', 'this'].includes(varName) && !varName.startsWith('final')) {
+                                capturedVars.add(varName);
+                            }
+                        }
+                    }
+                }
+                // Also check variables passed as arguments to extend(), this.method(), etc.
+                const extendMatch = lines[j].match(/\.extend\([^,]+,\s*([a-z]\w+)\)/);
+                if (extendMatch) {
+                    const varName = extendMatch[1];
+                    if (!['null', 'true', 'false', 'this'].includes(varName) && !varName.startsWith('final')) {
+                        capturedVars.add(varName);
+                    }
+                }
+                // Also check variables in ternary expressions or comparisons inside put()
+                const isEqualMatch = lines[j].match(/Helpers\.isEqual\(([a-z]\w+),\s*"/);
+                if (isEqualMatch) {
+                    const varName = isEqualMatch[1];
+                    if (!['null', 'true', 'false', 'this'].includes(varName) && !varName.startsWith('final')) {
+                        capturedVars.add(varName);
+                    }
+                }
+                // Also check variables in inner asList() calls by extracting content between parens
+                // This handles nested asList patterns like asList(symbol, timeframe)
+                const innerAsListMatches = lines[j].matchAll(/asList\(([^()]+)\)/g);
+                for (const m2 of innerAsListMatches) {
+                    const innerArgs = m2[1].split(',').map((a: string) => a.trim());
+                    for (const arg of innerArgs) {
+                        const varMatch = arg.match(/^([a-z]\w+)$/);
+                        if (varMatch) {
+                            const vn = varMatch[1];
+                            if (!['null', 'true', 'false', 'this'].includes(vn) && !vn.startsWith('final')) {
+                                capturedVars.add(vn);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // For each captured variable, check if it was reassigned before this initializer
+            // (within the same method)
+            for (const varName of capturedVars) {
+                // Find if there's a reassignment pattern: varName = ... (without "Object" or "final" before it)
+                let reassigned = false;
+                // Find method start
+                let methodStart = i;
+                for (let j = i - 1; j >= 0; j--) {
+                    if (lines[j].match(/^\s*(?:public|private|protected)\s+/)) {
+                        methodStart = j;
+                        break;
+                    }
+                }
+                // Check for reassignment ANYWHERE in the method (Java checks entire scope)
+                for (let j = methodStart; j < lines.length; j++) {
+                    if (j > methodStart && lines[j].match(/^\s*(?:public|private|protected)\s+/)) break;
+                    const reassignRegex = new RegExp(`^\\s+${varName}\\s*=\\s`);
+                    if (reassignRegex.test(lines[j])) {
+                        reassigned = true;
+                        break;
+                    }
+                }
+
+                if (reassigned) {
+                    // Generate a unique final variable name
+                    const baseFinalName = `final${varName.charAt(0).toUpperCase()}${varName.slice(1)}`;
+                    // Check if a final copy exists NEARBY (within 5 lines before this HashMap init)
+                    let nearbyExists = false;
+                    for (let j = Math.max(methodStart, i - 5); j < i; j++) {
+                        if (lines[j].includes(`final Object ${baseFinalName}`) || lines[j].includes(`final Object ${baseFinalName}2`)) {
+                            nearbyExists = true;
+                            break;
+                        }
+                    }
+                    // Use a unique suffix to avoid conflicts
+                    let suffix = '';
+                    for (let j = methodStart; j < i; j++) {
+                        if (lines[j].includes(`final Object ${baseFinalName}`)) suffix = '2';
+                        if (lines[j].includes(`final Object ${baseFinalName}2`)) suffix = '3';
+                    }
+                    const finalVarName = baseFinalName + suffix;
+                    if (nearbyExists) {
+                        // Still replace references inside the block with the existing final copy
+                        const existingFinal = baseFinalName; // or with suffix if needed
+                        for (let j2 = i; j2 <= endLine; j2++) {
+                            if (lines[j2].includes(`final Object`)) continue;
+                            lines[j2] = lines[j2].replace(
+                                new RegExp(`\\b${varName}\\b`, 'g'),
+                                existingFinal
+                            );
+                        }
+                    } else {
+                        // Add final copy before the initializer
+                        const indent = lines[i].match(/^\s*/)?.[0] || '';
+                        lines.splice(i, 0, `${indent}final Object ${finalVarName} = ${varName};`);
+                        i++; endLine++;
+                        // Replace ALL references to the variable within the initializer
+                        // (but only standalone word references, not as part of other identifiers)
+                        for (let j = i; j <= endLine; j++) {
+                            // Skip lines that are just the final declaration
+                            if (lines[j].includes(`final Object ${finalVarName}`)) continue;
+                            // Replace all standalone occurrences of the variable
+                            lines[j] = lines[j].replace(
+                                new RegExp(`\\b${varName}\\b`, 'g'),
+                                finalVarName
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        return lines.join('\n');
+    }
+
+    fixEffectivelyFinalLambda(content: string): string {
+        // Fix specific known pattern: this.keepAliveListenKey(listenKey, ...)
+        // inside a spawn/delay lambda where listenKey was reassigned
+        // General approach: find spawn/delay lambdas and check for non-final captures
+        const lines = content.split('\n');
+
+        for (let i = 0; i < lines.length; i++) {
+            // Match this.spawn(() -> { ... this.methodName(args) ... })
+            const spawnMatch = lines[i].match(/this\.spawn\(\(\)\s*->\s*\{.*this\.(\w+)\(([^)]+)\)/);
+            if (!spawnMatch) continue;
+
+            const args = spawnMatch[2].split(',').map((a: string) => a.trim());
+
+            // Find method start
+            let methodStart = 0;
+            for (let j = i - 1; j >= 0; j--) {
+                if (lines[j].match(/^\s*(?:public|private|protected)\s+/)) {
+                    methodStart = j;
+                    break;
+                }
+            }
+
+            for (const arg of args) {
+                if (!arg.match(/^[a-z]\w+$/)) continue; // skip non-variable args
+                // Check if this variable was reassigned
+                let reassigned = false;
+                for (let j = methodStart; j < i; j++) {
+                    if (new RegExp(`^\\s+${arg}\\s*=\\s`).test(lines[j])) {
+                        reassigned = true;
+                        break;
+                    }
+                }
+                if (reassigned) {
+                    const finalName = `_final_${arg}`;
+                    const indent = lines[i].match(/^\s*/)?.[0] || '';
+                    lines.splice(i, 0, `${indent}final Object ${finalName} = ${arg};`);
+                    i++;
+                    // Replace in the lambda line (only the variable, not in method names)
+                    lines[i] = lines[i].replace(
+                        new RegExp(`this\\.(\\w+)\\(([^)]*\\b)${arg}\\b`),
+                        (m: string, method: string, before: string) => `this.${method}(${before}${finalName}`
+                    );
+                }
+            }
+        }
+
+        return lines.join('\n');
+    }
+
+    removeTrueDuplicateFinals(content: string): string {
+        const lines = content.split('\n');
+        // Track final variable declarations per method scope
+        // Reset on each new method declaration
+        let seen = new Set<string>();
+        for (let i = 0; i < lines.length; i++) {
+            // Reset on new method
+            if (lines[i].match(/^\s*(?:public|private|protected)\s+.*\(.*\)\s*$/)) {
+                seen = new Set<string>();
+            }
+            // Also reset on new method with opening brace on same line
+            if (lines[i].match(/^\s*(?:public|private|protected)\s+.*\(.*\)\s*\{?\s*$/)) {
+                seen = new Set<string>();
+            }
+            const finalMatch = lines[i].match(/^\s*final\s+Object\s+(final\w+)\s*=\s*\w+\s*;/);
+            if (finalMatch) {
+                const varName = finalMatch[1];
+                if (seen.has(varName)) {
+                    lines[i] = ''; // Remove duplicate
+                } else {
+                    seen.add(varName);
+                }
+            }
+        }
+        return lines.join('\n');
+    }
+
+    replaceParenthesizedClientFutureJoin(content: string): string {
+        // Match (client.future(...)).join() or (client.reusableFuture(...)).join()
+        // where ... may contain nested parens
+        const pattern = /\(client\.(future|reusableFuture)\(/g;
+        let result = '';
+        let lastIdx = 0;
+        let match;
+        while ((match = pattern.exec(content)) !== null) {
+            const method = match[1];
+            const argsStart = match.index + match[0].length;
+            // Balance parens to find the end of the inner call
+            let depth = 1;
+            let j = argsStart;
+            while (j < content.length && depth > 0) {
+                if (content[j] === '(') depth++;
+                if (content[j] === ')') depth--;
+                j++;
+            }
+            // j is now past the closing ) of client.future(...)
+            // Check if next char is ) followed by .join()
+            if (j < content.length && content[j] === ')' && content.substring(j + 1, j + 8) === '.join()') {
+                const args = content.substring(argsStart, j - 1);
+                result += content.substring(lastIdx, match.index);
+                result += `client.${method}(${args}).getFuture().join()`;
+                lastIdx = j + 8; // skip past ).join()
+            }
+        }
+        result += content.substring(lastIdx);
+        return result;
     }
 
     replaceCallPattern(content: string): string {
@@ -1256,9 +1945,9 @@ class NewTranspiler {
             if (/(?:this\.|Helpers\.|new\s|\w\.)$/.test(before)) continue;
             // Skip known Java keywords and common typed variables that are NOT Object-typed
             const skipVars = ['new', 'var', 'for', 'if', 'else', 'return', 'try', 'catch', 'throw',
-                'list', 'result', 'results', 'channel', 'response', 'request', 'message',
+                'list', 'channel', 'response', 'request', 'message',
                 'data', 'params', 'options', 'config', 'entry', 'item', 'key', 'value',
-                'asks', 'bids', 'client', 'exchange', 'string', 'array', 'map', 'set',
+                'client', 'exchange', 'string', 'array', 'map', 'set',
                 'ticker', 'trade', 'order', 'balance', 'position', 'currency', 'market'];
             if (skipVars.includes(varName)) continue;
 

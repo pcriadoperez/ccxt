@@ -542,7 +542,7 @@ public class Derive extends io.github.ccxt.exchanges.Derive
                 Object message = this.extend(request, parameters);
                 this.watch(url, messageHash, message, messageHash, message);
             }
-            return future.getFuture().join();
+            return ((io.github.ccxt.ws.Future)future).getFuture().join();
         }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }

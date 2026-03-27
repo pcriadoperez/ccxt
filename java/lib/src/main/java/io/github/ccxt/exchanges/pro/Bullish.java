@@ -93,7 +93,7 @@ public class Bullish extends io.github.ccxt.exchanges.Bullish
         //         }
         //     }
         //
-        client.lastPong = this.milliseconds();
+        client.lastPong = ((Number)this.milliseconds()).longValue();
         return message;  // current line is for transpilation compatibility
     }
 
