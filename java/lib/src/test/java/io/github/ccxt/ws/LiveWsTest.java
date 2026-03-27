@@ -33,8 +33,8 @@ class LiveWsTest {
 
     @BeforeAll
     static void setup() {
-        // Use the pro (WS) Binance class
-        exchange = new io.github.ccxt.exchanges.pro.Binance();
+        // Use a WS exchange class
+        exchange = new io.github.ccxt.exchanges.pro.Deribit();
         exchange.verbose = false;
         exchange.loadMarkets().join();
     }

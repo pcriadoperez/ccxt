@@ -80,7 +80,7 @@ public class Poloniex extends io.github.ccxt.exchanges.Poloniex
             }} );
             put( "streaming", new java.util.HashMap<String, Object>() {{
                 put( "keepAlive", 15000 );
-                put( "ping", (java.util.function.Function<Client, Object>) Poloniex.this::ping );
+                put( "ping", "ping");
             }} );
         }});
     }
@@ -113,7 +113,7 @@ public class Poloniex extends io.github.ccxt.exchanges.Poloniex
                     put( "event", "subscribe" );
                     put( "channel", new java.util.ArrayList<Object>(java.util.Arrays.asList("auth")) );
                     put( "params", new java.util.HashMap<String, Object>() {{
-                        put( "key", Poloniex.this.apiKey );
+                        put( "key", "apiKey");
                         put( "signTimestamp", timestamp );
                         put( "signature", signature );
                         put( "signatureMethod", "HmacSHA256" );
@@ -1021,7 +1021,7 @@ public class Poloniex extends io.github.ccxt.exchanges.Poloniex
                     Helpers.callDynamically(orders, "append", new Object[]{parsed});
                 } else
                 {
-                    Object previousOrders = this.safeValue(((io.github.ccxt.ws.ArrayCache) orders).hashmap, symbol, new java.util.HashMap<String, Object>() {{}});
+                    Object previousOrders = this.safeValue(((io.github.ccxt.ws.ArrayCache)orders).hashmap, symbol, new java.util.HashMap<String, Object>() {{}});
                     Object previousOrder = this.safeValue2(previousOrders, orderId, clientOrderId);
                     Object trade = this.parseWsTrade(order);
                     this.handleMyTrades(client, trade);
