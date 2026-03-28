@@ -7,7 +7,7 @@
 !postinstall.js
 !LICENSE.txt
 !README.md
-!ccxt.d.cts
+!index.d.cts
 
 # Folders to include
 !js/**/*
