@@ -50,6 +50,12 @@ public class WsClient {
     private static final EventLoopGroup SHARED_EVENT_LOOP = new NioEventLoopGroup(
             Math.max(2, Runtime.getRuntime().availableProcessors()));
 
+    static {
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            SHARED_EVENT_LOOP.shutdownGracefully();
+        }, "ccxt-ws-shutdown"));
+    }
+
     // State — typed as Object for compatibility with transpiled code that casts these
     public String url;
     public Object futures = new ConcurrentHashMap<String, Future>();
@@ -133,6 +139,7 @@ public class WsClient {
             return;
         }
         String messageHash = messageHash2.toString();
+        rejectionsMap().remove(messageHash); // clear any stale rejection for this hash
         Future f = futuresMap().remove(messageHash);
         if (f != null) {
             f.resolve(content);
@@ -266,6 +273,9 @@ public class WsClient {
     }
 
     void onOpen() {
+        if (this.verbose) {
+            System.out.println("WsClient connected: " + this.url);
+        }
         this.isConnected = true;
         this.connectionEstablished = System.currentTimeMillis();
         this.lastPong = this.connectionEstablished;
@@ -299,6 +309,9 @@ public class WsClient {
     }
 
     void onClose(Object reason) {
+        if (this.verbose) {
+            System.out.println("WsClient closed: " + this.url + " reason: " + reason);
+        }
         this.isConnected = false;
         this.startedConnecting = false;
         this.error = false;
@@ -308,6 +321,9 @@ public class WsClient {
     }
 
     void onError(Object err) {
+        if (this.verbose) {
+            System.err.println("WsClient error on " + this.url + ": " + err);
+        }
         this.isConnected = false;
         this.startedConnecting = false;
         this.error = true;
@@ -345,9 +361,14 @@ public class WsClient {
                 }
 
                 if (this.pingCallback != null) {
-                    Object pingResult = this.pingCallback.apply(this);
-                    if (pingResult != null) {
-                        this.send(pingResult);
+                    try {
+                        Object pingResult = this.pingCallback.apply(this);
+                        if (pingResult != null) {
+                            this.send(pingResult);
+                        }
+                    } catch (Exception pingEx) {
+                        this.onError(pingEx);
+                        break;
                     }
                 } else if (this.channel != null && this.channel.isActive()) {
                     this.channel.writeAndFlush(new PingWebSocketFrame());
@@ -369,6 +390,8 @@ public class WsClient {
 
     /**
      * Send a message over the WebSocket. Accepts String or Object (serialized to JSON).
+     * Returns a CompletableFuture that completes when the message is flushed to the network.
+     * Callers should handle the returned future to detect send failures.
      */
     public CompletableFuture<Void> send(Object message) {
         String json;
@@ -405,6 +428,9 @@ public class WsClient {
      * Close the WebSocket connection and reject all pending futures.
      */
     public void close() {
+        if (this.verbose) {
+            System.out.println("WsClient closing: " + this.url);
+        }
         if (this.channel != null && this.channel.isActive()) {
             this.channel.writeAndFlush(new CloseWebSocketFrame());
         }
@@ -419,6 +445,8 @@ public class WsClient {
     }
 
     // ─── Binary decompression (matches C# lines 393-471) ───
+    // Note: Netty handles WebSocket frame aggregation before our handler sees frames,
+    // so multi-frame deflate messages are already reassembled at this point.
 
     static String decompressGzip(byte[] data) {
         try (ByteArrayInputStream bais = new ByteArrayInputStream(data);
@@ -430,8 +458,8 @@ public class WsClient {
     }
 
     static String decompressDeflate(byte[] data) {
+        Inflater inflater = new Inflater(true); // raw deflate (no header)
         try {
-            Inflater inflater = new Inflater(true); // raw deflate (no header)
             inflater.setInput(data);
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             byte[] buf = new byte[4096];
@@ -440,10 +468,11 @@ public class WsClient {
                 if (count == 0 && inflater.needsInput()) break;
                 out.write(buf, 0, count);
             }
-            inflater.end();
             return out.toString(StandardCharsets.UTF_8);
         } catch (Exception e) {
             throw new RuntimeException("Deflate decompression failed", e);
+        } finally {
+            inflater.end();
         }
     }
 
@@ -459,6 +488,8 @@ public class WsClient {
 
     // ─── Netty WebSocket frame handler ───
 
+    // Note: SimpleChannelInboundHandler with channelRead0 auto-releases ByteBuf references
+    // (including BinaryWebSocketFrame content), so no manual ReferenceCountUtil.release() is needed.
     static class WsClientHandler extends SimpleChannelInboundHandler<Object> {
 
         private final WebSocketClientHandshaker handshaker;
