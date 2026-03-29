@@ -27,8 +27,13 @@ class LiveWsTest {
 
     @BeforeAll
     static void setup() {
-        // Use the pro (WS) Binance class
-        exchange = new io.github.ccxt.exchanges.pro.Binance();
+        // Use a WS exchange class — dynamically so it works without generated pro/ files
+        try {
+            exchange = (Exchange) Class.forName("io.github.ccxt.exchanges.pro.Binance")
+                    .getDeclaredConstructor().newInstance();
+        } catch (Exception e) {
+            exchange = Exchange.dynamicallyCreateInstance("binance", null);
+        }
         exchange.verbose = false;
         exchange.loadMarkets().join();
     }
