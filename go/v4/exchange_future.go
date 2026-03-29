@@ -120,6 +120,7 @@ func (f *Future) Reject(reason interface{}) {
 		}()
 
 		// Notify all subscribers
+		f.subscribersMu.Lock()
 		for _, sub := range f.subscribers {
 			func(sub chan interface{}) {
 				defer func() {
@@ -135,6 +136,7 @@ func (f *Future) Reject(reason interface{}) {
 			}(sub)
 		}
 		f.subscribers = nil // Clear subscribers after notifying them
+		f.subscribersMu.Unlock()
 	})
 }
 
