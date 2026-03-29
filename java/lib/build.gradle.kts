@@ -31,6 +31,9 @@ dependencies {
 
     implementation("org.web3j:crypto:4.12.2")
 
+    // Netty for WebSocket support (high-performance async I/O)
+    implementation("io.netty:netty-codec-http:4.1.116.Final")
+    implementation("io.netty:netty-handler-proxy:4.1.116.Final")
 }
 
 // Apply a specific Java toolchain to ease working on different environments.
@@ -43,4 +46,25 @@ java {
 tasks.named<Test>("test") {
     // Use JUnit Platform for unit tests.
     useJUnitPlatform()
+    // Pass environment variables to the test JVM
+    environment("CCXT_LIVE_WS_TESTS", System.getenv("CCXT_LIVE_WS_TESTS") ?: "false")
+}
+
+tasks.register<JavaExec>("liveTest") {
+    classpath = sourceSets["test"].runtimeClasspath
+    mainClass.set("io.github.ccxt.types.LiveTest")
+    javaLauncher = javaToolchains.launcherFor {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+    if (project.hasProperty("args")) {
+        args = (project.property("args") as String).split(" ").toList()
+    }
+}
+
+tasks.register<JavaExec>("example") {
+    classpath = sourceSets["test"].runtimeClasspath
+    mainClass.set("io.github.ccxt.types.FetchOrderBooksExample")
+    javaLauncher = javaToolchains.launcherFor {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
 }
