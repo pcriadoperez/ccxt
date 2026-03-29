@@ -93,6 +93,8 @@ public class OrderBookSide extends ArrayList<Object> {
 
     /**
      * Truncate to max depth.
+     * Called explicitly by exchange code after processing deltas, matching JS/C# behavior.
+     * Not called automatically from storeArray() by design.
      */
     public void limit() {
         int excess = this.size() - this.depth;

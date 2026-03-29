@@ -1551,8 +1551,7 @@ public class Exchange {
 
         io.github.ccxt.ws.Future future = client.future(messageHash);
 
-        if (!client.subscriptionsMap().containsKey(subscribeHash)) {
-            client.subscriptionsMap().put(subscribeHash, subscription != null ? subscription : true);
+        if (client.subscriptionsMap().putIfAbsent(subscribeHash, subscription != null ? subscription : true) == null) {
             client.connect(0).thenAccept(connected -> {
                 if (message != null) {
                     try {
@@ -1562,11 +1561,17 @@ public class Exchange {
                         future.reject(ex);
                     }
                 }
+            }).exceptionally(ex -> {
+                client.subscriptionsMap().remove(subscribeHash);
+                future.reject(ex);
+                return null;
             });
         }
         return future.getFuture();
     }
 
+    // Note: a single subscribe message is sent for all symbols, matching JS/C# design.
+    // Exchange-specific code is responsible for building the message with all symbols.
     @SuppressWarnings("unchecked")
     public CompletableFuture<Object> watchMultiple(Object url, Object messageHashes2, Object message, Object subscribeHashes2, Object subscription) {
         var client = this.client(url);
@@ -1601,6 +1606,12 @@ public class Exchange {
                         raceFuture.reject(ex);
                     }
                 }
+            }).exceptionally(ex -> {
+                for (String subHash : missingSubscriptions) {
+                    client.subscriptionsMap().remove(subHash);
+                }
+                raceFuture.reject(ex);
+                return null;
             });
         }
 
@@ -1631,10 +1642,7 @@ public class Exchange {
         var clientsMap = (java.util.concurrent.ConcurrentHashMap<String, Client>) this.clients;
         var urlClient = clientsMap.get(client.url);
         if (urlClient != null) {
-            // Reject all pending futures
-            for (String key : urlClient.subscriptionsMap().keySet()) {
-                urlClient.subscriptionsMap().remove(key);
-            }
+            urlClient.subscriptionsMap().clear();
             urlClient.reject(error);
             clientsMap.remove(client.url);
         }

@@ -1,6 +1,7 @@
 package io.github.ccxt.ws;
 
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Promise-like wrapper around CompletableFuture with explicit resolve/reject.
@@ -68,12 +69,15 @@ public class Future {
      */
     public static Future race(Future... futures) {
         Future result = new Future();
+        AtomicBoolean settled = new AtomicBoolean(false);
         for (Future f : futures) {
             f.completableFuture.whenComplete((val, ex) -> {
-                if (ex != null) {
-                    result.completableFuture.completeExceptionally(ex);
-                } else {
-                    result.completableFuture.complete(val);
+                if (settled.compareAndSet(false, true)) {
+                    if (ex != null) {
+                        result.completableFuture.completeExceptionally(ex);
+                    } else {
+                        result.completableFuture.complete(val);
+                    }
                 }
             });
         }
