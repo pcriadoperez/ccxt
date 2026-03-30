@@ -31,14 +31,11 @@ public class BinanceDemoWsTest {
             System.exit(1);
         }
 
-        // Create exchange with sandbox mode
+        // Create exchange with demo trading mode
         Map<String, Object> config = new HashMap<>();
         config.put("apiKey", apiKey);
         config.put("secret", secret);
         config.put("verbose", false);
-        Map<String, Object> options = new HashMap<>();
-        options.put("sandbox", true);
-        config.put("options", options);
 
         try {
             exchange = (Exchange) Class.forName("io.github.ccxt.exchanges.pro.Binance")
@@ -48,7 +45,8 @@ public class BinanceDemoWsTest {
             exchange = Exchange.dynamicallyCreateInstance("binance", config);
         }
 
-        System.out.println("Sandbox mode: " + exchange.isSandboxModeEnabled);
+        exchange.enableDemoTrading(true);
+        System.out.println("Demo trading enabled");
         System.out.println("Loading markets...");
         exchange.loadMarkets().join();
         System.out.println("Markets loaded. Starting WS tests...\n");
@@ -88,7 +86,7 @@ public class BinanceDemoWsTest {
     static void testPublic(String method, Object... args) {
         System.out.printf("%-40s ", method + "(" + argsToString(args) + ")");
         try {
-            CompletableFuture<Object> future = Helpers.callDynamically(exchange, method, args);
+            CompletableFuture<Object> future = (CompletableFuture<Object>) Helpers.callDynamically(exchange, method, args);
             Object result = future.get(TIMEOUT_SEC, TimeUnit.SECONDS);
             if (result == null) {
                 System.out.println("FAIL (null result)");
@@ -119,7 +117,7 @@ public class BinanceDemoWsTest {
     static void testPublicMultiSymbol(String method, List<String> symbols) {
         System.out.printf("%-40s ", method + "(" + symbols + ")");
         try {
-            CompletableFuture<Object> future = Helpers.callDynamically(exchange, method, new Object[]{symbols});
+            CompletableFuture<Object> future = (CompletableFuture<Object>) Helpers.callDynamically(exchange, method, new Object[]{symbols});
             Object result = future.get(TIMEOUT_SEC, TimeUnit.SECONDS);
             if (result == null) {
                 System.out.println("FAIL (null result)");
@@ -149,7 +147,7 @@ public class BinanceDemoWsTest {
     static void testPrivate(String method, Object... args) {
         System.out.printf("%-40s ", method + "(" + argsToString(args) + ")");
         try {
-            CompletableFuture<Object> future = Helpers.callDynamically(exchange, method, args);
+            CompletableFuture<Object> future = (CompletableFuture<Object>) Helpers.callDynamically(exchange, method, args);
             Object result = future.get(TIMEOUT_SEC, TimeUnit.SECONDS);
             if (result == null) {
                 System.out.println("FAIL (null result)");
@@ -186,7 +184,7 @@ public class BinanceDemoWsTest {
     static void testPrivateAuth(String method, Object... args) {
         System.out.printf("%-40s ", method + "(" + argsToString(args) + ")");
         try {
-            CompletableFuture<Object> future = Helpers.callDynamically(exchange, method, args);
+            CompletableFuture<Object> future = (CompletableFuture<Object>) Helpers.callDynamically(exchange, method, args);
             Object result = future.get(10, TimeUnit.SECONDS);
             if (result == null) {
                 System.out.println("PASS  (auth ok, null data — expected on sandbox)");

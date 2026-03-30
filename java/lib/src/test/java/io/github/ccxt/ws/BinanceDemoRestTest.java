@@ -35,12 +35,10 @@ public class BinanceDemoRestTest {
         config.put("apiKey", apiKey);
         config.put("secret", secret);
         config.put("verbose", false);
-        Map<String, Object> options = new HashMap<>();
-        options.put("sandbox", true);
-        config.put("options", options);
 
         exchange = Exchange.dynamicallyCreateInstance("binance", config);
-        System.out.println("Sandbox mode: " + exchange.isSandboxModeEnabled);
+        exchange.enableDemoTrading(true);
+        System.out.println("Demo trading enabled");
         System.out.println("Loading markets...\n");
         exchange.loadMarkets().join();
 
@@ -92,7 +90,7 @@ public class BinanceDemoRestTest {
     static void test(String method, Object... args) {
         System.out.printf("  %-40s ", method + "(" + argsStr(args) + ")");
         try {
-            CompletableFuture<Object> future = Helpers.callDynamically(exchange, method, args);
+            CompletableFuture<Object> future = (CompletableFuture<Object>) Helpers.callDynamically(exchange, method, args);
             Object result = future.get(TIMEOUT_SEC, TimeUnit.SECONDS);
             System.out.println("PASS  " + describe(result));
             passed++;
@@ -120,11 +118,11 @@ public class BinanceDemoRestTest {
         System.out.printf("  %-40s ", "createOrder(BTC/USDT limit buy)");
         try {
             // Get current price and place limit buy ~20% below to avoid fill but within PERCENT_PRICE filter
-            Map<String, Object> ticker = (Map<String, Object>) Helpers.callDynamically(exchange, "fetchTicker", new Object[]{SYMBOL}).get(TIMEOUT_SEC, TimeUnit.SECONDS);
+            Map<String, Object> ticker = (Map<String, Object>) ((CompletableFuture<Object>) Helpers.callDynamically(exchange, "fetchTicker", new Object[]{SYMBOL})).get(TIMEOUT_SEC, TimeUnit.SECONDS);
             double lastPrice = ((Number) ticker.get("last")).doubleValue();
             double buyPrice = Math.floor(lastPrice * 0.80); // 20% below market
 
-            CompletableFuture<Object> future = Helpers.callDynamically(exchange, "createOrder",
+            CompletableFuture<Object> future = (CompletableFuture<Object>) Helpers.callDynamically(exchange, "createOrder",
                     new Object[]{SYMBOL, "limit", "buy", 0.001, buyPrice});
             Object result = future.get(TIMEOUT_SEC, TimeUnit.SECONDS);
             Map<String, Object> order = (Map<String, Object>) result;
@@ -134,7 +132,7 @@ public class BinanceDemoRestTest {
 
             // Cancel it
             System.out.printf("  %-40s ", "cancelOrder(" + orderId + ")");
-            CompletableFuture<Object> cancelFuture = Helpers.callDynamically(exchange, "cancelOrder",
+            CompletableFuture<Object> cancelFuture = (CompletableFuture<Object>) Helpers.callDynamically(exchange, "cancelOrder",
                     new Object[]{orderId, SYMBOL});
             Object cancelResult = cancelFuture.get(TIMEOUT_SEC, TimeUnit.SECONDS);
             Map<String, Object> canceled = (Map<String, Object>) cancelResult;
