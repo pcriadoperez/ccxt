@@ -1168,8 +1168,13 @@ class NewTranspiler {
         content = content.replace(/(?<!=\s)this\.(handle\w+)\s*(?=[,;)\s])/gm, '"$1"');
         // method = this.handleXyz; → method = "handleXyz";
         content = content.replace(/=\s*this\.(handle\w+)\s*;/gm, '= "$1";');
-        // Also for non-handle methods used as references: this.ping, this.negotiate etc
-        content = content.replace(new RegExp(`${cap}\\.this\\.(\\w+)\\s*(?=[,;)](?!\\s*\\())`, 'gm'), '"$1"');
+        // Also for specific non-handle methods used as callback references
+        // Only match known callback method patterns, NOT field access like this.apiKey
+        const callbackMethods = ['ping', 'negotiate', 'negotiateHelper', 'keepAliveListenKey',
+            'fetchOrderBookSnapshot', 'loadOrderBook', 'loadBalanceSnapshot', 'loadPositionsSnapshot'];
+        for (const method of callbackMethods) {
+            content = content.replace(new RegExp(`${cap}\\.this\\.${method}\\s*(?=[,;)])`, 'gm'), `"${method}"`);
+        }
 
         // ── .call(this, args) → reflection dispatch — use balanced parens ──
         content = this.replaceCallPattern(content);
