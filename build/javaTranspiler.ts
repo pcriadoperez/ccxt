@@ -8,7 +8,7 @@ import { platform } from 'process'
 import fs from 'fs'
 import log from 'ololog'
 import ansi from 'ansicolor'
-import {Transpiler as OldTranspiler, parallelizeTranspiling } from "./transpile.js";
+import { Transpiler as OldTranspiler, parallelizeTranspiling } from "./transpile.js";
 import { promisify } from 'util';
 import errorHierarchy from '../js/src/base/errorHierarchy.js'
 import Piscina from 'piscina';
@@ -19,9 +19,9 @@ ansi.nice
 
 type dict = { [key: string]: string }
 
-const promisedWriteFile = promisify (fs.writeFile);
+const promisedWriteFile = promisify(fs.writeFile);
 
-let exchanges = JSON.parse (fs.readFileSync("./exchanges.json", "utf8"));
+let exchanges = JSON.parse(fs.readFileSync("./exchanges.json", "utf8"));
 const exchangeIds: string[] = exchanges.ids
 
 // @ts-expect-error
@@ -30,12 +30,12 @@ let __dirname = new URL('.', metaUrl).pathname;
 
 let shouldTranspileTests = true
 
-function overwriteFileAndFolder (path: string, content: string) {
+function overwriteFileAndFolder(path: string, content: string) {
     if (!(fs.existsSync(path))) {
-        checkCreateFolder (path);
+        checkCreateFolder(path);
     }
-    overwriteFile (path, content);
-    writeFile (path, content);
+    overwriteFile(path, content);
+    writeFile(path, content);
 }
 
 // this is necessary because for some reason
@@ -49,7 +49,7 @@ if (platform === 'win32') {
 }
 
 const GLOBAL_WRAPPER_FILE = './cs/ccxt/base/Exchange.Wrappers.cs';
-const EXCHANGE_WRAPPER_FOLDER = './cs/ccxt/wrappers/'
+const EXCHANGE_WRAPPER_FOLDER = './java/lib/src/main/java/io/github/ccxt/'
 const EXCHANGE_WS_WRAPPER_FOLDER = './cs/ccxt/exchanges/pro/wrappers/'
 const ERRORS_FOLDER = './java/lib/src/main/java/io/github/ccxt/errors/';
 const BASE_METHODS_FILE = './java/lib/src/main/java/io/github/ccxt/Exchange.java';
@@ -57,7 +57,7 @@ const EXCHANGES_FOLDER = './java/lib/src/main/java/io/github/ccxt/exchanges/';
 const EXCHANGES_WS_FOLDER = './java/lib/src/main/java/io/github/ccxt/exchanges/pro/';
 const GENERATED_TESTS_FOLDER = './java/tests/src/main/java/tests/exchange/';
 const BASE_TESTS_FOLDER = 'java/tests/src/main/java/tests/base/';
-const BASE_TESTS_FILE =  './java/tests/src/main/java/tests/exchange/TestMain.java';
+const BASE_TESTS_FILE = './java/tests/src/main/java/tests/exchange/TestMain.java';
 const EXCHANGE_BASE_FOLDER = './java/tests/src/main/java/tests/exchange/';
 const EXCHANGE_GENERATED_FOLDER = './java/tests/src/main/java/tests/exchange/';
 const EXAMPLES_INPUT_FOLDER = './examples/ts/';
@@ -86,8 +86,44 @@ class NewTranspiler {
     }
 
     getWsRegexes() {
-        // C# WS regexes — kept for reference but not used for Java
-        return [];
+        // hoplefully we won't need this in the future by having everything typed properly in the typescript side
+        return [
+            [/new (\w+)Rest\(\)/, 'new ccxt.$1()'],
+            [/return await (\w+);/gm, 'return await ($1 as Exchange.Future);'],
+            // [/typeof\(client\)/gm, 'client'],
+            // [/typeof\(orderbook\)/gm, 'orderbook'], // fix this in the transpiler later
+            [/new\sgetValue\((\w+),\s(\w+)\)\((\w+)\)/gm, 'this.newException(getValue($1, $2), $3)'],
+            [/\(object\)client\).subscriptions/gm, '(WebSocketClient)client).subscriptions'],
+            [/client\.subscriptions/gm, '((WebSocketClient)client).subscriptions'],
+            [/Dictionary<string,object>\)client.futures/gm, 'Dictionary<string, ccxt.Exchange.Future>)client.futures'],
+            [/this\.safeValue\(client\.futures,/gm, 'this.safeValue((client as WebSocketClient).futures,'],
+            [/Dictionary<string,object>\)this\.clients/gm, 'Dictionary<string, ccxt.Exchange.WebSocketClient>)this.clients'],
+            [/(object \w+) = client\.futures/, '$1 = (client as WebSocketClient).futures'],
+            [/(orderbook)(\.reset.+)/gm, '($1 as IOrderBook)$2'],
+            [/(\w+)(\.cache)/gm, '($1 as ccxt.pro.OrderBook)$2'],
+            //  [/(\w+)(\.reset)/gm, '($1 as ccxt.OrderBook)$2'],
+            [/((?:this\.)?\w+)(\.hashmap)/gm, '($1 as ArrayCacheBySymbolById)$2'],
+            [/(countedBookSide)\.store\(((.+),(.+),(.+))\)/gm, '($1 as IOrderBookSide).store($2)'],
+            [/(\w+)\.store\(((.+),(.+),(.+))\)/gm, '($1 as IOrderBookSide).store($2)'],
+            [/(\w+)\.store\(((.+),(.+))\)/gm, '($1 as IOrderBookSide).store($2)'],
+            [/(\w+)(\.storeArray\(.+\))/gm, '($1 as IOrderBookSide)$2'],
+            // [/(.+)\.store\((.+),(.+)\)/gm, '($1 as OrderBookSide).store($2,$3)'],
+            [/(\w+)\.call\(this,(.+)\)/gm, 'DynamicInvoker.InvokeMethod($1, new object[] {$2})'],
+            [/(\w+)(\.limit\(\))/gm, '($1 as IOrderBook)$2'],
+            [/(future)\.resolve\((.*)\)/gm, '($1 as Future).resolve($2)'],
+            [/this\.spawn\((this\.\w+),(.+)\)/gm, 'this.spawn($1, new object[] {$2})'],
+            [/this\.delay\(([^,]+),([^,]+),(.+)\)/gm, 'this.delay($1, $2, new object[] {$3})'],
+            // [/(this\.\w+)\.(append|resolve|getLimit)\((.+)\)/gm, 'callDynamically($1, "$2", new object[] {$3})'], // check this.orders
+            [/(((?:this\.)?\w+))\.(append|resolve|getLimit)\((.+)\)/gm, 'callDynamically($1, "$3", new object[] {$4})'],
+            [/future(\.reject.+)/gm, '((Future)future)$1'],
+            [/(\w+)(\.reject.+)/gm, '((WebSocketClient)$1)$2'],
+            [/(client)(\.reset.+)/gm, '((WebSocketClient)$1)$2'],
+            [/\(client,/g, '(client as WebSocketClient,'],
+            [/\(object client,/gm, '(WebSocketClient client,'],
+            [/\(object client\)/gm, '(WebSocketClient client)'],
+            [/object client =/gm, 'var client ='],
+            [/object future =/gm, 'var future ='],
+        ]
     }
 
     getJavaWsRegexes() {
@@ -111,12 +147,6 @@ class NewTranspiler {
             // new XyzRest() → new Xyz() for instantiating REST parent
             [/new (\w+)Rest\(\)/g, 'new io.github.ccxt.exchanges.$1()'],
 
-            // OrderBook/OrderBookSide operations — these are already our Java types
-            // .storeArray, .store, .limit, .reset, .cache — these work directly on our ws types
-
-            // spawn — leave as-is, Exchange.spawn accepts method name + args via reflection
-            // The spawn calls will be handled by a Java-side overload
-
             // ArrayCache constructor — needs FQN for inner classes + int cast
             [/new ArrayCache\((\w+)\)/gm, 'new ArrayCache(((Number)$1).intValue())'],
             [/new ArrayCacheByTimestamp\((\w+)\)/gm, 'new ArrayCache.ArrayCacheByTimestamp(((Number)$1).intValue())'],
@@ -127,7 +157,6 @@ class NewTranspiler {
             [/new ArrayCacheBySymbolBySide\(\)/gm, 'new ArrayCache.ArrayCacheBySymbolBySide()'],
         ]
     }
-
 
     // c# custom method
     customCSharpPropAssignment(node: any, identation: any) {
@@ -141,12 +170,12 @@ class NewTranspiler {
     // a helper to apply an array of regexes and substitutions to text
     // accepts an array like [ [ regex, substitution ], ... ]
 
-    regexAll (text: string, array: any[]) {
+    regexAll(text: string, array: any[]) {
         for (const i in array) {
             let regex = array[i][0]
             const flags = (typeof regex === 'string') ? 'g' : undefined
-            regex = new RegExp (regex, flags)
-            text = text.replace (regex, array[i][1])
+            regex = new RegExp(regex, flags)
+            text = text.replace(regex, array[i][1])
         }
         return text
     }
@@ -176,7 +205,7 @@ class NewTranspiler {
     }
 
     createParam(param: any) {
-        return`/// <item>
+        return `/// <item>
     /// <term>${param.name}</term>
     /// <description>
     /// ${param.type} : ${param.description}
@@ -184,7 +213,7 @@ class NewTranspiler {
     /// </item>`
     }
 
-    createCsharpCommentTemplate(name: string, desc: string, see: string[], params : string[], returnType:string, returnDesc: string) {
+    createCsharpCommentTemplate(name: string, desc: string, see: string[], params: string[], returnType: string, returnDesc: string) {
         //
         // Summary:
         //     Converts the value of the specified 16-bit signed integer to an equivalent 64-bit
@@ -201,17 +230,17 @@ class NewTranspiler {
     /// ${desc}
     /// </summary>
     /// <remarks>
-    ${see.map( l => this.createSee(l)).join("\n    ")}
+    ${see.map(l => this.createSee(l)).join("\n    ")}
     /// <list type="table">
-    ${params.map( p => this.createParam(p)).join("\n    ")}
+    ${params.map(p => this.createParam(p)).join("\n    ")}
     /// </list>
     /// </remarks>
     /// <returns> <term>${returnType}</term> ${returnDesc}.</returns>`
-    const commentWithoutEmptyLines = comment.replace(/^\s*[\r\n]/gm, "");
-    return commentWithoutEmptyLines;
+        const commentWithoutEmptyLines = comment.replace(/^\s*[\r\n]/gm, "");
+        return commentWithoutEmptyLines;
     }
 
-    transformTSCommentIntoCSharp(name: string, desc: string, sees: string[], params : string[], returnType:string, returnDesc: string) {
+    transformTSCommentIntoCSharp(name: string, desc: string, sees: string[], params: string[], returnType: string, returnDesc: string) {
         return this.createCsharpCommentTemplate(name, desc, sees, params, returnType, returnDesc);
     }
 
@@ -253,12 +282,12 @@ class NewTranspiler {
         let paramMatch;
         while ((paramMatch = paramRegex.exec(comment)) !== null) {
             const [, type, name, description] = paramMatch;
-            params.push({type, name, description});
+            params.push({ type, name, description });
         }
         const returnRegex = /@returns\s{(\w+\[?\]?\[?\]?)}\s(.+)/;
         const returnMatch = comment.match(returnRegex);
         const returnType = returnMatch ? returnMatch[1] : undefined;
-        const returnDescription =  returnMatch && returnMatch.length > 1 ? returnMatch[2]: undefined;
+        const returnDescription = returnMatch && returnMatch.length > 1 ? returnMatch[2] : undefined;
         let exchangeData = csharpComments[exchangeName];
         if (!exchangeData) {
             exchangeData = csharpComments[exchangeName] = {}
@@ -267,14 +296,14 @@ class NewTranspiler {
         if (!exchangeMethods) {
             exchangeMethods = {}
         }
-        const transformedComment = this.transformTSCommentIntoCSharp(methodName, description, sees,params, returnType, returnDescription);
+        const transformedComment = this.transformTSCommentIntoCSharp(methodName, description, sees, params, returnType, returnDescription);
         exchangeMethods[methodName] = transformedComment;
         csharpComments[exchangeName] = exchangeMethods
         return comment;
     }
 
     setupTranspiler() {
-        this.transpiler = new Transpiler (this.getTranspilerConfig())
+        this.transpiler = new Transpiler(this.getTranspilerConfig())
         this.transpiler.setVerboseMode(false);
         this.transpiler.csharpTranspiler.transformLeadingComment = this.transformLeadingComment.bind(this);
     }
@@ -300,11 +329,14 @@ class NewTranspiler {
             ];
         }
         const values = [
+            // "using ccxt;",
             'package io.github.ccxt.exchanges;',
             `import io.github.ccxt.api.${this.capitalize(file)}Api;`,
             'import io.github.ccxt.base.Precise;',
             'import io.github.ccxt.errors.*;',
             'import io.github.ccxt.Helpers;'
+            // 'import io.github.ccxt.Exchange;',
+            // 'import io.github.ccxt.Errors;'
         ]
         return values;
     }
@@ -326,52 +358,43 @@ class NewTranspiler {
     }
 
     isIntegerType(type: string) {
-        return type !== undefined && (type.toLowerCase() === 'int') ;
+        return type !== undefined && (type.toLowerCase() === 'int');
     }
 
     isBooleanType(type: string) {
         return (type === 'boolean') || (type === 'BooleanLiteral') || (type === 'BooleanLiteralType') || (type === 'Bool')
     }
 
-    convertJavascriptTypeToCsharpType(name: string, type: string, isReturn = false): string | undefined {
+    convertJavascriptTypeToJavaType(name: string, type: string, isReturn = false): string | undefined {
 
-        // handle watchOrderBook exception here (watchOrderBook and watchOrderBookForSymbols)
-        if (name.startsWith('watchOrderBook')) {
-            return `Task<ccxt.pro.IOrderBook>`;
-        }
-
-        if (name === 'watchOHLCVForSymbols') {
-            return `Task<Dictionary<string, Dictionary<string, List<OHLCV>>>>`;
-        }
-
-        if (name === 'fetchTime'){
-            return `Task<Int64>`; // custom handling for now
+        if (name === 'fetchTime') {
+            return `CompletableFuture<Long>`; // custom handling for now
         }
 
         const isPromise = type.startsWith('Promise<') && type.endsWith('>');
         let wrappedType = isPromise ? type.substring(8, type.length - 1) : type;
         let isList = false;
 
-        function addTaskIfNeeded(type: string) {
-            if (type == 'void') {
-                return isPromise ? `Task` : 'void';
+        function addFutureIfNeeded(t: string) {
+            if (t === 'void') {
+                return isPromise ? `CompletableFuture<Void>` : 'void';
             } else if (isList) {
-                return isPromise ? `Task<List<${type}>>` : `List<${type}>`;
+                return isPromise ? `CompletableFuture<List<${t}>>` : `List<${t}>`;
             }
-            return isPromise ? `Task<${type}>` : type;
+            return isPromise ? `CompletableFuture<${t}>` : t;
         }
 
-        const csharpReplacements: dict = {
-            'OrderType': 'string',
-            'OrderSide': 'string', // tmp
-        }
+        const javaReplacements: dict = {
+            'OrderType': 'String',
+            'OrderSide': 'String', // tmp
+        };
 
         if (wrappedType === undefined || wrappedType === 'Undefined') {
-            return addTaskIfNeeded('object'); // default if type is unknown;
+            return addFutureIfNeeded('Object'); // default if type is unknown
         }
 
         if (wrappedType === 'string[][]') {
-            return addTaskIfNeeded('List<List<string>>');
+            return addFutureIfNeeded('List<List<String>>');
         }
 
         // check if returns a list
@@ -382,99 +405,95 @@ class NewTranspiler {
 
         if (this.isObject(wrappedType)) {
             if (isReturn) {
-                return addTaskIfNeeded('Dictionary<string, object>');
+                return addFutureIfNeeded('Map<String, Object>');
             }
-            return addTaskIfNeeded('object');
+            return addFutureIfNeeded('Object');
         }
         if (this.isDictionary(wrappedType)) {
-            return addTaskIfNeeded('Dictionary<string, object>');
+            return addFutureIfNeeded('Map<String, Object>');
         }
         if (this.isStringType(wrappedType)) {
-            return addTaskIfNeeded('string');
+            return addFutureIfNeeded('String');
         }
         if (this.isIntegerType(wrappedType)) {
-            return addTaskIfNeeded('Int64');
+            return addFutureIfNeeded('long');
         }
         if (this.isNumberType(wrappedType)) {
-            // return addTaskIfNeeded('float');
-            return addTaskIfNeeded('double');
+            return addFutureIfNeeded('double');
         }
         if (this.isBooleanType(wrappedType)) {
-            return addTaskIfNeeded('bool');
+            return addFutureIfNeeded('boolean');
         }
         if (wrappedType === 'Strings') {
-            return addTaskIfNeeded('List<String>')
+            return addFutureIfNeeded('List<String>');
         }
-        if (csharpReplacements[wrappedType] !== undefined) {
-            return addTaskIfNeeded(csharpReplacements[wrappedType]);
+        if (javaReplacements[wrappedType] !== undefined) {
+            return addFutureIfNeeded(javaReplacements[wrappedType]);
         }
 
+        // Convert Dictionary<...> -> Map<String, ...>
         if (wrappedType.startsWith('Dictionary<')) {
-            let type = wrappedType.substring(11, wrappedType.length - 1);
-            if (type.startsWith('Dictionary<')) {
-                type = this.convertJavascriptTypeToCsharpType(name, type) as any;
+            let inner = wrappedType.substring(11, wrappedType.length - 1);
+            if (inner.startsWith('Dictionary<')) {
+                inner = this.convertJavascriptTypeToJavaType(name, inner) as any;
             }
-            return addTaskIfNeeded(`Dictionary<string, ${type}>`);
+            return addFutureIfNeeded(`Map<String, ${inner}>`);
         }
 
-        return addTaskIfNeeded(wrappedType);
+        return addFutureIfNeeded(wrappedType);
     }
 
-    safeCsharpName(name: string): string {
-        const csharpReservedWordsReplacement: dict = {
+    safeJavaName(name: string): string {
+        const javaReservedWordsReplacement: dict = {
             'params': 'parameters',
             'base': 'baseArg',
         }
-        return csharpReservedWordsReplacement[name] || name;
+        return javaReservedWordsReplacement[name] || name;
     }
 
-    convertJavascriptParamToCsharpParam(param: any): string | undefined {
+    convertJavascriptParamToJavaParam(param: any): string | undefined {
         const name = param.name;
-        const safeName = this.safeCsharpName(name);
-        const isOptional =  param.optional || param.initializer !== undefined;
-        const op = isOptional ? '?' : '';
+        const safeName = this.safeJavaName(name);
+        const isOptional = param.optional || param.initializer !== undefined;
+
         let paramType: any = undefined;
-        
-        // Special case for setMarketsFromExchange method
+
         if (name === 'sourceExchange' && param.type === undefined) {
             paramType = 'Exchange';
         } else if (param.type == undefined) {
-            paramType = 'object';
+            paramType = 'Object';
         } else {
-            paramType = this.convertJavascriptTypeToCsharpType(name, param.type);
+            paramType = this.convertJavascriptTypeToJavaType(name, param.type);
         }
-        const isNonNullableType = this.isNumberType(param.type) || this.isBooleanType(param.type) || this.isIntegerType(param.type);
-        if (isNonNullableType) {
-            if (isOptional) {
-                if (param.initializer !== undefined && param.initializer !== 'undefined') {
-                    return `${paramType} ${safeName} = ${param.initializer}`
-                } else {
-                    if (paramType  === 'bool') {
-                        return `${paramType}? ${safeName} = false`
-                    }
-                    if (paramType === 'double' || paramType  === 'float') {
-                        return `${paramType}? ${safeName}2 = 0`
-                    }
-                    if (paramType  === 'Int64') {
-                        return `${paramType}? ${safeName}2 = 0`
-                    }
-                    return `${paramType}? ${safeName}`
-                }
-            }
-        } else {
-            if (isOptional) {
-                if (param.initializer !== undefined) {
-                        if (param.initializer === 'undefined' || param.initializer === '{}' || paramType === 'object') {
-                            return `${paramType} ${safeName} = null`
-                        }
-                        return `${paramType} ${safeName} = ${param.initializer.replaceAll("'", '"')}`
-                }
-            } else {
-                return `${paramType} ${safeName}`
-            }
+
+        const isNonNullableType =
+            this.isNumberType(param.type) ||
+            this.isBooleanType(param.type) ||
+            this.isIntegerType(param.type);
+
+        if (isOptional && isNonNullableType) {
+            if (paramType === 'boolean') paramType = 'Boolean';
+            else if (paramType === 'double') paramType = 'Double';
+            else if (paramType === 'float') paramType = 'Float';
+            else if (paramType === 'long') paramType = 'Long';
+            else if (paramType === 'int') paramType = 'Integer';
         }
-        return `${paramType}${op} ${safeName}`
+
+        if (isOptional) {
+            if (param.initializer !== undefined && param.initializer !== 'undefined') {
+                const init =
+                    typeof param.initializer === 'string'
+                        ? param.initializer.replaceAll("'", '"')
+                        : param.initializer;
+                return `${paramType} ${safeName} = ${init}`;
+            }
+
+            return `${paramType} ${safeName} = null`;
+        }
+
+        return `${paramType} ${safeName}`;
     }
+
 
     shouldCreateWrapper(methodName: string, isWs = false): boolean {
         const allowedPrefixes = [
@@ -533,7 +552,7 @@ class NewTranspiler {
         return type.startsWith('Dictionary<string,') && type.endsWith('>') ? type.substring(19, type.length - 1) : type;
     }
 
-    createReturnStatement(methodName: string,  unwrappedType:string ) {
+    createReturnStatement(methodName: string, unwrappedType: string) {
         // handle watchOrderBook exception here
         if (methodName.startsWith('watchOrderBook')) {
             return `return ((ccxt.pro.IOrderBook) res).Copy();`; // return copy to avoid concurrency issues
@@ -544,7 +563,7 @@ class NewTranspiler {
         }
 
         // custom handling for now
-        if (methodName === 'fetchTime'){
+        if (methodName === 'fetchTime') {
             return `return (Int64)res;`;
         }
 
@@ -574,19 +593,19 @@ class NewTranspiler {
             ].join("\n");
             return returnParts;
         } else {
-            returnStatement =  needsToInstantiate ? `return new ${unwrappedType}(res);` :  `return ((${unwrappedType})res);`;            ;
+            returnStatement = needsToInstantiate ? `return new ${unwrappedType}(res);` : `return ((${unwrappedType})res);`;;
         }
         return returnStatement;
     }
 
-    getDefaultParamsWrappers(rawParameters: any []) {
+    getDefaultParamsWrappers(rawParameters: any[]) {
         const res: string[] = [];
 
         rawParameters.forEach(param => {
-            const isOptional =  param.optional || param.initializer === 'undefined';
+            const isOptional = param.optional || param.initializer === 'undefined';
             // const isOptional =  param.optional || param.initializer !== undefined;
             if (isOptional && (this.isIntegerType(param.type) || this.isNumberType(param.type))) {
-                const decl =  `${this.inden(2)}var ${param.name} = ${param.name}2 == 0 ? null : (object)${param.name}2;`;
+                const decl = `${this.inden(2)}var ${param.name} = ${param.name}2 == 0 ? null : (object)${param.name}2;`;
                 res.push(decl);
             }
         });
@@ -598,18 +617,18 @@ class NewTranspiler {
         return '    '.repeat(level);
     }
 
-    createWrapper (exchangeName: string, methodWrapper: any, isWs = false) {
+    createWrapper(exchangeName: string, methodWrapper: any, isWs = false) {
         const isAsync = methodWrapper.async;
         const methodName = methodWrapper.name;
         if (!this.shouldCreateWrapper(methodName, isWs)) {
             return ''; // skip aux methods like encodeUrl, parseOrder, etc
         }
         const methodNameCapitalized = methodName.charAt(0).toUpperCase() + methodName.slice(1);
-        const returnType = this.convertJavascriptTypeToCsharpType(methodName, methodWrapper.returnType, true);
+        const returnType = this.convertJavascriptTypeToJavaType(methodName, methodWrapper.returnType, true);
         const unwrappedType = this.unwrapTaskIfNeeded(returnType as string);
-        const args: any[] = methodWrapper.parameters.map((param: any) => this.convertJavascriptParamToCsharpParam(param));
+        const args: any[] = methodWrapper.parameters.map((param: any) => this.convertJavascriptParamToJavaParam(param));
         const stringArgs = args.filter(arg => arg !== undefined).join(', ');
-        const params = methodWrapper.parameters.map((param: any) => this.safeCsharpName(param.name)).join(', ');
+        const params = methodWrapper.parameters.map((param: any) => this.safeJavaName(param.name)).join(', ');
 
         const one = this.inden(1);
         const two = this.inden(2);
@@ -629,53 +648,78 @@ class NewTranspiler {
     }
 
     createExchangesWrappers(): string[] {
-        // in csharp classes should be Capitalized, so I'm creating a wrapper class for each exchange
         const res: string[] = ['// class wrappers'];
+
         exchangeIds.forEach(exchange => {
             const capitalizedExchange = exchange.charAt(0).toUpperCase() + exchange.slice(1);
-            const capitalName = capitalizedExchange.replace('.ts','');
-            const constructor = `public ${capitalName}(object args = null) : base(args) { }`
-            res.push(`public class  ${capitalName}: ${exchange.replace('.ts','')} { ${constructor} }`)
+            const capitalName = capitalizedExchange.replace('.ts', '');
+
+            const className = exchange.replace('.ts', '');
+            const constructor1 = `    public ${capitalName}() { super(null); }`;
+            const constructor2 = `    public ${capitalName}(Object args) { super(args); }`;
+
+            const cls = [
+                `public class ${capitalName} extends ${className} {`,
+                constructor1,
+                constructor2,
+                `}`
+            ].join('\n');
+
+            res.push(cls);
         });
+
         return res;
     }
 
-    createJavaWrappers(exchange:string, path: string, wrappers: any[], ws = false) {
-        const wrappersIndented = wrappers.map(wrapper => this.createWrapper(exchange, wrapper, ws)).filter(wrapper => wrapper !== '').join('\n');
+    createJavaWrappers(exchange: string, path: string, wrappers: any[], ws = false) {
+        const wrappersIndented = wrappers
+            .map(wrapper => this.createWrapper(exchange, wrapper, ws))
+            .filter(wrapper => wrapper !== '')
+            .join('\n');
+
         const shouldCreateClassWrappers = exchange === 'Exchange';
-        const classes = shouldCreateClassWrappers ? this.createExchangesWrappers().filter(e=> !!e).join('\n') : '';
-        // const exchangeName = ws ? exchange + 'Ws' : exchange;
-        const namespace = ws ? 'namespace ccxt.pro;' : 'namespace ccxt;';
+        const classes = shouldCreateClassWrappers ? this.createExchangesWrappers().filter(e => !!e).join('\n') : '';
+
+        const pkg = ws ? 'package ccxt.pro;' : 'package io.github.ccxt;';
         const capitizedName = exchange.charAt(0).toUpperCase() + exchange.slice(1);
-        const capitalizeStatement = ws ? `public class  ${capitizedName}: ${exchange} { public ${capitizedName}(object args = null) : base(args) { } }` : '';
+
+        const capitalizeStatement = ws
+            ? [
+                `public class ${capitizedName} extends ${exchange} {`,
+                `    public ${capitizedName}() { super(null); }`,
+                `    public ${capitizedName}(Object args) { super(args); }`,
+                `}`
+            ].join('\n')
+            : '';
+
         const file = [
-            namespace,
+            pkg,
             '',
             this.createGeneratedHeader().join('\n'),
             capitalizeStatement,
-            `public partial class ${exchange}`,
-            '{',
+            `public class ${exchange} {`,
             wrappersIndented,
-            '}',
+            `}`,
             classes
-        ].join('\n')
-        log.magenta ('→', (path as any).yellow)
+        ].filter(s => s !== '').join('\n');
 
-        overwriteFileAndFolder (path, file);
+        log.magenta('→', (path as any).yellow);
+        overwriteFileAndFolder(path, file);
     }
 
-    transpileErrorHierarchy () {
+
+    transpileErrorHierarchy() {
 
         const errorHierarchyFilename = './js/src/base/errorHierarchy.js'
         const errorHierarchyPath = __dirname + '/.' + errorHierarchyFilename
 
-        let js = fs.readFileSync (errorHierarchyPath, 'utf8')
+        let js = fs.readFileSync(errorHierarchyPath, 'utf8')
 
-        js = this.regexAll (js, [
+        js = this.regexAll(js, [
             // [ /export { [^\;]+\s*\}\n/s, '' ], // new esm
-            [ /\s*export default[^\n]+;\n/g, '' ],
+            [/\s*export default[^\n]+;\n/g, ''],
             // [ /module\.exports = [^\;]+\;\n/s, '' ], // old commonjs
-        ]).trim ()
+        ]).trim()
 
         const message = 'Transpiling error hierachy →'
         const root = errorHierarchy['BaseError']
@@ -684,14 +728,14 @@ class NewTranspiler {
         // properly derived from corresponding parent classes according
         // to the error hierarchy
 
-        function intellisense (map: any, parent: any, generate: any, classes: any) {
+        function intellisense(map: any, parent: any, generate: any, classes: any) {
             function* generator(map: any, parent: any, generate: any, classes: any): any {
                 for (const key in map) {
-                    yield generate (key, parent, classes)
-                    yield* generator (map[key], key, generate, classes)
+                    yield generate(key, parent, classes)
+                    yield* generator(map[key], key, generate, classes)
                 }
             }
-            return Array.from (generator (map, parent, generate, classes))
+            return Array.from(generator(map, parent, generate, classes))
         }
 
 
@@ -699,9 +743,9 @@ class NewTranspiler {
 
         // ---------------------------------------------------------------------
 
-        function javaMakeErrorClassFile (name: string, parent: string) {
+        function javaMakeErrorClassFile(name: string, parent: string) {
             const exception =
-`public class ${name} extends ${parent}
+                `public class ${name} extends ${parent}
 {
     public ${name}() { super(); }
     public ${name}(String message) { super(message); }
@@ -710,16 +754,16 @@ class NewTranspiler {
             return exception
         }
 
-            const javaBaseError =
-`public class BaseError extends RuntimeException
+        const javaBaseError =
+            `public class BaseError extends RuntimeException
 {
     public BaseError() { super(); }
     public BaseError(String message) { super(message); }
     public BaseError(String message, Throwable cause) { super(message, cause); }
 }`;
 
-        const javaErrors = intellisense (root as any, 'BaseError', javaMakeErrorClassFile, undefined)
-        const allErrors = [javaBaseError].concat (javaErrors)
+        const javaErrors = intellisense(root as any, 'BaseError', javaMakeErrorClassFile, undefined)
+        const allErrors = [javaBaseError].concat(javaErrors)
         for (let i = 0; i < allErrors.length; i++) {
             const error = allErrors[i];
             const groups = error.match(/class (\w+) extends (\w+)/);
@@ -732,8 +776,8 @@ class NewTranspiler {
             ].join('\n')
 
             const fileName = ERRORS_FOLDER + this.capitalize(errorName) + '.java'
-            log.bright.cyan (message, (fileName as any).yellow)
-            overwriteFileAndFolder (fileName, file)
+            log.bright.cyan(message, (fileName as any).yellow)
+            overwriteFileAndFolder(fileName, file)
         }
         // const javaBodyIntellisense = '\npackage io.github.ccxt;\n' + this.createGeneratedHeader().join('\n') + '\n' + javaBaseError + '\n' + javaErrors.join ('\n') + '\n'
         // if (fs.existsSync (ERRORS_FILE)) {
@@ -767,20 +811,20 @@ class NewTranspiler {
 
         const javaDelimiter = '// ' + delimiter + '\n';
         const restOfFile = '([^\n]*\n)+'
-        const parts = baseClass.split (javaDelimiter)
+        const parts = baseClass.split(javaDelimiter)
         if (parts.length > 1) {
-            log.magenta ('→', (javaExchangeBase as any).yellow)
+            log.magenta('→', (javaExchangeBase as any).yellow)
             replaceInFile(javaExchangeBase, new RegExp(javaDelimiter + restOfFile), javaDelimiter + '\n' + parts[1].trim() + '\n')
         }
     }
 
     camelize(str: string) {
-        var res =  str.replace(/(?:^\w|[A-Z]|\b\w|\s+)/g, function(match, index) {
-          if (+match === 0) return ""; // or if (/\s+/.test(match)) for white spaces
-          return index === 0 ? match.toLowerCase() : match.toUpperCase();
+        var res = str.replace(/(?:^\w|[A-Z]|\b\w|\s+)/g, function (match, index) {
+            if (+match === 0) return ""; // or if (/\s+/.test(match)) for white spaces
+            return index === 0 ? match.toLowerCase() : match.toUpperCase();
         });
         return res.replaceAll('-', '');
-      }
+    }
 
 
     getCsharpExamplesWarning() {
@@ -796,18 +840,18 @@ class NewTranspiler {
         ].join('\n')
     }
 
-    transpileExamples () {
+    transpileExamples() {
         return;
         // currently disabled!, the generated code is too complex and illegible
         const transpileFlagPhrase = '// AUTO-TRANSPILE //'
 
-        const allTsExamplesFiles = fs.readdirSync (EXAMPLES_INPUT_FOLDER).filter((f) => f.endsWith('.ts'));
+        const allTsExamplesFiles = fs.readdirSync(EXAMPLES_INPUT_FOLDER).filter((f) => f.endsWith('.ts'));
         for (const filenameWithExtenstion of allTsExamplesFiles) {
-            const tsFile = path.join (EXAMPLES_INPUT_FOLDER, filenameWithExtenstion)
-            let tsContent = fs.readFileSync (tsFile).toString ()
-            if (tsContent.indexOf (transpileFlagPhrase) > -1) {
-                const fileName = filenameWithExtenstion.replace ('.ts', '')
-                log.magenta ('[C#] Transpiling example from', (tsFile as any).yellow)
+            const tsFile = path.join(EXAMPLES_INPUT_FOLDER, filenameWithExtenstion)
+            let tsContent = fs.readFileSync(tsFile).toString()
+            if (tsContent.indexOf(transpileFlagPhrase) > -1) {
+                const fileName = filenameWithExtenstion.replace('.ts', '')
+                log.magenta('[C#] Transpiling example from', (tsFile as any).yellow)
                 const csharp = this.transpiler.transpileCSharp(tsContent);
 
                 const transpiledFixed = this.regexAll(
@@ -831,7 +875,7 @@ class NewTranspiler {
                     '}'
                 ].join('\n');
 
-                overwriteFileAndFolder (EXAMPLES_OUTPUT_FOLDER + fileName + '.cs', finalFile);
+                overwriteFileAndFolder(EXAMPLES_OUTPUT_FOLDER + fileName + '.cs', finalFile);
             }
         }
     }
@@ -853,15 +897,15 @@ class NewTranspiler {
         await this.transpileDerivedExchangeFiles (tsFolder, options, '.ts', force, !!(inputExchanges), true)
     }
 
-    async transpileEverything (force = false, child = false, baseOnly = false, examplesOnly = false) {
+    async transpileEverything(force = false, child = false, baseOnly = false, examplesOnly = false) {
 
-        const exchanges = process.argv.slice (2).filter (x => !x.startsWith ('--'))
+        const exchanges = process.argv.slice(2).filter(x => !x.startsWith('--'))
             , javaFolder = EXCHANGES_FOLDER
             , tsFolder = './ts/src/'
             , exchangeBase = './ts/src/base/Exchange.ts'
 
         if (!child) {
-            createFolderRecursively (javaFolder)
+            createFolderRecursively(javaFolder)
         }
         const transpilingSingleExchange = (exchanges.length === 1); // when transpiling single exchange, we can skip some steps because this is only used for testing/debugging
         if (transpilingSingleExchange) {
@@ -870,7 +914,7 @@ class NewTranspiler {
         const options = { csharpFolder: javaFolder, exchanges }
 
         if (!baseOnly && !examplesOnly) {
-            await this.transpileDerivedExchangeFiles (tsFolder, options, '.ts', force, !!(child || exchanges.length))
+            await this.transpileDerivedExchangeFiles(tsFolder, options, '.ts', force, !!(child || exchanges.length))
         }
 
         if (transpilingSingleExchange) {
@@ -880,7 +924,7 @@ class NewTranspiler {
             return;
         }
 
-        this.transpileBaseMethods (exchangeBase)
+        this.transpileBaseMethods(exchangeBase)
 
         if (baseOnly) {
             return;
@@ -889,12 +933,12 @@ class NewTranspiler {
 
         this.transpileTests()
 
-        this.transpileErrorHierarchy ()
+        this.transpileErrorHierarchy()
 
-        log.bright.green ('Transpiled successfully.')
+        log.bright.green('Transpiled successfully.')
     }
 
-    async webworkerTranspile (allFiles: any[], parserConfig: any) {
+    async webworkerTranspile(allFiles: any[], parserConfig: any) {
 
         // create worker
         const piscina = new Piscina({
@@ -906,16 +950,16 @@ class NewTranspiler {
         const now = Date.now();
         for (let i = 0; i < allFiles.length; i += chunkSize) {
             const chunk = allFiles.slice(i, i + chunkSize);
-            promises.push(piscina.run({transpilerConfig:parserConfig, files:chunk}));
+            promises.push(piscina.run({ transpilerConfig: parserConfig, files: chunk }));
         }
         const workerResult = await Promise.all(promises);
         const elapsed = Date.now() - now;
-        log.green ('[ast-transpiler] Transpiled', allFiles.length, 'files in', elapsed, 'ms');
+        log.green('[ast-transpiler] Transpiled', allFiles.length, 'files in', elapsed, 'ms');
         const flatResult = workerResult.flat();
         return flatResult;
     }
 
-    async transpileDerivedExchangeFiles (jsFolder: string, options: any, pattern = '.ts', force = false, child = false, ws = false) {
+    async transpileDerivedExchangeFiles(jsFolder: string, options: any, pattern = '.ts', force = false, child = false, ws = false) {
 
         // todo normalize jsFolder and other arguments
 
@@ -926,27 +970,28 @@ class NewTranspiler {
         } catch (e) {
         }
 
-        const regex = new RegExp (pattern.replace (/[.*+?^${}()|[\]\\]/g, '\\$&'))
+        const regex = new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
 
         // let exchanges
         if (options.exchanges && options.exchanges.length) {
-            exchanges = options.exchanges.map ((x: string) => x + pattern)
+            exchanges = options.exchanges.map((x: string) => x + pattern)
         } else {
-            exchanges = fs.readdirSync (jsFolder).filter (file => file.match (regex) && (!ids || ids.includes (basename (file, '.ts'))))
+            exchanges = fs.readdirSync(jsFolder).filter(file => file.match(regex) && (!ids || ids.includes(basename(file, '.ts'))))
         }
 
         // transpile using webworker
-        const allFilesPath = exchanges.map ((file: string) => jsFolder + file );
+        const allFilesPath = exchanges.map((file: string) => jsFolder + file);
         // const transpiledFiles =  await this.webworkerTranspile(allFilesPath, this.getTranspilerConfig());
         log.blue('[java] Transpiling [', exchanges.join(', '), ']');
-        const transpiledFiles =  allFilesPath.map((file: string) => this.transpiler.transpileJavaByPath(file));
+        const transpiledFiles = allFilesPath.map((file: string) => this.transpiler.transpileJavaByPath(file));
 
         if (!ws) {
             for (let i = 0; i < transpiledFiles.length; i++) {
-                // const transpiled = transpiledFiles[i];
-                // const exchangeName = exchanges[i].replace('.ts','');
-                // const path = EXCHANGE_WRAPPER_FOLDER + this.capitalizeexchangeName + '.java';
-                // // this.createCSharpWrappers(exchangeName, path, transpiled.methodsTypes)
+                const transpiled = transpiledFiles[i];
+                const exchangeName = exchanges[i].replace('.ts','');
+                const path = EXCHANGE_WRAPPER_FOLDER + this.capitalize(exchangeName) + '.java';
+                // this.createJavaWrappers(exchangeName, path, transpiled.methodsTypes)
+                // break;
             }
         } else {
             //
@@ -957,7 +1002,7 @@ class NewTranspiler {
                 // this.createCSharpWrappers(exchangeName, path, transpiled.methodsTypes, true)
             }
         }
-        exchanges.map ((file: string, idx: number) => this.transpileDerivedExchangeFile (jsFolder, file, options, transpiledFiles[idx], force, ws))
+        exchanges.map((file: string, idx: number) => this.transpileDerivedExchangeFile(jsFolder, file, options, transpiledFiles[idx], force, ws))
 
         const classes = {}
 
@@ -970,15 +1015,15 @@ class NewTranspiler {
 
         // inject constructor
         const constructor = [
-        '',
-        `   public ${this.capitalize(name)} () {`,
-        `       super();`,
-        `   }`,
-        '',
-        `   public ${this.capitalize(name)} (Object options) {`,
-        `       super(options);`,
-        `   }`,
-        ''
+            '',
+            `   public ${this.capitalize(name)} () {`,
+            `       super();`,
+            `   }`,
+            '',
+            `   public ${this.capitalize(name)} (Object options) {`,
+            `       super(options);`,
+            `   }`,
+            ''
         ].join('\n');
 
         const regex = /class (\w+) extends (\w+)/
@@ -987,7 +1032,7 @@ class NewTranspiler {
         // override extends from Exchange to ClassApi
         content = content.replace(/extends\s\w+/g, `extends ${this.capitalize(name)}Api`);
         content = content.replace(/, (sha1|sha384|sha512|sha256|md5|ed25519|keccak|p256|secp256k1)([,)])/g, `, $1()$2`);
-        content = content.replace(/(\s+public Object describe\(\))/g,`${constructor}$1`)
+        content = content.replace(/(\s+public Object describe\(\))/g, `${constructor}$1`)
 
         // const baseWsClassRegex = /class\s(\w+)\s+:\s(\w+)/;
         // const baseWsClassExec = baseWsClassRegex.exec(content);
@@ -1013,6 +1058,18 @@ class NewTranspiler {
         }
         content = this.createGeneratedHeader().join('\n') + '\n' + content;
         return javaImports + content;
+    }
+
+    replaceImportedRestClasses(content: string, imports: any[]) {
+        for (const imp of imports) {
+            // { name: "hitbtc", path: "./hitbtc.js", isDefault: true, }
+            // { name: "bequantRest", path: "../bequant.js", isDefault: true, }
+            const name = imp.name;
+            if (name.endsWith('Rest')) {
+                content = content.replaceAll(name, 'ccxt.' + name.replace('Rest', ''));
+            }
+        }
+        return content;
     }
 
     postProcessWsJava(content: string, name: string): string {
@@ -1126,16 +1183,12 @@ class NewTranspiler {
             return `this.spawn(() -> { try { this.${method}(${args}); } catch(Exception _e) { throw new RuntimeException(_e); } });`;
         });
         // this.spawn(this.method, args) used as expression (value) — NOT ending with ;
-        // e.g., inside Helpers.addElementToObject(urls, connectId, this.spawn(this.negotiateHelper, ...))
-        // Convert to inline call: this.method(args)
-        // Match when followed by ) (closing outer call) rather than );
         content = content.replace(/this\.spawn\(this\.(\w+),\s*([^)]*(?:\([^)]*\)[^)]*)*)\)(?=\))/gm,
             (match: string, method: string, args: string) => {
                 return `this.${method}(${args})`;
             });
 
         // ── watch/watchMultiple missing 5th arg ──
-        // Use balanced paren counting for accurate arg detection
         for (const method of ['watch', 'watchMultiple']) {
             const pattern = new RegExp(`this\\.${method}\\(`, 'g');
             let result2 = '';
@@ -1151,7 +1204,6 @@ class NewTranspiler {
                     j2++;
                 }
                 const args2 = content.substring(startIdx, j2 - 1);
-                // Count top-level commas (not inside nested parens)
                 let topLevelCommas = 0;
                 let d = 0;
                 for (const ch of args2) {
@@ -1178,46 +1230,35 @@ class NewTranspiler {
 
         // ── Client type handling ──
         content = content.replace(/WsClient\b/gm, 'Client');
-        // Method parameter: (Object client) or (Object client, ...) — first param
         content = content.replace(/\(Object client\)/gm, '(Client client)');
         content = content.replace(/\(Object client,/gm, '(Client client,');
-        // Method parameter: (..., Object client, ...) or (..., Object client) — non-first param
         content = content.replace(/,\s*Object client,/gm, ', Client client,');
         content = content.replace(/,\s*Object client\)/gm, ', Client client)');
-        // Variable declarations
         content = content.replace(/Object client =/gm, 'Client client =');
         content = content.replace(/Object client = this\.client\(/gm, 'Client client = this.client(');
-        // Client client = Helpers.GetValue(clients, i) pattern
         content = content.replace(/Client\s+client\s*=\s*Helpers\.GetValue\((\w+),\s*(\w+)\)/gm,
             'Client client = (Client)Helpers.GetValue($1, $2)');
-        // Client client = this.safeValue(...) → needs cast
         content = content.replace(/Client\s+client\s*=\s*this\.(safeValue|safeDict)\(/gm,
             'Client client = (Client)this.$1(');
 
         // ── Pattern 9: int/long from Object ──
         content = content.replace(/int (\w+) = (?![\d(])/gm, 'Object $1 = ');
-        // new ArrayCache(Object) → new ArrayCache(((Number)Object).intValue())
         content = content.replace(/new ArrayCache\(this\.(safeInteger\([^)]+\))\)/gm,
             'new ArrayCache(((Number)this.$1).intValue())');
         content = content.replace(/new ArrayCache\(this\.(safeInteger\([^)]+\))\)/gm,
             'new ArrayCache(((Number)this.$1).intValue())');
-        // client.lastPong = ... → needs Number cast for any expression
         content = content.replace(/client\.lastPong\s*=\s*([^;]+);/gm, (match: string, rhs: string) => {
-            // If already a Number cast or literal, skip
             if (rhs.startsWith('((Number)') || /^\d+L?$/.test(rhs.trim())) return match;
             return `client.lastPong = ((Number)${rhs}).longValue();`;
         });
-        // client.keepAlive = ... → needs Number cast
         content = content.replace(/client\.keepAlive\s*=\s*([^;]+);/gm, (match: string, rhs: string) => {
             if (rhs.startsWith('((Number)') || /^\d+L?$/.test(rhs.trim())) return match;
             return `client.keepAlive = ((Number)${rhs}).longValue();`;
         });
 
         // ── this.delay → spawn with sleep ──
-        // 3-arg: this.delay(time, this.method, args)
         content = content.replace(/this\.delay\(([^,]+),\s*this\.(\w+),\s*([^)]+)\)/gm,
             'this.spawn(() -> { try { Thread.sleep(((Number)$1).longValue()); this.$2($3); } catch(Exception _e) {} })');
-        // 2-arg: this.delay(time, this.method) — no extra args
         content = content.replace(/this\.delay\(([^,]+),\s*this\.(\w+)\)/gm,
             'this.spawn(() -> { try { Thread.sleep(((Number)$1).longValue()); this.$2(); } catch(Exception _e) {} })');
 
@@ -1228,42 +1269,28 @@ class NewTranspiler {
         content = content.replace(/CompletableFuture<Void>/gm, 'CompletableFuture<Object>');
 
         // ── this.lockId()/this.unlockId() → synchronized with scoping fix ──
-        // The pattern: synchronized (this) { Object x = ...; } return x;
-        // x is declared inside the block and referenced outside — invalid Java.
-        // Fix: move variable declarations before the synchronized block.
         content = this.fixSynchronizedScoping(content);
 
         // ── super.describeData() → call WS parent method ──
-        // When WS class extends REST parent, super.describeData() from the WS base isn't available.
-        // Create a temp instance of the WS parent class to call the method.
         content = content.replace(/super\.describeData\(\)/gm, (match: string) => {
-            // For binanceus -> binance WS, binancecoinm -> binance WS, etc.
             return `new io.github.ccxt.exchanges.pro.Binance().describeData()`;
         });
 
         // ── Fix effectively final: when url is captured in anonymous inner class ──
-        // Pattern: (this.authenticate(new HashMap... put("url", url))) where url was reassigned
-        // Fix: add final Object finalUrl = url; before the anonymous class
         content = content.replace(/(this\.authenticate\(new java\.util\.HashMap[^}]*\{\{[^}]*put\(\s*"url",\s*)url(\s*\))/gm,
             (match: string, before: string, after: string) => {
-                // Can't insert a line here, so use a different approach
-                // Just wrap url in a local variable inline
                 return match;
             });
-        // Simpler: just declare finalUrl before the authenticate call
-        // Use line-level approach: find authenticate calls, then look for put("url", url) nearby
         {
             const lines2 = content.split('\n');
             for (let j = 0; j < lines2.length; j++) {
                 if (lines2[j].includes('this.authenticate')) {
-                    // Look in the next few lines for put( "url", url )
                     for (let k = j; k < Math.min(j + 5, lines2.length); k++) {
                         if (lines2[k].includes('put( "url", url )')) {
-                            // Insert finalUrl before the authenticate line
                             const indent2 = lines2[j].match(/^\s*/)?.[0] || '';
                             lines2.splice(j, 0, `${indent2}final Object finalUrl = url;`);
                             lines2[k + 1] = lines2[k + 1].replace(/put\(\s*"url",\s*url\s*\)/, 'put( "url", finalUrl )');
-                            j = k + 2; // skip past
+                            j = k + 2;
                             break;
                         }
                     }
@@ -1273,16 +1300,10 @@ class NewTranspiler {
         }
 
         // ── Fix extra args in method calls when definition has fewer params ──
-        // In JS, extra args are silently ignored. In Java, we need to match.
-        // For loadPositionsSnapshot: check if the method definition has fewer params
-        // than the call and add optionalArgs to the definition if needed.
-        // Use a generic approach: find calls vs definitions within the same file
         {
-            // Check if loadPositionsSnapshot is defined AND called in this file
             const defMatch = content.match(/loadPositionsSnapshot\(Client\s+\w+,\s*Object\s+\w+,\s*Object\s+\w+\)\s*$/m);
             const callMatch = content.match(/this\.loadPositionsSnapshot\(\w+,\s*\w+,\s*\w+,\s*\w+\)/);
             if (defMatch && callMatch) {
-                // Definition has 3 params but call has 4 — add optionalArgs to definition
                 content = content.replace(
                     /loadPositionsSnapshot\(Client\s+(\w+),\s*Object\s+(\w+),\s*Object\s+(\w+)\)\s*$/m,
                     'loadPositionsSnapshot(Client $1, Object $2, Object $3, Object... _extraArgs)'
@@ -1295,19 +1316,14 @@ class NewTranspiler {
         content = content.replace(/new Asks\(/gm, 'new io.github.ccxt.ws.OrderBookSide.Asks(');
 
         // ── Exchange class name capitalization ──
-        // new io.github.ccxt.exchanges.bequant() → new io.github.ccxt.exchanges.Bequant()
         content = content.replace(/new io\.github\.ccxt\.exchanges\.([a-z])(\w+)\(\)/gm,
             (m: string, first: string, rest: string) => `new io.github.ccxt.exchanges.${first.toUpperCase()}${rest}()`);
 
         // ── Assignment to map.get() → Helpers.addElementToObject ──
-        // ((HashMap<String, Object>)x).get("y") = value; → Helpers.addElementToObject(x, "y", value);
         content = content.replace(/\(\(java\.util\.HashMap<String, Object>\)(\w+)\)\.get\("(\w+)"\)\s*=\s*([^;]+);/gm,
             'Helpers.addElementToObject($1, "$2", $3);');
-        // ((java.util.List<Object>)Helpers.GetValue(orderbook, "cache")) = new ArrayList(...)
-        // → Helpers.addElementToObject(orderbook, "cache", new ArrayList(...))
         content = content.replace(/\(\(java\.util\.List<Object>\)Helpers\.GetValue\((\w+),\s*"(\w+)"\)\)\s*=\s*([^;]+);/gm,
             'Helpers.addElementToObject($1, "$2", $3);');
-        // ((java.util.List<Object>)((java.util.List<Object>)Helpers.GetValue(orderbook, "cache"))) = ...
         content = content.replace(/\(\(java\.util\.List<Object>\)\(\(java\.util\.List<Object>\)Helpers\.GetValue\((\w+),\s*"(\w+)"\)\)\)\s*=\s*([^;]+);/gm,
             'Helpers.addElementToObject($1, "$2", $3);');
 
@@ -1316,46 +1332,30 @@ class NewTranspiler {
             '(java.util.List<String>)(java.util.List)new java.util.ArrayList<Object>');
 
         // ── Fix final variable scoping across if/else blocks ──
-        // When a final Object finalXxx is declared inside an if-block but used in the else-block,
-        // hoist it to before the if statement
         content = this.hoistFinalVarsAcrossIfElse(content);
 
         // ── Fix effectively final for anonymous inner class captures ──
-        // When a variable is reassigned (x = ...) and later captured in an
-        // anonymous inner class (new HashMap() {{ put("key", x); }}),
-        // add final Object finalX = x; before the inner class
         content = this.fixEffectivelyFinal(content);
 
         // ── Fix effectively final for lambda captures in spawn/delay ──
-        // When a reassigned variable is captured in this.spawn(() -> { ... })
-        // add a final copy before the spawn
         content = this.fixEffectivelyFinalLambda(content);
 
         // ── Remove duplicate final variable declarations in same method ──
         content = this.removeTrueDuplicateFinals(content);
 
-        // ── Pattern 7: Lambda capture variables ──
-        // (Placeholder — not needed if effectively final)
-
         // ── Void supplyAsync return null insertion ──
-        // Use brace-counting approach: find supplyAsync blocks and ensure they return a value
         content = this.insertReturnNullInSupplyAsync(content);
 
         return content;
     }
 
     fixSynchronizedScoping(content: string): string {
-        // Replace lockId/unlockId with synchronized blocks
         content = content.replace(/this\.lockId\(\);/gm, 'synchronized (this) {');
         content = content.replace(/this\.unlockId\(\);/gm, '}');
 
-        // Fix scoping: variables declared inside synchronized {} and used after
-        // Pattern: synchronized (this) { Object x = ...; \n Helpers.addElementToObject(..., x); \n } \n return x;
-        // → Object x; synchronized (this) { x = ...; \n Helpers.addElementToObject(..., x); \n } \n return x;
         const lines = content.split('\n');
         for (let i = 0; i < lines.length; i++) {
             if (lines[i].trim() === 'synchronized (this) {') {
-                // Collect variables declared inside the synchronized block
                 const syncStart = i;
                 let syncEnd = -1;
                 let braceCount = 0;
@@ -1371,7 +1371,6 @@ class NewTranspiler {
                 }
                 if (syncEnd === -1) continue;
 
-                // Find variable declarations inside the block
                 const declaredVars: {name: string, lineIdx: number}[] = [];
                 for (let j = syncStart + 1; j < syncEnd; j++) {
                     const declMatch = lines[j].match(/^(\s*)Object\s+(\w+)\s*=\s*/);
@@ -1380,7 +1379,6 @@ class NewTranspiler {
                     }
                 }
 
-                // Check if any of these variables are used after the synchronized block
                 for (const v of declaredVars) {
                     let usedAfter = false;
                     for (let j = syncEnd + 1; j < Math.min(syncEnd + 5, lines.length); j++) {
@@ -1390,12 +1388,9 @@ class NewTranspiler {
                         }
                     }
                     if (usedAfter) {
-                        // Move declaration before synchronized, keep assignment inside
                         const indent = lines[v.lineIdx].match(/^(\s*)/)?.[1] || '';
                         lines[v.lineIdx] = lines[v.lineIdx].replace(`Object ${v.name} =`, `${v.name} =`);
-                        // Insert declaration before synchronized block
                         lines.splice(syncStart, 0, `${indent}Object ${v.name};`);
-                        // Adjust indices
                         i++;
                     }
                 }
@@ -1405,8 +1400,6 @@ class NewTranspiler {
     }
 
     hoistFinalVarsAcrossIfElse(content: string): string {
-        // Fix: when a final variable is declared inside a block (if/for/etc)
-        // but referenced outside that block, hoist it to before the block.
         const lines = content.split('\n');
 
         for (let i = 0; i < lines.length; i++) {
@@ -1416,7 +1409,6 @@ class NewTranspiler {
             const varName = finalMatch[2];
             const sourceVar = finalMatch[3];
 
-            // Find the enclosing block's opening brace
             let braceDepth = 0;
             let enclosingBlockStart = -1;
             for (let j = i - 1; j >= 0; j--) {
@@ -1432,7 +1424,6 @@ class NewTranspiler {
             }
             if (enclosingBlockStart < 0) continue;
 
-            // Find the closing brace of this enclosing block
             braceDepth = 0;
             let blockEnd = -1;
             for (let j = enclosingBlockStart; j < lines.length; j++) {
@@ -1447,7 +1438,6 @@ class NewTranspiler {
             }
             if (blockEnd < 0) continue;
 
-            // Only hoist from if-blocks, not for-loops or other blocks
             let blockHeaderLine = enclosingBlockStart;
             if (lines[enclosingBlockStart].trim() === '{') {
                 blockHeaderLine = enclosingBlockStart - 1;
@@ -1456,13 +1446,9 @@ class NewTranspiler {
             const blockHeader2 = blockHeaderLine >= 0 ? lines[blockHeaderLine].trim() : '';
             if (!blockHeader2.startsWith('if ') && !blockHeader2.startsWith('if(') && !blockHeader2.includes('if (')) continue;
 
-            // Check if the variable is used AFTER the enclosing block ends
-            // but within the same parent block (not across for-loop boundaries)
             let usedAfter = false;
             for (let j = blockEnd + 1; j < lines.length; j++) {
-                // Stop at next method declaration
                 if (lines[j].match(/^\s*(?:public|private|protected)\s+/)) break;
-                // Stop at closing brace at same or lower indent (parent block end)
                 if (lines[j].includes(varName) && !lines[j].match(/^\s*final\s+Object\s+/)) {
                     usedAfter = true;
                     break;
@@ -1470,24 +1456,18 @@ class NewTranspiler {
             }
 
             if (usedAfter) {
-                // Hoist: remove from current position and add before the enclosing statement
-                // Find the start of the enclosing statement (e.g., the "if" line)
-                // Walk back from enclosingBlockStart to find the statement that owns this block
                 let stmtStart = enclosingBlockStart;
-                // If the opening { is on its own line, the statement starts on a previous line
                 if (lines[enclosingBlockStart].trim() === '{') {
                     stmtStart = enclosingBlockStart - 1;
                     while (stmtStart >= 0 && lines[stmtStart].trim() === '') stmtStart--;
                 }
-                // If the { is on the same line as if(...), stmtStart is that line
-                // Walk further back to find multi-line if conditions
                 while (stmtStart > 0 && lines[stmtStart - 1].trim().endsWith('&&') ||
                        (stmtStart > 0 && lines[stmtStart - 1].trim().endsWith('||'))) {
                     stmtStart--;
                 }
-                lines[i] = ''; // remove original
+                lines[i] = '';
                 lines.splice(stmtStart, 0, `${indent}final Object ${varName} = ${sourceVar};`);
-                i++; // adjust for inserted line
+                i++;
             }
         }
 
@@ -1495,11 +1475,8 @@ class NewTranspiler {
     }
 
     replaceThisFieldDynamicCall(content: string): string {
-        // Revert the simple replace above (it was wrong) and do it properly with balanced parens
-        // Undo the incorrect replacement first
         content = content.replace(/Helpers\.callDynamically\(this\.(myTrades|positions|orders|trades|ohlcvs|tickers|orderbooks), "(append|store|storeArray|reset)", new Object\[\]\{/gm,
             'this.$1.$2(');
-        // Now do it properly with balanced parens
         const fields = ['myTrades', 'positions', 'orders', 'trades', 'ohlcvs', 'tickers', 'orderbooks'];
         const methods2 = ['append', 'store', 'storeArray', 'reset'];
         for (const field of fields) {
@@ -1532,7 +1509,6 @@ class NewTranspiler {
     insertReturnNullInSupplyAsync(content: string): string {
         const lines = content.split('\n');
 
-        // First pass: replace bare "return;" with "return null;" inside supplyAsync
         let inSupplyAsync = 0;
         for (let i = 0; i < lines.length; i++) {
             if (lines[i].includes('CompletableFuture.supplyAsync')) inSupplyAsync++;
@@ -1542,14 +1518,9 @@ class NewTranspiler {
             }
         }
 
-        // Second pass: find each `}, VIRTUAL_EXECUTOR)` line.
-        // The `}` on that line is the lambda's closing brace.
-        // Look at the last non-empty line before it in the lambda body.
-        // If it doesn't return a value, insert `return null;`.
         for (let i = 0; i < lines.length; i++) {
             if (!lines[i].trim().startsWith('}, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR)')) continue;
 
-            // Find the last non-empty line before this line (inside the lambda body)
             let lastStmtIdx = i - 1;
             while (lastStmtIdx >= 0 && lines[lastStmtIdx].trim() === '') lastStmtIdx--;
             if (lastStmtIdx < 0) continue;
@@ -1559,29 +1530,22 @@ class NewTranspiler {
             const isReturn = (s: string) => s.startsWith('return ') || s.startsWith('return(') || s === 'return null;';
             let hasReturn = isReturn(stmt);
 
-            // Check if this line is the end of a multi-line return statement
-            // Walk backwards to check if there's a 'return' keyword that starts this statement
             if (!hasReturn) {
-                // Check up to 30 lines back for a return that starts this multi-line statement
                 for (let k = lastStmtIdx - 1; k >= Math.max(0, lastStmtIdx - 30); k--) {
                     const kLine = lines[k].trim();
-                    // IMPORTANT: check lambda boundary FIRST to avoid matching outer return
                     if (kLine.includes('-> {')) break;
                     if (kLine.match(/^(?:public|private|protected)\s+/)) break;
                     if (isReturn(kLine)) {
                         hasReturn = true;
                         break;
                     }
-                    // Statement boundary: line ends with ; and is not inside {{ }}
                     if (kLine.endsWith(';') && !kLine.includes('put(') && !kLine.includes('add(') && !kLine.startsWith('//')) {
                         break;
                     }
                 }
             }
 
-            // If the last line is "}", check what kind of block it closes
             if (stmt === '}') {
-                // Find the matching opening brace to determine what kind of block this is
                 let bd = 0;
                 let openingLine = lastStmtIdx;
                 for (let k = lastStmtIdx; k >= 0; k--) {
@@ -1596,47 +1560,37 @@ class NewTranspiler {
                     if (bd === 0) break;
                 }
                 let openingStmt = lines[openingLine].trim();
-                // If the opening brace is on its own line, look at the previous line
                 if (openingStmt === '{') {
                     let prevLine = openingLine - 1;
                     while (prevLine >= 0 && lines[prevLine].trim() === '') prevLine--;
                     if (prevLine >= 0) openingStmt = lines[prevLine].trim();
                 }
-                // If it's a for/while loop, it might not execute — DON'T mark as hasReturn
-                // If it's an if/else where all branches return, mark as hasReturn
                 if (openingStmt.startsWith('} else') || openingStmt.startsWith('else')) {
-                    // Check if this else block ends with return
                     let innerLast = lastStmtIdx - 1;
                     while (innerLast >= 0 && lines[innerLast].trim() === '') innerLast--;
                     if (innerLast >= 0 && isReturn(lines[innerLast].trim())) {
-                        // Also check the if block returns
-                        // For simplicity, assume if all else blocks return, the if/else returns
                         hasReturn = true;
                     }
                 } else if (openingStmt.includes('catch')) {
-                    // try/catch: check if both try and catch return
                     let innerLast = lastStmtIdx - 1;
                     while (innerLast >= 0 && lines[innerLast].trim() === '') innerLast--;
                     if (innerLast >= 0 && isReturn(lines[innerLast].trim())) {
                         hasReturn = true;
                     }
                 }
-                // For for/while/other blocks, explicitly force insertion
                 if (openingStmt.startsWith('for ') || openingStmt.startsWith('for(') ||
                     openingStmt.startsWith('while ') || openingStmt.startsWith('while(')) {
-                    // For/while loops might not execute — always insert return null
                     const indent3 = lines[i].match(/^\s*/)?.[0] || '';
                     lines.splice(i, 0, indent3 + '    return null;');
                     i++;
-                    hasReturn = true; // prevent further insertion
+                    hasReturn = true;
                 }
             }
 
             if (!hasReturn) {
-                // Insert return null; just before the `}, VIRTUAL_EXECUTOR)` line
                 const indent = lines[i].match(/^\s*/)?.[0] || '';
                 lines.splice(i, 0, indent + '    return null;');
-                i++; // adjust for the inserted line
+                i++;
             }
         }
 
@@ -1646,11 +1600,9 @@ class NewTranspiler {
     fixEffectivelyFinal(content: string): string {
         const lines = content.split('\n');
 
-        // Find HashMap/ArrayList double-brace initializers
         for (let i = 0; i < lines.length; i++) {
             if (!lines[i].includes('new java.util.HashMap<String, Object>() {{')) continue;
 
-            // Find the end of this initializer (matching }})
             let depth = 0;
             let endLine = -1;
             for (let j = i; j < lines.length; j++) {
@@ -1665,24 +1617,20 @@ class NewTranspiler {
             }
             if (endLine < 0) continue;
 
-            // Collect all variable names used in put() calls within this initializer
             const capturedVars = new Set<string>();
             for (let j = i; j <= endLine; j++) {
                 const putMatch = lines[j].match(/put\(\s*"[^"]+",\s*(?:new\s+)?([a-z]\w+)\s*\)/);
                 if (putMatch) {
                     const varName = putMatch[1];
-                    // Skip common literals and already-final variables
                     if (['null', 'true', 'false', 'this'].includes(varName)) continue;
                     if (varName.startsWith('final')) continue;
                     capturedVars.add(varName);
                 }
-                // Also check ArrayList captures — match any variable in asList(...)
                 const asListMatches = lines[j].matchAll(/java\.util\.Arrays\.asList\(([^)]+)\)/g);
                 for (const m of asListMatches) {
                     const argsStr = m[1];
                     const args = argsStr.split(',').map((a: string) => a.trim());
                     for (const arg of args) {
-                        // Only match simple variable names
                         const varMatch = arg.match(/^([a-z]\w+)$/);
                         if (varMatch) {
                             const varName = varMatch[1];
@@ -1692,7 +1640,6 @@ class NewTranspiler {
                         }
                     }
                 }
-                // Also check variables passed as arguments to extend(), this.method(), etc.
                 const extendMatch = lines[j].match(/\.extend\([^,]+,\s*([a-z]\w+)\)/);
                 if (extendMatch) {
                     const varName = extendMatch[1];
@@ -1700,7 +1647,6 @@ class NewTranspiler {
                         capturedVars.add(varName);
                     }
                 }
-                // Also check variables in ternary expressions or comparisons inside put()
                 const isEqualMatch = lines[j].match(/Helpers\.isEqual\(([a-z]\w+),\s*"/);
                 if (isEqualMatch) {
                     const varName = isEqualMatch[1];
@@ -1708,8 +1654,6 @@ class NewTranspiler {
                         capturedVars.add(varName);
                     }
                 }
-                // Also check variables in inner asList() calls by extracting content between parens
-                // This handles nested asList patterns like asList(symbol, timeframe)
                 const innerAsListMatches = lines[j].matchAll(/asList\(([^()]+)\)/g);
                 for (const m2 of innerAsListMatches) {
                     const innerArgs = m2[1].split(',').map((a: string) => a.trim());
@@ -1725,12 +1669,8 @@ class NewTranspiler {
                 }
             }
 
-            // For each captured variable, check if it was reassigned before this initializer
-            // (within the same method)
             for (const varName of capturedVars) {
-                // Find if there's a reassignment pattern: varName = ... (without "Object" or "final" before it)
                 let reassigned = false;
-                // Find method start
                 let methodStart = i;
                 for (let j = i - 1; j >= 0; j--) {
                     if (lines[j].match(/^\s*(?:public|private|protected)\s+/)) {
@@ -1738,7 +1678,6 @@ class NewTranspiler {
                         break;
                     }
                 }
-                // Check for reassignment ANYWHERE in the method (Java checks entire scope)
                 for (let j = methodStart; j < lines.length; j++) {
                     if (j > methodStart && lines[j].match(/^\s*(?:public|private|protected)\s+/)) break;
                     const reassignRegex = new RegExp(`^\\s+${varName}\\s*=\\s`);
@@ -1749,9 +1688,7 @@ class NewTranspiler {
                 }
 
                 if (reassigned) {
-                    // Generate a unique final variable name
                     const baseFinalName = `final${varName.charAt(0).toUpperCase()}${varName.slice(1)}`;
-                    // Check if a final copy exists NEARBY (within 5 lines before this HashMap init)
                     let nearbyExists = false;
                     for (let j = Math.max(methodStart, i - 5); j < i; j++) {
                         if (lines[j].includes(`final Object ${baseFinalName}`) || lines[j].includes(`final Object ${baseFinalName}2`)) {
@@ -1759,7 +1696,6 @@ class NewTranspiler {
                             break;
                         }
                     }
-                    // Use a unique suffix to avoid conflicts
                     let suffix = '';
                     for (let j = methodStart; j < i; j++) {
                         if (lines[j].includes(`final Object ${baseFinalName}`)) suffix = '2';
@@ -1767,8 +1703,7 @@ class NewTranspiler {
                     }
                     const finalVarName = baseFinalName + suffix;
                     if (nearbyExists) {
-                        // Still replace references inside the block with the existing final copy
-                        const existingFinal = baseFinalName; // or with suffix if needed
+                        const existingFinal = baseFinalName;
                         for (let j2 = i; j2 <= endLine; j2++) {
                             if (lines[j2].includes(`final Object`)) continue;
                             lines[j2] = lines[j2].replace(
@@ -1777,16 +1712,11 @@ class NewTranspiler {
                             );
                         }
                     } else {
-                        // Add final copy before the initializer
                         const indent = lines[i].match(/^\s*/)?.[0] || '';
                         lines.splice(i, 0, `${indent}final Object ${finalVarName} = ${varName};`);
                         i++; endLine++;
-                        // Replace ALL references to the variable within the initializer
-                        // (but only standalone word references, not as part of other identifiers)
                         for (let j = i; j <= endLine; j++) {
-                            // Skip lines that are just the final declaration
                             if (lines[j].includes(`final Object ${finalVarName}`)) continue;
-                            // Replace all standalone occurrences of the variable
                             lines[j] = lines[j].replace(
                                 new RegExp(`\\b${varName}\\b`, 'g'),
                                 finalVarName
@@ -1801,19 +1731,14 @@ class NewTranspiler {
     }
 
     fixEffectivelyFinalLambda(content: string): string {
-        // Fix specific known pattern: this.keepAliveListenKey(listenKey, ...)
-        // inside a spawn/delay lambda where listenKey was reassigned
-        // General approach: find spawn/delay lambdas and check for non-final captures
         const lines = content.split('\n');
 
         for (let i = 0; i < lines.length; i++) {
-            // Match this.spawn(() -> { ... this.methodName(args) ... })
             const spawnMatch = lines[i].match(/this\.spawn\(\(\)\s*->\s*\{.*this\.(\w+)\(([^)]+)\)/);
             if (!spawnMatch) continue;
 
             const args = spawnMatch[2].split(',').map((a: string) => a.trim());
 
-            // Find method start
             let methodStart = 0;
             for (let j = i - 1; j >= 0; j--) {
                 if (lines[j].match(/^\s*(?:public|private|protected)\s+/)) {
@@ -1823,8 +1748,7 @@ class NewTranspiler {
             }
 
             for (const arg of args) {
-                if (!arg.match(/^[a-z]\w+$/)) continue; // skip non-variable args
-                // Check if this variable was reassigned
+                if (!arg.match(/^[a-z]\w+$/)) continue;
                 let reassigned = false;
                 for (let j = methodStart; j < i; j++) {
                     if (new RegExp(`^\\s+${arg}\\s*=\\s`).test(lines[j])) {
@@ -1837,7 +1761,6 @@ class NewTranspiler {
                     const indent = lines[i].match(/^\s*/)?.[0] || '';
                     lines.splice(i, 0, `${indent}final Object ${finalName} = ${arg};`);
                     i++;
-                    // Replace in the lambda line (only the variable, not in method names)
                     lines[i] = lines[i].replace(
                         new RegExp(`this\\.(\\w+)\\(([^)]*\\b)${arg}\\b`),
                         (m: string, method: string, before: string) => `this.${method}(${before}${finalName}`
@@ -1851,15 +1774,11 @@ class NewTranspiler {
 
     removeTrueDuplicateFinals(content: string): string {
         const lines = content.split('\n');
-        // Track final variable declarations per method scope
-        // Reset on each new method declaration
         let seen = new Set<string>();
         for (let i = 0; i < lines.length; i++) {
-            // Reset on new method
             if (lines[i].match(/^\s*(?:public|private|protected)\s+.*\(.*\)\s*$/)) {
                 seen = new Set<string>();
             }
-            // Also reset on new method with opening brace on same line
             if (lines[i].match(/^\s*(?:public|private|protected)\s+.*\(.*\)\s*\{?\s*$/)) {
                 seen = new Set<string>();
             }
@@ -1867,7 +1786,7 @@ class NewTranspiler {
             if (finalMatch) {
                 const varName = finalMatch[1];
                 if (seen.has(varName)) {
-                    lines[i] = ''; // Remove duplicate
+                    lines[i] = '';
                 } else {
                     seen.add(varName);
                 }
@@ -1877,8 +1796,6 @@ class NewTranspiler {
     }
 
     replaceParenthesizedClientFutureJoin(content: string): string {
-        // Match (client.future(...)).join() or (client.reusableFuture(...)).join()
-        // where ... may contain nested parens
         const pattern = /\(client\.(future|reusableFuture)\(/g;
         let result = '';
         let lastIdx = 0;
@@ -1886,7 +1803,6 @@ class NewTranspiler {
         while ((match = pattern.exec(content)) !== null) {
             const method = match[1];
             const argsStart = match.index + match[0].length;
-            // Balance parens to find the end of the inner call
             let depth = 1;
             let j = argsStart;
             while (j < content.length && depth > 0) {
@@ -1894,13 +1810,11 @@ class NewTranspiler {
                 if (content[j] === ')') depth--;
                 j++;
             }
-            // j is now past the closing ) of client.future(...)
-            // Check if next char is ) followed by .join()
             if (j < content.length && content[j] === ')' && content.substring(j + 1, j + 8) === '.join()') {
                 const args = content.substring(argsStart, j - 1);
                 result += content.substring(lastIdx, match.index);
                 result += `client.${method}(${args}).getFuture().join()`;
-                lastIdx = j + 8; // skip past ).join()
+                lastIdx = j + 8;
             }
         }
         result += content.substring(lastIdx);
@@ -1908,7 +1822,6 @@ class NewTranspiler {
     }
 
     replaceCallPattern(content: string): string {
-        // handler.call(this, args) → Helpers.callDynamically(this, handler, new Object[]{args})
         const pattern = /(\w+)\.call\(this,\s*/g;
         let result = '';
         let lastIdx = 0;
@@ -1916,7 +1829,7 @@ class NewTranspiler {
         while ((match = pattern.exec(content)) !== null) {
             const handler = match[1];
             const startIdx = match.index + match[0].length;
-            let depth = 1; // we're inside the outer ( already
+            let depth = 1;
             let i = startIdx;
             while (i < content.length && depth > 0) {
                 if (content[i] === '(') depth++;
@@ -1933,17 +1846,14 @@ class NewTranspiler {
     }
 
     replaceDynamicMethodCall(content: string, methodName: string): string {
-        // Find localVar.methodName( and balance parens to find the closing )
         const pattern = new RegExp(`(?<=[^\\w.])([a-z]\\w+)\\.${methodName}\\(`, 'g');
         let result = '';
         let lastIdx = 0;
         let match;
         while ((match = pattern.exec(content)) !== null) {
             const varName = match[1];
-            // Check it's not preceded by this. or Helpers. or other qualifiers
             const before = content.substring(Math.max(0, match.index - 20), match.index);
             if (/(?:this\.|Helpers\.|new\s|\w\.)$/.test(before)) continue;
-            // Skip known Java keywords and common typed variables that are NOT Object-typed
             const skipVars = ['new', 'var', 'for', 'if', 'else', 'return', 'try', 'catch', 'throw',
                 'list', 'channel', 'response', 'request', 'message',
                 'data', 'params', 'options', 'config', 'entry', 'item', 'key', 'value',
@@ -1951,7 +1861,7 @@ class NewTranspiler {
                 'ticker', 'trade', 'order', 'balance', 'position', 'currency', 'market'];
             if (skipVars.includes(varName)) continue;
 
-            const startIdx = match.index + match[0].length; // after the (
+            const startIdx = match.index + match[0].length;
             let depth = 1;
             let i = startIdx;
             while (i < content.length && depth > 0) {
@@ -1959,7 +1869,6 @@ class NewTranspiler {
                 if (content[i] === ')') depth--;
                 i++;
             }
-            // i is now past the closing )
             const args = content.substring(startIdx, i - 1);
             result += content.substring(lastIdx, match.index);
             result += `Helpers.callDynamically(${varName}, "${methodName}", new Object[]{${args}})`;
@@ -1969,60 +1878,48 @@ class NewTranspiler {
         return result;
     }
 
-    replaceImportedRestClasses (content: string, imports: any[]) {
-        for (const imp of imports) {
-            // { name: "hitbtc", path: "./hitbtc.js", isDefault: true, }
-            // { name: "bequantRest", path: "../bequant.js", isDefault: true, }
-            const name = imp.name;
-            if (name.endsWith('Rest')) {
-                content = content.replaceAll(name, 'ccxt.' + name.replace('Rest', ''));
-            }
-        }
-        return content;
-    }
-
-    transpileDerivedExchangeFile (tsFolder: string, filename: string, options: any, csharpResult: any, force = false, ws = false) {
+    transpileDerivedExchangeFile(tsFolder: string, filename: string, options: any, csharpResult: any, force = false, ws = false) {
 
         const tsPath = tsFolder + filename
 
         const { csharpFolder: javaFolder } = options
 
-        const javaName = filename.replace ('.ts', '.java')
+        const javaName = filename.replace('.ts', '.java')
 
-        const fileNameNoExt = filename.replace ('.ts', '')
+        const fileNameNoExt = filename.replace('.ts', '')
 
-        const tsMtime = fs.statSync (tsPath).mtime.getTime ()
+        const tsMtime = fs.statSync(tsPath).mtime.getTime()
 
-        const csharp  = this.createJavaClass (fileNameNoExt, csharpResult, ws)
+        const csharp = this.createJavaClass(fileNameNoExt, csharpResult, ws)
 
         if (javaFolder) {
-            overwriteFileAndFolder (javaFolder + this.capitalize(javaName), csharp)
+            overwriteFileAndFolder(javaFolder + this.capitalize(javaName), csharp)
         }
     }
 
     // ---------------------------------------------------------------------------------------------
-    transpileWsOrderbookTestsToCSharp (outDir: string) {
+    transpileWsOrderbookTestsToCSharp(outDir: string) {
 
         const jsFile = './ts/src/pro/test/base/test.orderBook.ts';
         const csharpFile = `${outDir}/Ws/test.orderBook.cs`;
 
-        log.magenta ('Transpiling from', (jsFile as any).yellow)
+        log.magenta('Transpiling from', (jsFile as any).yellow)
 
         const csharp = this.transpiler.transpileCSharpByPath(jsFile);
         let content = csharp.content;
         const splitParts = content.split('// --------------------------------------------------------------------------------------------------------------------');
         splitParts.shift();
         content = splitParts.join('\n// --------------------------------------------------------------------------------------------------------------------\n');
-        content = this.regexAll (content, [
-            [/typeof\((\w+)\)/g,'$1'], // tmp fix
-            [/object\s*(\w+)\s=\sgetValue\((\w+),\s*"(bids|asks)".+/g,'var $1 = $2.$3;'], // tmp fix
-            [ /object  = functions;/g, '' ], // tmp fix
-            [ /\s*public\sobject\sequals(([^}]|\n)+)+}/gm, '' ], // remove equals
+        content = this.regexAll(content, [
+            [/typeof\((\w+)\)/g, '$1'], // tmp fix
+            [/object\s*(\w+)\s=\sgetValue\((\w+),\s*"(bids|asks)".+/g, 'var $1 = $2.$3;'], // tmp fix
+            [/object  = functions;/g, ''], // tmp fix
+            [/\s*public\sobject\sequals(([^}]|\n)+)+}/gm, ''], // remove equals
             [/assert/g, 'Assert'],
-        ]).trim ()
+        ]).trim()
 
-        const contentLines = content.split ('\n');
-        const contentIdented = contentLines.map (line => '        ' + line).join ('\n');
+        const contentLines = content.split('\n');
+        const contentIdented = contentLines.map(line => '        ' + line).join('\n');
 
         const file = [
             'using ccxt.pro;',
@@ -2035,34 +1932,34 @@ class NewTranspiler {
             '}',
         ].join('\n')
 
-        log.magenta ('→', (csharpFile as any).yellow)
+        log.magenta('→', (csharpFile as any).yellow)
 
-        overwriteFileAndFolder (csharpFile, file);
+        overwriteFileAndFolder(csharpFile, file);
     }
 
     // ---------------------------------------------------------------------------------------------
-    transpileWsCacheTestsToCSharp (outDir: string) {
+    transpileWsCacheTestsToCSharp(outDir: string) {
 
         const jsFile = './ts/src/pro/test/base/test.cache.ts';
         const csharpFile = `${outDir}/Ws/test.cache.cs`;
 
-        log.magenta ('Transpiling from', (jsFile as any).yellow)
+        log.magenta('Transpiling from', (jsFile as any).yellow)
 
         const csharp = this.transpiler.transpileCSharpByPath(jsFile);
         let content = csharp.content;
         const splitParts = content.split('// ----------------------------------------------------------------------------');
         splitParts.shift();
         content = splitParts.join('\n// ----------------------------------------------------------------------------\n');
-        content = this.regexAll (content, [
-            [/typeof\((\w+)\)/g,'$1'], // tmp fix
-            [/typeof\(timestampCache\)/g,'timestampCache'], // tmp fix
-            [ /object  = functions;/g, '' ], // tmp fix
-            [ /\s*public\sobject\sequals(([^}]|\n)+)+}/gm, '' ], // remove equals
+        content = this.regexAll(content, [
+            [/typeof\((\w+)\)/g, '$1'], // tmp fix
+            [/typeof\(timestampCache\)/g, 'timestampCache'], // tmp fix
+            [/object  = functions;/g, ''], // tmp fix
+            [/\s*public\sobject\sequals(([^}]|\n)+)+}/gm, ''], // remove equals
             [/assert/g, 'Assert'],
-        ]).trim ()
+        ]).trim()
 
-        const contentLines = content.split ('\n');
-        const contentIdented = contentLines.map (line => '        ' + line).join ('\n');
+        const contentLines = content.split('\n');
+        const contentIdented = contentLines.map(line => '        ' + line).join('\n');
 
         const file = [
             'using ccxt.pro;',
@@ -2075,32 +1972,32 @@ class NewTranspiler {
             '}',
         ].join('\n')
 
-        log.magenta ('→', (csharpFile as any).yellow)
+        log.magenta('→', (csharpFile as any).yellow)
 
-        overwriteFileAndFolder (csharpFile, file);
+        overwriteFileAndFolder(csharpFile, file);
     }
 
     // ---------------------------------------------------------------------------------------------
 
-    transpileCryptoTestsToJava (outDir: string) {
+    transpileCryptoTestsToJava(outDir: string) {
 
         const jsFile = './ts/src/test/base/test.cryptography.ts';
         const csharpFile = `${outDir}/TestCryptography.java`;
 
-        log.magenta ('[java] Transpiling from', (jsFile as any).yellow)
+        log.magenta('[java] Transpiling from', (jsFile as any).yellow)
 
         const java = this.transpiler.transpileJavaByPath(jsFile);
         let content = java.content;
-        content = this.regexAll (content, [
-            [ /\s*public\sObject\sequals(([^}]|\n)+)+}/gm, '' ], // remove equals
+        content = this.regexAll(content, [
+            [/\s*public\sObject\sequals(([^}]|\n)+)+}/gm, ''], // remove equals
             [/, (sha1|sha384|sha512|sha256|md5|ed25519|keccak|p256|secp256k1)([,)])/gm, `, $1()$2`],
             [/, (sha1|sha384|sha512|sha256|md5|ed25519|keccak|p256|secp256k1)([,)])/gm, `, $1()$2`], // quick fix to replace twice
             [/assert/g, 'Assert'],
             // [/(^\s*Assert\(equals\(ecdsa\([^;]+;)/gm, '/*\n $1\nTODO: add ecdsa\n*/'] // temporarily disable ecdsa tests
-        ]).trim ()
+        ]).trim()
 
-        const contentLines = content.split ('\n');
-        const contentIdented = contentLines.map (line => '        ' + line).join ('\n');
+        const contentLines = content.split('\n');
+        const contentIdented = contentLines.map(line => '        ' + line).join('\n');
 
 
         const file = [
@@ -2114,9 +2011,9 @@ class NewTranspiler {
             '}',
         ].join('\n')
 
-        log.magenta ('→', (csharpFile as any).yellow)
+        log.magenta('→', (csharpFile as any).yellow)
 
-        overwriteFileAndFolder (csharpFile, file);
+        overwriteFileAndFolder(csharpFile, file);
     }
 
     transpileExchangeTest(name: string, path: string): [string, string] {
@@ -2127,14 +2024,14 @@ class NewTranspiler {
         const parsedParts = parsedName.split('.');
         const finalName = parsedParts[0] + this.capitalize(parsedParts[1]);
 
-        content = this.regexAll (content, [
+        content = this.regexAll(content, [
             [/assert/g, 'Assert'],
             [/object exchange/g, 'Exchange exchange'],
             [/function test/g, finalName],
-        ]).trim ()
+        ]).trim()
 
-        const contentLines = content.split ('\n');
-        const contentIdented = contentLines.map (line => '    ' + line).join ('\n');
+        const contentLines = content.split('\n');
+        const contentIdented = contentLines.map(line => '    ' + line).join('\n');
 
         const className = 'Test' + this.capitalize(parsedName.replace('test.', ''))
         const file = [
@@ -2161,12 +2058,12 @@ class NewTranspiler {
         ]
 
         const inputFiles = fs.readdirSync('./ts/src/test/exchange');
-        const files = inputFiles.filter(file => file.match(/\.ts$/)).filter(file => !ignore.includes(file) );
+        const files = inputFiles.filter(file => file.match(/\.ts$/)).filter(file => !ignore.includes(file));
         const transpiledFiles = files.map(file => this.transpileExchangeTest(file, inputDir + file));
-        await Promise.all (transpiledFiles.map ((file, idx) => promisedWriteFile (outDir + file[0] + '.cs', file[1])))
+        await Promise.all(transpiledFiles.map((file, idx) => promisedWriteFile(outDir + file[0] + '.cs', file[1])))
     }
 
-    transpileBaseTestsToJava () {
+    transpileBaseTestsToJava() {
         const outDir = BASE_TESTS_FOLDER;
         this.transpileBaseTests(outDir);
         this.transpileCryptoTestsToJava(outDir);
@@ -2174,52 +2071,52 @@ class NewTranspiler {
         // this.transpileWsOrderbookTestsToCSharp(outDir);
     }
 
-    transpileBaseTests (outDir: string) {
+    transpileBaseTests(outDir: string) {
 
         const baseFolders = {
             ts: './ts/src/test/base/',
         };
 
-        let baseFunctionTests = fs.readdirSync (baseFolders.ts).filter(filename => filename.endsWith('.ts')).map(filename => filename.replace('.ts', ''));
+        let baseFunctionTests = fs.readdirSync(baseFolders.ts).filter(filename => filename.endsWith('.ts')).map(filename => filename.replace('.ts', ''));
 
         for (const testName of baseFunctionTests) {
             const tsFile = baseFolders.ts + testName + '.ts';
             const tsContent = fs.readFileSync(tsFile).toString();
-            if (!tsContent.includes ('// AUTO_TRANSPILE_ENABLED')) {
+            if (!tsContent.includes('// AUTO_TRANSPILE_ENABLED')) {
                 continue;
             }
 
             const correctedTestName = 'Test' + this.capitalize(testName.replace('test.', '').replace('tests.', ''))
             const javaFile = `${outDir}/${correctedTestName}.java`;
 
-            log.magenta ('Transpiling from', (tsFile as any).yellow)
+            log.magenta('Transpiling from', (tsFile as any).yellow)
 
             const java = this.transpiler.transpileJavaByPath(tsFile);
             let content = java.content;
-            content = this.regexAll (content, [
+            content = this.regexAll(content, [
                 [/async public/gm, 'public'],
-                [/object  = functions;/g, '' ], // tmp fix
+                [/object  = functions;/g, ''], // tmp fix
                 [/assert/g, 'Assert'],
-                [ /Object exchange(?=[,)])/g, 'Exchange exchange' ],
+                [/Object exchange(?=[,)])/g, 'Exchange exchange'],
                 [/new ccxt\.Exchange/gm, 'new Exchange'],
-                [ /\s*public\sObject\sequals(([^}]|\n)+)+}/gm, '' ], // remove equals
-                [ /testSharedMethods.AssertDeepEqual/gm, 'AssertDeepEqual' ], // deepEqual added
-            ]).trim ()
+                [/\s*public\sObject\sequals(([^}]|\n)+)+}/gm, ''], // remove equals
+                [/testSharedMethods.AssertDeepEqual/gm, 'AssertDeepEqual'], // deepEqual added
+            ]).trim()
 
             if (correctedTestName === 'TestInit') {
-                content = this.regexAll (content, [
+                content = this.regexAll(content, [
                     [/(test(\w+))\(\)/gm, '(new Test$2()).$1()'],
                 ])
             } else if (correctedTestName === 'TestSafeMethods') {
                 // we don't support wS structs yet
 
-                content = this.regexAll (content, [
+                content = this.regexAll(content, [
                     [/\/\/ init array cache tests[\s\S]*/gm, '}'],
                 ]);
             }
 
-            const contentLines = content.split ('\n');
-            const contentIdented = contentLines.map (line => '        ' + line).join ('\n');
+            const contentLines = content.split('\n');
+            const contentIdented = contentLines.map(line => '        ' + line).join('\n');
 
             const usesExchange = java.content.indexOf('ccxt.Exchange') >= 0;
             const usesPrecise = java.content.indexOf('Precise.') >= 0;
@@ -2232,16 +2129,16 @@ class NewTranspiler {
                 exchangeImport,
                 preciseImport,
                 this.createGeneratedHeader().join('\n'),
-                `public class ${correctedTestName} extends BaseTest` ,
+                `public class ${correctedTestName} extends BaseTest`,
                 '{',
                 contentIdented,
                 '}',
             ].join('\n')
 
-            log.magenta ('→', (javaFile as any).yellow)
+            log.magenta('→', (javaFile as any).yellow)
 
-            overwriteFileAndFolder (javaFile, file);
-        } 
+            overwriteFileAndFolder(javaFile, file);
+        }
     }
 
     capitalize(s: string) {
@@ -2249,11 +2146,11 @@ class NewTranspiler {
     }
 
     transpileMainTest(files: any) {
-        log.magenta ('[java] Transpiling from', files.tsFile.yellow)
-        let ts = fs.readFileSync (files.tsFile).toString ();
+        log.magenta('[java] Transpiling from', files.tsFile.yellow)
+        let ts = fs.readFileSync(files.tsFile).toString();
 
-        ts = this.regexAll (ts, [
-            [ /\'use strict\';?\s+/g, '' ],
+        ts = this.regexAll(ts, [
+            [/\'use strict\';?\s+/g, ''],
         ])
 
         const mainContent = ts;
@@ -2263,16 +2160,16 @@ class NewTranspiler {
 
 
         // ad-hoc fixes
-        contentIndentend = this.regexAll (contentIndentend, [
-            [ /Object mockedExchange =/gm, 'var mockedExchange =' ],
-            [ /public Object initOfflineExchange/g, 'public Exchange initOfflineExchange' ],
-            [ /Object exchange(?=[,)])/g, 'Exchange exchange' ],
-            [ /Object exchange =/g, 'Exchange exchange =' ],
-            [ /throw new Error/g, 'throw new Exception' ],
-            [ /public class TestMainClass/g, 'public class TestMain extends BaseTest'],
-            [ /assert/gm, 'Assert'],
+        contentIndentend = this.regexAll(contentIndentend, [
+            [/Object mockedExchange =/gm, 'var mockedExchange ='],
+            [/public Object initOfflineExchange/g, 'public Exchange initOfflineExchange'],
+            [/Object exchange(?=[,)])/g, 'Exchange exchange'],
+            [/Object exchange =/g, 'Exchange exchange ='],
+            [/throw new Error/g, 'throw new Exception'],
+            [/public class TestMainClass/g, 'public class TestMain extends BaseTest'],
+            [/assert/gm, 'Assert'],
             [/TestMainClass\.this/gm, 'TestMain.this'],
-            [ /throw new Exception/g, 'throw new RuntimeException' ],
+            [/throw new Exception/g, 'throw new RuntimeException'],
             [/throw e/gm, 'throw new RuntimeException(e)'],
 
         ])
@@ -2288,10 +2185,10 @@ class NewTranspiler {
             contentIndentend,
         ].join('\n')
 
-        overwriteFileAndFolder (files.javaFile, file);
+        overwriteFileAndFolder(files.javaFile, file);
     }
 
-    transpileExchangeTests(){
+    transpileExchangeTests() {
         this.transpileMainTest({
             'tsFile': './ts/src/test/tests.ts',
             'javaFile': BASE_TESTS_FILE,
@@ -2304,24 +2201,24 @@ class NewTranspiler {
             java: EXCHANGE_GENERATED_FOLDER,
         };
 
-        let baseTests = fs.readdirSync (baseFolders.tsBase).filter(filename => filename.endsWith('.ts')).map(filename => filename.replace('.ts', ''));
-        const exchangeTests = fs.readdirSync (baseFolders.ts).filter(filename => filename.endsWith('.ts')).map(filename => filename.replace('.ts', ''));
+        let baseTests = fs.readdirSync(baseFolders.tsBase).filter(filename => filename.endsWith('.ts')).map(filename => filename.replace('.ts', ''));
+        const exchangeTests = fs.readdirSync(baseFolders.ts).filter(filename => filename.endsWith('.ts')).map(filename => filename.replace('.ts', ''));
 
         // ignore throttle test for now
-        baseTests = baseTests.filter (filename => filename !== 'test.throttle');
+        baseTests = baseTests.filter(filename => filename !== 'test.throttle');
 
         const tests = [] as any;
-        baseTests.forEach (baseTest => {
+        baseTests.forEach(baseTest => {
             let correctedName = 'Test' + this.capitalize(baseTest.replace('test.', ''));
             correctedName = correctedName.replace('Ohlcv', 'OHLCV'); // special case
             tests.push({
                 base: true,
-                name:baseTest,
+                name: baseTest,
                 tsFile: baseFolders.tsBase + baseTest + '.ts',
                 javaFile: baseFolders.javaBase + correctedName + '.java',
             });
         });
-        exchangeTests.forEach (test => {
+        exchangeTests.forEach(test => {
             const correctedName = 'Test' + this.capitalize(test.replace('test.', ''));
             tests.push({
                 base: false,
@@ -2331,21 +2228,21 @@ class NewTranspiler {
             });
         });
 
-        this.transpileAndSaveJavaExchangeTests (tests);
+        this.transpileAndSaveJavaExchangeTests(tests);
     }
 
-    transpileWsExchangeTests(){
+    transpileWsExchangeTests() {
 
         const baseFolders = {
             ts: './ts/src/pro/test/Exchange/',
             csharp: EXCHANGE_GENERATED_FOLDER + 'Ws/',
         };
 
-        const wsTests = fs.readdirSync (baseFolders.ts).filter(filename => filename.endsWith('.ts')).map(filename => filename.replace('.ts', ''));
+        const wsTests = fs.readdirSync(baseFolders.ts).filter(filename => filename.endsWith('.ts')).map(filename => filename.replace('.ts', ''));
 
         const tests = [] as any;
 
-        wsTests.forEach (test => {
+        wsTests.forEach(test => {
             tests.push({
                 name: test,
                 tsFile: baseFolders.ts + test + '.ts',
@@ -2353,12 +2250,12 @@ class NewTranspiler {
             });
         });
 
-        this.transpileAndSaveJavaExchangeTests (tests, true);
+        this.transpileAndSaveJavaExchangeTests(tests, true);
     }
 
     async transpileAndSaveJavaExchangeTests(tests: any[], isWs = false) {
         const paths = tests.map(test => test.tsFile);
-        const flatResult = await this.webworkerTranspile (paths, this.getTranspilerConfig());
+        const flatResult = await this.webworkerTranspile(paths, this.getTranspilerConfig());
         flatResult.forEach((file, idx) => {
             let contentIndentend = file.content.split('\n').map((line: string) => line ? '    ' + line : line).join('\n');
             const filename = tests[idx].name;
@@ -2367,20 +2264,21 @@ class NewTranspiler {
                 [/assert/g, 'Assert'],
                 [/testSharedMethods\./gm, 'TestSharedMethods.'],
                 [/async public/gm, 'public'],
-                [ /Object exchange(?=[,)])/g, 'Exchange exchange' ],
-                [ /throw new Exception/g, 'throw new RuntimeException' ],
+                [/Object exchange(?=[,)])/g, 'Exchange exchange'],
+                [/throw new Exception/g, 'throw new RuntimeException'],
                 [/throw e/gm, 'throw new RuntimeException(e)'],
                 [/TestSharedMethods\.assertTimestampAndDatetime\(exchange, skippedProperties, method, orderbook\)/, '// testSharedMethods.assertTimestampAndDatetime (exchange, skippedProperties, method, orderbook)'], // tmp disabling timestamp check on the orderbook
-                [ /void function/g, 'void'],
+                [/void function/g, 'void'],
                 [/(\w+)\.spawn\(([^,]+),(.+)\)/gm, '$1.spawn($2, new object[] {$3})'],
+                [/exchange.jsonStringifyWithNull/g, 'exchange.json']
             ];
 
             if (filename.includes('fetch') || filename.includes('load') || filename.includes('create')) {
-                contentIndentend = this.regexAll (contentIndentend, [
+                contentIndentend = this.regexAll(contentIndentend, [
                     [/test(\w+)\(exchange,/gm, 'Test$1.test$1(exchange,'], // dirty trick recognize outside static functions, check comment below *
                 ]);
             } else {
-                contentIndentend = this.regexAll (contentIndentend, [
+                contentIndentend = this.regexAll(contentIndentend, [
                     [/testTrade\(exchange\,/, 'TestTrade.testTrade(exchange,'], // quick fix
                 ]);
             }
@@ -2390,7 +2288,7 @@ class NewTranspiler {
             // so let's say we have the test `testFetchLedger`, it will call the aux function `testledgerEntry`
             // but that function is part of a different class.
 
-            contentIndentend = this.regexAll (contentIndentend, regexes)
+            contentIndentend = this.regexAll(contentIndentend, regexes)
             // const namespace = isWs ? 'using ccxt;\nusing ccxt.pro;' : 'using ccxt;';
             let parsedName = 'Test' + this.capitalize(filename.replace('test.', '').replace('tests.', ''));
             if (parsedName === 'TestOhlcv') parsedName = 'TestOHLCV'; // special case
@@ -2409,9 +2307,9 @@ class NewTranspiler {
             ]
             let java: string;
             if (filename === 'test.sharedMethods') {
-                contentIndentend = this.regexAll (contentIndentend, [
-                    [/public void /g, 'public static void ' ], // make tests static
-                    [/public java.util.concurrent.CompletableFuture<Object> /g, 'public static java.util.concurrent.CompletableFuture<Object> ' ], // make tests static
+                contentIndentend = this.regexAll(contentIndentend, [
+                    [/public void /g, 'public static void '], // make tests static
+                    [/public java.util.concurrent.CompletableFuture<Object> /g, 'public static java.util.concurrent.CompletableFuture<Object> '], // make tests static
                     [/public Object /g, 'public static Object ']
                 ])
                 // const doubleIndented = contentIndentend.split('\n').map((line: string) => line ? '    ' + line : line).join('\n');
@@ -2421,10 +2319,10 @@ class NewTranspiler {
                     '}'
                 ].join('\n');
             } else {
-                contentIndentend = this.regexAll (contentIndentend, [
-                    [ /public void/g, 'public static void' ], // make tests static
-                    [ /async public Task/g, 'async static public Task' ], // make tests static
-                    [ /public object /g, 'public static object ' ],
+                contentIndentend = this.regexAll(contentIndentend, [
+                    [/public void/g, 'public static void'], // make tests static
+                    [/async public Task/g, 'async static public Task'], // make tests static
+                    [/public object /g, 'public static object '],
                 ])
                 java = [
                     ...fileHeaders,
@@ -2432,13 +2330,13 @@ class NewTranspiler {
                     '}',
                 ].join('\n');
             }
-            overwriteFileAndFolder (tests[idx].javaFile, java);
+            overwriteFileAndFolder(tests[idx].javaFile, java);
         });
     }
 
-    transpileTests(){
+    transpileTests() {
         if (!shouldTranspileTests) {
-            log.bright.yellow ('Skipping tests transpilation');
+            log.bright.yellow('Skipping tests transpilation');
             return;
         }
         this.transpileBaseTestsToJava();
@@ -2447,27 +2345,30 @@ class NewTranspiler {
     }
 }
 
-async function runMain () {
-    const ws = process.argv.includes ('--ws')
-    const baseOnly = process.argv.includes ('--baseTests')
-    const test = process.argv.includes ('--test') || process.argv.includes ('--tests')
-    const examples = process.argv.includes ('--examples');
-    const force = process.argv.includes ('--force')
-    const child = process.argv.includes ('--child')
-    const multiprocess = process.argv.includes ('--multiprocess') || process.argv.includes ('--multi')
-    shouldTranspileTests = process.argv.includes ('--noTests') ? false : true
+async function runMain() {
+    const ws = process.argv.includes('--ws')
+    const baseOnly = process.argv.includes('--baseTests')
+    const test = process.argv.includes('--test') || process.argv.includes('--tests')
+    const examples = process.argv.includes('--examples');
+    const force = process.argv.includes('--force')
+    const child = process.argv.includes('--child')
+    const multiprocess = process.argv.includes('--multiprocess') || process.argv.includes('--multi')
+    const baseClassOnly = process.argv.includes('--baseClass')
+    shouldTranspileTests = process.argv.includes('--noTests') ? false : true
     if (!child && !multiprocess) {
-        log.bright.green ({ force })
+        log.bright.green({ force })
     }
-    const transpiler = new NewTranspiler ();
-    if (ws) {
-        await transpiler.transpileWS (force)
+    const transpiler = new NewTranspiler();
+    if (baseClassOnly) {
+        transpiler.transpileBaseMethods('./ts/src/base/Exchange.ts');
+    } else if (ws) {
+        await transpiler.transpileWS(force)
     } else if (test) {
-        transpiler.transpileTests ()
+        transpiler.transpileTests()
     } else if (multiprocess) {
-        parallelizeTranspiling (exchangeIds)
+        parallelizeTranspiling(exchangeIds)
     } else {
-        await transpiler.transpileEverything (force, child, baseOnly, examples)
+        await transpiler.transpileEverything(force, child, baseOnly, examples)
     }
 }
 
