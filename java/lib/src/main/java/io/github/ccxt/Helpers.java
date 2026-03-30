@@ -808,6 +808,22 @@ private static Object[] adaptForVarArgs(Method m, Object[] args) {
                 "List requires (value) to append or (index(Integer), value) to insert");
         }
 
+        // Fallback: set field via reflection for arbitrary objects (e.g., WsOrderBook)
+        if (args.length == 2 && args[0] instanceof String fieldName) {
+            try {
+                java.lang.reflect.Field field = target.getClass().getField(fieldName);
+                field.setAccessible(true);
+                field.set(target, args[1]);
+                return;
+            } catch (NoSuchFieldException e) {
+                try {
+                    String setter = "set" + fieldName.substring(0, 1).toUpperCase() + fieldName.substring(1);
+                    java.lang.reflect.Method method = target.getClass().getMethod(setter, Object.class);
+                    method.invoke(target, args[1]);
+                    return;
+                } catch (Exception e2) { /* fall through */ }
+            } catch (Exception e) { /* fall through */ }
+        }
         throw new IllegalArgumentException("Target is neither Map nor List: " + typeName(target));
     }
 

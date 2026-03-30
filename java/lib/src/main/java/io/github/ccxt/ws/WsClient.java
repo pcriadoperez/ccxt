@@ -173,6 +173,15 @@ public class WsClient {
         reject(error, (Object) null);
     }
 
+    /**
+     * Reset the client by rejecting all pending futures and closing the connection.
+     * Called when an unrecoverable error is detected by exchange-specific WS code.
+     */
+    public void reset(Object error) {
+        this.reject(error);
+        this.close();
+    }
+
     // ─── Connection management ───
 
     /**
@@ -301,7 +310,7 @@ public class WsClient {
         }
     }
 
-    void onPong() {
+    public void onPong() {
         this.lastPong = System.currentTimeMillis();
         if (this.verbose) {
             System.out.println("Pong received: " + this.lastPong);

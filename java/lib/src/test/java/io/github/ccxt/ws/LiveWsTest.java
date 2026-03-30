@@ -20,8 +20,14 @@ import java.util.concurrent.TimeUnit;
  *
  * Requires network access. Run with: CCXT_LIVE_WS_TESTS=true ./gradlew :lib:test --tests "io.github.ccxt.ws.LiveWsTest"
  */
-@EnabledIfEnvironmentVariable(named = "CCXT_LIVE_WS_TESTS", matches = "true")
+// Enable with: CCXT_LIVE_WS_TESTS=true or -DCCXT_LIVE_WS_TESTS=true
+@org.junit.jupiter.api.condition.EnabledIf("isLiveTestEnabled")
 class LiveWsTest {
+
+    static boolean isLiveTestEnabled() {
+        return "true".equals(System.getenv("CCXT_LIVE_WS_TESTS"))
+            || "true".equals(System.getProperty("CCXT_LIVE_WS_TESTS"));
+    }
 
     static Exchange exchange;
 
