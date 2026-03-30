@@ -532,7 +532,7 @@ public class Helpers {
     // }
 
 
-public static CompletableFuture<Object> callDynamically(Object obj, Object methodName, Object[] args) {
+public static Object callDynamically(Object obj, Object methodName, Object[] args) {
     if (args == null) args = new Object[]{};
 
     String name = (String) methodName;
@@ -543,19 +543,10 @@ public static CompletableFuture<Object> callDynamically(Object obj, Object metho
 
         Object[] invokeArgs = adaptForVarArgs(m, args);
 
-        Object result = m.invoke(obj, invokeArgs);
-
-        if (result instanceof CompletableFuture<?> cf) {
-            @SuppressWarnings("unchecked")
-            CompletableFuture<Object> cast = (CompletableFuture<Object>) cf;
-            return cast;
-        }
-        return CompletableFuture.completedFuture(result);
+        return m.invoke(obj, invokeArgs);
 
     } catch (Exception e) {
-        CompletableFuture<Object> failed = new CompletableFuture<>();
-        failed.completeExceptionally(e);
-        return failed;
+        throw new RuntimeException(e);
     }
 }
 

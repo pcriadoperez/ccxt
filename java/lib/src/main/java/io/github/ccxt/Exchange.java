@@ -6146,7 +6146,7 @@ public Object describe()
                     try
                     {
                         
-                        response = (Helpers.callDynamically(this, endpointMethod, new Object[] { new java.util.HashMap<String, Object>() {{}} })).join();
+                        response = ((CompletableFuture<Object>)Helpers.callDynamically(this, endpointMethod, new Object[] { new java.util.HashMap<String, Object>() {{}} })).join();
                         shouldBreak = true;
                         break;
                     } catch(Exception e)
@@ -11388,7 +11388,7 @@ public Object describe()
                         {
                             Helpers.addElementToObject(parameters, "until", Helpers.subtract(paginationTimestamp, 1));
                         }
-                        Object response = (Helpers.callDynamically(this, method, new Object[] { symbol, null, maxEntriesPerRequest, parameters })).join();
+                        Object response = ((CompletableFuture<Object>)Helpers.callDynamically(this, method, new Object[] { symbol, null, maxEntriesPerRequest, parameters })).join();
                         Object responseLength = Helpers.getArrayLength(response);
                         if (Helpers.isTrue(this.verbose))
                         {
@@ -11414,7 +11414,7 @@ public Object describe()
                     } else
                     {
                         // do it forwards, starting from the since
-                        Object response = (Helpers.callDynamically(this, method, new Object[] { symbol, paginationTimestamp, maxEntriesPerRequest, parameters })).join();
+                        Object response = ((CompletableFuture<Object>)Helpers.callDynamically(this, method, new Object[] { symbol, paginationTimestamp, maxEntriesPerRequest, parameters })).join();
                         Object responseLength = Helpers.getArrayLength(response);
                         if (Helpers.isTrue(this.verbose))
                         {
@@ -11479,10 +11479,10 @@ public Object describe()
                 {
                     if (Helpers.isTrue(Helpers.isTrue(timeframe) && Helpers.isTrue(!Helpers.isEqual(method, "fetchFundingRateHistory"))))
                     {
-                        return (Helpers.callDynamically(this, method, new Object[] { symbol, timeframe, since, limit, parameters })).join();
+                        return ((CompletableFuture<Object>)Helpers.callDynamically(this, method, new Object[] { symbol, timeframe, since, limit, parameters })).join();
                     } else
                     {
-                        return (Helpers.callDynamically(this, method, new Object[] { symbol, since, limit, parameters })).join();
+                        return ((CompletableFuture<Object>)Helpers.callDynamically(this, method, new Object[] { symbol, since, limit, parameters })).join();
                     }
                 } catch(Exception e)
                 {
@@ -11612,16 +11612,16 @@ public Object describe()
                     Object response = null;
                     if (Helpers.isTrue(Helpers.isEqual(method, "fetchAccounts")))
                     {
-                        response = (Helpers.callDynamically(this, method, new Object[] { parameters })).join();
+                        response = ((CompletableFuture<Object>)Helpers.callDynamically(this, method, new Object[] { parameters })).join();
                     } else if (Helpers.isTrue(Helpers.isTrue(Helpers.isEqual(method, "getLeverageTiersPaginated")) || Helpers.isTrue(Helpers.isEqual(method, "fetchPositions"))))
                     {
-                        response = (Helpers.callDynamically(this, method, new Object[] { symbol, parameters })).join();
+                        response = ((CompletableFuture<Object>)Helpers.callDynamically(this, method, new Object[] { symbol, parameters })).join();
                     } else if (Helpers.isTrue(Helpers.isEqual(method, "fetchOpenInterestHistory")))
                     {
-                        response = (Helpers.callDynamically(this, method, new Object[] { symbol, timeframe, since, maxEntriesPerRequest, parameters })).join();
+                        response = ((CompletableFuture<Object>)Helpers.callDynamically(this, method, new Object[] { symbol, timeframe, since, maxEntriesPerRequest, parameters })).join();
                     } else
                     {
-                        response = (Helpers.callDynamically(this, method, new Object[] { symbol, since, maxEntriesPerRequest, parameters })).join();
+                        response = ((CompletableFuture<Object>)Helpers.callDynamically(this, method, new Object[] { symbol, since, maxEntriesPerRequest, parameters })).join();
                     }
                     errors = 0;
                     Object responseLength = Helpers.getArrayLength(response);
@@ -11708,7 +11708,7 @@ public Object describe()
                 try
                 {
                     Helpers.addElementToObject(parameters, pageKey, Helpers.add(i, 1));
-                    Object response = (Helpers.callDynamically(this, method, new Object[] { symbol, since, maxEntriesPerRequest, parameters })).join();
+                    Object response = ((CompletableFuture<Object>)Helpers.callDynamically(this, method, new Object[] { symbol, since, maxEntriesPerRequest, parameters })).join();
                     errors = 0;
                     Object responseLength = Helpers.getArrayLength(response);
                     if (Helpers.isTrue(this.verbose))

@@ -48,7 +48,7 @@ class LiveWsTest {
     @Timeout(value = 30, unit = TimeUnit.SECONDS)
     @SuppressWarnings("unchecked")
     void testWatchTicker() throws Exception {
-        CompletableFuture<Object> future = Helpers.callDynamically(exchange, "watchTicker", new Object[]{"BTC/USDT"});
+        CompletableFuture<Object> future = (CompletableFuture<Object>) Helpers.callDynamically(exchange,"watchTicker", new Object[]{"BTC/USDT"});
         Object result = future.get(20, TimeUnit.SECONDS);
 
         assertNotNull(result, "watchTicker should return data");
@@ -63,7 +63,7 @@ class LiveWsTest {
     @Timeout(value = 30, unit = TimeUnit.SECONDS)
     @SuppressWarnings("unchecked")
     void testWatchTrades() throws Exception {
-        CompletableFuture<Object> future = Helpers.callDynamically(exchange, "watchTrades", new Object[]{"BTC/USDT"});
+        CompletableFuture<Object> future = (CompletableFuture<Object>) Helpers.callDynamically(exchange,"watchTrades", new Object[]{"BTC/USDT"});
         Object result = future.get(20, TimeUnit.SECONDS);
 
         assertNotNull(result, "watchTrades should return data");
