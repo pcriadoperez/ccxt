@@ -1150,6 +1150,26 @@ class NewTranspiler {
         content = content.replace(/(?<!this\.)(?<!Helpers\.)(?<![\w.])([a-z]\w+)\.limit\(\)/gm,
             'Helpers.callDynamically($1, "limit", new Object[]{})');
 
+        // ── callDynamically returns CompletableFuture — must .join() when used as value ──
+        // Case 1: return xxx.limit() → limit is void, so call it then return the object
+        // e.g. return Helpers.callDynamically(orderbook, "limit", new Object[]{}); → call limit, return orderbook
+        content = content.split('\n').map(line => {
+            const limitReturnMatch = line.match(/^(\s*)return Helpers\.callDynamically\((\w+), "limit",/);
+            if (limitReturnMatch) {
+                const indent = limitReturnMatch[1];
+                const varName = limitReturnMatch[2];
+                return indent + line.trim().replace('return ', '') + '\n' + indent + 'return ' + varName + ';';
+            }
+            return line;
+        }).join('\n');
+        // Case 2: assignment: x = Helpers.callDynamically(...); → x = Helpers.callDynamically(...).join();
+        content = content.replace(/(= )(Helpers\.callDynamically\([^;]+\));/gm, '$1$2.join();');
+        // Case 3: fire-and-forget callDynamically that is a statement (not assignment/return) — add .join() too
+        // for "limit" calls as statements (not return, not assignment)
+        content = content.replace(/^(\s+)(Helpers\.callDynamically\(\w+, "limit"[^;]+\));/gm, '$1$2.join();');
+        // Prevent double .join() on already-joined calls
+        content = content.replace(/\.join\(\)\.join\(\)/gm, '.join()');
+
         // ── this.xxx.append/store/storeArray/reset calls on Object-typed fields ──
         content = content.replace(/this\.(myTrades|positions|orders|trades|ohlcvs|tickers|orderbooks)\.(append|store|storeArray|reset)\(/gm,
             'Helpers.callDynamically(this.$1, "$2", new Object[]{')

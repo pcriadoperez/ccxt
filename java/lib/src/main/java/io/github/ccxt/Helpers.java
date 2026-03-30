@@ -769,7 +769,7 @@ private static Object[] adaptForVarArgs(Method m, Object[] args) {
     }
 
     public static Object getArg(Object[] v, int index, Object def) {
-        if (v.length <= index) {
+        if (v == null || v.length <= index) {
             return def;
         }
         return v[index];

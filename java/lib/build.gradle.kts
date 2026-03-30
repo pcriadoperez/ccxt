@@ -59,6 +59,26 @@ tasks.register<JavaExec>("liveTest") {
     }
 }
 
+tasks.register<JavaExec>("wsTest") {
+    classpath = sourceSets["test"].runtimeClasspath
+    mainClass.set("io.github.ccxt.ws.BinanceDemoWsTest")
+    javaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(21) }
+    standardOutput = System.out
+    errorOutput = System.err
+    environment("BINANCE_APIKEY", System.getenv("BINANCE_APIKEY") ?: "")
+    environment("BINANCE_SECRET", System.getenv("BINANCE_SECRET") ?: "")
+}
+
+tasks.register<JavaExec>("restTest") {
+    classpath = sourceSets["test"].runtimeClasspath
+    mainClass.set("io.github.ccxt.ws.BinanceDemoRestTest")
+    javaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(21) }
+    standardOutput = System.out
+    errorOutput = System.err
+    environment("BINANCE_APIKEY", System.getenv("BINANCE_APIKEY") ?: "")
+    environment("BINANCE_SECRET", System.getenv("BINANCE_SECRET") ?: "")
+}
+
 tasks.register<JavaExec>("watchOrderBook") {
     classpath = sourceSets["test"].runtimeClasspath
     mainClass.set("io.github.ccxt.ws.WatchOrderBookExample")
