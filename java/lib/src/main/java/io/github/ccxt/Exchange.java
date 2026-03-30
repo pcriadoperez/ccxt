@@ -102,7 +102,7 @@ public class Exchange {
     public Object number = Float.class;                   // C# typeof(float) → Java Class<?> for Float
     public Map<String, Object> has = new HashMap<>();
     public Map<String, Object> features = new HashMap<>();
-    public Map<String, Object> options = new java.util.concurrent.ConcurrentHashMap<>();
+    public Map<String, Object> options = new HashMap<>();
     public boolean isSandboxModeEnabled = false;
 
     public volatile Object markets = null;
@@ -1129,8 +1129,8 @@ public class Exchange {
                 CompletableFuture.delayedExecutor(ms, java.util.concurrent.TimeUnit.MILLISECONDS));
     }
 
-    public java.util.concurrent.ConcurrentHashMap<String, Object> createSafeDictionary() {
-        return new java.util.concurrent.ConcurrentHashMap<String, Object>();
+    public HashMap<String, Object> createSafeDictionary() {
+        return new HashMap<String, Object>();
     }
 
     public Map<String, Object> convertToSafeDictionary(Object obj) {
