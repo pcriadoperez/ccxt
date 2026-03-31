@@ -1732,25 +1732,23 @@ public class Exchange {
     }
 
     private void initHttpClient() {
-        HttpClient builder = HttpClient.newHttpClient();
+        var builder = HttpClient.newBuilder();
 
-//        if (this.httpProxy != null && this.httpProxy.toString().length() > 0) {
-//            String proxyString = this.httpProxy.toString();
-//            java.net.URI proxyUri = java.net.URI.create(proxyString);
-//            String host = proxyUri.getHost();
-//            int port = (proxyUri.getPort() != -1) ? proxyUri.getPort() : 80;
-//            builder.proxy(java.net.ProxySelector.of(new java.net.InetSocketAddress(host, port)));
-//        } else if (this.httpsProxy != null && this.httpsProxy.toString().length() > 0) {
-//            String proxyString = this.httpsProxy.toString();
-//            java.net.URI proxyUri = java.net.URI.create(proxyString);
-//            String host = proxyUri.getHost();
-//            int port = (proxyUri.getPort() != -1) ? proxyUri.getPort() : 443;
-//            builder.proxy(java.net.ProxySelector.of(new java.net.InetSocketAddress(host, port)));
-//        } else {
-//            builder.proxy(java.net.ProxySelector.of(new java.net.InetSocketAddress("", 0)));
-//        }
+        boolean httpsProxySet = this.httpsProxy != null && !this.httpsProxy.toString().isEmpty();
+        boolean httpProxySet = this.httpProxy != null && !this.httpProxy.toString().isEmpty();
+        if (!httpsProxySet && !httpProxySet) {
+            this.httpClient = builder.build();
+            return;
+        }
 
-        this.httpClient = builder;
+        Object proxyUrl = httpsProxySet ? this.httpsProxy : this.httpProxy;
+        String proxyString = proxyUrl.toString();
+        java.net.URI proxyUri = java.net.URI.create(proxyString);
+        String host = proxyUri.getHost();
+        int port = (proxyUri.getPort() != -1) ? proxyUri.getPort() : 80;
+        builder.proxy(java.net.ProxySelector.of(new java.net.InetSocketAddress(host, port)));
+
+        this.httpClient = builder.build();
     }
 
     public CompletableFuture<Object> fetch(Object url2, Object method2, Object headers2, Object body2) {
