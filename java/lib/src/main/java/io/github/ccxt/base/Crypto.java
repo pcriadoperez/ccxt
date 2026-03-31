@@ -383,7 +383,7 @@ public final class Crypto {
         if (hash != null) {
             // msg = (byte[])Hash(msg, hash, "binary");
             // for now assume sha256 check it later
-            if (hash != "sha256") {
+            if (!"sha256".equals(hash)) {
                 throw new IllegalArgumentException("Only sha256 is supported for now");
             }
             msg = sha256(msg);

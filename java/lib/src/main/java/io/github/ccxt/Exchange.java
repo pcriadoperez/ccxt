@@ -44,6 +44,12 @@ import java.nio.charset.StandardCharsets;
 
 public class Exchange {
 
+    // Virtual thread executor for non-blocking async operations.
+    // Virtual threads park at zero cost on .join(), enabling hundreds of concurrent
+    // requests without exhausting platform threads.
+    protected static final java.util.concurrent.ExecutorService VIRTUAL_EXECUTOR =
+            java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor();
+
     public Object timeout = 10000; // default timeout 10s
     // If you have these constants elsewhere, remove these placeholders.
     // HTTP
@@ -55,17 +61,17 @@ public class Exchange {
     public boolean alias = false;
     public String version = "";
     public String userAgent;                              // null by default
-    public boolean verbose = true;
+    public boolean verbose = false;
     public boolean enableRateLimit = true;
-    public long lastRestRequestTimestamp = 0L;
+    public volatile long lastRestRequestTimestamp = 0L;
     public String url = "";
     public String hostname = "";
 
     // Currencies/markets API structures
     public Map<String, Object> baseCurrencies = new HashMap<>();
-    public boolean reloadingMarkets = false;
-    public CompletableFuture<Object> marketsLoading = null;
-    public boolean marketsLoaded = false;
+    public volatile boolean reloadingMarkets = false;
+    public volatile CompletableFuture<Object> marketsLoading = null;
+    public volatile boolean marketsLoaded = false;
 
     public Map<String, Object> quoteCurrencies = new HashMap<>();
     public Map<String, Object> api = new HashMap<>();
@@ -73,11 +79,11 @@ public class Exchange {
 
     public boolean reduceFees = true;
 
-    public Map<String, Object> markets_by_id = null;
+    public volatile Map<String, Object> markets_by_id = null;
 
-    public List<Object> symbols = new ArrayList<>();
-    public List<Object> codes = new ArrayList<>();
-    public List<Object> ids = new ArrayList<>();
+    public volatile List<Object> symbols = new ArrayList<>();
+    public volatile List<Object> codes = new ArrayList<>();
+    public volatile List<Object> ids = new ArrayList<>();
 
     public boolean substituteCommonCurrencyCodes = true;
 
@@ -85,7 +91,7 @@ public class Exchange {
 
     public Object limits = new HashMap<String, Object>();
     public Object precisionMode = DECIMAL_PLACES;
-    public Object currencies_by_id = new HashMap<String, Object>();
+    public volatile Object currencies_by_id = new HashMap<String, Object>();
 
     public Object accounts = new HashMap<String, Object>();
     public Object accountsById = new HashMap<String, Object>();
@@ -99,8 +105,8 @@ public class Exchange {
     public Map<String, Object> options = new HashMap<>();
     public boolean isSandboxModeEnabled = false;
 
-    public Object markets = null;
-    public Object currencies = new HashMap<String, Object>();
+    public volatile Object markets = null;
+    public volatile Object currencies = new HashMap<String, Object>();
     public Object fees = new HashMap<String, Object>();
     public Object requiredCredentials = new HashMap<String, Object>();
     public Object timeframes = new HashMap<String, Object>();
@@ -140,13 +146,13 @@ public class Exchange {
     public String agent;
     // public Object timeout = 10000;                         // Integer by autoboxing
 
-    // Last responses
-    public Object last_response_headers;
-    public Object last_request_headers;
-    public Object last_json_response;
-    public Object last_http_response;
-    public Object last_request_body;
-    public Object last_request_url;
+    // Last responses — volatile for visibility across async callbacks (last-writer-wins)
+    public volatile Object last_response_headers;
+    public volatile Object last_request_headers;
+    public volatile Object last_json_response;
+    public volatile Object last_http_response;
+    public volatile Object last_request_body;
+    public volatile Object last_request_url;
     public boolean returnResponseHeaders = false;
     public Map<String, Object> headers = new HashMap<>();
     public Object httpExceptions;
@@ -1107,23 +1113,20 @@ public class Exchange {
     // }
     // ----- END OF WRAPPERS ----- //
     public CompletableFuture<Object> sleep(Object milliseconds) {
-        return CompletableFuture.supplyAsync(() -> {
-            try {
-                if (milliseconds instanceof Integer) {
-                    // milliseconds = Long.valueOf((int) milliseconds);
-                    Thread.sleep((Integer) milliseconds);
-                } else if (milliseconds instanceof Long) {
-                    Thread.sleep((Long) milliseconds);
-                } else if (milliseconds instanceof String) {
-                    Thread.sleep(Long.valueOf((String) milliseconds));
-                } else {
-                    throw new IllegalArgumentException("milliseconds must be Integer, Long, or String");
-                }
-            } catch (InterruptedException e) {
-                throw new RuntimeException(e);
-            }
-            return null;
-        });
+        long ms;
+        if (milliseconds instanceof Integer) {
+            ms = ((Integer) milliseconds).longValue();
+        } else if (milliseconds instanceof Long) {
+            ms = (Long) milliseconds;
+        } else if (milliseconds instanceof String) {
+            ms = Long.valueOf((String) milliseconds);
+        } else if (milliseconds instanceof Double) {
+            ms = ((Double) milliseconds).longValue();
+        } else {
+            throw new IllegalArgumentException("milliseconds must be Integer, Long, Double, or String");
+        }
+        return CompletableFuture.supplyAsync(() -> null,
+                CompletableFuture.delayedExecutor(ms, java.util.concurrent.TimeUnit.MILLISECONDS));
     }
 
     public HashMap<String, Object> createSafeDictionary() {
@@ -1381,35 +1384,30 @@ public class Exchange {
 
     public java.util.concurrent.CompletableFuture<Object> loadMarketsHelper(boolean reload) throws ExecutionException, InterruptedException {
 
-        return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
-            if (!reload && this.markets != null) {
-                if (this.markets_by_id == null) {
-                    return this.setMarkets(this.markets);
-                }
-                return this.markets;
+        if (!reload && this.markets != null) {
+            if (this.markets_by_id == null) {
+                return java.util.concurrent.CompletableFuture.completedFuture(this.setMarkets(this.markets));
             }
+            return java.util.concurrent.CompletableFuture.completedFuture(this.markets);
+        }
 
-            Object currencies = null;
-            if (this.has != null && this.has.containsKey("fetchCurrencies") && (Boolean) this.has.get("fetchCurrencies")) {
-                try {
-                    currencies = this.fetchCurrencies().get();
-                } catch (InterruptedException e) {
-                    throw new RuntimeException(e);
-                } catch (ExecutionException e) {
-                    throw new RuntimeException(e);
-                }
+        // Chain: fetchCurrencies (if supported) → fetchMarkets → setMarkets
+        // No thread blocked at any point
+        boolean hasFetchCurrencies = this.has != null && this.has.containsKey("fetchCurrencies") && (Boolean) this.has.get("fetchCurrencies");
 
+        java.util.concurrent.CompletableFuture<Object> currenciesFuture;
+        if (hasFetchCurrencies) {
+            currenciesFuture = this.fetchCurrencies();
+        } else {
+            currenciesFuture = java.util.concurrent.CompletableFuture.completedFuture(null);
+        }
+
+        return currenciesFuture.thenCompose(currencies -> {
+            if (currencies != null) {
                 this.options.put("cachedCurrencies", currencies);
             }
-
-            Object markets = null;
-            try {
-                markets = this.fetchMarkets().get();
-            } catch (InterruptedException e) {
-                throw new RuntimeException(e);
-            } catch (ExecutionException e) {
-                throw new RuntimeException(e);
-            }
+            return this.fetchMarkets();
+        }).thenApply(markets -> {
             this.options.remove("cachedCurrencies");
             return this.setMarkets(markets);
         });
@@ -1423,19 +1421,17 @@ public class Exchange {
             return this.marketsLoading;
         }
         if (!this.reloadingMarkets || reload) {
-            // var marketsLoadingFuture = java.util.concurrent
-            // this.marketsLoading;
-            this.marketsLoading = CompletableFuture.supplyAsync(() -> {
-                this.reloadingMarkets = true;
-                try {
-                    var res = this.loadMarketsHelper(reload);
-                    return res.get();
-                } catch (ExecutionException e) {
-                    throw new RuntimeException(e);
-                } catch (InterruptedException e) {
-                    throw new RuntimeException(e);
-                }
-            });
+            this.reloadingMarkets = true;
+            try {
+                this.marketsLoading = this.loadMarketsHelper(reload)
+                        .thenApply(res -> {
+                            this.reloadingMarkets = false;
+                            this.marketsLoaded = true;
+                            return res;
+                        });
+            } catch (ExecutionException | InterruptedException e) {
+                throw new RuntimeException(e);
+            }
         }
         return this.marketsLoading;
     }
@@ -1448,13 +1444,23 @@ public class Exchange {
         return CompletableFuture.completedFuture(new ArrayList<>(((Map<String, Object>)this.markets).values()));
     }
 
+    public Throttler throttler = null;
+
     public void initThrottler() {
-        // to do
+        this.throttler = new Throttler(this.tokenBucket);
     }
 
     public java.util.concurrent.CompletableFuture<Void> throttle(Object... args) {
-        // to do
-        return CompletableFuture.completedFuture(null);
+        if (this.throttler == null) {
+            return CompletableFuture.completedFuture(null);
+        }
+        double cost = 1.0;
+        if (args.length > 0 && args[0] != null) {
+            if (args[0] instanceof Number n) {
+                cost = n.doubleValue();
+            }
+        }
+        return this.throttler.throttle(cost);
     }
 
     public Object clone(Object s) {
@@ -1519,6 +1525,19 @@ public class Exchange {
         HttpRequest.Builder requestBuilder = HttpRequest.newBuilder();
         requestBuilder.uri(URI.create(url));
 
+        // Apply HTTP timeout
+        if (this.timeout != null) {
+            long timeoutMs;
+            if (this.timeout instanceof Number) {
+                timeoutMs = ((Number) this.timeout).longValue();
+            } else {
+                timeoutMs = Long.parseLong(this.timeout.toString());
+            }
+            if (timeoutMs > 0) {
+                requestBuilder.timeout(java.time.Duration.ofMillis(timeoutMs));
+            }
+        }
+
         if (this.userAgent != null && this.userAgent.length() > 0) {
             requestBuilder.header("User-Agent", this.userAgent);
         }
@@ -1537,123 +1556,131 @@ public class Exchange {
             }
         }
 
-        final String finalContentType = contentType;
+        // Build the HTTP request synchronously (no need to defer to a thread)
+        if ("GET".equalsIgnoreCase(method)) {
+            requestBuilder.GET();
+        } else {
+            String ct = contentType.isEmpty() ? "application/json" : contentType;
+            String requestBody = (body != null) ? body : "";
+            HttpRequest.BodyPublisher publisher = HttpRequest.BodyPublishers.ofString(requestBody, java.nio.charset.StandardCharsets.UTF_8);
+            requestBuilder.header("Content-Type", ct);
+            if ("POST".equalsIgnoreCase(method)) {
+                requestBuilder.POST(publisher);
+            } else if ("PUT".equalsIgnoreCase(method)) {
+                requestBuilder.PUT(publisher);
+            } else if ("DELETE".equalsIgnoreCase(method)) {
+                requestBuilder.method("DELETE", publisher);
+            } else if ("PATCH".equalsIgnoreCase(method)) {
+                requestBuilder.method("PATCH", publisher);
+            } else {
+                requestBuilder.method(method, publisher);
+            }
+        }
+
+        HttpRequest request = requestBuilder.build();
+
         final String finalMethod = method;
         final String finalUrl = url;
         final Map<String, Object> finalHeaders = headers;
 
-        return CompletableFuture.supplyAsync(() -> {
-            HttpResponse<byte[]> response;
-            String result;
-            try {
-                if ("GET".equalsIgnoreCase(finalMethod)) {
-                    requestBuilder.GET();
-                } else {
-                    String ct = finalContentType.isEmpty() ? "application/json" : finalContentType;
-                    String requestBody = (body != null) ? body : "";
-                    HttpRequest.BodyPublisher publisher = HttpRequest.BodyPublishers.ofString(requestBody, java.nio.charset.StandardCharsets.UTF_8);
-                    requestBuilder.header("Content-Type", ct);
-                    if ("POST".equalsIgnoreCase(finalMethod)) {
-                        requestBuilder.POST(publisher);
-                    } else if ("PUT".equalsIgnoreCase(finalMethod)) {
-                        requestBuilder.PUT(publisher);
-                    } else if ("DELETE".equalsIgnoreCase(finalMethod)) {
-                        requestBuilder.method("DELETE", publisher);
-                    } else if ("PATCH".equalsIgnoreCase(finalMethod)) {
-                        requestBuilder.method("PATCH", publisher);
-                    } else {
-                        requestBuilder.method(finalMethod, publisher);
-                    }
-                }
+        // Use sendAsync for non-blocking I/O — no thread is blocked during network I/O
+        return this.httpClient.sendAsync(request, java.net.http.HttpResponse.BodyHandlers.ofByteArray())
+                .thenApply(response -> processResponse(response, finalUrl, finalMethod, finalHeaders, body))
+                .exceptionally(e -> {
+                    throw mapNetworkException(e, finalMethod, finalUrl);
+                });
+    }
 
-                HttpRequest request = requestBuilder.build();
-
-                response = this.httpClient.send(request, java.net.http.HttpResponse.BodyHandlers.ofByteArray());
-
-                byte[] bodyBytes = response.body();
-                List<String> encHeader = response.headers().allValues("Content-Encoding");
-                boolean gzip = false;
-                for (String encVal : encHeader) {
-                    if (encVal.toLowerCase().contains("gzip")) {
-                        gzip = true;
-                        break;
-                    }
-                }
-
-                if (gzip) {
-                    try (java.io.ByteArrayInputStream bais = new java.io.ByteArrayInputStream(bodyBytes); java.util.zip.GZIPInputStream gis = new java.util.zip.GZIPInputStream(bais); java.io.InputStreamReader isr = new java.io.InputStreamReader(gis, java.nio.charset.StandardCharsets.UTF_8); java.io.BufferedReader br = new java.io.BufferedReader(isr)) {
-                        StringBuilder sb = new StringBuilder();
-                        String line;
-                        while ((line = br.readLine()) != null) {
-                            sb.append(line);
-                        }
-                        result = sb.toString();
-                    } catch (Exception inner) {
-                        throw new RuntimeException(inner);
-                    }
-                } else {
-                    result = new String(bodyBytes, java.nio.charset.StandardCharsets.UTF_8);
-                }
-            } catch (Exception e) {
-                if (e instanceof java.net.http.HttpTimeoutException
-                        || e instanceof java.net.ConnectException
-                        || e instanceof java.net.UnknownHostException
-                        || e instanceof java.net.SocketException
-                        || e instanceof java.io.IOException) {
-                    String errorMessage = this.id + " " + finalMethod + " " + finalUrl + " " + e.getMessage();
-                    throw new NetworkError(errorMessage);
-                }
-                throw new RuntimeException(e);
+    private Object processResponse(HttpResponse<byte[]> response, String url, String method, Map<String, Object> requestHeaders, String body) {
+        String result;
+        byte[] bodyBytes = response.body();
+        List<String> encHeader = response.headers().allValues("Content-Encoding");
+        boolean gzip = false;
+        for (String encVal : encHeader) {
+            if (encVal.toLowerCase().contains("gzip")) {
+                gzip = true;
+                break;
             }
+        }
 
-            Map<String, String> responseHeaders = null;
-            int httpStatusCode = -1;
-            String httpStatusText = null;
+        if (gzip) {
+            try (java.io.ByteArrayInputStream bais = new java.io.ByteArrayInputStream(bodyBytes);
+                 java.util.zip.GZIPInputStream gis = new java.util.zip.GZIPInputStream(bais)) {
+                result = new String(gis.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+            } catch (Exception inner) {
+                throw new RuntimeException(inner);
+            }
+        } else {
+            result = new String(bodyBytes, java.nio.charset.StandardCharsets.UTF_8);
+        }
 
-            try {
-                Map<String, List<String>> map = response.headers().map();
-                responseHeaders = new java.util.HashMap<>();
-                for (Map.Entry<String, List<String>> entry : map.entrySet()) {
-                    if (entry.getValue() != null && !entry.getValue().isEmpty()) {
-                        responseHeaders.put(entry.getKey(), entry.getValue().get(0));
-                    }
+        Map<String, String> responseHeaders = null;
+        int httpStatusCode = -1;
+        String httpStatusText = null;
+
+        try {
+            Map<String, List<String>> map = response.headers().map();
+            responseHeaders = new java.util.HashMap<>();
+            for (Map.Entry<String, List<String>> entry : map.entrySet()) {
+                if (entry.getValue() != null && !entry.getValue().isEmpty()) {
+                    responseHeaders.put(entry.getKey(), entry.getValue().get(0));
                 }
-                this.last_response_headers = responseHeaders;
-                this.last_request_headers = finalHeaders;
-                httpStatusCode = response.statusCode();
-                httpStatusText = null;
-            } catch (Exception ignored) {
             }
+            this.last_response_headers = responseHeaders;
+            this.last_request_headers = requestHeaders;
+            httpStatusCode = response.statusCode();
+            httpStatusText = null;
+        } catch (Exception ignored) {
+        }
 
-            if (this.verbose) {
-                this.log(
-                        "handleRestResponse:\n"
-                        + this.id + " " + finalMethod + " " + finalUrl + " " + httpStatusCode + " " + httpStatusText
-                        + "\nResponseHeaders:\n" + this.json(responseHeaders)
-                        + "\nResponseBody:\n" + result + "\n"
-                );
+        if (this.verbose) {
+            this.log(
+                    "handleRestResponse:\n"
+                    + this.id + " " + method + " " + url + " " + httpStatusCode + " " + httpStatusText
+                    + "\nResponseHeaders:\n" + this.json(responseHeaders)
+                    + "\nResponseBody:\n" + result + "\n"
+            );
+        }
+
+        Object responseBody;
+        try {
+            responseBody = JsonHelper.deserialize(result);
+            if (this.returnResponseHeaders && responseBody instanceof Map) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> dict = (Map<String, Object>) responseBody;
+                dict.put("headers", responseHeaders);
+                responseBody = dict;
             }
+        } catch (Exception parseErr) {
+            responseBody = result;
+        }
 
-            Object responseBody;
-            try {
-                responseBody = JsonHelper.deserialize(result);
-                if (this.returnResponseHeaders && responseBody instanceof Map) {
-                    @SuppressWarnings("unchecked")
-                    Map<String, Object> dict = (Map<String, Object>) responseBody;
-                    dict.put("headers", responseHeaders);
-                    responseBody = dict;
-                }
-            } catch (Exception parseErr) {
-                responseBody = result;
-            }
+        Object res = handleErrors(httpStatusCode, httpStatusText, url, method, responseHeaders, result, responseBody, requestHeaders, body);
+        if (res == null) {
+            handleHttpStatusCode(httpStatusCode, httpStatusText, url, method, result);
+        }
 
-            Object res = handleErrors(httpStatusCode, httpStatusText, finalUrl, finalMethod, responseHeaders, result, responseBody, finalHeaders, body);
-            if (res == null) {
-                handleHttpStatusCode(httpStatusCode, httpStatusText, finalUrl, finalMethod, result);
-            }
+        return responseBody;
+    }
 
-            return responseBody;
-        });
+    private RuntimeException mapNetworkException(Throwable e, String method, String url) {
+        // Unwrap CompletionException if needed
+        Throwable cause = e;
+        while (cause instanceof java.util.concurrent.CompletionException && cause.getCause() != null) {
+            cause = cause.getCause();
+        }
+        if (cause instanceof java.net.http.HttpTimeoutException
+                || cause instanceof java.net.ConnectException
+                || cause instanceof java.net.UnknownHostException
+                || cause instanceof java.net.SocketException
+                || cause instanceof java.io.IOException) {
+            String errorMessage = this.id + " " + method + " " + url + " " + cause.getMessage();
+            return new NetworkError(errorMessage);
+        }
+        if (cause instanceof RuntimeException) {
+            return (RuntimeException) cause;
+        }
+        return new RuntimeException(cause);
     }
 
     public CompletableFuture<Object> fetch(Object url2, Object method2, Object headers2) {
@@ -6829,108 +6856,114 @@ public Object describe()
 
     public java.util.concurrent.CompletableFuture<Object> fetch2(Object path, Object... optionalArgs)
     {
+        // Extract params synchronously — no need to defer to a thread
+        Object api = Helpers.getArg(optionalArgs, 0, "public");
+        Object method = Helpers.getArg(optionalArgs, 1, "GET");
+        Object parameters = Helpers.getArg(optionalArgs, 2, new java.util.HashMap<String, Object>() {{}});
+        Object headers = Helpers.getArg(optionalArgs, 3, null);
+        Object body = Helpers.getArg(optionalArgs, 4, null);
+        Object config = Helpers.getArg(optionalArgs, 5, new java.util.HashMap<String, Object>() {{}});
 
-        return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+        // Rate limiting: returns a future that completes when we're allowed to proceed
+        java.util.concurrent.CompletableFuture<Void> throttleFuture;
+        if (Helpers.isTrue(this.enableRateLimit))
+        {
+            Object cost = this.calculateRateLimiterCost(api, method, path, parameters, config);
+            throttleFuture = this.throttle(cost);
+        } else {
+            throttleFuture = java.util.concurrent.CompletableFuture.completedFuture(null);
+        }
 
-            Object api = Helpers.getArg(optionalArgs, 0, "public");
-            Object method = Helpers.getArg(optionalArgs, 1, "GET");
-            Object parameters = Helpers.getArg(optionalArgs, 2, new java.util.HashMap<String, Object>() {{}});
-            Object headers = Helpers.getArg(optionalArgs, 3, null);
-            Object body = Helpers.getArg(optionalArgs, 4, null);
-            Object config = Helpers.getArg(optionalArgs, 5, new java.util.HashMap<String, Object>() {{}});
-            if (Helpers.isTrue(this.enableRateLimit))
-            {
-                Object cost = this.calculateRateLimiterCost(api, method, path, parameters, config);
-                (this.throttle(cost)).join();
-            }
-            Object retries = null;
-            var retriesparametersVariable = this.handleOptionAndParams(parameters, path, "maxRetriesOnFailure", 0);
-            retries = ((java.util.List<Object>) retriesparametersVariable).get(0);
-            parameters = ((java.util.List<Object>) retriesparametersVariable).get(1);
-            Object retryDelay = null;
-            var retryDelayparametersVariable = this.handleOptionAndParams(parameters, path, "maxRetriesOnFailureDelay", 0);
-            retryDelay = ((java.util.List<Object>) retryDelayparametersVariable).get(0);
-            parameters = ((java.util.List<Object>) retryDelayparametersVariable).get(1);
+        Object retries = null;
+        var retriesparametersVariable = this.handleOptionAndParams(parameters, path, "maxRetriesOnFailure", 0);
+        retries = ((java.util.List<Object>) retriesparametersVariable).get(0);
+        parameters = ((java.util.List<Object>) retriesparametersVariable).get(1);
+        Object retryDelay = null;
+        var retryDelayparametersVariable = this.handleOptionAndParams(parameters, path, "maxRetriesOnFailureDelay", 0);
+        retryDelay = ((java.util.List<Object>) retryDelayparametersVariable).get(0);
+        final Object finalParameters = ((java.util.List<Object>) retryDelayparametersVariable).get(1);
+
+        final int maxRetries = (retries instanceof Number) ? ((Number) retries).intValue() : 0;
+        final Object finalRetryDelay = retryDelay;
+        final Object finalApi = api;
+        final Object finalMethod = method;
+        final Object finalHeaders = headers;
+        final Object finalBody = body;
+
+        // Chain: throttle → sign → fetch with retry — no thread blocked at any point
+        return throttleFuture.thenCompose(ignored -> {
             this.lastRestRequestTimestamp = this.milliseconds();
-            Object request = this.sign(path, api, method, parameters, headers, body);
+            Object request = this.sign(path, finalApi, finalMethod, finalParameters, finalHeaders, finalBody);
             this.last_request_headers = Helpers.GetValue(request, "headers");
             this.last_request_body = Helpers.GetValue(request, "body");
             this.last_request_url = Helpers.GetValue(request, "url");
-            for (var i = 0; Helpers.isLessThan(i, Helpers.add(retries, 1)); i++)
-            {
-                try
-                {
-                    return (this.fetch(Helpers.GetValue(request, "url"), Helpers.GetValue(request, "method"), Helpers.GetValue(request, "headers"), Helpers.GetValue(request, "body"))).join();
-                } catch(Exception e)
-                {
-                    if (Helpers.isTrue(Helpers.isInstance(e, OperationFailed.class)))
-                    {
-                        if (Helpers.isTrue(Helpers.isLessThan(i, retries)))
-                        {
-                            if (Helpers.isTrue(this.verbose))
-                            {
-                                Object index = Helpers.add(i, 1);
-                                this.log(Helpers.add(Helpers.add(Helpers.add(Helpers.add(Helpers.add(Helpers.add("Request failed with the error: ", String.valueOf(e)), ", retrying "), String.valueOf(index)), " of "), String.valueOf(retries)), "..."));
-                            }
-                            if (Helpers.isTrue(Helpers.isTrue((!Helpers.isEqual(retryDelay, null))) && Helpers.isTrue((!Helpers.isEqual(retryDelay, 0)))))
-                            {
-                                (this.sleep(retryDelay)).join();
-                            }
-                        } else
-                        {
-                            throw e;
-                        }
-                    } else
-                    {
-                        throw e;
-                    }
-                }
-            }
-            return null;  // this line is never reached, but exists for c# value return requirement
+            return fetchWithRetry(request, 0, maxRetries, finalRetryDelay);
         });
+    }
 
+    private java.util.concurrent.CompletableFuture<Object> fetchWithRetry(Object request, int attempt, int maxRetries, Object retryDelay) {
+        return this.fetch(
+                Helpers.GetValue(request, "url"),
+                Helpers.GetValue(request, "method"),
+                Helpers.GetValue(request, "headers"),
+                Helpers.GetValue(request, "body")
+        ).exceptionallyCompose(ex -> {
+            // Unwrap CompletionException to get the actual error
+            Throwable cause = ex;
+            while (cause instanceof java.util.concurrent.CompletionException && cause.getCause() != null) {
+                cause = cause.getCause();
+            }
+            if (Helpers.isTrue(Helpers.isInstance(cause, OperationFailed.class)) && attempt < maxRetries)
+            {
+                if (Helpers.isTrue(this.verbose))
+                {
+                    Object index = Helpers.add(attempt, 1);
+                    this.log(Helpers.add(Helpers.add(Helpers.add(Helpers.add(Helpers.add(Helpers.add("Request failed with the error: ", String.valueOf(cause)), ", retrying "), String.valueOf(index)), " of "), String.valueOf(maxRetries)), "..."));
+                }
+                // Delay before retry (non-blocking)
+                java.util.concurrent.CompletableFuture<Object> delayFuture;
+                if (Helpers.isTrue(Helpers.isTrue((!Helpers.isEqual(retryDelay, null))) && Helpers.isTrue((!Helpers.isEqual(retryDelay, 0)))))
+                {
+                    delayFuture = this.sleep(retryDelay);
+                } else {
+                    delayFuture = java.util.concurrent.CompletableFuture.completedFuture(null);
+                }
+                return delayFuture.thenCompose(v -> fetchWithRetry(request, attempt + 1, maxRetries, retryDelay));
+            }
+            // Not retryable or out of retries — propagate the error
+            if (cause instanceof RuntimeException) {
+                return java.util.concurrent.CompletableFuture.failedFuture(cause);
+            }
+            return java.util.concurrent.CompletableFuture.failedFuture(new RuntimeException(cause));
+        });
     }
 
     public java.util.concurrent.CompletableFuture<Object> request(Object path, Object... optionalArgs)
     {
-
-        return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
-
-            Object api = Helpers.getArg(optionalArgs, 0, "public");
-            Object method = Helpers.getArg(optionalArgs, 1, "GET");
-            Object parameters = Helpers.getArg(optionalArgs, 2, new java.util.HashMap<String, Object>() {{}});
-            Object headers = Helpers.getArg(optionalArgs, 3, null);
-            Object body = Helpers.getArg(optionalArgs, 4, null);
-            Object config = Helpers.getArg(optionalArgs, 5, new java.util.HashMap<String, Object>() {{}});
-            return (this.fetch2(path, api, method, parameters, headers, body, config)).join();
-        });
-
+        Object api = Helpers.getArg(optionalArgs, 0, "public");
+        Object method = Helpers.getArg(optionalArgs, 1, "GET");
+        Object parameters = Helpers.getArg(optionalArgs, 2, new java.util.HashMap<String, Object>() {{}});
+        Object headers = Helpers.getArg(optionalArgs, 3, null);
+        Object body = Helpers.getArg(optionalArgs, 4, null);
+        Object config = Helpers.getArg(optionalArgs, 5, new java.util.HashMap<String, Object>() {{}});
+        return this.fetch2(path, api, method, parameters, headers, body, config);
     }
 
     public java.util.concurrent.CompletableFuture<Object> loadAccounts(Object... optionalArgs)
     {
+        Object reload = Helpers.getArg(optionalArgs, 0, false);
+        Object parameters = Helpers.getArg(optionalArgs, 1, new java.util.HashMap<String, Object>() {{}});
 
-        return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+        if (!Helpers.isTrue(reload) && Helpers.isTrue(this.accounts))
+        {
+            return java.util.concurrent.CompletableFuture.completedFuture(this.accounts);
+        }
 
-            Object reload = Helpers.getArg(optionalArgs, 0, false);
-            Object parameters = Helpers.getArg(optionalArgs, 1, new java.util.HashMap<String, Object>() {{}});
-            if (Helpers.isTrue(reload))
-            {
-                this.accounts = (this.fetchAccounts(parameters)).join();
-            } else
-            {
-                if (Helpers.isTrue(this.accounts))
-                {
-                    return this.accounts;
-                } else
-                {
-                    this.accounts = (this.fetchAccounts(parameters)).join();
-                }
-            }
+        return this.fetchAccounts(parameters).thenApply(accounts -> {
+            this.accounts = accounts;
             this.accountsById = ((Object)this.indexBy(this.accounts, "id"));
             return this.accounts;
         });
-
     }
 
     public Object buildOHLCVC(Object trades, Object... optionalArgs)
