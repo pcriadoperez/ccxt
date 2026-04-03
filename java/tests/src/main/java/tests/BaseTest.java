@@ -362,6 +362,19 @@ public class BaseTest {
         return false;
     }
 
+    public boolean isWindows() {
+        return System.getProperty("os.name").toLowerCase().contains("win");
+    }
+
+    public boolean isAmd64() {
+        String arch = System.getProperty("os.arch").toLowerCase();
+        return arch.contains("amd64") || arch.contains("x86_64");
+    }
+
+    public static boolean isLinux() {
+        return System.getProperty("os.name").toLowerCase().contains("linux");
+    }
+
     public String exceptionMessage(Object e) {
         return ((Exception) e).getMessage();
     }
