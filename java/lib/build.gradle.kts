@@ -79,6 +79,16 @@ tasks.register<JavaExec>("restTest") {
     environment("BINANCE_SECRET", System.getenv("BINANCE_SECRET") ?: "")
 }
 
+tasks.register<JavaExec>("proxyLiveTest") {
+    classpath = sourceSets["test"].runtimeClasspath
+    mainClass.set("io.github.ccxt.ProxyLiveTest")
+    javaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(21) }
+    standardOutput = System.out
+    errorOutput = System.err
+    environment("PROXY_HOST", System.getenv("PROXY_HOST") ?: "127.0.0.1")
+    environment("PROXY_PORT", System.getenv("PROXY_PORT") ?: "18911")
+}
+
 tasks.register<JavaExec>("watchOrderBook") {
     classpath = sourceSets["test"].runtimeClasspath
     mainClass.set("io.github.ccxt.ws.WatchOrderBookExample")
