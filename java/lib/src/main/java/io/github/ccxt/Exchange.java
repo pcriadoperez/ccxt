@@ -233,8 +233,8 @@ public class Exchange {
             defaultConfig = new HashMap<String, Object>();
         }
         System.setProperty("java.net.preferIPv4Stack", "true");
-        this.initHttpClient();
         this.initializeProperties(defaultConfig);
+        this.initHttpClient();
         this.afterConstruct();
         this.transformApiNew(this.api, new ArrayList<>());
     }
