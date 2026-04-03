@@ -532,7 +532,7 @@ public class Helpers {
     // }
 
 
-public static CompletableFuture<Object> callDynamically(Object obj, Object methodName, Object[] args) {
+public static Object callDynamically(Object obj, Object methodName, Object[] args) {
     if (args == null) args = new Object[]{};
 
     String name = (String) methodName;
@@ -543,19 +543,10 @@ public static CompletableFuture<Object> callDynamically(Object obj, Object metho
 
         Object[] invokeArgs = adaptForVarArgs(m, args);
 
-        Object result = m.invoke(obj, invokeArgs);
-
-        if (result instanceof CompletableFuture<?> cf) {
-            @SuppressWarnings("unchecked")
-            CompletableFuture<Object> cast = (CompletableFuture<Object>) cf;
-            return cast;
-        }
-        return CompletableFuture.completedFuture(result);
+        return m.invoke(obj, invokeArgs);
 
     } catch (Exception e) {
-        CompletableFuture<Object> failed = new CompletableFuture<>();
-        failed.completeExceptionally(e);
-        return failed;
+        throw new RuntimeException(e);
     }
 }
 
@@ -769,7 +760,7 @@ private static Object[] adaptForVarArgs(Method m, Object[] args) {
     }
 
     public static Object getArg(Object[] v, int index, Object def) {
-        if (v.length <= index) {
+        if (v == null || v.length <= index) {
             return def;
         }
         return v[index];
@@ -808,6 +799,22 @@ private static Object[] adaptForVarArgs(Method m, Object[] args) {
                 "List requires (value) to append or (index(Integer), value) to insert");
         }
 
+        // Fallback: set field via reflection for arbitrary objects (e.g., WsOrderBook)
+        if (args.length == 2 && args[0] instanceof String fieldName) {
+            try {
+                java.lang.reflect.Field field = target.getClass().getField(fieldName);
+                field.setAccessible(true);
+                field.set(target, args[1]);
+                return;
+            } catch (NoSuchFieldException e) {
+                try {
+                    String setter = "set" + fieldName.substring(0, 1).toUpperCase() + fieldName.substring(1);
+                    java.lang.reflect.Method method = target.getClass().getMethod(setter, Object.class);
+                    method.invoke(target, args[1]);
+                    return;
+                } catch (Exception e2) { /* fall through */ }
+            } catch (Exception e) { /* fall through */ }
+        }
         throw new IllegalArgumentException("Target is neither Map nor List: " + typeName(target));
     }
 
