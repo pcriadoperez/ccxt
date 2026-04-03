@@ -1983,6 +1983,71 @@ public class Exchange {
         throw new RuntimeException("Apex currently does not support create order in java language");
     }
 
+    public CompletableFuture<Void> loadLighterLibrary(Object libraryPath,  Object chainId,  Object privateKey,  Object apiKeyIndex,  Object accountIndex)
+    {
+        throw new RuntimeException("Apex currently does not support create order in java language");
+    }
+
+    public Object lighterSignCreateGroupedOrders(Object signer, Object request)
+    {
+        return null;
+    }
+
+    public Object lighterSignCreateOrder(Object signer, Object request)
+    {
+        return null;
+    }
+
+    public Object lighterSignCancelOrder(Object signer, Object request)
+    {
+        return null;
+    }
+
+    public Object lighterSignWithdraw(Object signer, Object request)
+    {
+        return null;
+    }
+
+    public Object lighterSignCreateSubAccount(Object signer, Object request)
+    {
+        return null;
+    }
+
+    public Object lighterSignCancelAllOrders(Object signer, Object request)
+    {
+        return null;
+    }
+
+
+    public Object lighterSignModifyOrder(Object signer, Object request)
+    {
+        return null;
+    }
+
+
+    public Object lighterSignTransfer(Object signer, Object request)
+    {
+        return null;
+    }
+
+
+    public Object lighterSignUpdateLeverage(Object signer, Object request)
+    {
+        return null;
+    }
+
+
+    public Object lighterCreateAuthToken(Object signer, Object request)
+    {
+        return null;
+    }
+
+
+    public Object lighterSignUpdateMargin(Object signer, Object request)
+    {
+        return null;
+    }
+
     public String strip(Object str) {
         var str2 = (String)str;
         return str2.trim();
@@ -2231,6 +2296,7 @@ public Object describe()
                 put( "editOrders", null );
                 put( "editOrderWs", null );
                 put( "fetchAccounts", null );
+                put( "fetchADLRank", null );
                 put( "fetchBalance", true );
                 put( "fetchBalanceWs", null );
                 put( "fetchBidsAsks", null );
@@ -2316,6 +2382,8 @@ public Object describe()
                 put( "fetchOrderTrades", null );
                 put( "fetchOrderWs", null );
                 put( "fetchPosition", null );
+                put( "fetchPositionADLRank", null );
+                put( "fetchPositionsADLRank", null );
                 put( "fetchPositionHistory", null );
                 put( "fetchPositionsHistory", null );
                 put( "fetchPositionWs", null );
@@ -3724,13 +3792,26 @@ public Object describe()
 
     }
 
-    public java.util.concurrent.CompletableFuture<Object> watchFundingRates(Object symbols, Object... optionalArgs)
+    public java.util.concurrent.CompletableFuture<Object> watchFundingRates(Object... optionalArgs)
     {
 
         return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
 
-            Object parameters = Helpers.getArg(optionalArgs, 0, new java.util.HashMap<String, Object>() {{}});
+            Object symbols = Helpers.getArg(optionalArgs, 0, null);
+            Object parameters = Helpers.getArg(optionalArgs, 1, new java.util.HashMap<String, Object>() {{}});
             throw new NotSupported((String)Helpers.add(this.id, " watchFundingRates() is not supported yet")) ;
+        });
+
+    }
+
+    public java.util.concurrent.CompletableFuture<Object> unWatchFundingRates(Object... optionalArgs)
+    {
+
+        return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+
+            Object symbols = Helpers.getArg(optionalArgs, 0, null);
+            Object parameters = Helpers.getArg(optionalArgs, 1, new java.util.HashMap<String, Object>() {{}});
+            throw new NotSupported((String)Helpers.add(this.id, " unWatchFundingRates() is not supported yet")) ;
         });
 
     }
@@ -3952,7 +4033,14 @@ public Object describe()
         return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
 
             Object parameters = Helpers.getArg(optionalArgs, 0, new java.util.HashMap<String, Object>() {{}});
-            throw new NotSupported((String)Helpers.add(this.id, " fetchOpenInterest() is not supported yet")) ;
+            if (Helpers.isTrue(Helpers.GetValue(this.has, "fetchOpenInterests")))
+            {
+                Object openInterests = (this.fetchOpenInterests(new java.util.ArrayList<Object>(java.util.Arrays.asList(symbol)), parameters)).join();
+                return this.safeDict(openInterests, symbol);
+            } else
+            {
+                throw new NotSupported((String)Helpers.add(this.id, " fetchOpenInterest() is not supported yet")) ;
+            }
         });
 
     }
@@ -4020,6 +4108,11 @@ public Object describe()
         // i.e. isRoundNumber(1.000) returns true, while isInteger(1.000) returns false
         Object res = this.parseToNumeric((Helpers.mod(value, 1)));
         return Helpers.isEqual(res, 0);
+    }
+
+    public Object isEmptyString(Object value)
+    {
+        return !Helpers.isTrue(this.valueIsDefined(value)) || Helpers.isTrue(Helpers.isEqual(value, ""));
     }
 
     public Object safeNumberOmitZero(Object obj, Object key, Object... optionalArgs)
@@ -5507,6 +5600,11 @@ public Object describe()
         return reversed;
     }
 
+    public Object stringToBase16(Object str)
+    {
+        return Helpers.add("0x", this.binaryToBase16(this.base64ToBinary(this.stringToBase64(str))));
+    }
+
     public Object reduceFeesByCurrency(Object fees)
     {
         //
@@ -5814,6 +5912,34 @@ public Object describe()
                 message = ". If you want to build OHLCV candles from trade executions data, visit https://github.com/ccxt/ccxt/tree/master/examples/ and see \"build-ohlcv-bars\" file";
             }
             throw new NotSupported((String)Helpers.add(Helpers.add(this.id, " fetchOHLCV() is not supported yet"), message)) ;
+        });
+
+    }
+
+    public java.util.concurrent.CompletableFuture<Object> fetchSpotOHLCV(Object symbol, Object... optionalArgs)
+    {
+
+        return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+
+            Object timeframe = Helpers.getArg(optionalArgs, 0, "1m");
+            Object since = Helpers.getArg(optionalArgs, 1, null);
+            Object limit = Helpers.getArg(optionalArgs, 2, null);
+            Object parameters = Helpers.getArg(optionalArgs, 3, new java.util.HashMap<String, Object>() {{}});
+            throw new NotSupported((String)Helpers.add(this.id, " fetchSpotOHLCV() is not supported yet")) ;
+        });
+
+    }
+
+    public java.util.concurrent.CompletableFuture<Object> fetchContractOHLCV(Object symbol, Object... optionalArgs)
+    {
+
+        return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+
+            Object timeframe = Helpers.getArg(optionalArgs, 0, "1m");
+            Object since = Helpers.getArg(optionalArgs, 1, null);
+            Object limit = Helpers.getArg(optionalArgs, 2, null);
+            Object parameters = Helpers.getArg(optionalArgs, 3, new java.util.HashMap<String, Object>() {{}});
+            throw new NotSupported((String)Helpers.add(this.id, " fetchContractOHLCV() is not supported yet")) ;
         });
 
     }
@@ -6520,6 +6646,27 @@ public Object describe()
         return this.filterByArrayPositions(result, "symbol", symbols, false);
     }
 
+    public Object parseADLRank(Object info, Object... optionalArgs)
+    {
+        Object market = Helpers.getArg(optionalArgs, 0, null);
+        throw new NotSupported((String)Helpers.add(this.id, " parseADLRank() is not supported yet")) ;
+    }
+
+    public Object parseADLRanks(Object ranks, Object... optionalArgs)
+    {
+        Object symbols = Helpers.getArg(optionalArgs, 0, null);
+        Object parameters = Helpers.getArg(optionalArgs, 1, new java.util.HashMap<String, Object>() {{}});
+        symbols = this.marketSymbols(symbols);
+        ranks = this.toArray(ranks);
+        Object result = new java.util.ArrayList<Object>(java.util.Arrays.asList());
+        for (var i = 0; Helpers.isLessThan(i, Helpers.getArrayLength(ranks)); i++)
+        {
+            Object rank = this.extend(this.parseADLRank(Helpers.GetValue(ranks, i)), parameters);
+            ((java.util.List<Object>)result).add(rank);
+        }
+        return this.filterByArrayPositions(result, "symbol", symbols, false);
+    }
+
     public Object parseAccounts(Object accounts, Object... optionalArgs)
     {
         Object parameters = Helpers.getArg(optionalArgs, 0, new java.util.HashMap<String, Object>() {{}});
@@ -6856,114 +7003,108 @@ public Object describe()
 
     public java.util.concurrent.CompletableFuture<Object> fetch2(Object path, Object... optionalArgs)
     {
-        // Extract params synchronously — no need to defer to a thread
-        Object api = Helpers.getArg(optionalArgs, 0, "public");
-        Object method = Helpers.getArg(optionalArgs, 1, "GET");
-        Object parameters = Helpers.getArg(optionalArgs, 2, new java.util.HashMap<String, Object>() {{}});
-        Object headers = Helpers.getArg(optionalArgs, 3, null);
-        Object body = Helpers.getArg(optionalArgs, 4, null);
-        Object config = Helpers.getArg(optionalArgs, 5, new java.util.HashMap<String, Object>() {{}});
 
-        // Rate limiting: returns a future that completes when we're allowed to proceed
-        java.util.concurrent.CompletableFuture<Void> throttleFuture;
-        if (Helpers.isTrue(this.enableRateLimit))
-        {
-            Object cost = this.calculateRateLimiterCost(api, method, path, parameters, config);
-            throttleFuture = this.throttle(cost);
-        } else {
-            throttleFuture = java.util.concurrent.CompletableFuture.completedFuture(null);
-        }
+        return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
 
-        Object retries = null;
-        var retriesparametersVariable = this.handleOptionAndParams(parameters, path, "maxRetriesOnFailure", 0);
-        retries = ((java.util.List<Object>) retriesparametersVariable).get(0);
-        parameters = ((java.util.List<Object>) retriesparametersVariable).get(1);
-        Object retryDelay = null;
-        var retryDelayparametersVariable = this.handleOptionAndParams(parameters, path, "maxRetriesOnFailureDelay", 0);
-        retryDelay = ((java.util.List<Object>) retryDelayparametersVariable).get(0);
-        final Object finalParameters = ((java.util.List<Object>) retryDelayparametersVariable).get(1);
-
-        final int maxRetries = (retries instanceof Number) ? ((Number) retries).intValue() : 0;
-        final Object finalRetryDelay = retryDelay;
-        final Object finalApi = api;
-        final Object finalMethod = method;
-        final Object finalHeaders = headers;
-        final Object finalBody = body;
-
-        // Chain: throttle → sign → fetch with retry — no thread blocked at any point
-        return throttleFuture.thenCompose(ignored -> {
+            Object api = Helpers.getArg(optionalArgs, 0, "public");
+            Object method = Helpers.getArg(optionalArgs, 1, "GET");
+            Object parameters = Helpers.getArg(optionalArgs, 2, new java.util.HashMap<String, Object>() {{}});
+            Object headers = Helpers.getArg(optionalArgs, 3, null);
+            Object body = Helpers.getArg(optionalArgs, 4, null);
+            Object config = Helpers.getArg(optionalArgs, 5, new java.util.HashMap<String, Object>() {{}});
+            if (Helpers.isTrue(this.enableRateLimit))
+            {
+                Object cost = this.calculateRateLimiterCost(api, method, path, parameters, config);
+                (this.throttle(cost)).join();
+            }
+            Object retries = null;
+            var retriesparametersVariable = this.handleOptionAndParams(parameters, path, "maxRetriesOnFailure", 0);
+            retries = ((java.util.List<Object>) retriesparametersVariable).get(0);
+            parameters = ((java.util.List<Object>) retriesparametersVariable).get(1);
+            Object retryDelay = null;
+            var retryDelayparametersVariable = this.handleOptionAndParams(parameters, path, "maxRetriesOnFailureDelay", 0);
+            retryDelay = ((java.util.List<Object>) retryDelayparametersVariable).get(0);
+            parameters = ((java.util.List<Object>) retryDelayparametersVariable).get(1);
             this.lastRestRequestTimestamp = this.milliseconds();
-            Object request = this.sign(path, finalApi, finalMethod, finalParameters, finalHeaders, finalBody);
+            Object request = this.sign(path, api, method, parameters, headers, body);
             this.last_request_headers = Helpers.GetValue(request, "headers");
             this.last_request_body = Helpers.GetValue(request, "body");
             this.last_request_url = Helpers.GetValue(request, "url");
-            return fetchWithRetry(request, 0, maxRetries, finalRetryDelay);
-        });
-    }
-
-    private java.util.concurrent.CompletableFuture<Object> fetchWithRetry(Object request, int attempt, int maxRetries, Object retryDelay) {
-        return this.fetch(
-                Helpers.GetValue(request, "url"),
-                Helpers.GetValue(request, "method"),
-                Helpers.GetValue(request, "headers"),
-                Helpers.GetValue(request, "body")
-        ).exceptionallyCompose(ex -> {
-            // Unwrap CompletionException to get the actual error
-            Throwable cause = ex;
-            while (cause instanceof java.util.concurrent.CompletionException && cause.getCause() != null) {
-                cause = cause.getCause();
-            }
-            if (Helpers.isTrue(Helpers.isInstance(cause, OperationFailed.class)) && attempt < maxRetries)
+            for (var i = 0; Helpers.isLessThan(i, Helpers.add(retries, 1)); i++)
             {
-                if (Helpers.isTrue(this.verbose))
+                try
                 {
-                    Object index = Helpers.add(attempt, 1);
-                    this.log(Helpers.add(Helpers.add(Helpers.add(Helpers.add(Helpers.add(Helpers.add("Request failed with the error: ", String.valueOf(cause)), ", retrying "), String.valueOf(index)), " of "), String.valueOf(maxRetries)), "..."));
-                }
-                // Delay before retry (non-blocking)
-                java.util.concurrent.CompletableFuture<Object> delayFuture;
-                if (Helpers.isTrue(Helpers.isTrue((!Helpers.isEqual(retryDelay, null))) && Helpers.isTrue((!Helpers.isEqual(retryDelay, 0)))))
+                    return (this.fetch(Helpers.GetValue(request, "url"), Helpers.GetValue(request, "method"), Helpers.GetValue(request, "headers"), Helpers.GetValue(request, "body"))).join();
+                } catch(Exception e)
                 {
-                    delayFuture = this.sleep(retryDelay);
-                } else {
-                    delayFuture = java.util.concurrent.CompletableFuture.completedFuture(null);
+                    if (Helpers.isTrue(Helpers.isInstance(e, OperationFailed.class)))
+                    {
+                        if (Helpers.isTrue(Helpers.isLessThan(i, retries)))
+                        {
+                            if (Helpers.isTrue(this.verbose))
+                            {
+                                Object index = Helpers.add(i, 1);
+                                this.log(Helpers.add(Helpers.add(Helpers.add(Helpers.add(Helpers.add(Helpers.add("Request failed with the error: ", String.valueOf(e)), ", retrying "), String.valueOf(index)), " of "), String.valueOf(retries)), "..."));
+                            }
+                            if (Helpers.isTrue(Helpers.isTrue((!Helpers.isEqual(retryDelay, null))) && Helpers.isTrue((!Helpers.isEqual(retryDelay, 0)))))
+                            {
+                                (this.sleep(retryDelay)).join();
+                            }
+                        } else
+                        {
+                            throw e;
+                        }
+                    } else
+                    {
+                        throw e;
+                    }
                 }
-                return delayFuture.thenCompose(v -> fetchWithRetry(request, attempt + 1, maxRetries, retryDelay));
             }
-            // Not retryable or out of retries — propagate the error
-            if (cause instanceof RuntimeException) {
-                return java.util.concurrent.CompletableFuture.failedFuture(cause);
-            }
-            return java.util.concurrent.CompletableFuture.failedFuture(new RuntimeException(cause));
+            return null;  // this line is never reached, but exists for c# value return requirement
         });
+
     }
 
     public java.util.concurrent.CompletableFuture<Object> request(Object path, Object... optionalArgs)
     {
-        Object api = Helpers.getArg(optionalArgs, 0, "public");
-        Object method = Helpers.getArg(optionalArgs, 1, "GET");
-        Object parameters = Helpers.getArg(optionalArgs, 2, new java.util.HashMap<String, Object>() {{}});
-        Object headers = Helpers.getArg(optionalArgs, 3, null);
-        Object body = Helpers.getArg(optionalArgs, 4, null);
-        Object config = Helpers.getArg(optionalArgs, 5, new java.util.HashMap<String, Object>() {{}});
-        return this.fetch2(path, api, method, parameters, headers, body, config);
+
+        return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+
+            Object api = Helpers.getArg(optionalArgs, 0, "public");
+            Object method = Helpers.getArg(optionalArgs, 1, "GET");
+            Object parameters = Helpers.getArg(optionalArgs, 2, new java.util.HashMap<String, Object>() {{}});
+            Object headers = Helpers.getArg(optionalArgs, 3, null);
+            Object body = Helpers.getArg(optionalArgs, 4, null);
+            Object config = Helpers.getArg(optionalArgs, 5, new java.util.HashMap<String, Object>() {{}});
+            return (this.fetch2(path, api, method, parameters, headers, body, config)).join();
+        });
+
     }
 
     public java.util.concurrent.CompletableFuture<Object> loadAccounts(Object... optionalArgs)
     {
-        Object reload = Helpers.getArg(optionalArgs, 0, false);
-        Object parameters = Helpers.getArg(optionalArgs, 1, new java.util.HashMap<String, Object>() {{}});
 
-        if (!Helpers.isTrue(reload) && Helpers.isTrue(this.accounts))
-        {
-            return java.util.concurrent.CompletableFuture.completedFuture(this.accounts);
-        }
+        return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
 
-        return this.fetchAccounts(parameters).thenApply(accounts -> {
-            this.accounts = accounts;
+            Object reload = Helpers.getArg(optionalArgs, 0, false);
+            Object parameters = Helpers.getArg(optionalArgs, 1, new java.util.HashMap<String, Object>() {{}});
+            if (Helpers.isTrue(reload))
+            {
+                this.accounts = (this.fetchAccounts(parameters)).join();
+            } else
+            {
+                if (Helpers.isTrue(this.accounts))
+                {
+                    return this.accounts;
+                } else
+                {
+                    this.accounts = (this.fetchAccounts(parameters)).join();
+                }
+            }
             this.accountsById = ((Object)this.indexBy(this.accounts, "id"));
             return this.accounts;
         });
+
     }
 
     public Object buildOHLCVC(Object trades, Object... optionalArgs)
@@ -7092,9 +7233,10 @@ public Object describe()
             Object amount = Helpers.getArg(optionalArgs, 0, null);
             Object price = Helpers.getArg(optionalArgs, 1, null);
             Object parameters = Helpers.getArg(optionalArgs, 2, new java.util.HashMap<String, Object>() {{}});
-            return (this.editOrder("", symbol, type, side, amount, price, this.extend(new java.util.HashMap<String, Object>() {{
+            Object extendedParams = this.extend(parameters, new java.util.HashMap<String, Object>() {{
                 put( "clientOrderId", clientOrderId );
-            }}, parameters))).join();
+            }});
+            return (this.editOrder("", symbol, type, side, amount, price, extendedParams)).join();
         });
 
     }
@@ -7970,6 +8112,30 @@ public Object describe()
 
     }
 
+    public java.util.concurrent.CompletableFuture<Object> fetchSpotTickers(Object... optionalArgs)
+    {
+
+        return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+
+            Object symbols = Helpers.getArg(optionalArgs, 0, null);
+            Object parameters = Helpers.getArg(optionalArgs, 1, new java.util.HashMap<String, Object>() {{}});
+            throw new NotSupported((String)Helpers.add(this.id, " fetchSpotTickers() is not supported yet")) ;
+        });
+
+    }
+
+    public java.util.concurrent.CompletableFuture<Object> fetchContractTickers(Object... optionalArgs)
+    {
+
+        return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+
+            Object symbols = Helpers.getArg(optionalArgs, 0, null);
+            Object parameters = Helpers.getArg(optionalArgs, 1, new java.util.HashMap<String, Object>() {{}});
+            throw new NotSupported((String)Helpers.add(this.id, " fetchContractTickers() is not supported yet")) ;
+        });
+
+    }
+
     public java.util.concurrent.CompletableFuture<Object> fetchMarkPrices(Object... optionalArgs)
     {
 
@@ -7989,7 +8155,7 @@ public Object describe()
 
             Object symbols = Helpers.getArg(optionalArgs, 0, null);
             Object parameters = Helpers.getArg(optionalArgs, 1, new java.util.HashMap<String, Object>() {{}});
-            throw new NotSupported((String)Helpers.add(this.id, " fetchTickers() is not supported yet")) ;
+            throw new NotSupported((String)Helpers.add(this.id, " fetchTickersWs() is not supported yet")) ;
         });
 
     }
@@ -8039,6 +8205,17 @@ public Object describe()
             Object symbols = Helpers.getArg(optionalArgs, 0, null);
             Object parameters = Helpers.getArg(optionalArgs, 1, new java.util.HashMap<String, Object>() {{}});
             throw new NotSupported((String)Helpers.add(this.id, " unWatchTickers() is not supported yet")) ;
+        });
+
+    }
+
+    public java.util.concurrent.CompletableFuture<Object> unWatchFundingRate(Object symbol, Object... optionalArgs)
+    {
+
+        return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+
+            Object parameters = Helpers.getArg(optionalArgs, 0, new java.util.HashMap<String, Object>() {{}});
+            throw new NotSupported((String)Helpers.add(this.id, " unWatchFundingRate() is not supported yet")) ;
         });
 
     }
@@ -8129,6 +8306,17 @@ public Object describe()
 
     }
 
+    public java.util.concurrent.CompletableFuture<Object> createTwapOrder(Object symbol, Object side, Object amount, Object duration, Object... optionalArgs)
+    {
+
+        return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+
+            Object parameters = Helpers.getArg(optionalArgs, 0, new java.util.HashMap<String, Object>() {{}});
+            throw new NotSupported((String)Helpers.add(this.id, " createTwapOrder() is not supported yet")) ;
+        });
+
+    }
+
     public java.util.concurrent.CompletableFuture<Object> createConvertTrade(Object id, Object fromCode, Object toCode, Object... optionalArgs)
     {
 
@@ -8175,6 +8363,57 @@ public Object describe()
             Object symbol = Helpers.getArg(optionalArgs, 0, null);
             Object parameters = Helpers.getArg(optionalArgs, 1, new java.util.HashMap<String, Object>() {{}});
             throw new NotSupported((String)Helpers.add(this.id, " fetchPositionMode() is not supported yet")) ;
+        });
+
+    }
+
+    public java.util.concurrent.CompletableFuture<Object> fetchADLRank(Object symbol, Object... optionalArgs)
+    {
+
+        return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+
+            Object parameters = Helpers.getArg(optionalArgs, 0, new java.util.HashMap<String, Object>() {{}});
+            throw new NotSupported((String)Helpers.add(this.id, " fetchADLRank() is not supported yet")) ;
+        });
+
+    }
+
+    public java.util.concurrent.CompletableFuture<Object> fetchPositionsADLRank(Object... optionalArgs)
+    {
+
+        return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+
+            Object symbols = Helpers.getArg(optionalArgs, 0, null);
+            Object parameters = Helpers.getArg(optionalArgs, 1, new java.util.HashMap<String, Object>() {{}});
+            throw new NotSupported((String)Helpers.add(this.id, " fetchPositionsADLRank() is not supported yet")) ;
+        });
+
+    }
+
+    public java.util.concurrent.CompletableFuture<Object> fetchPositionADLRank(Object symbol2, Object... optionalArgs)
+    {
+        final Object symbol3 = symbol2;
+        return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+            Object symbol = symbol3;
+            Object parameters = Helpers.getArg(optionalArgs, 0, new java.util.HashMap<String, Object>() {{}});
+            if (Helpers.isTrue(Helpers.GetValue(this.has, "fetchPositionsADLRank")))
+            {
+                (this.loadMarkets()).join();
+                Object market = this.market(symbol);
+                symbol = Helpers.GetValue(market, "symbol");
+                Object ranks = (this.fetchPositionsADLRank(new java.util.ArrayList<Object>(java.util.Arrays.asList(symbol)), parameters)).join();
+                Object rank = this.safeDict(ranks, 0);
+                if (Helpers.isTrue(Helpers.isEqual(rank, null)))
+                {
+                    throw new NullResponse((String)Helpers.add(Helpers.add(this.id, " fetchPositionsADLRank() could not find a rank for "), symbol)) ;
+                } else
+                {
+                    return rank;
+                }
+            } else
+            {
+                throw new NotSupported((String)Helpers.add(this.id, " fetchPositionsADLRank() is not supported yet")) ;
+            }
         });
 
     }
@@ -8812,6 +9051,28 @@ public Object describe()
 
     }
 
+    public java.util.concurrent.CompletableFuture<Object> createSpotOrders(Object orders, Object... optionalArgs)
+    {
+
+        return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+
+            Object parameters = Helpers.getArg(optionalArgs, 0, new java.util.HashMap<String, Object>() {{}});
+            throw new NotSupported((String)Helpers.add(this.id, " createSpotOrders() is not supported yet")) ;
+        });
+
+    }
+
+    public java.util.concurrent.CompletableFuture<Object> createContractOrders(Object orders, Object... optionalArgs)
+    {
+
+        return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+
+            Object parameters = Helpers.getArg(optionalArgs, 0, new java.util.HashMap<String, Object>() {{}});
+            throw new NotSupported((String)Helpers.add(this.id, " createContractOrders() is not supported yet")) ;
+        });
+
+    }
+
     public java.util.concurrent.CompletableFuture<Object> editOrders(Object orders, Object... optionalArgs)
     {
 
@@ -8843,6 +9104,30 @@ public Object describe()
             Object symbol = Helpers.getArg(optionalArgs, 0, null);
             Object parameters = Helpers.getArg(optionalArgs, 1, new java.util.HashMap<String, Object>() {{}});
             throw new NotSupported((String)Helpers.add(this.id, " cancelOrder() is not supported yet")) ;
+        });
+
+    }
+
+    public java.util.concurrent.CompletableFuture<Object> cancelSpotOrder(Object id, Object... optionalArgs)
+    {
+
+        return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+
+            Object symbol = Helpers.getArg(optionalArgs, 0, null);
+            Object parameters = Helpers.getArg(optionalArgs, 1, new java.util.HashMap<String, Object>() {{}});
+            throw new NotSupported((String)Helpers.add(this.id, " cancelSpotOrder() is not supported yet")) ;
+        });
+
+    }
+
+    public java.util.concurrent.CompletableFuture<Object> cancelContractOrder(Object id, Object... optionalArgs)
+    {
+
+        return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+
+            Object symbol = Helpers.getArg(optionalArgs, 0, null);
+            Object parameters = Helpers.getArg(optionalArgs, 1, new java.util.HashMap<String, Object>() {{}});
+            throw new NotSupported((String)Helpers.add(this.id, " cancelContractOrder() is not supported yet")) ;
         });
 
     }
@@ -8939,6 +9224,30 @@ public Object describe()
             Object symbol = Helpers.getArg(optionalArgs, 0, null);
             Object parameters = Helpers.getArg(optionalArgs, 1, new java.util.HashMap<String, Object>() {{}});
             throw new NotSupported((String)Helpers.add(this.id, " cancelAllOrders() is not supported yet")) ;
+        });
+
+    }
+
+    public java.util.concurrent.CompletableFuture<Object> cancelAllSpotOrders(Object... optionalArgs)
+    {
+
+        return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+
+            Object symbol = Helpers.getArg(optionalArgs, 0, null);
+            Object parameters = Helpers.getArg(optionalArgs, 1, new java.util.HashMap<String, Object>() {{}});
+            throw new NotSupported((String)Helpers.add(this.id, " cancelAllSpotOrders() is not supported yet")) ;
+        });
+
+    }
+
+    public java.util.concurrent.CompletableFuture<Object> cancelAllContractOrders(Object... optionalArgs)
+    {
+
+        return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+
+            Object symbol = Helpers.getArg(optionalArgs, 0, null);
+            Object parameters = Helpers.getArg(optionalArgs, 1, new java.util.HashMap<String, Object>() {{}});
+            throw new NotSupported((String)Helpers.add(this.id, " cancelAllContractOrders() is not supported yet")) ;
         });
 
     }
@@ -9452,6 +9761,17 @@ public Object describe()
             {
                 throw new NotSupported((String)Helpers.add(this.id, " fetchDepositAddress() is not supported yet")) ;
             }
+        });
+
+    }
+
+    public java.util.concurrent.CompletableFuture<Object> fetchContractDepositAddress(Object code, Object... optionalArgs)
+    {
+
+        return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+
+            Object parameters = Helpers.getArg(optionalArgs, 0, new java.util.HashMap<String, Object>() {{}});
+            throw new NotSupported((String)Helpers.add(this.id, " fetchContractDepositAddress() is not supported yet")) ;
         });
 
     }
@@ -11108,6 +11428,18 @@ public Object describe()
         * @ignore
         * @method
         * @description Typed wrapper for filterByArray that returns a dictionary of tickers
+        */
+        Object values = Helpers.getArg(optionalArgs, 0, null);
+        Object indexed = Helpers.getArg(optionalArgs, 1, true);
+        return this.filterByArray(objects, key, values, indexed);
+    }
+
+    public Object filterByArrayADLRanks(Object objects, Object key, Object... optionalArgs)
+    {
+        /**
+        * @ignore
+        * @method
+        * @description Typed wrapper for filterByArray that returns a list of ADL Ranks
         */
         Object values = Helpers.getArg(optionalArgs, 0, null);
         Object indexed = Helpers.getArg(optionalArgs, 1, true);
