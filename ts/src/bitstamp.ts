@@ -681,12 +681,13 @@ export default class bitstamp extends Exchange {
                 }
             }
             const isSpot = (type === 'spot');
+            const settle = settleId ? this.safeCurrencyCode (settleId) : undefined;
             result.push ({
                 'id': this.safeString (market, 'market_symbol'),
                 'symbol': symbol,
                 'base': base,
                 'quote': quote,
-                'settle': settleId ? this.safeCurrencyCode (settleId) : undefined,
+                'settle': settle,
                 'baseId': baseId,
                 'quoteId': quoteId,
                 'settleId': settleId,

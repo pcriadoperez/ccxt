@@ -5366,7 +5366,7 @@ export default class Exchange {
         ranks = this.toArray (ranks);
         const result = [];
         for (let i = 0; i < ranks.length; i++) {
-            const rank = this.extend (this.parseADLRank (ranks[i], undefined), params);
+            const rank = this.extend (this.parseADLRank (ranks[i]), params);
             result.push (rank);
         }
         return this.filterByArrayPositions (result, 'symbol', symbols, false);

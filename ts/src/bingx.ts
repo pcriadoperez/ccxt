@@ -1722,9 +1722,9 @@ export default class bingx extends Exchange {
         [ subType, params ] = this.handleSubTypeAndParams ('fetchFundingRates', firstMarket, params, subType);
         let response = undefined;
         if (subType === 'inverse') {
-            response = await this.cswapV1PublicGetMarketPremiumIndex (this.extend (params));
+            response = await this.cswapV1PublicGetMarketPremiumIndex (params);
         } else {
-            response = await this.swapV2PublicGetQuotePremiumIndex (this.extend (params));
+            response = await this.swapV2PublicGetQuotePremiumIndex (params);
         }
         const data = this.safeList (response, 'data', []);
         return this.parseFundingRates (data, symbols);

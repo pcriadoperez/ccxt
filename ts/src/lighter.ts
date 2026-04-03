@@ -406,9 +406,9 @@ export default class lighter extends Exchange {
         return false;
     }
 
-    async handleAccountIndex (params: object, methodName1: string, optionName1: string, optionName2: string, defaultValue = undefined) {
+    async handleAccountIndex (parameters: object, methodName1: string, optionName1: string, optionName2: string, defaultValue = undefined) {
         let accountIndex = undefined;
-        [ accountIndex, params ] = this.handleOptionAndParams2 (params, methodName1, optionName1, optionName2, defaultValue);
+        [ accountIndex, parameters ] = this.handleOptionAndParams2 (parameters, methodName1, optionName1, optionName2, defaultValue);
         if (accountIndex === undefined) {
             const walletAddress = this.walletAddress;
             if (walletAddress === undefined || walletAddress === '') {
@@ -448,7 +448,7 @@ export default class lighter extends Exchange {
                 this.options['accountIndex'] = accountIndex;
             }
         }
-        return [ this.parseToInt (accountIndex), params ];
+        return [ this.parseToInt (accountIndex), parameters ];
     }
 
     async createSubAccount (name: string, params = {}) {
@@ -1453,7 +1453,7 @@ export default class lighter extends Exchange {
      */
     async fetchFundingRates (symbols: Strings = undefined, params = {}): Promise<FundingRates> {
         await this.loadMarkets ();
-        const response = await this.publicGetFundingRates (this.extend (params));
+        const response = await this.publicGetFundingRates (params);
         //
         //     {
         //         "code": 200,
@@ -1705,13 +1705,14 @@ export default class lighter extends Exchange {
                 leverage = 100 / imf;
             }
         }
+        const isIsolated = (marginMode === 'isolated');
         return this.safePosition ({
             'info': position,
             'id': undefined,
             'symbol': market['symbol'],
             'timestamp': undefined,
             'datetime': undefined,
-            'isolated': (marginMode === 'isolated'),
+            'isolated': isIsolated,
             'hedged': undefined,
             'side': side,
             'contracts': this.safeNumber (position, 'position'),
