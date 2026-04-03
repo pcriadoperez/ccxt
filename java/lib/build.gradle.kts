@@ -31,6 +31,9 @@ dependencies {
 
     implementation("org.web3j:crypto:4.12.2")
 
+    // Netty for WebSocket support (high-performance async I/O)
+    implementation("io.netty:netty-codec-http:4.1.116.Final")
+    implementation("io.netty:netty-handler-proxy:4.1.116.Final")
 }
 
 // Apply a specific Java toolchain to ease working on different environments.
@@ -54,6 +57,46 @@ tasks.register<JavaExec>("liveTest") {
     if (project.hasProperty("args")) {
         args = (project.property("args") as String).split(" ").toList()
     }
+}
+
+tasks.register<JavaExec>("wsTest") {
+    classpath = sourceSets["test"].runtimeClasspath
+    mainClass.set("io.github.ccxt.ws.BinanceDemoWsTest")
+    javaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(21) }
+    standardOutput = System.out
+    errorOutput = System.err
+    environment("BINANCE_APIKEY", System.getenv("BINANCE_APIKEY") ?: "")
+    environment("BINANCE_SECRET", System.getenv("BINANCE_SECRET") ?: "")
+}
+
+tasks.register<JavaExec>("restTest") {
+    classpath = sourceSets["test"].runtimeClasspath
+    mainClass.set("io.github.ccxt.ws.BinanceDemoRestTest")
+    javaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(21) }
+    standardOutput = System.out
+    errorOutput = System.err
+    environment("BINANCE_APIKEY", System.getenv("BINANCE_APIKEY") ?: "")
+    environment("BINANCE_SECRET", System.getenv("BINANCE_SECRET") ?: "")
+}
+
+tasks.register<JavaExec>("proxyLiveTest") {
+    classpath = sourceSets["test"].runtimeClasspath
+    mainClass.set("io.github.ccxt.ProxyLiveTest")
+    javaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(21) }
+    standardOutput = System.out
+    errorOutput = System.err
+    environment("PROXY_HOST", System.getenv("PROXY_HOST") ?: "127.0.0.1")
+    environment("PROXY_PORT", System.getenv("PROXY_PORT") ?: "18911")
+}
+
+tasks.register<JavaExec>("watchOrderBook") {
+    classpath = sourceSets["test"].runtimeClasspath
+    mainClass.set("io.github.ccxt.ws.WatchOrderBookExample")
+    javaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(21) }
+    standardOutput = System.out
+    errorOutput = System.err
+    environment("BINANCE_APIKEY", System.getenv("BINANCE_APIKEY") ?: "")
+    environment("BINANCE_SECRET", System.getenv("BINANCE_SECRET") ?: "")
 }
 
 tasks.register<JavaExec>("example") {
