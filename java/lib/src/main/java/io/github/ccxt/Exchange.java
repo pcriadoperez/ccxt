@@ -703,8 +703,14 @@ public class Exchange {
     }
 
     public Object ethGetAddressFromPrivateKey(Object privateKey) {
-        // TODO: implement Ethereum address derivation from private key
-        throw new UnsupportedOperationException("ethGetAddressFromPrivateKey is not yet implemented in Java");
+        try {
+            String cleanKey = (String) this.remove0xPrefix(privateKey);
+            java.math.BigInteger privKeyBigInt = new java.math.BigInteger(cleanKey, 16);
+            java.math.BigInteger publicKey = org.web3j.crypto.Sign.publicKeyFromPrivate(privKeyBigInt);
+            return "0x" + org.web3j.crypto.Keys.getAddress(publicKey);
+        } catch (Exception e) {
+            throw new RuntimeException("ethGetAddressFromPrivateKey failed: " + e.getMessage(), e);
+        }
     }
 
     // =======================
