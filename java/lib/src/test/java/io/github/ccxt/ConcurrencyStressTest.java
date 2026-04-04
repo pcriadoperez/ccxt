@@ -1,6 +1,7 @@
 package io.github.ccxt;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -24,13 +25,6 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 class ConcurrencyStressTest {
 
-    private static void setProxyFromEnv(Exchange exchange) {
-        String proxy = System.getenv("CCXT_HTTPS_PROXY");
-        if (proxy != null && !proxy.isEmpty()) {
-            exchange.httpsProxy = proxy;
-        }
-    }
-
     /**
      * Creates an exchange where fetch() simulates I/O latency by returning
      * a future that completes after a delay, rather than using fetchResponse
@@ -40,10 +34,17 @@ class ConcurrencyStressTest {
         Exchange exchange = Exchange.dynamicallyCreateInstance("binance", null);
         exchange.verbose = false;
         exchange.enableRateLimit = false;
-        setProxyFromEnv(exchange);
+        String proxy = System.getenv("CCXT_HTTPS_PROXY");
+        if (proxy != null && !proxy.isEmpty()) {
+            exchange.httpsProxy = proxy;
+        }
 
         // Load markets with real HTTP first (needed for fetchTicker routing)
-        exchange.loadMarkets().join();
+        try {
+            exchange.loadMarkets().join();
+        } catch (Exception e) {
+            assumeTrue(false, "Skipping: exchange not reachable (" + e.getMessage() + ")");
+        }
 
         // Now install a mock fetch response, but with simulated I/O delay.
         // We override fetchResponse handling: instead of completedFuture,

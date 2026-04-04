@@ -62,8 +62,6 @@ jobs:
         done
     - name: Build Project
       run: npm run buildJava
-      env:
-        CCXT_HTTPS_PROXY: http://188.245.226.105:8911
     - name: Run Base Tests
       if: env.important_modified == 'true'
       run: npm run test-base-rest-java
