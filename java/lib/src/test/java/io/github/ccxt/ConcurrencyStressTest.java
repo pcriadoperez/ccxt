@@ -2,6 +2,7 @@ package io.github.ccxt;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -22,6 +23,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * To reproduce this without hitting real exchanges, we simulate I/O latency
  * by making fetch() return a delayed CompletableFuture.
  */
+@Tag("live")
 class ConcurrencyStressTest {
 
     /**
