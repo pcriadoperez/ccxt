@@ -619,6 +619,10 @@ public class Exchange {
         return Encode.binaryToBase16(buff2);
     }
 
+    public static String binaryToBase64(Object buff) {
+        return Encode.binaryToBase64((byte[]) buff);
+    }
+
     public static byte[] base58ToBinary(Object pt) {
         return Encode.Base58ToBinary(pt);
     }
@@ -686,6 +690,21 @@ public class Exchange {
 
     public Object binaryConcatArray(Object arrays2) {
         return Encode.binaryConcatArray(arrays2);
+    }
+
+    public Object exceptionMessage(Object exc, Object... optionalArgs) {
+        boolean includeStack = optionalArgs.length > 0 && optionalArgs[0] != null ? (boolean) optionalArgs[0] : true;
+        if (exc instanceof Throwable t) {
+            String message = "[" + t.getClass().getSimpleName() + "] " + (includeStack ? t.toString() : t.getMessage());
+            int length = Math.min(100000, message.length());
+            return message.substring(0, length);
+        }
+        return String.valueOf(exc);
+    }
+
+    public Object ethGetAddressFromPrivateKey(Object privateKey) {
+        // TODO: implement Ethereum address derivation from private key
+        throw new UnsupportedOperationException("ethGetAddressFromPrivateKey is not yet implemented in Java");
     }
 
     // =======================
@@ -2832,7 +2851,12 @@ public Object describe()
         * @returns {bool | undefined}
         */
         Object defaultValue = Helpers.getArg(optionalArgs, 0, null);
-        return this.safeBoolN(dictionary, new java.util.ArrayList<Object>(java.util.Arrays.asList(key)), defaultValue);
+        Object value = this.safeValue(dictionary, key, defaultValue);
+        if (Helpers.isTrue((value instanceof Boolean)))
+        {
+            return value;
+        }
+        return defaultValue;
     }
 
     public Object safeDictN(Object dictionaryOrList, Object keys, Object... optionalArgs)
@@ -2865,7 +2889,16 @@ public Object describe()
         * @returns {object | undefined}
         */
         Object defaultValue = Helpers.getArg(optionalArgs, 0, null);
-        return this.safeDictN(dictionary, new java.util.ArrayList<Object>(java.util.Arrays.asList(key)), defaultValue);
+        Object value = this.safeValue(dictionary, key, defaultValue);
+        if (Helpers.isTrue(Helpers.isEqual(value, null)))
+        {
+            return defaultValue;
+        }
+        if (Helpers.isTrue(Helpers.isTrue(((value instanceof java.util.Map))) && !Helpers.isTrue(((value instanceof java.util.List) || (value.getClass().isArray())))))
+        {
+            return value;
+        }
+        return defaultValue;
     }
 
     public Object safeDict2(Object dictionary, Object key1, Object key2, Object... optionalArgs)
@@ -2922,7 +2955,16 @@ public Object describe()
         * @returns {Array | undefined}
         */
         Object defaultValue = Helpers.getArg(optionalArgs, 0, null);
-        return this.safeListN(dictionaryOrList, new java.util.ArrayList<Object>(java.util.Arrays.asList(key)), defaultValue);
+        Object value = this.safeValue(dictionaryOrList, key, defaultValue);
+        if (Helpers.isTrue(Helpers.isEqual(value, null)))
+        {
+            return defaultValue;
+        }
+        if (Helpers.isTrue(((value instanceof java.util.List) || (value.getClass().isArray()))))
+        {
+            return value;
+        }
+        return defaultValue;
     }
 
     public void handleDeltas(Object orderbook, Object deltas)
@@ -4021,7 +4063,7 @@ public Object describe()
             Object symbols = Helpers.getArg(optionalArgs, 0, null);
             Object parameters = Helpers.getArg(optionalArgs, 1, new java.util.HashMap<String, Object>() {{}});
             throw new NotSupported((String)Helpers.add(this.id, " unWatchFundingRates() is not supported yet")) ;
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -4242,7 +4284,14 @@ public Object describe()
         return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
 
             Object parameters = Helpers.getArg(optionalArgs, 0, new java.util.HashMap<String, Object>() {{}});
-            throw new NotSupported((String)Helpers.add(this.id, " fetchOpenInterest() is not supported yet")) ;
+            if (Helpers.isTrue(Helpers.GetValue(this.has, "fetchOpenInterests")))
+            {
+                Object openInterests = (this.fetchOpenInterests(new java.util.ArrayList<Object>(java.util.Arrays.asList(symbol)), parameters)).join();
+                return this.safeDict(openInterests, symbol);
+            } else
+            {
+                throw new NotSupported((String)Helpers.add(this.id, " fetchOpenInterest() is not supported yet")) ;
+            }
         }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
@@ -6128,7 +6177,7 @@ public Object describe()
             Object limit = Helpers.getArg(optionalArgs, 2, null);
             Object parameters = Helpers.getArg(optionalArgs, 3, new java.util.HashMap<String, Object>() {{}});
             throw new NotSupported((String)Helpers.add(this.id, " fetchSpotOHLCV() is not supported yet")) ;
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -6142,7 +6191,7 @@ public Object describe()
             Object limit = Helpers.getArg(optionalArgs, 2, null);
             Object parameters = Helpers.getArg(optionalArgs, 3, new java.util.HashMap<String, Object>() {{}});
             throw new NotSupported((String)Helpers.add(this.id, " fetchContractOHLCV() is not supported yet")) ;
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -6263,7 +6312,7 @@ public Object describe()
                     try
                     {
                         
-                        response = ((CompletableFuture<Object>)Helpers.callDynamically(this, endpointMethod, new Object[] { new java.util.HashMap<String, Object>() {{}} })).join();
+                        response = ((java.util.concurrent.CompletableFuture<Object>)Helpers.callDynamically(this, endpointMethod, new Object[] { new java.util.HashMap<String, Object>() {{}} })).join();
                         shouldBreak = true;
                         break;
                     } catch(Exception e)
@@ -7437,7 +7486,8 @@ public Object describe()
             Object parameters = Helpers.getArg(optionalArgs, 2, new java.util.HashMap<String, Object>() {{}});
             Object extendedParams = this.extend(parameters, new java.util.HashMap<String, Object>() {{
                 put( "clientOrderId", clientOrderId );
-            }}, parameters))).join();
+            }});
+            return (this.editOrder("", symbol, type, side, amount, price, extendedParams)).join();
         }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
@@ -8321,7 +8371,7 @@ public Object describe()
             Object symbols = Helpers.getArg(optionalArgs, 0, null);
             Object parameters = Helpers.getArg(optionalArgs, 1, new java.util.HashMap<String, Object>() {{}});
             throw new NotSupported((String)Helpers.add(this.id, " fetchSpotTickers() is not supported yet")) ;
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -8333,7 +8383,7 @@ public Object describe()
             Object symbols = Helpers.getArg(optionalArgs, 0, null);
             Object parameters = Helpers.getArg(optionalArgs, 1, new java.util.HashMap<String, Object>() {{}});
             throw new NotSupported((String)Helpers.add(this.id, " fetchContractTickers() is not supported yet")) ;
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -8356,7 +8406,7 @@ public Object describe()
 
             Object symbols = Helpers.getArg(optionalArgs, 0, null);
             Object parameters = Helpers.getArg(optionalArgs, 1, new java.util.HashMap<String, Object>() {{}});
-            throw new NotSupported((String)Helpers.add(this.id, " fetchTickers() is not supported yet")) ;
+            throw new NotSupported((String)Helpers.add(this.id, " fetchTickersWs() is not supported yet")) ;
         }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
@@ -8417,7 +8467,7 @@ public Object describe()
 
             Object parameters = Helpers.getArg(optionalArgs, 0, new java.util.HashMap<String, Object>() {{}});
             throw new NotSupported((String)Helpers.add(this.id, " unWatchFundingRate() is not supported yet")) ;
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -8514,7 +8564,7 @@ public Object describe()
 
             Object parameters = Helpers.getArg(optionalArgs, 0, new java.util.HashMap<String, Object>() {{}});
             throw new NotSupported((String)Helpers.add(this.id, " createTwapOrder() is not supported yet")) ;
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -8575,7 +8625,7 @@ public Object describe()
 
             Object parameters = Helpers.getArg(optionalArgs, 0, new java.util.HashMap<String, Object>() {{}});
             throw new NotSupported((String)Helpers.add(this.id, " fetchADLRank() is not supported yet")) ;
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -8587,7 +8637,7 @@ public Object describe()
             Object symbols = Helpers.getArg(optionalArgs, 0, null);
             Object parameters = Helpers.getArg(optionalArgs, 1, new java.util.HashMap<String, Object>() {{}});
             throw new NotSupported((String)Helpers.add(this.id, " fetchPositionsADLRank() is not supported yet")) ;
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -8615,7 +8665,7 @@ public Object describe()
             {
                 throw new NotSupported((String)Helpers.add(this.id, " fetchPositionsADLRank() is not supported yet")) ;
             }
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -9259,7 +9309,7 @@ public Object describe()
 
             Object parameters = Helpers.getArg(optionalArgs, 0, new java.util.HashMap<String, Object>() {{}});
             throw new NotSupported((String)Helpers.add(this.id, " createSpotOrders() is not supported yet")) ;
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -9270,7 +9320,7 @@ public Object describe()
 
             Object parameters = Helpers.getArg(optionalArgs, 0, new java.util.HashMap<String, Object>() {{}});
             throw new NotSupported((String)Helpers.add(this.id, " createContractOrders() is not supported yet")) ;
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -9317,7 +9367,7 @@ public Object describe()
             Object symbol = Helpers.getArg(optionalArgs, 0, null);
             Object parameters = Helpers.getArg(optionalArgs, 1, new java.util.HashMap<String, Object>() {{}});
             throw new NotSupported((String)Helpers.add(this.id, " cancelSpotOrder() is not supported yet")) ;
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -9329,7 +9379,7 @@ public Object describe()
             Object symbol = Helpers.getArg(optionalArgs, 0, null);
             Object parameters = Helpers.getArg(optionalArgs, 1, new java.util.HashMap<String, Object>() {{}});
             throw new NotSupported((String)Helpers.add(this.id, " cancelContractOrder() is not supported yet")) ;
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -9437,7 +9487,7 @@ public Object describe()
             Object symbol = Helpers.getArg(optionalArgs, 0, null);
             Object parameters = Helpers.getArg(optionalArgs, 1, new java.util.HashMap<String, Object>() {{}});
             throw new NotSupported((String)Helpers.add(this.id, " cancelAllSpotOrders() is not supported yet")) ;
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -9449,7 +9499,7 @@ public Object describe()
             Object symbol = Helpers.getArg(optionalArgs, 0, null);
             Object parameters = Helpers.getArg(optionalArgs, 1, new java.util.HashMap<String, Object>() {{}});
             throw new NotSupported((String)Helpers.add(this.id, " cancelAllContractOrders() is not supported yet")) ;
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -9611,6 +9661,20 @@ public Object describe()
                 return this.filterBy(orders, "status", "closed");
             }
             throw new NotSupported((String)Helpers.add(this.id, " fetchClosedOrders() is not supported yet")) ;
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+
+    }
+
+    public java.util.concurrent.CompletableFuture<Object> fetchCanceledOrders(Object... optionalArgs)
+    {
+
+        return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+
+            Object symbol = Helpers.getArg(optionalArgs, 0, null);
+            Object since = Helpers.getArg(optionalArgs, 1, null);
+            Object limit = Helpers.getArg(optionalArgs, 2, null);
+            Object parameters = Helpers.getArg(optionalArgs, 3, new java.util.HashMap<String, Object>() {{}});
+            throw new NotSupported((String)Helpers.add(this.id, " fetchCanceledOrders() is not supported yet")) ;
         }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
@@ -9959,7 +10023,7 @@ public Object describe()
 
             Object parameters = Helpers.getArg(optionalArgs, 0, new java.util.HashMap<String, Object>() {{}});
             throw new NotSupported((String)Helpers.add(this.id, " fetchContractDepositAddress() is not supported yet")) ;
-        });
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
 
@@ -11716,7 +11780,7 @@ public Object describe()
                         {
                             Helpers.addElementToObject(parameters, "until", Helpers.subtract(paginationTimestamp, 1));
                         }
-                        Object response = ((CompletableFuture<Object>)Helpers.callDynamically(this, method, new Object[] { symbol, null, maxEntriesPerRequest, parameters })).join();
+                        Object response = ((java.util.concurrent.CompletableFuture<Object>)Helpers.callDynamically(this, method, new Object[] { symbol, null, maxEntriesPerRequest, parameters })).join();
                         Object responseLength = Helpers.getArrayLength(response);
                         if (Helpers.isTrue(this.verbose))
                         {
@@ -11742,7 +11806,7 @@ public Object describe()
                     } else
                     {
                         // do it forwards, starting from the since
-                        Object response = ((CompletableFuture<Object>)Helpers.callDynamically(this, method, new Object[] { symbol, paginationTimestamp, maxEntriesPerRequest, parameters })).join();
+                        Object response = ((java.util.concurrent.CompletableFuture<Object>)Helpers.callDynamically(this, method, new Object[] { symbol, paginationTimestamp, maxEntriesPerRequest, parameters })).join();
                         Object responseLength = Helpers.getArrayLength(response);
                         if (Helpers.isTrue(this.verbose))
                         {
@@ -11781,7 +11845,8 @@ public Object describe()
                 uniqueResults = this.removeRepeatedElementsFromArray(result);
             }
             Object key = ((Helpers.isTrue((Helpers.isEqual(method, "fetchOHLCV"))))) ? 0 : "timestamp";
-            return this.filterBySinceLimit(uniqueResults, since, limit, key);
+            Object sortedRes = this.sortBy(uniqueResults, key);
+            return this.filterBySinceLimit(sortedRes, since, limit, key);
         }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
 
     }
@@ -11807,10 +11872,10 @@ public Object describe()
                 {
                     if (Helpers.isTrue(Helpers.isTrue(timeframe) && Helpers.isTrue(!Helpers.isEqual(method, "fetchFundingRateHistory"))))
                     {
-                        return ((CompletableFuture<Object>)Helpers.callDynamically(this, method, new Object[] { symbol, timeframe, since, limit, parameters })).join();
+                        return ((java.util.concurrent.CompletableFuture<Object>)Helpers.callDynamically(this, method, new Object[] { symbol, timeframe, since, limit, parameters })).join();
                     } else
                     {
-                        return ((CompletableFuture<Object>)Helpers.callDynamically(this, method, new Object[] { symbol, since, limit, parameters })).join();
+                        return ((java.util.concurrent.CompletableFuture<Object>)Helpers.callDynamically(this, method, new Object[] { symbol, since, limit, parameters })).join();
                     }
                 } catch(Exception e)
                 {
@@ -11940,16 +12005,16 @@ public Object describe()
                     Object response = null;
                     if (Helpers.isTrue(Helpers.isEqual(method, "fetchAccounts")))
                     {
-                        response = ((CompletableFuture<Object>)Helpers.callDynamically(this, method, new Object[] { parameters })).join();
+                        response = ((java.util.concurrent.CompletableFuture<Object>)Helpers.callDynamically(this, method, new Object[] { parameters })).join();
                     } else if (Helpers.isTrue(Helpers.isTrue(Helpers.isEqual(method, "getLeverageTiersPaginated")) || Helpers.isTrue(Helpers.isEqual(method, "fetchPositions"))))
                     {
-                        response = ((CompletableFuture<Object>)Helpers.callDynamically(this, method, new Object[] { symbol, parameters })).join();
+                        response = ((java.util.concurrent.CompletableFuture<Object>)Helpers.callDynamically(this, method, new Object[] { symbol, parameters })).join();
                     } else if (Helpers.isTrue(Helpers.isEqual(method, "fetchOpenInterestHistory")))
                     {
-                        response = ((CompletableFuture<Object>)Helpers.callDynamically(this, method, new Object[] { symbol, timeframe, since, maxEntriesPerRequest, parameters })).join();
+                        response = ((java.util.concurrent.CompletableFuture<Object>)Helpers.callDynamically(this, method, new Object[] { symbol, timeframe, since, maxEntriesPerRequest, parameters })).join();
                     } else
                     {
-                        response = ((CompletableFuture<Object>)Helpers.callDynamically(this, method, new Object[] { symbol, since, maxEntriesPerRequest, parameters })).join();
+                        response = ((java.util.concurrent.CompletableFuture<Object>)Helpers.callDynamically(this, method, new Object[] { symbol, since, maxEntriesPerRequest, parameters })).join();
                     }
                     errors = 0;
                     Object responseLength = Helpers.getArrayLength(response);
@@ -12036,7 +12101,7 @@ public Object describe()
                 try
                 {
                     Helpers.addElementToObject(parameters, pageKey, Helpers.add(i, 1));
-                    Object response = ((CompletableFuture<Object>)Helpers.callDynamically(this, method, new Object[] { symbol, since, maxEntriesPerRequest, parameters })).join();
+                    Object response = ((java.util.concurrent.CompletableFuture<Object>)Helpers.callDynamically(this, method, new Object[] { symbol, since, maxEntriesPerRequest, parameters })).join();
                     errors = 0;
                     Object responseLength = Helpers.getArrayLength(response);
                     if (Helpers.isTrue(this.verbose))
@@ -12503,6 +12568,17 @@ public Object describe()
 
     }
 
+    public java.util.concurrent.CompletableFuture<Object> loadMarketsAndSignIn()
+    {
+
+        return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+
+            (Helpers.promiseAll(new java.util.ArrayList<Object>(java.util.Arrays.asList(this.loadMarkets(), this.signIn())))).join();
+            return true;
+        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+
+    }
+
     public java.util.concurrent.CompletableFuture<Object> fetchPositionsHistory(Object... optionalArgs)
     {
 
@@ -12804,5 +12880,39 @@ public Object describe()
                 }
             }
         }
+    }
+
+    public Object timeframeFromMilliseconds(Object ms)
+    {
+        if (Helpers.isTrue(Helpers.isLessThanOrEqual(ms, 0)))
+        {
+            return "";
+        }
+        Object second = 1000;
+        Object minute = Helpers.multiply(60, second);
+        Object hour = Helpers.multiply(60, minute);
+        Object day = Helpers.multiply(24, hour);
+        Object week = Helpers.multiply(7, day);
+        if (Helpers.isTrue(Helpers.isEqual(Helpers.mod(ms, week), 0)))
+        {
+            return Helpers.add((Helpers.divide(ms, week)), "w");
+        }
+        if (Helpers.isTrue(Helpers.isEqual(Helpers.mod(ms, day), 0)))
+        {
+            return Helpers.add((Helpers.divide(ms, day)), "d");
+        }
+        if (Helpers.isTrue(Helpers.isEqual(Helpers.mod(ms, hour), 0)))
+        {
+            return Helpers.add((Helpers.divide(ms, hour)), "h");
+        }
+        if (Helpers.isTrue(Helpers.isEqual(Helpers.mod(ms, minute), 0)))
+        {
+            return Helpers.add((Helpers.divide(ms, minute)), "m");
+        }
+        if (Helpers.isTrue(Helpers.isEqual(Helpers.mod(ms, second), 0)))
+        {
+            return Helpers.add((Helpers.divide(ms, second)), "s");
+        }
+        return "";
     }
 }
