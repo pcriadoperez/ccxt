@@ -2,7 +2,6 @@ package io.github.ccxt;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -23,8 +22,14 @@ import java.util.concurrent.atomic.AtomicInteger;
  * To reproduce this without hitting real exchanges, we simulate I/O latency
  * by making fetch() return a delayed CompletableFuture.
  */
-@Tag("live")
 class ConcurrencyStressTest {
+
+    private static void setProxyFromEnv(Exchange exchange) {
+        String proxy = System.getenv("CCXT_HTTPS_PROXY");
+        if (proxy != null && !proxy.isEmpty()) {
+            exchange.httpsProxy = proxy;
+        }
+    }
 
     /**
      * Creates an exchange where fetch() simulates I/O latency by returning
@@ -35,6 +40,7 @@ class ConcurrencyStressTest {
         Exchange exchange = Exchange.dynamicallyCreateInstance("binance", null);
         exchange.verbose = false;
         exchange.enableRateLimit = false;
+        setProxyFromEnv(exchange);
 
         // Load markets with real HTTP first (needed for fetchTicker routing)
         exchange.loadMarkets().join();

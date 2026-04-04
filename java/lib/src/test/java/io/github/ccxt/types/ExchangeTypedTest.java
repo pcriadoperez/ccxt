@@ -7,7 +7,6 @@ import io.github.ccxt.ExchangeTyped;
 import io.github.ccxt.errors.*;
 
 import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -25,7 +24,6 @@ import java.util.concurrent.atomic.AtomicReference;
  *
  * These are live tests that hit Binance public/private endpoints.
  */
-@Tag("live")
 class ExchangeTypedTest {
 
     static Exchange rawExchange;
@@ -35,6 +33,10 @@ class ExchangeTypedTest {
     static void setup() {
         rawExchange = Exchange.dynamicallyCreateInstance("binance", null);
         rawExchange.verbose = false;
+        String proxy = System.getenv("CCXT_HTTPS_PROXY");
+        if (proxy != null && !proxy.isEmpty()) {
+            rawExchange.httpsProxy = proxy;
+        }
         exchange = new ExchangeTyped(rawExchange);
         // Load markets once
         exchange.loadMarkets();

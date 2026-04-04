@@ -45,9 +45,7 @@ java {
 
 tasks.named<Test>("test") {
     // Use JUnit Platform for unit tests.
-    useJUnitPlatform {
-        excludeTags("live")
-    }
+    useJUnitPlatform()
 }
 
 tasks.register<JavaExec>("liveTest") {
