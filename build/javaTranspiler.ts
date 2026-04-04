@@ -805,6 +805,8 @@ class NewTranspiler {
             // [/(put\(\s*"\w+", )(this\.\w+)/gm, "$1Exchange.$2"],
             [/public Object setMarketsFromExchange\(Object sourceExchange\)/g, "public Object setMarketsFromExchange(Exchange sourceExchange)"]
         ]);
+        // cast callDynamically to CompletableFuture when .join() is called on the result
+        baseClass = baseClass.replace(/\(Helpers\.callDynamically\(([^)]+(?:\([^)]*\))*[^)]*)\)\)\.join\(\)/g, '((java.util.concurrent.CompletableFuture<Object>)Helpers.callDynamically($1)).join()');
 
         // // WS fixes
         // baseClass = baseClass.replace(/\(object client,/gm, '(WebSocketClient client,');
@@ -1033,6 +1035,8 @@ class NewTranspiler {
         content = content.replace(/extends\s\w+/g, `extends ${this.capitalize(name)}Api`);
         content = content.replace(/, (sha1|sha384|sha512|sha256|md5|ed25519|keccak|p256|secp256k1)([,)])/g, `, $1()$2`);
         content = content.replace(/(\s+public Object describe\(\))/g, `${constructor}$1`)
+        // cast callDynamically to CompletableFuture when .join() is called on the result
+        content = content.replace(/\(Helpers\.callDynamically\(([^)]+(?:\([^)]*\))*[^)]*)\)\)\.join\(\)/g, '((java.util.concurrent.CompletableFuture<Object>)Helpers.callDynamically($1)).join()');
 
         // const baseWsClassRegex = /class\s(\w+)\s+:\s(\w+)/;
         // const baseWsClassExec = baseWsClassRegex.exec(content);
@@ -2035,6 +2039,8 @@ class NewTranspiler {
             [/object exchange/g, 'Exchange exchange'],
             [/function test/g, finalName],
         ]).trim()
+        // cast callDynamically to CompletableFuture when .join() is called on the result
+        content = content.replace(/\(Helpers\.callDynamically\(([^)]+(?:\([^)]*\))*[^)]*)\)\)\.join\(\)/g, '((java.util.concurrent.CompletableFuture<Object>)Helpers.callDynamically($1)).join()');
 
         const contentLines = content.split('\n');
         const contentIdented = contentLines.map(line => '    ' + line).join('\n');
@@ -2050,7 +2056,7 @@ class NewTranspiler {
             contentIdented,
             '}',
         ].join('\n')
-        return [finalName, file];
+        return [className, file];
     }
 
     async transpileExchangeTestsToJava() {
@@ -2066,7 +2072,7 @@ class NewTranspiler {
         const inputFiles = fs.readdirSync('./ts/src/test/exchange');
         const files = inputFiles.filter(file => file.match(/\.ts$/)).filter(file => !ignore.includes(file));
         const transpiledFiles = files.map(file => this.transpileExchangeTest(file, inputDir + file));
-        await Promise.all(transpiledFiles.map((file, idx) => promisedWriteFile(outDir + file[0] + '.cs', file[1])))
+        await Promise.all(transpiledFiles.map((file, idx) => promisedWriteFile(outDir + file[0] + '.java', file[1])))
     }
 
     transpileBaseTestsToJava() {
@@ -2108,6 +2114,8 @@ class NewTranspiler {
                 [/\s*public\sObject\sequals(([^}]|\n)+)+}/gm, ''], // remove equals
                 [/testSharedMethods.AssertDeepEqual/gm, 'AssertDeepEqual'], // deepEqual added
             ]).trim()
+            // cast callDynamically to CompletableFuture when .join() is called on the result
+            content = content.replace(/\(Helpers\.callDynamically\(([^)]+(?:\([^)]*\))*[^)]*)\)\)\.join\(\)/g, '((java.util.concurrent.CompletableFuture<Object>)Helpers.callDynamically($1)).join()');
 
             if (correctedTestName === 'TestInit') {
                 content = this.regexAll(content, [
@@ -2295,6 +2303,8 @@ class NewTranspiler {
             // but that function is part of a different class.
 
             contentIndentend = this.regexAll(contentIndentend, regexes)
+            // cast callDynamically to CompletableFuture when .join() is called on the result
+            contentIndentend = contentIndentend.replace(/\(Helpers\.callDynamically\(([^)]+(?:\([^)]*\))*[^)]*)\)\)\.join\(\)/g, '((java.util.concurrent.CompletableFuture<Object>)Helpers.callDynamically($1)).join()');
             // const namespace = isWs ? 'using ccxt;\nusing ccxt.pro;' : 'using ccxt;';
             let parsedName = 'Test' + this.capitalize(filename.replace('test.', '').replace('tests.', ''));
             if (parsedName === 'TestOhlcv') parsedName = 'TestOHLCV'; // special case
