@@ -1167,6 +1167,12 @@ def decimal_to_precision(n, rounding_mode=ROUND, precision=None, counting_mode=D
 function decimalToPrecision ($x, $roundingMode = ROUND, $numPrecisionDigits = null, $countingMode = DECIMAL_PLACES, $paddingMode = NO_PADDING)
 ```
 
+#### **Java**
+```java
+String formattedAmount = exchange.getExchange().amountToPrecision(symbol, amount);
+String formattedPrice = exchange.getExchange().priceToPrecision(symbol, price);
+```
+
 <!-- tabs:end -->
 
 For examples of how to use the `decimalToPrecision` to format strings and floats, please, see the following files:
@@ -1201,6 +1207,11 @@ function amount_to_precision($symbol, $amount)
 function price_to_precision($symbol, $price)
 function cost_to_precision($symbol, $cost)
 function currency_to_precision($code, $amount)
+```
+#### **Java**
+```java
+String formattedAmount = exchange.getExchange().amountToPrecision(symbol, amount);
+String formattedPrice = exchange.getExchange().priceToPrecision(symbol, price);
 ```
 <!-- tabs:end -->
 
@@ -1244,6 +1255,16 @@ $price = 87654.321; // price in quote currency USDT
 $formatted_amount = $exchange->amount_to_precision($symbol, $amount);
 $formatted_price = $exchange->price_to_precision($symbol, $price);
 echo $formatted_amount, " ", $formatted_price, "\n";
+```
+#### **Java**
+```java
+exchange.loadMarkets();
+String symbol = "BTC/USDT";
+double amount = 1.2345678;
+double price = 87654.321;
+String formattedAmount = exchange.getExchange().amountToPrecision(symbol, amount);
+String formattedPrice = exchange.getExchange().priceToPrecision(symbol, price);
+System.out.println(formattedAmount + " " + formattedPrice);
 ```
 <!-- tabs:end -->
 
@@ -1421,6 +1442,16 @@ binance2.setMarketsFromExchange(binance1);
 
 // Now binance2 can use the shared markets without loading them
 Console.WriteLine($"Symbols loaded: {binance2.symbols?.Count ?? 0}");
+```
+
+#### **Java**
+```java
+Exchange exchange1 = Exchange.dynamicallyCreateInstance("binance", null);
+exchange1.loadMarkets().join();
+
+Exchange exchange2 = Exchange.dynamicallyCreateInstance("binance", null);
+// share markets from exchange1 to exchange2
+exchange2.setMarketsFromExchange(exchange1);
 ```
 
 <!-- tabs:end -->
@@ -1788,6 +1819,14 @@ $reloadedMarkets = $bitfinex->load_markets(true); // force HTTP reload = true
 var_dump($bitfinex->markets['XRP/BTC']);
 ```
 
+#### **Java**
+```java
+ExchangeTyped kraken = new ExchangeTyped(Exchange.dynamicallyCreateInstance("kraken", null));
+kraken.loadMarkets();             // loads from exchange
+kraken.loadMarkets();             // returns cached version
+kraken.loadMarkets(true);         // force reload
+```
+
 <!-- tabs:end -->
 
 # Implicit API
@@ -2127,6 +2166,12 @@ $params = array (
 $result = $exchange->fetch_order_book ($symbol, $length, $params);
 ```
 
+#### **Java**
+```java
+Map<String, Object> params = Map.of("foo", "bar");
+OrderBook ob = exchange.fetchOrderBook(symbol, limit, params);
+```
+
 <!-- tabs:end -->
 
 ## Pagination
@@ -2275,6 +2320,21 @@ if ($exchange->has['fetchMyTrades']) {
 }
 ```
 
+#### **Java**
+```java
+long since = System.currentTimeMillis() - 86400000; // -1 day
+List<Trade> allTrades = new ArrayList<>();
+while (since < System.currentTimeMillis()) {
+    List<Trade> trades = exchange.fetchTrades("BTC/USDT", since, 20L, null);
+    if (!trades.isEmpty()) {
+        since = trades.get(trades.size() - 1).timestamp + 1;
+        allTrades.addAll(trades);
+    } else {
+        break;
+    }
+}
+```
+
 <!-- tabs:end -->
 
 ### id-based Pagination
@@ -2345,6 +2405,22 @@ if ($exchange->has['fetchMyTrades']) {
         } else {
             break;
         }
+    }
+}
+```
+
+#### **Java**
+```java
+String fromId = "abc123";
+List<Trade> allTrades = new ArrayList<>();
+while (true) {
+    Map<String, Object> params = Map.of("from_id", fromId);
+    List<Trade> trades = exchange.fetchTrades("BTC/USDT", null, 20L, params);
+    if (!trades.isEmpty()) {
+        fromId = trades.get(trades.size() - 1).id;
+        allTrades.addAll(trades);
+    } else {
+        break;
     }
 }
 ```
@@ -2430,6 +2506,22 @@ if ($exchange->has['fetchMyTrades']) {
         } else {
             break;
         }
+    }
+}
+```
+
+#### **Java**
+```java
+int page = 0;
+List<Trade> allTrades = new ArrayList<>();
+while (true) {
+    Map<String, Object> params = Map.of("page", page);
+    List<Trade> trades = exchange.fetchTrades("BTC/USDT", null, 20L, params);
+    if (!trades.isEmpty()) {
+        page++; // or extract cursor from response
+        allTrades.addAll(trades);
+    } else {
+        break;
     }
 }
 ```
@@ -2610,6 +2702,12 @@ $exchange = new $exchange ();
 // up to ten orders on each side, for example
 $limit = 20;
 var_dump ($exchange->fetch_order_book ('BTC/USD', $limit));
+```
+
+#### **Java**
+```java
+OrderBook ob = exchange.fetchOrderBook("BTC/USDT", 5L, null);
+System.out.println("bids: " + ob.bids.size() + " asks: " + ob.asks.size());
 ```
 
 <!-- tabs:end -->
@@ -3089,6 +3187,10 @@ mark_klines = exchange.fetch_mark_ohlcv('ADA/USDT', '1h')
 index_klines = exchange.fetch_index_ohlcv('ADA/USDT', '1h')
 pprint(mark_klines)
 pprint(index_klines)
+```
+#### **Java**
+```java
+List<OHLCV> markKlines = exchange.fetchOHLCV("ADA/USDT", "1h", null, null, Map.of("price", "mark"));
 ```
 <!-- tabs:end -->
 
@@ -4459,6 +4561,11 @@ print(exchange.has)
 $exchange = new \ccxt\bitfinex();
 print_r ($exchange->has); // or var_dump
 ```
+#### **Java**
+```java
+Map<String, Object> has = (Map<String, Object>) exchange.getExchange().has;
+System.out.println(has);
+```
 <!-- tabs:end -->
 
 A typical structure of the `.has` property usually contains the following flags corresponding to order API methods for querying orders:
@@ -4837,6 +4944,11 @@ if ($exchange->has['createMarketOrder']) {
     ...
 }
 ```
+#### **Java**
+```java
+// All order types are supported through createOrder
+Order order = exchange.createMarketBuyOrder("BTC/USDT", 0.001);
+```
 <!-- tabs:end -->
 
 #### Market Buys
@@ -4987,6 +5099,11 @@ $params = {
 }
 $order = $exchange->create_order ('ETH/USDT', 'market', 'buy', 0.1, 1500, $params)
 ```
+#### **Java**
+```java
+Map<String, Object> params = Map.of("triggerPrice", 1700);
+Order order = exchange.createOrder("ETH/USDT", "market", "buy", 0.1, null, params);
+```
 <!-- tabs:end -->
 <a name="trigger-direction" id="trigger-direction"></a>
 Typically, exchange automatically determines `triggerPrice`'s direction (whether it is "above" or "below" current price), however, some exchanges require that you provide `triggerDirection` with either `ascending` or `descending` values:
@@ -5083,6 +5200,11 @@ $params = {
 
 $order = $exchange->create_order ($symbol, $type, $side, $amount, $price, $params);
 ```
+#### **Java**
+```java
+Map<String, Object> params = Map.of("stopLossPrice", 55.45);
+Order order = exchange.createOrder(symbol, type, side, amount, price, params);
+```
 <!-- tabs:end -->
 
 ##### Take Profit Orders
@@ -5166,6 +5288,11 @@ $params = {
 
 $order = $exchange->create_order ($symbol, $type, $side, $amount, $price, $params);
 ```
+#### **Java**
+```java
+Map<String, Object> params = Map.of("takeProfitPrice", 120.45);
+Order order = exchange.createOrder(symbol, type, side, amount, price, params);
+```
 <!-- tabs:end -->
 
 #### StopLoss And TakeProfit Orders Attached To A Position
@@ -5219,6 +5346,14 @@ $params = [
     ]
 ]
 $order = $exchange->create_order ('SOL/USDT', 'limit', 'buy', 0.5, 13, $params);
+```
+#### **Java**
+```java
+Map<String, Object> params = Map.of(
+    "stopLoss", Map.of("triggerPrice", 12.34, "price", 12.00),
+    "takeProfit", Map.of("triggerPrice", 15.00, "price", 15.50)
+);
+Order order = exchange.createOrder("SOL/USDT", "limit", "buy", 0.5, 13.0, params);
 ```
 <!-- tabs:end -->
 
@@ -5294,6 +5429,11 @@ $params = {
 }
 $order = $exchange->create_order ($symbol, $type, $side, $amount, $price, $params);
 ```
+#### **Java**
+```java
+Map<String, Object> params = Map.of("trailingPercent", 1.0);
+Order order = exchange.createOrder("BTC/USDT:USDT", "market", "sell", 1.0, null, params);
+```
 <!-- tabs:end -->
 
 #### Custom Order Params
@@ -5315,6 +5455,10 @@ kraken.create_market_buy_order('BTC/USD', 1, {'trading_agreement': 'agree'})
 ```php
 // add custom user id to your order
 $hitbtc->create_order ('BTC/USD', 'limit', 'buy', 1, 3000, array ('clientOrderId' => '123'));
+```
+#### **Java**
+```java
+Order order = exchange.createOrder("BTC/USDT", "limit", "sell", 1.0, 10.0, Map.of("type", "trailing-stop"));
 ```
 <!-- tabs:end -->
 
@@ -5346,6 +5490,11 @@ exchange.create_order(symbol, type, side, amount, price, {
 $exchange->create_order($symbol, $type, $side, $amount, $price, array(
     'clientOrderId' => 'Foobar',
 ))
+```
+#### **Java**
+```java
+Order order = exchange.createOrder("BTC/USDT", "limit", "buy", 0.001, 50000.0,
+    Map.of("clientOrderId", "Hello"));
 ```
 <!-- tabs:end -->
 
@@ -5656,6 +5805,11 @@ if ($exchange->has['fetchOrderTrades']) {
     $trades = $exchange->fetch_order_trades($order_id, $symbol, $since, $limit, $params);
 }
 ```
+#### **Java**
+```java
+// fetchOrderTrades not available in ExchangeTyped, use raw exchange
+Object trades = exchange.getExchange().fetchOrderTrades(orderId, symbol).join();
+```
 <!-- tabs:end -->
 
 ## Ledger
@@ -5870,6 +6024,10 @@ withdraw(code, amount, address, tag=None, params={})
 ```php
 withdraw ($code, $amount, $address, $tag = null, $params = array ())
 ```
+#### **Java**
+```java
+Transaction tx = exchange.withdraw("BTC", 0.5, "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2", null, null);
+```
 <!-- tabs:end -->
 
 Parameters
@@ -5932,6 +6090,10 @@ withdraw(code, amount, address, { 'tag': tag, 'network': 'ETH' })
 #### **PHP**
 ```php
 withdraw ($code, $amount, $address, array( 'tag' => tag, 'network' -> 'ETH' ));
+```
+#### **Java**
+```java
+Transaction tx = exchange.withdraw("USDT", 100.0, "0x1234...", null, Map.of("network", "ETH"));
 ```
 <!-- tabs:end -->
 
@@ -6024,6 +6186,10 @@ if ($exchange->has['fetchDeposits']) {
     throw new Exception ($exchange->id . ' does not have the fetch_deposits method');
 }
 ```
+#### **Java**
+```java
+List<Transaction> deposits = exchange.fetchDeposits("BTC", null, null, null);
+```
 <!-- tabs:end -->
 
 ### fetchWithdrawals Examples
@@ -6058,6 +6224,10 @@ if ($exchange->has['fetchWithdrawals']) {
     throw new Exception ($exchange->id . ' does not have the fetch_withdrawals method');
 }
 ```
+#### **Java**
+```java
+List<Transaction> withdrawals = exchange.fetchWithdrawals("BTC", null, null, null);
+```
 <!-- tabs:end -->
 
 ### fetchTransactions Examples
@@ -6091,6 +6261,10 @@ if ($exchange->has['fetchTransactions']) {
 } else {
     throw new Exception ($exchange->id . ' does not have the fetch_transactions method');
 }
+```
+#### **Java**
+```java
+List<Transaction> transactions = exchange.fetchTransactions("BTC", null, null, null);
 ```
 <!-- tabs:end -->
 
@@ -6731,6 +6905,11 @@ $params = {
     'marginMode': 'isolated', // or 'cross'
 }
 $order = $exchange->create_order ('ETH/USDT', 'market', 'buy', 0.1, 1500, $params);
+```
+#### **Java**
+```java
+Map<String, Object> params = Map.of("marginMode", "isolated");
+Order order = exchange.createOrder("ETH/USDT", "market", "buy", 0.1, null, params);
 ```
 <!-- tabs:end -->
 
