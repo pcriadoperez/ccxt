@@ -742,15 +742,22 @@ export default class lighter extends lighterRest {
         //     }
         //
         const timestamp = this.safeInteger (liquidation, 'timestamp');
+        const isMakerAsk = this.safeBool (liquidation, 'is_maker_ask');
+        const side = isMakerAsk ? 'buy' : 'sell';
+        const contracts = this.safeString (liquidation, 'size');
+        const contractSize = this.safeString (market, 'contractSize');
+        const price = this.safeString (liquidation, 'price');
+        const baseValue = Precise.stringMul (contracts, contractSize);
+        const quoteValue = Precise.stringMul (baseValue, price);
         return this.safeLiquidation ({
             'info': liquidation,
             'symbol': market['symbol'],
-            'contracts': undefined,
-            'contractSize': undefined,
-            'price': this.safeString (liquidation, 'price'),
-            'side': this.safeString (liquidation, 'size'),
-            'baseValue': undefined,
-            'quoteValue': undefined,
+            'contracts': contracts,
+            'contractSize': contractSize,
+            'price': price,
+            'side': side,
+            'baseValue': baseValue,
+            'quoteValue': quoteValue,
             'timestamp': timestamp,
             'datetime': this.iso8601 (timestamp),
         });
@@ -846,7 +853,7 @@ export default class lighter extends lighterRest {
         const error = this.safeDict (message, 'error');
         try {
             if (error !== undefined) {
-                const code = this.safeString (message, 'code');
+                const code = this.safeString (error, 'code');
                 if (code !== undefined) {
                     const feedback = this.id + ' ' + this.json (message);
                     this.throwExactlyMatchedException (this.exceptions['exact'], code, feedback);

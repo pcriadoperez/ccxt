@@ -511,7 +511,7 @@ class lighter extends Exchange {
     public function set_sandbox_mode(bool $enable) {
         parent::set_sandbox_mode($enable);
         $this->options['sandboxMode'] = $enable;
-        $this->options['chainId'] = 300;
+        $this->options['chainId'] = $enable ? 300 : 304;
     }
 
     public function create_order_request(string $symbol, string $type, string $side, float $amount, ?float $price = null, $params = array ()): array {
@@ -1147,7 +1147,7 @@ class lighter extends Exchange {
         //         "daily_chart" => array(),
         //         "market_config" => {
         //             "market_margin_mode" => 0,
-        //             "insurance_fund_account_index" => 281474976710655,
+        //             "insurance_fund_account_index" => 281474976710654,
         //             "liquidation_mode" => 0,
         //             "force_reduce_only" => false,
         //             "trading_hours" => ""
@@ -2011,11 +2011,21 @@ class lighter extends Exchange {
         $market = $this->safe_market($marketId, $market);
         $timestamp = $this->safe_timestamp($order, 'timestamp');
         $isAsk = $this->safe_bool($order, 'is_ask');
+        if ($isAsk === null) {
+            $isAskAsInteger = $this->safe_integer($order, 'is_ask');
+            if ($isAskAsInteger !== null) {
+                $isAsk = $isAskAsInteger === 1;
+            }
+        }
         $side = null;
         if ($isAsk !== null) {
             $side = $isAsk ? 'sell' : 'buy';
         }
         $type = $this->safe_string($order, 'type');
+        if ($type === null) {
+            $typeAsInteger = $this->safe_integer($order, 'order_type');
+            $type = $this->parse_order_type_integer($typeAsInteger);
+        }
         $triggerPrice = $this->parse_number($this->omit_zero($this->safe_string($order, 'trigger_price')));
         $stopLossPrice = null;
         $takeProfitPrice = null;
@@ -2027,7 +2037,21 @@ class lighter extends Exchange {
                 $takeProfitPrice = $triggerPrice;
             }
         }
-        $tif = $this->safe_string($order, 'time_in_force');
+        // Try to parse to integer first, because parsing an integer to a string wouldn't result in null
+        $tif = null;
+        $tifAsInteger = $this->safe_integer($order, 'time_in_force');
+        if ($tifAsInteger !== null) {
+            $tif = $this->parse_order_time_in_force_integer($tifAsInteger);
+        } else {
+            $tif = $this->safe_string($order, 'time_in_force');
+        }
+        $reduceOnly = $this->safe_bool($order, 'reduce_only');
+        if ($reduceOnly === null) {
+            $reduceOnlyAsInteger = $this->safe_integer($order, 'reduce_only');
+            if ($reduceOnlyAsInteger !== null) {
+                $reduceOnly = $reduceOnlyAsInteger === 1;
+            }
+        }
         $status = $this->safe_string($order, 'status');
         return $this->safe_order(array(
             'info' => $order,
@@ -2039,9 +2063,9 @@ class lighter extends Exchange {
             'lastUpdateTimestamp' => $this->safe_timestamp($order, 'updated_at'),
             'symbol' => $market['symbol'],
             'type' => $this->parse_order_type($type),
-            'timeInForce' => $this->parse_order_time_in_foreces($tif),
-            'postOnly' => null,
-            'reduceOnly' => $this->safe_bool($order, 'reduce_only'),
+            'timeInForce' => $this->parse_order_time_in_force($tif),
+            'postOnly' => $tif === 'post-only',
+            'reduceOnly' => $reduceOnly,
             'side' => $side,
             'price' => $this->safe_string($order, 'price'),
             'triggerPrice' => $triggerPrice,
@@ -2080,8 +2104,8 @@ class lighter extends Exchange {
         return $this->safe_string($statuses, $status, $status);
     }
 
-    public function parse_order_type($status) {
-        $statuses = array(
+    public function parse_order_type($type) {
+        $types = array(
             'limit' => 'limit',
             'market' => 'market',
             'stop-loss' => 'market',
@@ -2092,17 +2116,44 @@ class lighter extends Exchange {
             'twap-sub' => 'twap',
             'liquidation' => 'market',
         );
-        return $this->safe_string($statuses, $status, $status);
+        return $this->safe_string($types, $type, $type);
     }
 
-    public function parse_order_time_in_foreces($tif) {
+    public function parse_order_type_integer($typeInteger) {
+        if ($typeInteger === null) {
+            return null;
+        }
+        $types = array(
+            '0' => 'limit',
+            '1' => 'market',
+            '2' => 'stop-loss',
+            '3' => 'stop-loss-limit',
+            '4' => 'take-profit',
+            '5' => 'take-profit-limit',
+            '6' => 'twap',
+            '7' => 'twap-sub',
+            '8' => 'liquidation',
+        );
+        return $this->safe_string($types, (string) $typeInteger);
+    }
+
+    public function parse_order_time_in_force($tif) {
         $timeInForces = array(
-            'good-till-time' => 'GTC',
             'immediate-or-cancel' => 'IOC',
+            'good-till-time' => 'GTC',
             'post-only' => 'PO',
             'Unknown' => null,
         );
         return $this->safe_string($timeInForces, $tif, $tif);
+    }
+
+    public function parse_order_time_in_force_integer($tifInteger) {
+        $timeInForces = array(
+            '0' => 'immediate-or-cancel',
+            '1' => 'good-till-time',
+            '2' => 'post-only',
+        );
+        return $this->safe_string($timeInForces, (string) $tifInteger);
     }
 
     public function transfer(string $code, float $amount, string $fromAccount, string $toAccount, $params = array ()): array {
