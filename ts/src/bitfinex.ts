@@ -666,6 +666,8 @@ export default class bitfinex extends Exchange {
             }
             const minOrderSizeString = this.safeString (market, 3);
             const maxOrderSizeString = this.safeString (market, 4);
+            const isMargin = (spot && this.inArray (id, marginIds));
+            const isContract = !spot;
             result.push ({
                 'id': 't' + id,
                 'symbol': symbol,
@@ -678,12 +680,12 @@ export default class bitfinex extends Exchange {
                 'type': type,
                 'spot': spot,
                 'tradfi': this.inArray (id, securitiesMarketsIds),
-                'margin': (spot && this.inArray (id, marginIds)),
+                'margin': isMargin,
                 'swap': swap,
                 'future': false,
                 'option': false,
                 'active': true,
-                'contract': !spot,
+                'contract': isContract,
                 'linear': swap ? true : undefined,
                 'inverse': swap ? false : undefined,
                 'contractSize': swap ? this.parseNumber ('1') : undefined,
