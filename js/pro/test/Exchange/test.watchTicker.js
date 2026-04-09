@@ -21,7 +21,6 @@ module.exports = async (exchange, symbol) => {
         'mexc',
         'woo',
         'alpaca', // requires auth
-        'bithumb', // times out 
     ]
 
     if (skippedExchanges.includes (exchange.id)) {
