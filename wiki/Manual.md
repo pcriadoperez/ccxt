@@ -279,20 +279,18 @@ $exchange = new $exchange_class(array(
 ```
 #### **Java**
 ```java
-import io.github.ccxt.Exchange;
-import io.github.ccxt.ExchangeTyped;
+import io.github.ccxt.exchanges.Kraken;
+import io.github.ccxt.exchanges.Binance;
 import java.util.HashMap;
 import java.util.Map;
 
-Exchange raw = Exchange.dynamicallyCreateInstance("kraken", null);
-ExchangeTyped kraken = new ExchangeTyped(raw);
+Kraken kraken = new Kraken();
 
-// from variable id with config
+// with config
 Map<String, Object> config = new HashMap<>();
 config.put("apiKey", "YOUR_API_KEY");
 config.put("secret", "YOUR_SECRET");
-Exchange rawBinance = Exchange.dynamicallyCreateInstance("binance", config);
-ExchangeTyped binance = new ExchangeTyped(rawBinance);
+Binance binance = new Binance(config);
 ```
 <!-- tabs:end -->
 
@@ -1332,10 +1330,9 @@ var_dump($huobipro->id, $markets);
 
 #### **Java**
 ```java
-Exchange raw = Exchange.dynamicallyCreateInstance("kraken", null);
-ExchangeTyped kraken = new ExchangeTyped(raw);
-Map<String, MarketInterface> markets = kraken.loadMarkets();
-System.out.println(raw.id + " " + markets.size() + " markets");
+Kraken kraken = new Kraken();
+Map<String, MarketInterface> markets = kraken.loadMarkets(false);
+System.out.println(kraken.id + " " + markets.size() + " markets");
 ```
 
 <!-- tabs:end -->
@@ -1587,8 +1584,8 @@ $okcoin->markets_by_id['btc_usd'][0]['symbol']; // id → symbol (get symbol by 
 ```
 #### **Java**
 ```java
-ExchangeTyped exchange = new ExchangeTyped(Exchange.dynamicallyCreateInstance("kraken", null));
-Map<String, MarketInterface> markets = exchange.loadMarkets();
+Kraken exchange = new Kraken();
+Map<String, MarketInterface> markets = exchange.loadMarkets(false);
 
 MarketInterface btcUsd = markets.get("BTC/USD");  // symbol → market
 String marketId = btcUsd.id;                       // symbol → id
@@ -1821,10 +1818,10 @@ var_dump($bitfinex->markets['XRP/BTC']);
 
 #### **Java**
 ```java
-ExchangeTyped kraken = new ExchangeTyped(Exchange.dynamicallyCreateInstance("kraken", null));
-kraken.loadMarkets();             // loads from exchange
-kraken.loadMarkets();             // returns cached version
-kraken.loadMarkets(true);         // force reload
+Kraken kraken = new Kraken();
+kraken.loadMarkets(false);            // loads from exchange
+kraken.loadMarkets(false);            // returns cached version
+kraken.loadMarkets(true);             // force reload
 ```
 
 <!-- tabs:end -->
@@ -1977,19 +1974,17 @@ See further examples in the `examples/php` directory; look for filenames that in
 
 #### **Java**
 
-In Java, the `ExchangeTyped` wrapper provides synchronous methods that block until the result is available, as well as async variants returning `CompletableFuture`:
+In Java, each exchange has its own typed subclass with synchronous methods that block until the result is available, as well as async variants returning `CompletableFuture`:
 
 ```java
 // Java
 
-import io.github.ccxt.Exchange;
-import io.github.ccxt.ExchangeTyped;
+import io.github.ccxt.exchanges.Kraken;
 import io.github.ccxt.types.Ticker;
 import java.util.concurrent.CompletableFuture;
 
-Exchange raw = Exchange.dynamicallyCreateInstance("kraken", null);
-ExchangeTyped kraken = new ExchangeTyped(raw);
-kraken.loadMarkets();
+Kraken kraken = new Kraken();
+kraken.loadMarkets(false);
 
 // Synchronous
 Ticker ticker = kraken.fetchTicker("BTC/USDT");
@@ -2621,8 +2616,8 @@ foreach ($exchange->markets as $symbol => $market) {
 
 #### **Java**
 ```java
-ExchangeTyped exchange = new ExchangeTyped(Exchange.dynamicallyCreateInstance("binance", null));
-exchange.loadMarkets();
+Binance exchange = new Binance();
+exchange.loadMarkets(false);
 OrderBook ob = exchange.fetchOrderBook("BTC/USDT", 10L, null);
 System.out.println("bids: " + ob.bids.size() + " asks: " + ob.asks.size());
 ```
@@ -5807,8 +5802,7 @@ if ($exchange->has['fetchOrderTrades']) {
 ```
 #### **Java**
 ```java
-// fetchOrderTrades not available in ExchangeTyped, use raw exchange
-Object trades = exchange.getExchange().fetchOrderTrades(orderId, symbol).join();
+Object trades = exchange.fetchOrderTrades(orderId, symbol).join();
 ```
 <!-- tabs:end -->
 
