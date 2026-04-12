@@ -173,6 +173,40 @@ public class Throttler
     }
 
 
+    public void syncUsedWeight(double actualUsed, double? windowSize = null)
+    {
+        if (this.config.Algorithm == "leakyBucket") return;
+        var windowMs = windowSize ?? this.config.WindowSize;
+        var nowTime = milliseconds();
+        var cutOffTime = nowTime - (long)windowMs;
+        this.timestamps = this.timestamps.Where(t => t.timestamp > cutOffTime).ToList();
+        var trackedTotal = this.timestamps.Sum(t => t.cost);
+        var delta = actualUsed - trackedTotal;
+        if (Math.Abs(delta) < 1) return;
+        if (delta > 0)
+        {
+            this.timestamps.Add((nowTime, delta));
+        }
+        else
+        {
+            var excess = -delta;
+            while (excess > 0 && this.timestamps.Count > 0)
+            {
+                var oldest = this.timestamps[0];
+                if (oldest.cost <= excess)
+                {
+                    excess -= oldest.cost;
+                    this.timestamps.RemoveAt(0);
+                }
+                else
+                {
+                    this.timestamps[0] = (oldest.timestamp, oldest.cost - excess);
+                    break;
+                }
+            }
+        }
+    }
+
     // move this elsewhere later
     private dict extend(object aa, object bb)
     {
