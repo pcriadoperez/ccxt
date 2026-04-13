@@ -436,13 +436,21 @@ public class BaseTest {
 
         Class<?> clazz = exchange.getClass();
 
-//        for (Method m : clazz.getDeclaredMethods()) {
+        // Prefer varargs methods (the untyped transpiled methods returning
+        // CompletableFuture<Object>) over typed overloads (String/Long/Map params
+        // returning sync typed objects). The test harness passes JSON-parsed args
+        // which have Integer (not Long) for numbers, causing "argument type mismatch"
+        // with typed overloads. Varargs methods accept Object and work with any type.
+        Method fallback = null;
         for (Method m : clazz.getMethods()) {
-            if (m.getName().equals(methodName)) {
+            if (!m.getName().equals(methodName)) continue;
+            if (m.isVarArgs()) {
                 method = m;
                 break;
             }
+            if (fallback == null) fallback = m;
         }
+        if (method == null) method = fallback;
 
         if (method == null) {
             throw new NoSuchMethodException(methodName);
