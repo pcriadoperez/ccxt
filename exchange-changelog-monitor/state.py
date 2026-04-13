@@ -7,6 +7,10 @@ from datetime import datetime, timezone
 
 DEFAULT_STATE_PATH = os.path.join(os.path.dirname(__file__), "state.json")
 
+# Max chars to store per source snapshot. Keeps state.json under ~2MB for 93 sources.
+# Changelogs prepend new entries at top, so truncating from end is safe.
+MAX_SNAPSHOT_CHARS = 20000
+
 
 def load_state(path=DEFAULT_STATE_PATH):
     """Load state from JSON file. Returns empty dict if file doesn't exist."""
@@ -25,3 +29,12 @@ def save_state(state, path=DEFAULT_STATE_PATH):
 def now_iso():
     """Return current UTC timestamp as ISO string."""
     return datetime.now(timezone.utc).isoformat()
+
+
+def make_state_entry(content_hash: str, text: str) -> dict:
+    """Create a state entry with truncated snapshot."""
+    return {
+        "content_hash": content_hash,
+        "text_snapshot": text[:MAX_SNAPSHOT_CHARS],
+        "last_check": now_iso(),
+    }

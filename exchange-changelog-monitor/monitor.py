@@ -13,11 +13,12 @@ import json
 import os
 import re
 import sys
+import time
 
 import yaml
 
-from state import load_state, save_state, now_iso
-from fetcher import fetch_changelog, fetch_all_changelogs
+from state import load_state, save_state, make_state_entry
+from fetcher import fetch_all_changelogs, fetch_exchange_urls
 from agent import analyze_changelog_diff
 
 
@@ -29,6 +30,9 @@ CCXT_INIT_PATH = os.path.join(SCRIPT_DIR, "..", "python", "ccxt", "__init__.py")
 TARGET_REPO = os.environ.get("TARGET_REPO", "pcriadoperez/ccxt")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 DRY_RUN = os.environ.get("DRY_RUN", "false").lower() == "true"
+
+# Delay between GitHub API calls to avoid rate limiting (30 req/min for search)
+GITHUB_API_DELAY = 2.0  # seconds
 
 
 # --- Helpers ---
@@ -58,28 +62,30 @@ def get_ccxt_exchange_list() -> list[str]:
 
 
 def get_exchange_urls(config: dict) -> list[dict]:
-    """Get the list of changelog URLs from an exchange config.
-
-    Supports both formats:
-      changelog_urls: [{label: "spot", url: "..."}, ...]
-      changelog_url: "..."  (legacy single URL)
-    """
-    urls = config.get("changelog_urls", [])
-    if urls:
-        return urls
-    # Legacy single-URL fallback
-    single = config.get("changelog_url", "")
-    if single:
-        return [{"label": "changelog", "url": single}]
-    return []
+    """Get the list of changelog URLs from an exchange config."""
+    return config.get("changelog_urls", [])
 
 
 # --- GitHub API ---
 
+_last_github_call = 0.0
+
+
+def _rate_limit():
+    """Enforce minimum delay between GitHub API calls."""
+    global _last_github_call
+    elapsed = time.time() - _last_github_call
+    if elapsed < GITHUB_API_DELAY:
+        time.sleep(GITHUB_API_DELAY - elapsed)
+    _last_github_call = time.time()
+
+
 def github_api(method: str, endpoint: str, data=None) -> dict | list | None:
-    """Make a GitHub API request."""
+    """Make a GitHub API request with rate limiting."""
     import urllib.request
     import urllib.error
+
+    _rate_limit()
 
     url = f"https://api.github.com{endpoint}"
     headers = {
@@ -87,6 +93,8 @@ def github_api(method: str, endpoint: str, data=None) -> dict | list | None:
         "Accept": "application/vnd.github.v3+json",
         "User-Agent": "ccxt-changelog-monitor",
     }
+    if data is not None:
+        headers["Content-Type"] = "application/json"
     body = json.dumps(data).encode() if data else None
     req = urllib.request.Request(url, data=body, headers=headers, method=method)
     try:
@@ -104,6 +112,48 @@ def github_api(method: str, endpoint: str, data=None) -> dict | list | None:
         return None
 
 
+def ensure_label(name: str, color: str = "d4c5f9", description: str = ""):
+    """Create a label if it doesn't exist. Silently ignores 422 (already exists)."""
+    import urllib.request
+    import urllib.error
+
+    if not GITHUB_TOKEN:
+        return
+
+    _rate_limit()
+
+    url = f"https://api.github.com/repos/{TARGET_REPO}/labels"
+    headers = {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github.v3+json",
+        "User-Agent": "ccxt-changelog-monitor",
+        "Content-Type": "application/json",
+    }
+    body = json.dumps({"name": name, "color": color, "description": description}).encode()
+    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    try:
+        urllib.request.urlopen(req)
+    except urllib.error.HTTPError:
+        pass  # 422 = already exists, other errors are non-fatal
+
+
+# Label cache so we only create each label once per run
+_ensured_labels: set[str] = set()
+
+
+def ensure_labels(labels: list[str]):
+    """Ensure all labels exist in the repo, creating if needed."""
+    for label in labels:
+        if label in _ensured_labels:
+            continue
+        color = "e11d48" if label == "breaking" else (
+            "f59e0b" if label == "needs-review" else (
+            "6366f1" if label == "changelog-monitor" else "d4c5f9"
+        ))
+        ensure_label(label, color)
+        _ensured_labels.add(label)
+
+
 def search_github_issues(exchange_id: str) -> list[str]:
     """Search for existing changelog-monitor issues for an exchange. Returns titles."""
     import urllib.parse
@@ -116,10 +166,11 @@ def search_github_issues(exchange_id: str) -> list[str]:
 
 
 def create_github_issue(title: str, body: str, labels: list[str]) -> str | None:
-    """Create a GitHub issue. Returns issue URL or None."""
+    """Create a GitHub issue. Ensures labels exist first. Returns issue URL or None."""
     if not GITHUB_TOKEN:
         print(f"  SKIP (no token): {title}")
         return None
+    ensure_labels(labels)
     result = github_api("POST", f"/repos/{TARGET_REPO}/issues", {
         "title": title,
         "body": body,
@@ -146,6 +197,13 @@ def cmd_run(args):
 
     exchanges = load_exchanges()
     state = load_state()
+
+    # Auto-seed: if state is empty, run seed logic first to avoid flooding issues
+    if not state:
+        print("State is empty — running seed to establish baseline...")
+        print("(No issues will be created on first run)\n")
+        _seed(exchanges)
+        return
 
     # Detect new CCXT exchanges not in exchanges.yaml
     ccxt_list = get_ccxt_exchange_list()
@@ -184,7 +242,7 @@ def cmd_run(args):
     fetch_results = fetch_all_changelogs(to_fetch)
 
     issues_created = 0
-    exchanges_changed = 0
+    sources_changed = 0
 
     for exchange_id, config in to_fetch.items():
         source_results = fetch_results.get(exchange_id, {})
@@ -218,7 +276,7 @@ def cmd_run(args):
             if new_hash == old_state.get("content_hash"):
                 continue  # No changes
 
-            exchanges_changed += 1
+            sources_changed += 1
             print(f"\n  [{exchange_id}/{label}] Content changed!")
 
             # Agent analyzes the diff
@@ -246,19 +304,14 @@ def cmd_run(args):
                         issues_created += 1
 
             # Update state for this specific source
-            state[state_key] = {
-                "content_hash": new_hash,
-                "text_snapshot": result.content,
-                "last_check": now_iso(),
-            }
+            state[state_key] = make_state_entry(new_hash, result.content)
 
     save_state(state)
-    print(f"\n=== Done: {exchanges_changed} sources changed, {issues_created} issues created ===")
+    print(f"\n=== Done: {sources_changed} sources changed, {issues_created} issues created ===")
 
 
-def cmd_seed(args):
-    """Save baseline state for all exchanges (no issues created)."""
-    exchanges = load_exchanges()
+def _seed(exchanges: dict):
+    """Internal seed logic — fetch all, save state, no issues."""
     to_fetch = {eid: cfg for eid, cfg in exchanges.items() if get_exchange_urls(cfg)}
 
     print(f"Seeding state for {len(to_fetch)} exchanges...")
@@ -273,16 +326,17 @@ def cmd_seed(args):
             if result.error:
                 print(f"  [{exchange_id}/{source_key}] Failed: {result.error}")
                 continue
-            state[state_key] = {
-                "content_hash": sha256(result.content),
-                "text_snapshot": result.content,
-                "last_check": now_iso(),
-            }
+            state[state_key] = make_state_entry(sha256(result.content), result.content)
             seeded += 1
             print(f"  [{exchange_id}/{source_key}] Seeded ({len(result.content)} chars)")
 
     save_state(state)
-    print(f"\nSeeded {seeded} sources across {len(to_fetch)} exchanges.")
+    print(f"\nSeeded {seeded} sources.")
+
+
+def cmd_seed(args):
+    """Save baseline state for all exchanges (no issues created)."""
+    _seed(load_exchanges())
 
 
 def cmd_check(args):
@@ -302,15 +356,21 @@ def cmd_check(args):
         print(f"No changelog URLs configured for {exchange_id}")
         sys.exit(1)
 
+    # Fetch all URLs for this exchange with a single shared browser
+    print(f"Fetching {len(urls)} source(s) for {name}...")
+    results = fetch_exchange_urls(urls)
+
     for i, source in enumerate(urls):
         label = source.get("label", f"source_{i}")
+        source_key = f"{i}_{label}"
         url = source.get("url", "")
-        print(f"\nFetching {name} — {label}...")
+
+        print(f"\n--- {name} / {label} ---")
         print(f"  URL: {url}")
 
-        result = fetch_changelog(url)
-        if result.error:
-            print(f"  FAILED: {result.error}")
+        result = results.get(source_key)
+        if not result or result.error:
+            print(f"  FAILED: {result.error if result else 'No result'}")
             continue
 
         print(f"  Fetched {len(result.content)} chars")

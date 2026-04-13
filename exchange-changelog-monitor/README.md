@@ -4,10 +4,10 @@ Automated daily monitoring of API changelogs for all cryptocurrency exchanges su
 
 ## Architecture
 
-1. **Playwright** fetches each exchange's changelog pages (handles JS-rendered pages and bot blocking)
+1. **Playwright** (async, concurrent) fetches each exchange's changelog pages — handles JS-rendered pages and bot blocking
 2. **SHA-256 hashing** detects content changes since the last run
 3. **Claude Haiku** interprets the diff and extracts structured API change data
-4. **GitHub API** creates issues with proper labels, deduplicating against existing ones
+4. **GitHub API** creates issues with auto-created labels, deduplicating against existing ones
 5. **state.json** (committed to repo) tracks what was seen last
 
 Each exchange can have **multiple changelog sources** (spot API, futures API, announcements, etc.), all monitored independently.
@@ -34,6 +34,8 @@ export ANTHROPIC_API_KEY=sk-...
 export TARGET_REPO=owner/repo
 python monitor.py run
 ```
+
+Note: if state.json is empty, `run` will automatically seed first to avoid creating issues for the entire changelog history.
 
 ## Environment Variables
 
@@ -68,4 +70,4 @@ The monitor compares `exchanges.yaml` against the live CCXT exchange list (from 
 
 ## GitHub Actions
 
-The workflow runs daily at 08:00 UTC via `.github/workflows/changelog-monitor.yml`. It can also be triggered manually with a dry-run option.
+The workflow runs daily at 08:00 UTC via `.github/workflows/changelog-monitor.yml`. It can also be triggered manually with a dry-run option. Labels are auto-created in the target repo.

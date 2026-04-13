@@ -7,10 +7,11 @@ import anthropic
 
 
 MODEL = "claude-haiku-4-5-20251001"
-MAX_INPUT_CHARS = 12000  # keep input tokens reasonable
+MAX_INPUT_CHARS = 15000  # per snapshot, keeps total prompt under ~8K tokens
 
 
-SYSTEM_PROMPT = """You are analyzing a changelog diff for a cryptocurrency exchange API.
+SYSTEM_PROMPT = """\
+You are analyzing a changelog diff for a cryptocurrency exchange API.
 You will receive the exchange name, the OLD text snapshot, and the NEW text snapshot of their API changelog page.
 
 Your job:
@@ -54,8 +55,8 @@ def analyze_changelog_diff(
         print("  WARNING: ANTHROPIC_API_KEY not set, skipping agent analysis")
         return []
 
-    # Truncate to keep costs low
-    old_truncated = old_text[-MAX_INPUT_CHARS:] if len(old_text) > MAX_INPUT_CHARS else old_text
+    # Truncate both from head — changelogs prepend new entries at the top
+    old_truncated = old_text[:MAX_INPUT_CHARS]
     new_truncated = new_text[:MAX_INPUT_CHARS]
 
     # Build dedup context
@@ -77,11 +78,12 @@ def analyze_changelog_diff(
         client = anthropic.Anthropic(api_key=api_key)
         response = client.messages.create(
             model=MODEL,
-            max_tokens=2000,
+            max_tokens=4000,
             system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_message}],
         )
         raw = response.content[0].text.strip()
+
         # Strip markdown fences if present
         if raw.startswith("```"):
             lines = raw.split("\n")
