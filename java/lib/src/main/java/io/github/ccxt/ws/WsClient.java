@@ -80,6 +80,7 @@ public class WsClient {
     public long keepAlive = 30000;
     public int maxPingPongMisses = 3;
     public boolean verbose = false;
+    public boolean validateServerSsl = true;
     public boolean decompressBinary = true;
 
     // Callbacks (set by Exchange)
@@ -97,9 +98,11 @@ public class WsClient {
                     Function<WsClient, Object> ping,
                     BiConsumer<WsClient, Object> onClose,
                     BiConsumer<WsClient, Object> onError,
-                    boolean verbose, long keepAlive, boolean decompressBinary) {
+                    boolean verbose, long keepAlive, boolean decompressBinary,
+                    boolean validateServerSsl) {
         this.url = url;
         this.proxy = proxy;
+        this.validateServerSsl = validateServerSsl;
         this.handleMessageCallback = handleMessage;
         this.pingCallback = ping;
         this.onCloseCallback = onClose;
@@ -215,9 +218,11 @@ public class WsClient {
 
             final SslContext sslCtx;
             if (ssl) {
-                sslCtx = SslContextBuilder.forClient()
-                        .trustManager(InsecureTrustManagerFactory.INSTANCE)
-                        .build();
+                var sslBuilder = SslContextBuilder.forClient();
+                if (!this.validateServerSsl) {
+                    sslBuilder.trustManager(InsecureTrustManagerFactory.INSTANCE);
+                }
+                sslCtx = sslBuilder.build();
             } else {
                 sslCtx = null;
             }

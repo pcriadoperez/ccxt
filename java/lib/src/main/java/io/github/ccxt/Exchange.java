@@ -56,6 +56,7 @@ public class Exchange {
     public String version = "";
     public String userAgent;                              // null by default
     public boolean verbose = false;
+    public boolean validateServerSsl = true;
     public boolean enableRateLimit = true;
     public volatile long lastRestRequestTimestamp = 0L;
     public String url = "";
@@ -1565,7 +1566,8 @@ public class Exchange {
                             (client) -> this.ping((Client) client),
                             (client, err) -> this.onClose((Client) client, err),
                             (client, err) -> this.onError((Client) client, err),
-                            this.verbose, keepAlive, decompressBin);
+                            this.verbose, keepAlive, decompressBin,
+                            this.validateServerSsl);
                 });
     }
 
@@ -1761,17 +1763,37 @@ public class Exchange {
 
         boolean httpsProxySet = this.httpsProxy != null && !this.httpsProxy.toString().isEmpty();
         boolean httpProxySet = this.httpProxy != null && !this.httpProxy.toString().isEmpty();
-        if (!httpsProxySet && !httpProxySet) {
+        boolean socksProxySet = this.socksProxy != null && !this.socksProxy.toString().isEmpty();
+
+        if (!httpsProxySet && !httpProxySet && !socksProxySet) {
             this.httpClient = builder.build();
             return;
         }
 
-        Object proxyUrl = httpsProxySet ? this.httpsProxy : this.httpProxy;
-        String proxyString = proxyUrl.toString();
-        java.net.URI proxyUri = java.net.URI.create(proxyString);
-        String host = proxyUri.getHost();
-        int port = (proxyUri.getPort() != -1) ? proxyUri.getPort() : 80;
-        builder.proxy(java.net.ProxySelector.of(new java.net.InetSocketAddress(host, port)));
+        if (socksProxySet) {
+            // SOCKS proxy requires a custom ProxySelector with Proxy.Type.SOCKS
+            String proxyString = this.socksProxy.toString();
+            java.net.URI proxyUri = java.net.URI.create(proxyString);
+            String host = proxyUri.getHost();
+            int port = (proxyUri.getPort() != -1) ? proxyUri.getPort() : 1080;
+            java.net.InetSocketAddress socksAddr = new java.net.InetSocketAddress(host, port);
+            builder.proxy(new java.net.ProxySelector() {
+                @Override
+                public java.util.List<java.net.Proxy> select(java.net.URI uri) {
+                    return java.util.List.of(new java.net.Proxy(java.net.Proxy.Type.SOCKS, socksAddr));
+                }
+                @Override
+                public void connectFailed(java.net.URI uri, java.net.SocketAddress sa, java.io.IOException ioe) {}
+            });
+        } else {
+            // HTTP/HTTPS proxy
+            Object proxyUrl = httpsProxySet ? this.httpsProxy : this.httpProxy;
+            String proxyString = proxyUrl.toString();
+            java.net.URI proxyUri = java.net.URI.create(proxyString);
+            String host = proxyUri.getHost();
+            int port = (proxyUri.getPort() != -1) ? proxyUri.getPort() : 80;
+            builder.proxy(java.net.ProxySelector.of(new java.net.InetSocketAddress(host, port)));
+        }
 
         this.httpClient = builder.build();
     }
@@ -1956,8 +1978,11 @@ public class Exchange {
         while (cause instanceof java.util.concurrent.CompletionException && cause.getCause() != null) {
             cause = cause.getCause();
         }
-        if (cause instanceof java.net.http.HttpTimeoutException
-                || cause instanceof java.net.ConnectException
+        if (cause instanceof java.net.http.HttpTimeoutException) {
+            String errorMessage = this.id + " " + method + " " + url + " " + cause.getMessage();
+            return new RequestTimeout(errorMessage);
+        }
+        if (cause instanceof java.net.ConnectException
                 || cause instanceof java.net.UnknownHostException
                 || cause instanceof java.net.SocketException
                 || cause instanceof java.io.IOException) {
