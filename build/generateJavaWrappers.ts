@@ -85,7 +85,7 @@ function tsReturnTypeToJava(methodName: string, tsReturnType: string): { javaTyp
 }
 
 // --- Allowed method filter ---
-const ALLOWED_PREFIXES = ['fetch', 'create', 'edit', 'cancel', 'setP', 'setM', 'setL', 'transfer', 'withdraw', 'watch', 'unWatch'];
+const ALLOWED_PREFIXES = ['fetch', 'create', 'edit', 'cancel', 'close', 'setP', 'setM', 'setL', 'transfer', 'withdraw', 'watch', 'unWatch'];
 const BLACKLIST = new Set([
     'fetch', 'fetchCurrenciesWs', 'fetchMarketsWs', 'setSandBoxMode', 'loadOrderBook',
     'loadMarketsHelper', 'createNetworksByIdObject', 'setMarketsFromExchange',
