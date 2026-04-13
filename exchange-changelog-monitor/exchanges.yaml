@@ -63,9 +63,7 @@ binance:
 
 binancecoinm:
   name: Binance COIN-M
-  changelog_urls:
-    - label: derivatives
-      url: "https://developers.binance.com/docs/derivatives/change-log"
+  changelog_urls: []  # same derivatives changelog as 'binance', monitored there
 
 binanceus:
   name: Binance US
@@ -75,9 +73,7 @@ binanceus:
 
 binanceusdm:
   name: Binance USDM
-  changelog_urls:
-    - label: derivatives
-      url: "https://developers.binance.com/docs/derivatives/change-log"
+  changelog_urls: []  # same derivatives changelog as 'binance', monitored there
 
 bingx:
   name: BingX
@@ -217,7 +213,7 @@ bybit:
     - label: v5-changelog
       url: "https://bybit-exchange.github.io/docs/changelog/v5"
     - label: announcements
-      url: "https://announcements.bybit.com/en/?category=api_update"
+      url: "https://www.bybit.com/en/announcement-info/api-update/"
 
 bydfi:
   name: BYDFi
@@ -367,9 +363,7 @@ gate:
 
 gateio:
   name: Gate.io
-  changelog_urls:
-    - label: announcements
-      url: "https://www.gate.com/announcements/apiupdates"
+  changelog_urls: []  # same exchange as 'gate', monitored there
 
 gemini:
   name: Gemini
@@ -417,9 +411,7 @@ htx:
 
 huobi:
   name: Huobi
-  changelog_urls:
-    - label: spot-changelog
-      url: "https://huobiapi.github.io/docs/spot/v1/en/#change-log"
+  changelog_urls: []  # same as 'htx', monitored there
 
 hyperliquid:
   name: Hyperliquid
@@ -445,9 +437,7 @@ kraken:
 
 krakenfutures:
   name: Kraken Futures
-  changelog_urls:
-    - label: change-log
-      url: "https://docs.kraken.com/api/docs/change-log/"
+  changelog_urls: []  # same changelog as 'kraken', monitored there
 
 kucoin:
   name: KuCoin
@@ -457,9 +447,7 @@ kucoin:
 
 kucoinfutures:
   name: KuCoin Futures
-  changelog_urls:
-    - label: change-log
-      url: "https://www.kucoin.com/docs-new/change-log"
+  changelog_urls: []  # same changelog as 'kucoin', monitored there
 
 latoken:
   name: LATOKEN
@@ -501,11 +489,7 @@ modetrade:
 
 myokx:
   name: MyOKX
-  changelog_urls:
-    - label: upcoming-changes
-      url: "https://www.okx.com/docs-v5/log_en/"
-    - label: api-announcements
-      url: "https://www.okx.com/help/section/announcements-api"
+  changelog_urls: []  # same as 'okx', monitored there
 
 ndax:
   name: NDAX
@@ -527,9 +511,7 @@ okx:
 
 okxus:
   name: OKX US
-  changelog_urls:
-    - label: upcoming-changes
-      url: "https://www.okx.com/docs-v5/log_en/"
+  changelog_urls: []  # same as 'okx', monitored there
 
 onetrading:
   name: One Trading
@@ -541,6 +523,10 @@ oxfun:
 
 p2b:
   name: P2B
+  changelog_urls: []
+
+pacifica:
+  name: Pacifica
   changelog_urls: []
 
 paradex:
@@ -601,9 +587,7 @@ woo:
 
 woofipro:
   name: WOOFi Pro
-  changelog_urls:
-    - label: orderly-changelog
-      url: "https://orderly.network/docs/changelog/evm"
+  changelog_urls: []  # same Orderly Network changelog as 'modetrade', monitored there
 
 xt:
   name: XT.COM

@@ -287,6 +287,9 @@ def cmd_run(args):
                 exchange_id, f"{name} ({label})", old_text, result.content, existing_titles
             )
 
+            if not issues:
+                print(f"    Agent found no actionable API changes")
+
             for issue in issues:
                 title = issue.get("title", "Untitled")
                 body = issue.get("body", "")
