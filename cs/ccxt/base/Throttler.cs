@@ -20,7 +20,7 @@ public class ThrottlerConfig
 
 public class Throttler
 {
-    private ThrottlerConfig config = new ThrottlerConfig();
+    public ThrottlerConfig config = new ThrottlerConfig();
     private Queue<(Task, double)> queue = new Queue<(Task, double)>();
     private readonly object queueLock = new object();
 
