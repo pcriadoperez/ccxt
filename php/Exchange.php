@@ -302,6 +302,7 @@ class Exchange {
     public $restRequestQueue = null;
     public $restPollerLoopIsRunning = false;
     public $enableRateLimit = true;
+    public $enableRateLimitFeedback = true;
     // rate limiter properties
     public $rateLimiterAlgorithm = 'leakyBucket';  // rollingWindow or leakyBucket
     public $rollingWindowSize = 60000;
@@ -1901,7 +1902,7 @@ class Exchange {
             $this->last_response_headers = $response_headers;
         }
 
-        if ($this->enableRateLimit) {
+        if ($this->enableRateLimit && $this->enableRateLimitFeedback) {
             $this->update_rate_limiter_state($http_status_code, $http_status_text, $url, $method, $response_headers);
         }
 

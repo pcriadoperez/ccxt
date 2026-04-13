@@ -220,7 +220,7 @@ func (this *Exchange) Fetch(url interface{}, method interface{}, headers interfa
 			fmt.Printf("Response: %s\n", respBody)
 		}
 
-		if this.EnableRateLimit {
+		if this.EnableRateLimit && this.EnableRateLimitFeedback {
 			type rateLimiterUpdater interface {
 				UpdateRateLimiterState(statusCode interface{}, statusText interface{}, url interface{}, method interface{}, responseHeaders interface{})
 			}

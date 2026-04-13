@@ -262,7 +262,7 @@ class Exchange(BaseExchange):
                     self.last_response_headers = headers
                 if self.enableLastJsonResponse:
                     self.last_json_response = json_response
-                if self.enableRateLimit:
+                if self.enableRateLimit and self.enableRateLimitFeedback:
                     self.update_rate_limiter_state(http_status_code, http_status_text, url, method, headers)
                 if self.verbose:
                     self.log("\nfetch Response:", self.id, method, url, http_status_code, "ResponseHeaders:", headers, "ResponseBody:", http_response)

@@ -340,6 +340,7 @@ export default class Exchange {
     tokenBucket: Dictionary<number> = undefined;
     throttler: any = undefined;
     enableRateLimit: boolean = undefined;
+    enableRateLimitFeedback: boolean = true;
     rollingWindowSize: number = 0.0;  // set to 0.0 to use leaky bucket rate limiter
     rateLimiterAlgorithm: string = 'leakyBucket';
 
@@ -1102,7 +1103,7 @@ export default class Exchange {
             if (this.enableLastJsonResponse) {
                 this.last_json_response = parsedBody;
             }
-            if (this.enableRateLimit) {
+            if (this.enableRateLimit && this.enableRateLimitFeedback) {
                 this.updateRateLimiterState (response.status, response.statusText, url, method, responseHeaders);
             }
             if (this.verbose) {

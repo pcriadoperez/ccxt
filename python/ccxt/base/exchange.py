@@ -175,6 +175,7 @@ class Exchange(object):
     alias = False  # whether this exchange is an alias to another exchange
     # rate limiter settings
     enableRateLimit = True
+    enableRateLimitFeedback = True
     rateLimit = 2000  # milliseconds = seconds * 1000
     timeout = 10000   # milliseconds = seconds * 1000
     asyncio_loop = None
@@ -686,7 +687,7 @@ class Exchange(object):
                 self.last_json_response = json_response
             if self.enableLastResponseHeaders:
                 self.last_response_headers = headers
-            if self.enableRateLimit:
+            if self.enableRateLimit and self.enableRateLimitFeedback:
                 self.update_rate_limiter_state(http_status_code, http_status_text, url, method, headers)
             if self.verbose:
                 self.log("\nfetch Response:", self.id, method, url, http_status_code, "ResponseHeaders:", headers, "ResponseBody:", http_response)
