@@ -25,7 +25,7 @@ public class Throttler
     private readonly object queueLock = new object();
 
     private bool running = false;
-    private List<(long timestamp, double cost)> timestamps = new List<(long, double)>();
+    public List<(long timestamp, double cost)> timestamps = new List<(long, double)>();
 
     public Throttler(Dictionary<string, object> configInput)
     {
