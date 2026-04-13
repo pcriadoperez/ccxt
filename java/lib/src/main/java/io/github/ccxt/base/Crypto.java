@@ -539,8 +539,15 @@ public final class Crypto {
             raw = b;
         } else if (secret instanceof String s) {
             raw = Base64.getDecoder().decode(s);
+        } else if (secret instanceof java.util.List<?> list) {
+            // arraySlice returns List<Byte> — convert to byte[]
+            raw = new byte[list.size()];
+            for (int i = 0; i < list.size(); i++) {
+                Object elem = list.get(i);
+                if (elem instanceof Number n) raw[i] = n.byteValue();
+            }
         } else {
-            throw new IllegalArgumentException("Ed25519 secret must be byte[] or base64 String");
+            throw new IllegalArgumentException("Ed25519 secret must be byte[], base64 String, or List<Byte>, got: " + secret.getClass().getName());
         }
         if (raw.length == 32) {
             return raw;
