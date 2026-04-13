@@ -1962,9 +1962,8 @@ export default class bitget extends Exchange {
         [ uta, params ] = this.handleOptionAndParams (params, 'fetchMarkets', 'uta', false);
         if (uta) {
             return await this.fetchUtaMarkets (params);
-        } else {
-            return await this.fetchDefaultMarkets (params);
         }
+        return await this.fetchDefaultMarkets (params);
     }
 
     async fetchDefaultMarkets (params): Promise<Market[]> {

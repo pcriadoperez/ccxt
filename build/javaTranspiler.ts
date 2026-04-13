@@ -808,6 +808,15 @@ class NewTranspiler {
         // cast callDynamically to CompletableFuture when .join() is called on the result
         baseClass = baseClass.replace(/\(Helpers\.callDynamically\(([^)]+(?:\([^)]*\))*[^)]*)\)\)\.join\(\)/g, '((java.util.concurrent.CompletableFuture<Object>)Helpers.callDynamically($1)).join()');
 
+        // Remove unreachable "return null;" after throw/return statements (ast-transpiler 0.0.80)
+        // Pattern 1: throw directly followed by return null (same block)
+        baseClass = baseClass.replace(/throw ([^;]+) ;\n\s*return null;/g, 'throw $1 ;');
+        // Pattern 2: if/else where the else throws, followed by return null before });
+        // Only safe when else contains throw (not return) — throw always terminates
+        baseClass = this.removeUnreachableReturnNull(baseClass);
+        // Pattern 2: } closing an if/else where both branches terminate, followed by return null
+        // This is unreachable but the lambda requires a return — Java compiler sees it as error
+
         // // WS fixes
         // baseClass = baseClass.replace(/\(object client,/gm, '(WebSocketClient client,');
 
@@ -1051,6 +1060,22 @@ class NewTranspiler {
         // cast callDynamically to CompletableFuture when .join() is called on the result
         content = content.replace(/\(Helpers\.callDynamically\(([^)]+(?:\([^)]*\))*[^)]*)\)\)\.join\(\)/g, '((java.util.concurrent.CompletableFuture<Object>)Helpers.callDynamically($1)).join()');
 
+        // Remove unreachable "return null;" after throw/return statements (ast-transpiler 0.0.80)
+        content = content.replace(/throw ([^;]+) ;\n\s*return null;/g, 'throw $1 ;');
+        content = this.removeUnreachableReturnNull(content);
+        // Remove unreachable "return null;" after simple if/else where both branches
+        // directly return (single-line return in each branch, no nested control flow)
+        // Handle if/else where else has return (not throw): remove unreachable return null
+        // Pattern: "return X;\n    } else\n    {\n    return Y;\n    }\n    return null;\n    });"
+        // Safe because plain "} else" covers all paths, and else block ends with return
+        // Pattern: any line ending with "return X;\n  }\n  return null;\n  });" where the line
+        // before "}" starts the else block with "} else\n  {"
+        // Uses the removeReturnNullAfterElseReturn method for multi-line else blocks
+        // Handle simple if/else where both branches have a direct return as last line:
+        // } else\n {\n    return X;\n }\n return null;\n });
+        // Remove unreachable "return null;" for simple if/else where else ends with return.
+        // Uses line-by-line function to avoid greedy regex issues.
+
         // const baseWsClassRegex = /class\s(\w+)\s+:\s(\w+)/;
         // const baseWsClassExec = baseWsClassRegex.exec(content);
         // const baseWsClass = baseWsClassExec ? baseWsClassExec[2] : '';
@@ -1076,6 +1101,163 @@ class NewTranspiler {
         }
         content = this.createGeneratedHeader().join('\n') + '\n' + content;
         return javaImports + content;
+    }
+
+    /**
+     * Remove unreachable "return null;" lines that appear after if/else blocks where
+     * both branches terminate (return or throw). The ast-transpiler 0.0.80 adds these
+     * for safety but Java treats them as compilation errors.
+     */
+    removeUnreachableReturnNull(content: string): string {
+        const lines = content.split('\n');
+        const result: string[] = [];
+        for (let i = 0; i < lines.length; i++) {
+            // Check if this line is "return null;" and the next is "});" (lambda end)
+            if (lines[i].trim() === 'return null;' && i + 1 < lines.length && lines[i + 1].trim().startsWith('})')) {
+                // Check if the preceding non-empty line is "}" closing an else/else-if block
+                // that contains a throw or return
+                let j = i - 1;
+                while (j >= 0 && lines[j].trim() === '') j--;
+                if (j >= 0 && lines[j].trim() === '}') {
+                    // Look back further to check if the block contains throw or return
+                    let k = j - 1;
+                    while (k >= 0 && lines[k].trim() !== '{') k--;
+                    // Check the else block for throw (guaranteed unconditional termination).
+                    // We don't check for return because return might be inside a nested
+                    // if/for and not guaranteed to execute on all paths.
+                    let hasThrow = false;
+                    for (let l = k; l <= j; l++) {
+                        const trimmed = lines[l].trim();
+                        if (trimmed.startsWith('throw ')) {
+                            hasThrow = true;
+                            break;
+                        }
+                    }
+                    // Only safe with plain "} else" (not "} else if")
+                    let hasPlainElse = false;
+                    if (k > 0) {
+                        const beforeBlock = lines[k - 1].trim();
+                        hasPlainElse = beforeBlock === '} else';
+                    }
+                    if (hasThrow && hasPlainElse) {
+                        // Skip this "return null;" line — it's unreachable
+                        continue;
+                    }
+                }
+            }
+            result.push(lines[i]);
+        }
+        return result.join('\n');
+    }
+
+    /**
+     * Remove "return null;" after if/else where the else block's last statement is a return.
+     * More conservative than removeUnreachableReturnNull — only handles the else-return pattern.
+     */
+    removeReturnNullAfterElseReturn(content: string): string {
+        const lines = content.split('\n');
+        const result: string[] = [];
+        for (let i = 0; i < lines.length; i++) {
+            if (lines[i].trim() === 'return null;'
+                && i + 1 < lines.length && lines[i + 1].trim().startsWith('})')) {
+                // Check: preceding } then scan backward for "} else" + "{" pair
+                let j = i - 1;
+                while (j >= 0 && lines[j].trim() === '') j--;
+                if (j >= 0 && lines[j].trim() === '}') {
+                    const elseClose = j;
+                    // Scan backward to find "} else" line, tracking brace depth
+                    let depth = 1; // start with 1 for the closing }
+                    let elseStart = -1;
+                    for (let k = elseClose - 1; k >= 0; k--) {
+                        const t = lines[k].trim();
+                        if (t === '}') depth++;
+                        else if (t === '{') {
+                            depth--;
+                            if (depth === 0) {
+                                // Found the opening { of this block
+                                if (k > 0 && lines[k - 1].trim() === '} else') {
+                                    elseStart = k;
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    if (elseStart >= 0) {
+                        // Check that the last non-comment statement before } is a return
+                        let lastReturn = false;
+                        for (let k = elseClose - 1; k > elseStart; k--) {
+                            const t = lines[k].trim();
+                            if (t === '' || t.startsWith('//') || t === '}') continue;
+                            lastReturn = t.startsWith('return ');
+                            break;
+                        }
+                        if (lastReturn) {
+                            continue; // Skip return null — else block ends with return
+                        }
+                    }
+                }
+            }
+            result.push(lines[i]);
+        }
+        return result.join('\n');
+    }
+
+    /**
+     * Remove "return null;" after if { return } else { ...return } where BOTH branches
+     * guarantee a return. Uses brace-depth to find the exact else block boundaries,
+     * then checks that the else block's last statement (at depth 0 within the block) is a return
+     * and the if block's statement just before "} else" is also a return.
+     */
+    removeReturnNullAfterCompleteIfElse(content: string): string {
+        const lines = content.split('\n');
+        const result: string[] = [];
+        for (let i = 0; i < lines.length; i++) {
+            if (lines[i].trim() === 'return null;'
+                && i + 1 < lines.length && lines[i + 1].trim().startsWith('})')) {
+                let j = i - 1;
+                while (j >= 0 && lines[j].trim() === '') j--;
+                if (j >= 0 && lines[j].trim() === '}') {
+                    // Find matching { using depth tracking
+                    let depth = 0;
+                    let elseOpen = -1;
+                    for (let k = j; k >= 0; k--) {
+                        for (let c = lines[k].length - 1; c >= 0; c--) {
+                            if (lines[k][c] === '}') depth++;
+                            else if (lines[k][c] === '{') depth--;
+                        }
+                        if (depth === 0) {
+                            elseOpen = k;
+                            break;
+                        }
+                    }
+                    if (elseOpen >= 0 && elseOpen > 0 && lines[elseOpen - 1].trim() === '} else') {
+                        // Check else block: last non-empty/non-comment/non-brace line is return
+                        let elseLastReturn = false;
+                        for (let k = j - 1; k > elseOpen; k--) {
+                            const t = lines[k].trim();
+                            if (t === '' || t.startsWith('//') || t === '}' || t === '{') continue;
+                            elseLastReturn = t.startsWith('return ');
+                            break;
+                        }
+                        // Check if block: line before "} else" should be return
+                        let ifLastReturn = false;
+                        const elseKeyLine = elseOpen - 1; // "} else" line
+                        // Find the line before } in "} else" — scan backward
+                        for (let k = elseKeyLine - 1; k >= 0; k--) {
+                            const t = lines[k].trim();
+                            if (t === '' || t.startsWith('//') || t === '}' || t === '{') continue;
+                            ifLastReturn = t.startsWith('return ');
+                            break;
+                        }
+                        if (elseLastReturn && ifLastReturn) {
+                            continue; // Skip unreachable return null;
+                        }
+                    }
+                }
+            }
+            result.push(lines[i]);
+        }
+        return result.join('\n');
     }
 
     /**
