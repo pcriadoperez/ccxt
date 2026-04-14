@@ -14,25 +14,53 @@ class FetchResult:
 
 # Max concurrent page fetches to avoid overwhelming the browser
 MAX_CONCURRENCY = 5
-DEFAULT_TIMEOUT_MS = 30000
+DEFAULT_TIMEOUT_MS = 45000
+MAX_RETRIES = 3
+RETRY_DELAY = 2  # seconds between retries
 
 
 async def _fetch_one(browser, url: str, timeout_ms: int) -> FetchResult:
-    """Fetch a single URL in a new page. Returns FetchResult (never raises)."""
-    try:
-        page = await browser.new_page()
+    """Fetch a single URL with retries. Returns FetchResult (never raises)."""
+    last_error = None
+    for attempt in range(MAX_RETRIES):
         try:
-            await page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
-            # Give JS a moment to render dynamic content
-            await page.wait_for_timeout(2000)
-            content = await page.inner_text("body")
-            if not content or not content.strip():
-                return FetchResult(content=None, error="Empty page content")
-            return FetchResult(content=content.strip(), error=None)
-        finally:
-            await page.close()
-    except Exception as e:
-        return FetchResult(content=None, error=str(e))
+            context = await browser.new_context(
+                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+                extra_http_headers={
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                },
+            )
+            page = await context.new_page()
+            try:
+                # Try networkidle first for JS-heavy pages, fall back to domcontentloaded
+                try:
+                    await page.goto(url, timeout=timeout_ms, wait_until="networkidle")
+                except Exception:
+                    await page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
+                    await page.wait_for_timeout(3000)
+
+                content = await page.inner_text("body")
+                if content and content.strip():
+                    return FetchResult(content=content.strip(), error=None)
+
+                # Page loaded but body is empty — wait longer for JS rendering
+                await page.wait_for_timeout(3000)
+                content = await page.inner_text("body")
+                if content and content.strip():
+                    return FetchResult(content=content.strip(), error=None)
+
+                last_error = "Empty page content after waiting"
+            finally:
+                await page.close()
+                await context.close()
+        except Exception as e:
+            last_error = str(e)
+
+        if attempt < MAX_RETRIES - 1:
+            await asyncio.sleep(RETRY_DELAY * (attempt + 1))
+
+    return FetchResult(content=None, error=f"Failed after {MAX_RETRIES} attempts: {last_error}")
 
 
 async def _fetch_all_async(

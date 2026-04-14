@@ -212,8 +212,6 @@ bybit:
   changelog_urls:
     - label: v5-changelog
       url: "https://bybit-exchange.github.io/docs/changelog/v5"
-    - label: announcements
-      url: "https://www.bybit.com/en/announcement-info/api-update/"
 
 bydfi:
   name: BYDFi

@@ -259,14 +259,9 @@ def cmd_run(args):
             if not result:
                 continue
 
-            # Handle fetch errors
+            # Handle fetch errors — just log, don't create issues
             if result.error:
                 print(f"  [{exchange_id}/{label}] Fetch failed: {result.error}")
-                if not dry_run:
-                    title = f"[{name}] Changelog fetch failed ({label})"
-                    existing = search_github_issues(exchange_id)
-                    if not any("fetch failed" in t.lower() for t in existing):
-                        create_review_issue(title, f"Error: {result.error}\n\nURL: {url}\nSource: {label}")
                 continue
 
             # Hash comparison
