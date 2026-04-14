@@ -4369,10 +4369,11 @@ export default class okx extends Exchange {
      */
     async fetchOpenOrders (symbol: Str = undefined, since: Int = undefined, limit: Int = undefined, params = {}): Promise<Order[]> {
         await this.loadMarkets ();
+        const maxLimit = 100;
         let paginate = false;
         [ paginate, params ] = this.handleOptionAndParams (params, 'fetchOpenOrders', 'paginate');
         if (paginate) {
-            return await this.fetchPaginatedCallDynamic ('fetchOpenOrders', symbol, since, limit, params) as Order[];
+            return await this.fetchPaginatedCallDynamic ('fetchOpenOrders', symbol, since, limit, params, maxLimit) as Order[];
         }
         const request: Dict = {
             // 'instType': 'SPOT', // SPOT, MARGIN, SWAP, FUTURES, OPTION
@@ -4390,7 +4391,7 @@ export default class okx extends Exchange {
             request['instId'] = market['id'];
         }
         if (limit !== undefined) {
-            request['limit'] = limit; // default 100, max 100
+            request['limit'] = Math.min (limit, maxLimit); // default 100, max 100
         }
         const options = this.safeValue (this.options, 'fetchOpenOrders', {});
         const algoOrderTypes = this.safeValue (this.options, 'algoOrderTypes', {});
@@ -4720,10 +4721,11 @@ export default class okx extends Exchange {
      */
     async fetchClosedOrders (symbol: Str = undefined, since: Int = undefined, limit: Int = undefined, params = {}): Promise<Order[]> {
         await this.loadMarkets ();
+        const maxLimit = 100;
         let paginate = false;
         [ paginate, params ] = this.handleOptionAndParams (params, 'fetchClosedOrders', 'paginate');
         if (paginate) {
-            return await this.fetchPaginatedCallDynamic ('fetchClosedOrders', symbol, since, limit, params) as Order[];
+            return await this.fetchPaginatedCallDynamic ('fetchClosedOrders', symbol, since, limit, params, maxLimit) as Order[];
         }
         const request: Dict = {
             // 'instType': type.toUpperCase (), // SPOT, MARGIN, SWAP, FUTURES, OPTION
@@ -4746,7 +4748,7 @@ export default class okx extends Exchange {
         [ type, query ] = this.handleMarketTypeAndParams ('fetchClosedOrders', market, params);
         request['instType'] = this.convertToInstrumentType (type);
         if (limit !== undefined) {
-            request['limit'] = limit; // default 100, max 100
+            request['limit'] = Math.min (limit, maxLimit); // default 100, max 100
         }
         const options = this.safeDict (this.options, 'fetchClosedOrders', {});
         const algoOrderTypes = this.safeDict (this.options, 'algoOrderTypes', {});

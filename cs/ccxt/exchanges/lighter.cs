@@ -318,6 +318,8 @@ public partial class lighter : Exchange
                 { "apiKeyIndex", null },
                 { "wasmExecPath", null },
                 { "libraryPath", null },
+                { "authDeadlineExpiry", 28800 },
+                { "authDeadlineMinimumRemaining", 60 },
             } },
             { "features", new Dictionary<string, object>() {
                 { "default", new Dictionary<string, object>() {
@@ -497,12 +499,38 @@ public partial class lighter : Exchange
             object res = this.handleOptionAndParams2(new Dictionary<string, object>() {}, "createAuth", "accountIndex", "account_index");
             accountIndex = this.safeInteger(res, 0);
         }
-        object rs = new Dictionary<string, object>() {
-            { "deadline", add(this.seconds(), 60) },
+        object auths = this.safeDict(this.options, "auths");
+        object accountAuths = this.safeDict(auths, accountIndex);
+        object cachedAuth = this.safeDict(accountAuths, apiKeyIndex);
+        object cachedDeadline = this.safeInteger(cachedAuth, "deadline");
+        if (isTrue(!isEqual(cachedDeadline, null)))
+        {
+            object minimumDeadline = add(this.seconds(), this.safeInteger(this.options, "authDeadlineMinimumRemaining"));
+            if (isTrue(isGreaterThanOrEqual(cachedDeadline, minimumDeadline)))
+            {
+                return this.safeString(cachedAuth, "token");
+            }
+        }
+        object deadline = add(this.seconds(), this.safeInteger(this.options, "authDeadlineExpiry"));
+        object request = new Dictionary<string, object>() {
+            { "deadline", deadline },
             { "api_key_index", apiKeyIndex },
             { "account_index", accountIndex },
         };
-        return this.lighterCreateAuthToken(this.safeValue(this.options, "signer"), rs);
+        object token = this.lighterCreateAuthToken(this.safeValue(this.options, "signer"), request);
+        if (!isTrue((inOp(this.options, "auths"))))
+        {
+            ((IDictionary<string,object>)this.options)["auths"] = new Dictionary<string, object>() {};
+        }
+        if (!isTrue((inOp(getValue(this.options, "auths"), accountIndex))))
+        {
+            ((List<object>)getValue(this.options, "auths"))[Convert.ToInt32(accountIndex)] = new Dictionary<string, object>() {};
+        }
+        ((List<object>)getValue(getValue(this.options, "auths"), accountIndex))[Convert.ToInt32(apiKeyIndex)] = new Dictionary<string, object>() {
+            { "deadline", deadline },
+            { "token", token },
+        };
+        return token;
     }
 
     public virtual object pow(object n, object m)
@@ -974,61 +1002,110 @@ public partial class lighter : Exchange
         parameters ??= new Dictionary<string, object>();
         object response = await this.publicGetOrderBookDetails(parameters);
         //
-        //     {
-        //         "code": 200,
-        //         "order_book_details": [
-        //             {
-        //                 "symbol": "ETH",
-        //                 "market_id": 0,
-        //                 "status": "active",
-        //                 "taker_fee": "0.0000",
-        //                 "maker_fee": "0.0000",
-        //                 "liquidation_fee": "1.0000",
-        //                 "min_base_amount": "0.0050",
-        //                 "min_quote_amount": "10.000000",
-        //                 "order_quote_limit": "",
-        //                 "supported_size_decimals": 4,
-        //                 "supported_price_decimals": 2,
-        //                 "supported_quote_decimals": 6,
-        //                 "size_decimals": 4,
-        //                 "price_decimals": 2,
-        //                 "quote_multiplier": 1,
-        //                 "default_initial_margin_fraction": 500,
-        //                 "min_initial_margin_fraction": 200,
-        //                 "maintenance_margin_fraction": 120,
-        //                 "closeout_margin_fraction": 80,
-        //                 "last_trade_price": 3550.69,
-        //                 "daily_trades_count": 1197349,
-        //                 "daily_base_token_volume": 481297.3509,
-        //                 "daily_quote_token_volume": 1671431095.263844,
-        //                 "daily_price_low": 3402.41,
-        //                 "daily_price_high": 3571.45,
-        //                 "daily_price_change": 0.5294300840859545,
-        //                 "open_interest": 39559.3278,
-        //                 "daily_chart": {},
-        //                 "market_config": {
-        //                     "market_margin_mode": 0,
-        //                     "insurance_fund_account_index": 281474976710655,
-        //                     "liquidation_mode": 0,
-        //                     "force_reduce_only": false,
-        //                     "trading_hours": ""
-        //                 }
-        //             }
-        //         ]
-        //     }
+        //    {
+        //        "code": "200",
+        //        "message": "string",
+        //        "order_book_details": [
+        //            {
+        //                "symbol": "ETH",
+        //                "market_id": 0,
+        //                "market_type": "perp",
+        //                "base_asset_id": 0,
+        //                "quote_asset_id": 0,
+        //                "status": "active",
+        //                "taker_fee": "0.0001",
+        //                "maker_fee": "0.0000",
+        //                "liquidation_fee": "0.01",
+        //                "min_base_amount": "0.01",
+        //                "min_quote_amount": "0.1",
+        //                "supported_size_decimals": "4",
+        //                "supported_price_decimals": "4",
+        //                "supported_quote_decimals": "4",
+        //                "order_quote_limit": "281474976.710655",
+        //                "size_decimals": "4",
+        //                "price_decimals": "4",
+        //                "quote_multiplier": "10000",
+        //                "default_initial_margin_fraction": "100",
+        //                "min_initial_margin_fraction": "100",
+        //                "maintenance_margin_fraction": "50",
+        //                "closeout_margin_fraction": "100",
+        //                "last_trade_price": "3024.66",
+        //                "daily_trades_count": "68",
+        //                "daily_base_token_volume": "235.25",
+        //                "daily_quote_token_volume": "93566.25",
+        //                "daily_price_low": "3014.66",
+        //                "daily_price_high": "3024.66",
+        //                "daily_price_change": "3.66",
+        //                "open_interest": "93.0",
+        //                "daily_chart": "{1640995200:3024.66}",
+        //                "market_config": {
+        //                    "market_margin_mode": 0,
+        //                    "insurance_fund_account_index": 281474976710655,
+        //                    "liquidation_mode": 0,
+        //                    "force_reduce_only": false,
+        //                    "funding_fee_discounts_enabled": true,
+        //                    "trading_hours": "",
+        //                    "hidden": true
+        //                },
+        //                "strategy_index": 0
+        //            }
+        //        ],
+        //        "spot_order_book_details": [
+        //            {
+        //                "symbol": "ETH/USDC",
+        //                "market_id": 2048,
+        //                "market_type": "spot",
+        //                "base_asset_id": 1,
+        //                "quote_asset_id": 3,
+        //                "status": "active",
+        //                "taker_fee": "0.0000",
+        //                "maker_fee": "0.0000",
+        //                "liquidation_fee": "0.0000",
+        //                "min_base_amount": "0.0001",
+        //                "min_quote_amount": "0.000001",
+        //                "order_quote_limit": "2500000.000000",
+        //                "supported_size_decimals": 4,
+        //                "supported_price_decimals": 2,
+        //                "supported_quote_decimals": 6,
+        //                "size_decimals": 4,
+        //                "price_decimals": 2,
+        //                "last_trade_price": 2731.79,
+        //                "daily_trades_count": 126993,
+        //                "daily_base_token_volume": 1203.0962,
+        //                "daily_quote_token_volume": 3516374.947553,
+        //                "daily_price_low": 2717.47,
+        //                "daily_price_high": 3044.21,
+        //                "daily_price_change": -10.2389493724579,
+        //                "daily_chart": "{1640995200:3024.66}"
+        //            }
+        //        ]
+        //    }
         //
-        object markets = this.safeList(response, "order_book_details", new List<object>() {});
+        object spotMarkets = this.safeList(response, "spot_order_book_details", new List<object>() {});
+        object swapMarkets = this.safeList(response, "order_book_details", new List<object>() {});
+        object markets = this.arrayConcat(spotMarkets, swapMarkets);
         object result = new List<object>() {};
         for (object i = 0; isLessThan(i, getArrayLength(markets)); postFixIncrement(ref i))
         {
             object market = getValue(markets, i);
             object id = this.safeString(market, "market_id");
+            object type = this.safeString(market, "market_type");
+            type = ((bool) isTrue((isEqual(type, "perp")))) ? "swap" : type;
             object baseId = this.safeString(market, "symbol");
+            if (isTrue(isTrue(!isEqual(baseId, null)) && isTrue(!isEqual(getIndexOf(baseId, "/"), -1))))
+            {
+                baseId = getValue(((string)baseId).Split(new [] {((string)"/")}, StringSplitOptions.None).ToList<object>(), 0);
+            }
             object quoteId = "USDC";
-            object settleId = "USDC";
+            object settleId = ((bool) isTrue((isEqual(type, "swap")))) ? "USDC" : null;
             object bs = this.safeCurrencyCode(baseId);
             object quote = this.safeCurrencyCode(quoteId);
             object settle = this.safeCurrencyCode(settleId);
+            object symbol = add(add(bs, "/"), quote);
+            if (isTrue(!isEqual(settle, null)))
+            {
+                symbol = add(add(symbol, ":"), settle);
+            }
             object amountDecimals = this.safeString2(market, "size_decimals", "supported_size_decimals");
             object priceDecimals = this.safeString2(market, "price_decimals", "supported_price_decimals");
             object amountPrecision = ((bool) isTrue((isEqual(amountDecimals, null)))) ? null : this.parseNumber(this.parsePrecision(amountDecimals));
@@ -1036,23 +1113,23 @@ public partial class lighter : Exchange
             object quoteMultiplier = this.safeNumber(market, "quote_multiplier");
             ((IList<object>)result).Add(new Dictionary<string, object>() {
                 { "id", id },
-                { "symbol", add(add(add(add(bs, "/"), quote), ":"), settle) },
+                { "symbol", symbol },
                 { "base", bs },
                 { "quote", quote },
                 { "settle", settle },
                 { "baseId", baseId },
                 { "quoteId", quoteId },
                 { "settleId", settleId },
-                { "type", "swap" },
-                { "spot", false },
+                { "type", type },
+                { "spot", isEqual(type, "spot") },
                 { "margin", false },
-                { "swap", true },
+                { "swap", isEqual(type, "swap") },
                 { "future", false },
                 { "option", false },
                 { "active", isEqual(this.safeString(market, "status"), "active") },
-                { "contract", true },
-                { "linear", true },
-                { "inverse", false },
+                { "contract", isEqual(type, "swap") },
+                { "linear", ((bool) isTrue((isEqual(type, "swap")))) ? true : null },
+                { "inverse", ((bool) isTrue((isEqual(type, "swap")))) ? false : null },
                 { "taker", this.safeNumber(market, "taker_fee") },
                 { "maker", this.safeNumber(market, "maker_fee") },
                 { "contractSize", quoteMultiplier },
@@ -1079,7 +1156,7 @@ public partial class lighter : Exchange
                     } },
                     { "cost", new Dictionary<string, object>() {
                         { "min", this.safeNumber(market, "min_quote_amount") },
-                        { "max", null },
+                        { "max", this.safeNumber(market, "order_quote_limit") },
                     } },
                 } },
                 { "created", null },
@@ -1389,8 +1466,10 @@ public partial class lighter : Exchange
         //         ]
         //     }
         //
-        object data = this.safeList(response, "order_book_details", new List<object>() {});
-        object first = this.safeDict(data, 0, new Dictionary<string, object>() {});
+        object spotTickers = this.safeList(response, "spot_order_book_details", new List<object>() {});
+        object swapTickers = this.safeList(response, "order_book_details", new List<object>() {});
+        object tickers = this.arrayConcat(spotTickers, swapTickers);
+        object first = this.safeDict(tickers, 0, new Dictionary<string, object>() {});
         return this.parseTicker(first, market);
     }
 
@@ -1409,7 +1488,9 @@ public partial class lighter : Exchange
         await this.loadMarkets();
         symbols = this.marketSymbols(symbols);
         object response = await this.publicGetOrderBookDetails(parameters);
-        object tickers = this.safeList(response, "order_book_details", new List<object>() {});
+        object spotTickers = this.safeList(response, "spot_order_book_details", new List<object>() {});
+        object swapTickers = this.safeList(response, "order_book_details", new List<object>() {});
+        object tickers = this.arrayConcat(spotTickers, swapTickers);
         return this.parseTickers(tickers, symbols);
     }
 
@@ -1603,6 +1684,7 @@ public partial class lighter : Exchange
      * @param {object} [params] extra parameters specific to the exchange API endpoint
      * @param {string} [params.by] fetch balance by 'index' or 'l1_address', defaults to 'index'
      * @param {string} [params.value] fetch balance value, account index or l1 address
+     * @param {string} [params.type] 'spot', 'swap', default is 'swap'
      * @returns {object} a [balance structure]{@link https://docs.ccxt.com/?id=balance-structure}
      */
     public async override Task<object> fetchBalance(object parameters = null)
@@ -1686,9 +1768,11 @@ public partial class lighter : Exchange
                 }
             } else
             {
-                object perpUSDC = this.safeString(account, "collateral");
-                object perpBalance = this.safeDict(result, "USDC(PERP)", this.account());
-                ((IDictionary<string,object>)perpBalance)["total"] = Precise.stringAdd(getValue(perpBalance, "total"), perpUSDC);
+                object perpBalance = this.safeDict(result, "USDC", this.account());
+                object perpUSDCTotal = this.safeString(account, "collateral");
+                object perpUSDCFree = this.safeString(account, "available_balance");
+                ((IDictionary<string,object>)perpBalance)["total"] = Precise.stringAdd(getValue(perpBalance, "total"), perpUSDCTotal);
+                ((IDictionary<string,object>)perpBalance)["free"] = Precise.stringAdd(getValue(perpBalance, "free"), perpUSDCFree);
                 ((IDictionary<string,object>)result)["USDC"] = perpBalance;
             }
         }

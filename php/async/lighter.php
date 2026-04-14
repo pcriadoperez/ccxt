@@ -348,6 +348,8 @@ class lighter extends Exchange {
                 'apiKeyIndex' => null,
                 'wasmExecPath' => null, // [JS Only] users should set the path to wasm_exec.js. It can be downloaded here https://github.com/ccxt/lighter-wasm
                 'libraryPath' => null, // users should set the path to the lighter signing library. It can be downloaded here https://github.com/elliottech/lighter-python/tree/main/lighter/signers, GO users don't need it
+                'authDeadlineExpiry' => 28800, // 8h validity for auth tokens
+                'authDeadlineMinimumRemaining' => 60,
             ),
             'features' => array(
                 'default' => array(
@@ -485,7 +487,7 @@ class lighter extends Exchange {
     }
 
     public function create_auth($params = array ()) {
-        // don't omit [$accountIndex, $apiKeyIndex], request may need them
+        // don't omit [$accountIndex, $apiKeyIndex], $request may need them
         $apiKeyIndex = $this->safe_integer_2($params, 'apiKeyIndex', 'api_key_index');
         if ($apiKeyIndex === null) {
             $res = $this->handle_option_and_params_2(array(), 'createAuth', 'apiKeyIndex', 'api_key_index');
@@ -496,12 +498,34 @@ class lighter extends Exchange {
             $res = $this->handle_option_and_params_2(array(), 'createAuth', 'accountIndex', 'account_index');
             $accountIndex = $this->safe_integer($res, 0);
         }
-        $rs = array(
-            'deadline' => $this->seconds() + 60,
+        $auths = $this->safe_dict($this->options, 'auths');
+        $accountAuths = $this->safe_dict($auths, $accountIndex);
+        $cachedAuth = $this->safe_dict($accountAuths, $apiKeyIndex);
+        $cachedDeadline = $this->safe_integer($cachedAuth, 'deadline');
+        if ($cachedDeadline !== null) {
+            $minimumDeadline = $this->seconds() . $this->safe_integer($this->options, 'authDeadlineMinimumRemaining');
+            if ($cachedDeadline >= $minimumDeadline) {
+                return $this->safe_string($cachedAuth, 'token');
+            }
+        }
+        $deadline = $this->seconds() . $this->safe_integer($this->options, 'authDeadlineExpiry');
+        $request = array(
+            'deadline' => $deadline,
             'api_key_index' => $apiKeyIndex,
             'account_index' => $accountIndex,
         );
-        return $this->lighter_create_auth_token($this->safe_value($this->options, 'signer'), $rs);
+        $token = $this->lighter_create_auth_token($this->safe_value($this->options, 'signer'), $request);
+        if (!(is_array($this->options) && array_key_exists('auths', $this->options))) {
+            $this->options['auths'] = array();
+        }
+        if (!(is_array($this->options['auths']) && array_key_exists($accountIndex, $this->options['auths']))) {
+            $this->options['auths'][$accountIndex] = array();
+        }
+        $this->options['auths'][$accountIndex][$apiKeyIndex] = array(
+            'deadline' => $deadline,
+            'token' => $token,
+        );
+        return $token;
     }
 
     public function pow(string $n, string $m) {
@@ -897,60 +921,107 @@ class lighter extends Exchange {
              */
             $response = Async\await($this->publicGetOrderBookDetails ($params));
             //
-            //     {
-            //         "code" => 200,
-            //         "order_book_details" => array(
-            //             {
-            //                 "symbol" => "ETH",
-            //                 "market_id" => 0,
-            //                 "status" => "active",
-            //                 "taker_fee" => "0.0000",
-            //                 "maker_fee" => "0.0000",
-            //                 "liquidation_fee" => "1.0000",
-            //                 "min_base_amount" => "0.0050",
-            //                 "min_quote_amount" => "10.000000",
-            //                 "order_quote_limit" => "",
-            //                 "supported_size_decimals" => 4,
-            //                 "supported_price_decimals" => 2,
-            //                 "supported_quote_decimals" => 6,
-            //                 "size_decimals" => 4,
-            //                 "price_decimals" => 2,
-            //                 "quote_multiplier" => 1,
-            //                 "default_initial_margin_fraction" => 500,
-            //                 "min_initial_margin_fraction" => 200,
-            //                 "maintenance_margin_fraction" => 120,
-            //                 "closeout_margin_fraction" => 80,
-            //                 "last_trade_price" => 3550.69,
-            //                 "daily_trades_count" => 1197349,
-            //                 "daily_base_token_volume" => 481297.3509,
-            //                 "daily_quote_token_volume" => 1671431095.263844,
-            //                 "daily_price_low" => 3402.41,
-            //                 "daily_price_high" => 3571.45,
-            //                 "daily_price_change" => 0.5294300840859545,
-            //                 "open_interest" => 39559.3278,
-            //                 "daily_chart" => array(),
-            //                 "market_config" => {
-            //                     "market_margin_mode" => 0,
-            //                     "insurance_fund_account_index" => 281474976710655,
-            //                     "liquidation_mode" => 0,
-            //                     "force_reduce_only" => false,
-            //                     "trading_hours" => ""
-            //                 }
-            //             }
-            //         )
-            //     }
+            //    {
+            //        "code" => "200",
+            //        "message" => "string",
+            //        "order_book_details" => array(
+            //            {
+            //                "symbol" => "ETH",
+            //                "market_id" => 0,
+            //                "market_type" => "perp",
+            //                "base_asset_id" => 0,
+            //                "quote_asset_id" => 0,
+            //                "status" => "active",
+            //                "taker_fee" => "0.0001",
+            //                "maker_fee" => "0.0000",
+            //                "liquidation_fee" => "0.01",
+            //                "min_base_amount" => "0.01",
+            //                "min_quote_amount" => "0.1",
+            //                "supported_size_decimals" => "4",
+            //                "supported_price_decimals" => "4",
+            //                "supported_quote_decimals" => "4",
+            //                "order_quote_limit" => "281474976.710655",
+            //                "size_decimals" => "4",
+            //                "price_decimals" => "4",
+            //                "quote_multiplier" => "10000",
+            //                "default_initial_margin_fraction" => "100",
+            //                "min_initial_margin_fraction" => "100",
+            //                "maintenance_margin_fraction" => "50",
+            //                "closeout_margin_fraction" => "100",
+            //                "last_trade_price" => "3024.66",
+            //                "daily_trades_count" => "68",
+            //                "daily_base_token_volume" => "235.25",
+            //                "daily_quote_token_volume" => "93566.25",
+            //                "daily_price_low" => "3014.66",
+            //                "daily_price_high" => "3024.66",
+            //                "daily_price_change" => "3.66",
+            //                "open_interest" => "93.0",
+            //                "daily_chart" => "array(1640995200:3024.66)",
+            //                "market_config" => array(
+            //                    "market_margin_mode" => 0,
+            //                    "insurance_fund_account_index" => 281474976710655,
+            //                    "liquidation_mode" => 0,
+            //                    "force_reduce_only" => false,
+            //                    "funding_fee_discounts_enabled" => true,
+            //                    "trading_hours" => "",
+            //                    "hidden" => true
+            //                ),
+            //                "strategy_index" => 0
+            //            }
+            //        ),
+            //        "spot_order_book_details" => array(
+            //            {
+            //                "symbol" => "ETH/USDC",
+            //                "market_id" => 2048,
+            //                "market_type" => "spot",
+            //                "base_asset_id" => 1,
+            //                "quote_asset_id" => 3,
+            //                "status" => "active",
+            //                "taker_fee" => "0.0000",
+            //                "maker_fee" => "0.0000",
+            //                "liquidation_fee" => "0.0000",
+            //                "min_base_amount" => "0.0001",
+            //                "min_quote_amount" => "0.000001",
+            //                "order_quote_limit" => "2500000.000000",
+            //                "supported_size_decimals" => 4,
+            //                "supported_price_decimals" => 2,
+            //                "supported_quote_decimals" => 6,
+            //                "size_decimals" => 4,
+            //                "price_decimals" => 2,
+            //                "last_trade_price" => 2731.79,
+            //                "daily_trades_count" => 126993,
+            //                "daily_base_token_volume" => 1203.0962,
+            //                "daily_quote_token_volume" => 3516374.947553,
+            //                "daily_price_low" => 2717.47,
+            //                "daily_price_high" => 3044.21,
+            //                "daily_price_change" => -10.2389493724579,
+            //                "daily_chart" => "array(1640995200:3024.66)"
+            //            }
+            //        )
+            //    }
             //
-            $markets = $this->safe_list($response, 'order_book_details', array());
+            $spotMarkets = $this->safe_list($response, 'spot_order_book_details', array());
+            $swapMarkets = $this->safe_list($response, 'order_book_details', array());
+            $markets = $this->array_concat($spotMarkets, $swapMarkets);
             $result = array();
             for ($i = 0; $i < count($markets); $i++) {
                 $market = $markets[$i];
                 $id = $this->safe_string($market, 'market_id');
+                $type = $this->safe_string($market, 'market_type');
+                $type = ($type === 'perp') ? 'swap' : $type;
                 $baseId = $this->safe_string($market, 'symbol');
+                if ($baseId !== null && mb_strpos($baseId, '/') !== -1) {
+                    $baseId = explode('/', $baseId)[0];
+                }
                 $quoteId = 'USDC';
-                $settleId = 'USDC';
+                $settleId = ($type === 'swap') ? 'USDC' : null;
                 $base = $this->safe_currency_code($baseId);
                 $quote = $this->safe_currency_code($quoteId);
                 $settle = $this->safe_currency_code($settleId);
+                $symbol = $base . '/' . $quote;
+                if ($settle !== null) {
+                    $symbol = $symbol . ':' . $settle;
+                }
                 $amountDecimals = $this->safe_string_2($market, 'size_decimals', 'supported_size_decimals');
                 $priceDecimals = $this->safe_string_2($market, 'price_decimals', 'supported_price_decimals');
                 $amountPrecision = ($amountDecimals === null) ? null : $this->parse_number($this->parse_precision($amountDecimals));
@@ -958,23 +1029,23 @@ class lighter extends Exchange {
                 $quoteMultiplier = $this->safe_number($market, 'quote_multiplier');
                 $result[] = array(
                     'id' => $id,
-                    'symbol' => $base . '/' . $quote . ':' . $settle,
+                    'symbol' => $symbol,
                     'base' => $base,
                     'quote' => $quote,
                     'settle' => $settle,
                     'baseId' => $baseId,
                     'quoteId' => $quoteId,
                     'settleId' => $settleId,
-                    'type' => 'swap',
-                    'spot' => false,
+                    'type' => $type,
+                    'spot' => $type === 'spot',
                     'margin' => false,
-                    'swap' => true,
+                    'swap' => $type === 'swap',
                     'future' => false,
                     'option' => false,
                     'active' => $this->safe_string($market, 'status') === 'active',
-                    'contract' => true,
-                    'linear' => true,
-                    'inverse' => false,
+                    'contract' => $type === 'swap',
+                    'linear' => ($type === 'swap') ? true : null,
+                    'inverse' => ($type === 'swap') ? false : null,
                     'taker' => $this->safe_number($market, 'taker_fee'),
                     'maker' => $this->safe_number($market, 'maker_fee'),
                     'contractSize' => $quoteMultiplier,
@@ -1001,7 +1072,7 @@ class lighter extends Exchange {
                         ),
                         'cost' => array(
                             'min' => $this->safe_number($market, 'min_quote_amount'),
-                            'max' => null,
+                            'max' => $this->safe_number($market, 'order_quote_limit'),
                         ),
                     ),
                     'created' => null,
@@ -1305,8 +1376,10 @@ class lighter extends Exchange {
             //         )
             //     }
             //
-            $data = $this->safe_list($response, 'order_book_details', array());
-            $first = $this->safe_dict($data, 0, array());
+            $spotTickers = $this->safe_list($response, 'spot_order_book_details', array());
+            $swapTickers = $this->safe_list($response, 'order_book_details', array());
+            $tickers = $this->array_concat($spotTickers, $swapTickers);
+            $first = $this->safe_dict($tickers, 0, array());
             return $this->parse_ticker($first, $market);
         }) ();
     }
@@ -1325,7 +1398,9 @@ class lighter extends Exchange {
             Async\await($this->load_markets());
             $symbols = $this->market_symbols($symbols);
             $response = Async\await($this->publicGetOrderBookDetails ($params));
-            $tickers = $this->safe_list($response, 'order_book_details', array());
+            $spotTickers = $this->safe_list($response, 'spot_order_book_details', array());
+            $swapTickers = $this->safe_list($response, 'order_book_details', array());
+            $tickers = $this->array_concat($spotTickers, $swapTickers);
             return $this->parse_tickers($tickers, $symbols);
         }) ();
     }
@@ -1516,6 +1591,7 @@ class lighter extends Exchange {
              * @param {array} [$params] extra parameters specific to the exchange API endpoint
              * @param {string} [$params->by] fetch $balance by 'index' or 'l1_address', defaults to 'index'
              * @param {string} [$params->value] fetch $balance value, $account index or l1 address
+             * @param {string} [$params->type] 'spot', 'swap', default is 'swap'
              * @return {array} a ~@link https://docs.ccxt.com/?id=$balance-structure $balance structure~
              */
             Async\await($this->load_markets());
@@ -1588,9 +1664,11 @@ class lighter extends Exchange {
                         $result[$code] = $balance;
                     }
                 } else {
-                    $perpUSDC = $this->safe_string($account, 'collateral');
-                    $perpBalance = $this->safe_dict($result, 'USDC(PERP)', $this->account());
-                    $perpBalance['total'] = Precise::string_add($perpBalance['total'], $perpUSDC);
+                    $perpBalance = $this->safe_dict($result, 'USDC', $this->account());
+                    $perpUSDCTotal = $this->safe_string($account, 'collateral');
+                    $perpUSDCFree = $this->safe_string($account, 'available_balance');
+                    $perpBalance['total'] = Precise::string_add($perpBalance['total'], $perpUSDCTotal);
+                    $perpBalance['free'] = Precise::string_add($perpBalance['free'], $perpUSDCFree);
                     $result['USDC'] = $perpBalance;
                 }
             }
