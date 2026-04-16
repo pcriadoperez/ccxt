@@ -2101,10 +2101,9 @@ export default class cryptocom extends Exchange {
         const depositAddresses = await this.fetchDepositAddressesByNetwork (code, params);
         if (network in depositAddresses) {
             return depositAddresses[network];
-        } else {
-            const keys = Object.keys (depositAddresses);
-            return depositAddresses[keys[0]];
         }
+        const keys = Object.keys (depositAddresses);
+        return depositAddresses[keys[0]];
     }
 
     /**

@@ -496,41 +496,69 @@ public final class Crypto {
     // ====================================================
 
     public static Object Eddsa(Object request, Object secret, Object alg) {
-        // // alg kept for parity; only ed25519 supported here
-        // byte[] msg = (request instanceof String) ? toUtf8(request) : (byte[]) request;
+        try {
+            byte[] msg = (request instanceof String) ? toUtf8(request) : (byte[]) request;
+            byte[] seed = extractEd25519Seed(secret);
 
-        // Ed25519Signer signer = new Ed25519Signer();
-        // Ed25519PrivateKeyParameters priv;
-        // if (secret instanceof String s) {
-        //     // accept raw base64 PEM body or full PEM
-        //     String pem = s.startsWith("-----BEGIN") ? s : "-----BEGIN PRIVATE KEY-----\n" + s + "\n-----END PRIVATE KEY-----";
-        //     try (PEMParser parser = new PEMParser(new StringReader(pem))) {
-        //         Object obj = parser.readObject();
-        //         if (obj instanceof PEMKeyPair pkp) {
-        //             PrivateKeyInfo pki = pkp.getPrivateKeyInfo();
-        //             byte[] keyBytes = pki.parsePrivateKey().toASN1Primitive().getEncoded();
-        //             // Ed25519PrivateKeyParameters expects 32-byte seed; try to extract
-        //             // BouncyCastle encodes PKCS#8 – rely on constructor parsing:
-        //             priv = new Ed25519PrivateKeyParameters(pki.parsePrivateKey().toASN1Primitive().getEncoded(), 0);
-        //         } else if (obj instanceof PrivateKeyInfo pki) {
-        //             priv = new Ed25519PrivateKeyParameters(pki.parsePrivateKey().toASN1Primitive().getEncoded(), 0);
-        //         } else {
-        //             throw new IllegalArgumentException("Unsupported Ed25519 PEM");
-        //         }
-        //     } catch (IOException e) {
-        //         throw new RuntimeException(e);
-        //     }
-        // } else {
-        //     priv = new Ed25519PrivateKeyParameters((byte[]) secret, 0);
-        // }
+            // Build PKCS#8 DER encoding for the 32-byte Ed25519 seed.
+            // PKCS#8 wraps the raw seed in ASN.1: SEQUENCE { SEQUENCE { OID 1.3.101.112 }, OCTET STRING { OCTET STRING { seed } } }
+            byte[] pkcs8 = new byte[48];
+            byte[] prefix = {
+                0x30, 0x2e,                   // SEQUENCE (46 bytes)
+                0x02, 0x01, 0x00,             // INTEGER 0 (version)
+                0x30, 0x05,                   // SEQUENCE (5 bytes)
+                0x06, 0x03, 0x2b, 0x65, 0x70, // OID 1.3.101.112 (Ed25519)
+                0x04, 0x22,                   // OCTET STRING (34 bytes)
+                0x04, 0x20                    // OCTET STRING (32 bytes) - the seed
+            };
+            System.arraycopy(prefix, 0, pkcs8, 0, prefix.length);
+            System.arraycopy(seed, 0, pkcs8, prefix.length, 32);
 
-        // signer.init(true, priv);
-        // signer.update(msg, 0, msg.length);
-        // byte[] sig = signer.generateSignature();
-        // return Base64.getEncoder().encodeToString(sig);
-//        throw new UnsupportedOperationException("Ed25519 signing not implemented");
-        byte[] res = {}; // dummy for now implement it later todo
-        return "";
+            java.security.KeyFactory kf = java.security.KeyFactory.getInstance("Ed25519");
+            java.security.PrivateKey privateKey = kf.generatePrivate(new java.security.spec.PKCS8EncodedKeySpec(pkcs8));
+
+            java.security.Signature sig = java.security.Signature.getInstance("Ed25519");
+            sig.initSign(privateKey);
+            sig.update(msg);
+            byte[] signature = sig.sign();
+            return Base64.getEncoder().encodeToString(signature);
+        } catch (Exception e) {
+            throw new RuntimeException("Ed25519 signing failed: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Extract the 32-byte Ed25519 seed from various secret formats:
+     * - byte[] of exactly 32 bytes: used directly
+     * - byte[] longer than 32: take last 32 bytes (common PEM/PKCS#8 format)
+     * - String: base64 decode, then take last 32 bytes (matches TS: Base64.unarmor(secret).slice(16))
+     */
+    private static byte[] extractEd25519Seed(Object secret) {
+        byte[] raw;
+        if (secret instanceof byte[] b) {
+            raw = b;
+        } else if (secret instanceof String s) {
+            raw = Base64.getDecoder().decode(s);
+        } else if (secret instanceof java.util.List<?> list) {
+            // arraySlice returns List<Byte> — convert to byte[]
+            raw = new byte[list.size()];
+            for (int i = 0; i < list.size(); i++) {
+                Object elem = list.get(i);
+                if (elem instanceof Number n) raw[i] = n.byteValue();
+            }
+        } else {
+            throw new IllegalArgumentException("Ed25519 secret must be byte[], base64 String, or List<Byte>, got: " + secret.getClass().getName());
+        }
+        if (raw.length == 32) {
+            return raw;
+        }
+        if (raw.length > 32) {
+            // Extract last 32 bytes (seed portion of PKCS#8 or PEM-decoded key)
+            byte[] seed = new byte[32];
+            System.arraycopy(raw, raw.length - 32, seed, 0, 32);
+            return seed;
+        }
+        throw new IllegalArgumentException("Ed25519 secret too short: " + raw.length + " bytes (need 32)");
     }
 
     // ====================================================

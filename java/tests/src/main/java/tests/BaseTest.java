@@ -362,6 +362,19 @@ public class BaseTest {
         return false;
     }
 
+    public boolean isWindows() {
+        return System.getProperty("os.name").toLowerCase().contains("win");
+    }
+
+    public boolean isAmd64() {
+        String arch = System.getProperty("os.arch").toLowerCase();
+        return arch.contains("amd64") || arch.contains("x86_64");
+    }
+
+    public static boolean isLinux() {
+        return System.getProperty("os.name").toLowerCase().contains("linux");
+    }
+
     public String exceptionMessage(Object e) {
         return ((Exception) e).getMessage();
     }
@@ -423,13 +436,21 @@ public class BaseTest {
 
         Class<?> clazz = exchange.getClass();
 
-//        for (Method m : clazz.getDeclaredMethods()) {
+        // Prefer varargs methods (the untyped transpiled methods returning
+        // CompletableFuture<Object>) over typed overloads (String/Long/Map params
+        // returning sync typed objects). The test harness passes JSON-parsed args
+        // which have Integer (not Long) for numbers, causing "argument type mismatch"
+        // with typed overloads. Varargs methods accept Object and work with any type.
+        Method fallback = null;
         for (Method m : clazz.getMethods()) {
-            if (m.getName().equals(methodName)) {
+            if (!m.getName().equals(methodName)) continue;
+            if (m.isVarArgs()) {
                 method = m;
                 break;
             }
+            if (fallback == null) fallback = m;
         }
+        if (method == null) method = fallback;
 
         if (method == null) {
             throw new NoSuchMethodException(methodName);

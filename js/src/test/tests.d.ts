@@ -92,11 +92,11 @@ declare class testMainClass {
     testXT(): Promise<boolean>;
     testParadex(): Promise<boolean>;
     testHashkey(): Promise<boolean>;
-    testCoincatch(): Promise<boolean>;
-    testDefx(): Promise<boolean>;
     testCryptomus(): Promise<boolean>;
     testDerive(): Promise<boolean>;
     testModeTrade(): Promise<boolean>;
     testBackpack(): Promise<boolean>;
+    testToobit(): Promise<boolean>;
+    testWeex(): Promise<void>;
 }
 export default testMainClass;

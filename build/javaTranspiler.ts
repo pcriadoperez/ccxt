@@ -126,6 +126,37 @@ class NewTranspiler {
         ]
     }
 
+    getJavaWsRegexes() {
+        // Java-specific WS regexes — converts transpiled code for WS exchange classes
+        return [
+            // Dynamic exception construction: new getValue(x, key)(msg) → this.newException(getValue(x, key), msg)
+            [/new\sHelpers\.GetValue\((\w+),\s*(\w+)\)\((\w+)\)/gm, 'this.newException(Helpers.GetValue($1, $2), $3)'],
+
+            // Client type casts — transpiled code uses Object client, need to cast to Client
+            [/\(Object client,/gm, '(Client client,'],
+            [/\(Object client\)/gm, '(Client client)'],
+            [/Object client =/gm, 'Client client ='],
+            [/Object future =/gm, 'Object future ='],
+
+            // client.subscriptions / client.futures — these are Object type fields
+            // transpiled code tries to cast them to Map, which works since they're ConcurrentHashMaps
+            [/\(java\.util\.Map<String, Object>\)client\.futures/gm, '(java.util.Map)client.futures'],
+            [/\(java\.util\.Map<String, Object>\)client\.subscriptions/gm, '(java.util.Map)client.subscriptions'],
+            [/\(java\.util\.Map<String, Object>\)this\.clients/gm, '(java.util.Map)this.clients'],
+
+            // new XyzRest() → new Xyz() for instantiating REST parent
+            [/new (\w+)Rest\(\)/g, 'new io.github.ccxt.exchanges.$1()'],
+
+            // ArrayCache constructor — needs FQN for inner classes + int cast
+            [/new ArrayCache\((\w+)\)/gm, 'new ArrayCache(((Number)$1).intValue())'],
+            [/new ArrayCacheByTimestamp\((\w+)\)/gm, 'new ArrayCache.ArrayCacheByTimestamp(((Number)$1).intValue())'],
+            [/new ArrayCacheByTimestamp\(\)/gm, 'new ArrayCache.ArrayCacheByTimestamp()'],
+            [/new ArrayCacheBySymbolById\((\w+)\)/gm, 'new ArrayCache.ArrayCacheBySymbolById(((Number)$1).intValue())'],
+            [/new ArrayCacheBySymbolById\(\)/gm, 'new ArrayCache.ArrayCacheBySymbolById()'],
+            [/new ArrayCacheBySymbolBySide\((\w+)\)/gm, 'new ArrayCache.ArrayCacheBySymbolBySide(((Number)$1).intValue())'],
+            [/new ArrayCacheBySymbolBySide\(\)/gm, 'new ArrayCache.ArrayCacheBySymbolBySide()'],
+        ]
+    }
 
     // c# custom method
     customCSharpPropAssignment(node: any, identation: any) {
@@ -286,6 +317,17 @@ class NewTranspiler {
     }
 
     getJavaImports(file: any, ws = false) {
+        if (ws) {
+            // For WS pro exchanges — no import of REST parent (use FQN to avoid name clash)
+            return [
+                'package io.github.ccxt.exchanges.pro;',
+                'import io.github.ccxt.base.Precise;',
+                'import io.github.ccxt.errors.*;',
+                'import io.github.ccxt.Helpers;',
+                'import io.github.ccxt.ws.*;',
+                'import io.github.ccxt.Client;',
+            ];
+        }
         const values = [
             // "using ccxt;",
             'package io.github.ccxt.exchanges;',
@@ -296,9 +338,6 @@ class NewTranspiler {
             // 'import io.github.ccxt.Exchange;',
             // 'import io.github.ccxt.Errors;'
         ]
-        // if (ws) {
-        //     values.push("using System.Reflection;");
-        // }
         return values;
     }
 
@@ -766,6 +805,17 @@ class NewTranspiler {
             // [/(put\(\s*"\w+", )(this\.\w+)/gm, "$1Exchange.$2"],
             [/public Object setMarketsFromExchange\(Object sourceExchange\)/g, "public Object setMarketsFromExchange(Exchange sourceExchange)"]
         ]);
+        // cast callDynamically to CompletableFuture when .join() is called on the result
+        baseClass = baseClass.replace(/\(Helpers\.callDynamically\(([^)]+(?:\([^)]*\))*[^)]*)\)\)\.join\(\)/g, '((java.util.concurrent.CompletableFuture<Object>)Helpers.callDynamically($1)).join()');
+
+        // Remove unreachable "return null;" after throw/return statements (ast-transpiler 0.0.80)
+        // Pattern 1: throw directly followed by return null (same block)
+        baseClass = baseClass.replace(/throw ([^;]+) ;\n\s*return null;/g, 'throw $1 ;');
+        // Pattern 2: if/else where the else throws, followed by return null before });
+        // Only safe when else contains throw (not return) — throw always terminates
+        baseClass = this.removeUnreachableReturnNull(baseClass);
+        // Pattern 2: } closing an if/else where both branches terminate, followed by return null
+        // This is unreachable but the lambda requires a return — Java compiler sees it as error
 
         // // WS fixes
         // baseClass = baseClass.replace(/\(object client,/gm, '(WebSocketClient client,');
@@ -842,15 +892,20 @@ class NewTranspiler {
     }
 
     async transpileWS(force = false) {
-        // const tsFolder = './ts/src/pro/';
+        const tsFolder = './ts/src/pro/';
 
-        // let inputExchanges =  process.argv.slice (2).filter (x => !x.startsWith ('--'));
-        // if (inputExchanges === undefined) {
-        //     inputExchanges = exchanges.ws;
-        // }
-        // const options = { csharpFolder: EXCHANGES_WS_FOLDER, exchanges:inputExchanges }
-        // // const options = { csharpFolder: EXCHANGES_WS_FOLDER, exchanges:['bitget'] }
-        // await this.transpileDerivedExchangeFiles (tsFolder, options, '.ts', force, !!(inputExchanges), true )
+        let inputExchanges: string[] =  process.argv.slice (2).filter (x => !x.startsWith ('--'));
+        if (!inputExchanges || inputExchanges.length === 0) {
+            // Only transpile WS exchanges that have a REST parent class already transpiled
+            const restExchanges = fs.readdirSync(EXCHANGES_FOLDER)
+                .filter((f: string) => f.endsWith('.java'))
+                .map((f: string) => f.replace('.java', '').toLowerCase());
+            const wsExchanges = (exchanges as any).ws as string[];
+            inputExchanges = wsExchanges.filter((ws: string) => restExchanges.includes(ws));
+            log.blue('[java-ws] Filtering to exchanges with REST parents:', inputExchanges);
+        }
+        const options = { csharpFolder: EXCHANGES_WS_FOLDER, exchanges: inputExchanges }
+        await this.transpileDerivedExchangeFiles (tsFolder, options, '.ts', force, !!(inputExchanges), true)
     }
 
     async transpileEverything(force = false, child = false, baseOnly = false, examplesOnly = false) {
@@ -890,6 +945,9 @@ class NewTranspiler {
         this.transpileTests()
 
         this.transpileErrorHierarchy()
+
+        // Fix Api classes that extend other exchanges (not Exchange) to use Core suffix
+        this.fixApiExtendsForCore()
 
         log.bright.green('Transpiled successfully.')
     }
@@ -969,14 +1027,19 @@ class NewTranspiler {
         const javaImports = this.getJavaImports(name, ws).join("\n") + "\n\n";
         let content = javaVersion.content;
 
+        // Append "Core" suffix so the typed wrapper can take the clean name.
+        // e.g., transpiled Binance becomes BinanceCore, typed Binance extends BinanceCore.
+        // Same for WS: pro.BinanceCore (transpiled WS), pro.Binance (typed WS wrapper).
+        const className = this.capitalize(name) + 'Core';
+
         // inject constructor
         const constructor = [
             '',
-            `   public ${this.capitalize(name)} () {`,
+            `   public ${className} () {`,
             `       super();`,
             `   }`,
             '',
-            `   public ${this.capitalize(name)} (Object options) {`,
+            `   public ${className} (Object options) {`,
             `       super(options);`,
             `   }`,
             ''
@@ -987,8 +1050,31 @@ class NewTranspiler {
         // const parentExchange = res[1].toLowerCase();
         // override extends from Exchange to ClassApi
         content = content.replace(/extends\s\w+/g, `extends ${this.capitalize(name)}Api`);
+        // Rename the class to include Core suffix
+        content = content.replace(/class\s+\w+\s+extends/, `class ${className} extends`);
+        // Also rename self-references like ClassName.this in anonymous inner classes
+        const origName = this.capitalize(name);
+        content = content.replace(new RegExp(`${origName}\\.this`, 'g'), `${className}.this`);
         content = content.replace(/, (sha1|sha384|sha512|sha256|md5|ed25519|keccak|p256|secp256k1)([,)])/g, `, $1()$2`);
         content = content.replace(/(\s+public Object describe\(\))/g, `${constructor}$1`)
+        // cast callDynamically to CompletableFuture when .join() is called on the result
+        content = content.replace(/\(Helpers\.callDynamically\(([^)]+(?:\([^)]*\))*[^)]*)\)\)\.join\(\)/g, '((java.util.concurrent.CompletableFuture<Object>)Helpers.callDynamically($1)).join()');
+
+        // Remove unreachable "return null;" after throw/return statements (ast-transpiler 0.0.80)
+        content = content.replace(/throw ([^;]+) ;\n\s*return null;/g, 'throw $1 ;');
+        content = this.removeUnreachableReturnNull(content);
+        // Remove unreachable "return null;" after simple if/else where both branches
+        // directly return (single-line return in each branch, no nested control flow)
+        // Handle if/else where else has return (not throw): remove unreachable return null
+        // Pattern: "return X;\n    } else\n    {\n    return Y;\n    }\n    return null;\n    });"
+        // Safe because plain "} else" covers all paths, and else block ends with return
+        // Pattern: any line ending with "return X;\n  }\n  return null;\n  });" where the line
+        // before "}" starts the else block with "} else\n  {"
+        // Uses the removeReturnNullAfterElseReturn method for multi-line else blocks
+        // Handle simple if/else where both branches have a direct return as last line:
+        // } else\n {\n    return X;\n }\n return null;\n });
+        // Remove unreachable "return null;" for simple if/else where else ends with return.
+        // Uses line-by-line function to avoid greedy regex issues.
 
         // const baseWsClassRegex = /class\s(\w+)\s+:\s(\w+)/;
         // const baseWsClassExec = baseWsClassRegex.exec(content);
@@ -1002,17 +1088,209 @@ class NewTranspiler {
         // content = content.replace(/binaryMessage.byteLength/gm, 'getValue(binaryMessage, "byteLength")'); // idex tmp fix
         // WS fixes
         if (ws) {
-            // const wsRegexes = this.getWsRegexes();
-            // content = this.regexAll (content, wsRegexes);
-            // content = this.replaceImportedRestClasses (content, csharpVersion.imports);
-            // const classNameRegex = /public\spartial\sclass\s(\w+)\s:\s(\w+)/gm;
-            // const classNameExec = classNameRegex.exec(content);
-            // const className = classNameExec ? classNameExec[1] : '';
-            // const constructorLine = `\npublic partial class ${className} { public ${className}(object args = null) : base(args) { } }\n`
-            // content = constructorLine  + content;
+            const wsRegexes = this.getJavaWsRegexes();
+            content = this.regexAll (content, wsRegexes);
+            content = this.replaceImportedRestClasses (content, javaVersion.imports);
+            // For WS classes, extend the typed REST class (not Core) so WS inherits REST typed methods.
+            // pro.BinanceCore extends io.github.ccxt.exchanges.Binance (the typed REST wrapper)
+            const restTypedFqn = `io.github.ccxt.exchanges.${this.capitalize(name)}`;
+            content = content.replace(/extends\s\w+Api/g, `extends ${restTypedFqn}`);
+            content = content.replace(/extends\s(\w+)Rest/g, `extends io.github.ccxt.exchanges.$1`);
+            content = content.replace(/extends\s(\w+)\b(?!\.)/, `extends ${restTypedFqn}`);
+            content = this.postProcessWsJava(content, name);
         }
         content = this.createGeneratedHeader().join('\n') + '\n' + content;
         return javaImports + content;
+    }
+
+    /**
+     * Remove unreachable "return null;" lines that appear after if/else blocks where
+     * both branches terminate (return or throw). The ast-transpiler 0.0.80 adds these
+     * for safety but Java treats them as compilation errors.
+     */
+    removeUnreachableReturnNull(content: string): string {
+        const lines = content.split('\n');
+        const result: string[] = [];
+        for (let i = 0; i < lines.length; i++) {
+            // Check if this line is "return null;" and the next is "});" (lambda end)
+            if (lines[i].trim() === 'return null;' && i + 1 < lines.length && lines[i + 1].trim().startsWith('})')) {
+                // Check if the preceding non-empty line is "}" closing an else/else-if block
+                // that contains a throw or return
+                let j = i - 1;
+                while (j >= 0 && lines[j].trim() === '') j--;
+                if (j >= 0 && lines[j].trim() === '}') {
+                    // Look back further to check if the block contains throw or return
+                    let k = j - 1;
+                    while (k >= 0 && lines[k].trim() !== '{') k--;
+                    // Check the else block for throw (guaranteed unconditional termination).
+                    // We don't check for return because return might be inside a nested
+                    // if/for and not guaranteed to execute on all paths.
+                    let hasThrow = false;
+                    for (let l = k; l <= j; l++) {
+                        const trimmed = lines[l].trim();
+                        if (trimmed.startsWith('throw ')) {
+                            hasThrow = true;
+                            break;
+                        }
+                    }
+                    // Only safe with plain "} else" (not "} else if")
+                    let hasPlainElse = false;
+                    if (k > 0) {
+                        const beforeBlock = lines[k - 1].trim();
+                        hasPlainElse = beforeBlock === '} else';
+                    }
+                    if (hasThrow && hasPlainElse) {
+                        // Skip this "return null;" line — it's unreachable
+                        continue;
+                    }
+                }
+            }
+            result.push(lines[i]);
+        }
+        return result.join('\n');
+    }
+
+    /**
+     * Remove "return null;" after if/else where the else block's last statement is a return.
+     * More conservative than removeUnreachableReturnNull — only handles the else-return pattern.
+     */
+    removeReturnNullAfterElseReturn(content: string): string {
+        const lines = content.split('\n');
+        const result: string[] = [];
+        for (let i = 0; i < lines.length; i++) {
+            if (lines[i].trim() === 'return null;'
+                && i + 1 < lines.length && lines[i + 1].trim().startsWith('})')) {
+                // Check: preceding } then scan backward for "} else" + "{" pair
+                let j = i - 1;
+                while (j >= 0 && lines[j].trim() === '') j--;
+                if (j >= 0 && lines[j].trim() === '}') {
+                    const elseClose = j;
+                    // Scan backward to find "} else" line, tracking brace depth
+                    let depth = 1; // start with 1 for the closing }
+                    let elseStart = -1;
+                    for (let k = elseClose - 1; k >= 0; k--) {
+                        const t = lines[k].trim();
+                        if (t === '}') depth++;
+                        else if (t === '{') {
+                            depth--;
+                            if (depth === 0) {
+                                // Found the opening { of this block
+                                if (k > 0 && lines[k - 1].trim() === '} else') {
+                                    elseStart = k;
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    if (elseStart >= 0) {
+                        // Check that the last non-comment statement before } is a return
+                        let lastReturn = false;
+                        for (let k = elseClose - 1; k > elseStart; k--) {
+                            const t = lines[k].trim();
+                            if (t === '' || t.startsWith('//') || t === '}') continue;
+                            lastReturn = t.startsWith('return ');
+                            break;
+                        }
+                        if (lastReturn) {
+                            continue; // Skip return null — else block ends with return
+                        }
+                    }
+                }
+            }
+            result.push(lines[i]);
+        }
+        return result.join('\n');
+    }
+
+    /**
+     * Remove "return null;" after if { return } else { ...return } where BOTH branches
+     * guarantee a return. Uses brace-depth to find the exact else block boundaries,
+     * then checks that the else block's last statement (at depth 0 within the block) is a return
+     * and the if block's statement just before "} else" is also a return.
+     */
+    removeReturnNullAfterCompleteIfElse(content: string): string {
+        const lines = content.split('\n');
+        const result: string[] = [];
+        for (let i = 0; i < lines.length; i++) {
+            if (lines[i].trim() === 'return null;'
+                && i + 1 < lines.length && lines[i + 1].trim().startsWith('})')) {
+                let j = i - 1;
+                while (j >= 0 && lines[j].trim() === '') j--;
+                if (j >= 0 && lines[j].trim() === '}') {
+                    // Find matching { using depth tracking
+                    let depth = 0;
+                    let elseOpen = -1;
+                    for (let k = j; k >= 0; k--) {
+                        for (let c = lines[k].length - 1; c >= 0; c--) {
+                            if (lines[k][c] === '}') depth++;
+                            else if (lines[k][c] === '{') depth--;
+                        }
+                        if (depth === 0) {
+                            elseOpen = k;
+                            break;
+                        }
+                    }
+                    if (elseOpen >= 0 && elseOpen > 0 && lines[elseOpen - 1].trim() === '} else') {
+                        // Check else block: last non-empty/non-comment/non-brace line is return
+                        let elseLastReturn = false;
+                        for (let k = j - 1; k > elseOpen; k--) {
+                            const t = lines[k].trim();
+                            if (t === '' || t.startsWith('//') || t === '}' || t === '{') continue;
+                            elseLastReturn = t.startsWith('return ');
+                            break;
+                        }
+                        // Check if block: line before "} else" should be return
+                        let ifLastReturn = false;
+                        const elseKeyLine = elseOpen - 1; // "} else" line
+                        // Find the line before } in "} else" — scan backward
+                        for (let k = elseKeyLine - 1; k >= 0; k--) {
+                            const t = lines[k].trim();
+                            if (t === '' || t.startsWith('//') || t === '}' || t === '{') continue;
+                            ifLastReturn = t.startsWith('return ');
+                            break;
+                        }
+                        if (elseLastReturn && ifLastReturn) {
+                            continue; // Skip unreachable return null;
+                        }
+                    }
+                }
+            }
+            result.push(lines[i]);
+        }
+        return result.join('\n');
+    }
+
+    /**
+     * Fix Api classes that extend other exchange classes (not Exchange) to use Core suffix.
+     * e.g., BinanceusdmApi extends Binance → BinanceusdmApi extends BinanceCore
+     * This is needed because the typed wrapper class now takes the clean name (Binance),
+     * and Api classes must extend the untyped Core class to avoid inheriting typed overloads.
+     */
+    fixApiExtendsForCore() {
+        const apiFolder = './java/lib/src/main/java/io/github/ccxt/api/';
+        if (!fs.existsSync(apiFolder)) return;
+
+        const apiFiles = fs.readdirSync(apiFolder).filter(f => f.endsWith('Api.java'));
+        for (const file of apiFiles) {
+            const path = apiFolder + file;
+            let content = fs.readFileSync(path, 'utf-8');
+            // Match "extends SomeName" where SomeName is NOT "Exchange" and NOT already Core
+            const match = content.match(/class\s+\w+Api\s+extends\s+(\w+)/);
+            if (match && match[1] !== 'Exchange' && !match[1].endsWith('Core')) {
+                const parentName = match[1];
+                // Update extends clause
+                content = content.replace(
+                    new RegExp(`extends\\s+${parentName}\\b`),
+                    `extends ${parentName}Core`
+                );
+                // Update import to use Core name
+                content = content.replace(
+                    new RegExp(`import\\s+io\\.github\\.ccxt\\.exchanges\\.${parentName}\\s*;`),
+                    `import io.github.ccxt.exchanges.${parentName}Core;`
+                );
+                fs.writeFileSync(path, content, 'utf-8');
+            }
+        }
     }
 
     replaceImportedRestClasses(content: string, imports: any[]) {
@@ -1025,6 +1303,824 @@ class NewTranspiler {
             }
         }
         return content;
+    }
+
+    postProcessWsJava(content: string, name: string): string {
+        const cap = this.capitalize(name) + 'Core'; // WS classes are now named *Core
+
+        // ── Fix broken method references: ClassName."methodName" → "methodName" ──
+        // The transpiler generates method references as ClassName."methodName" which is
+        // invalid Java (string template syntax). These are used as map values for
+        // message handler dispatch tables. Replace with just the string literal.
+        content = content.replace(new RegExp(`${cap}\\.("\\w+")`, 'gm'), '$1');
+
+        // ── Pattern 12: Map casts for client.subscriptions/futures access ──
+        content = content.replace(/\(\(Object\)client\)\.subscriptions/gm, '((java.util.Map)client.subscriptions)');
+        content = content.replace(/\(\(Object\)client\)\.futures/gm, '((java.util.Map)client.futures)');
+        // Direct access without cast
+        content = content.replace(/client\.subscriptions\.remove\(/gm, '((java.util.Map<String,Object>)client.subscriptions).remove(');
+        content = content.replace(/client\.subscriptions\.keySet\(/gm, '((java.util.Map<String,Object>)client.subscriptions).keySet(');
+
+        // ── Pattern 6: Method reference for ping ──
+        content = content.replace(new RegExp(`${cap}\\.this::ping`, 'gm'),
+            `(java.util.function.Function<Client, Object>) ${cap}.this::ping`);
+
+        // ── Pattern 1+2: client.future() / client.reusableFuture() return Future ──
+        // Object future = client.future(x) → io.github.ccxt.ws.Future future = client.future((String)x)
+        content = content.replace(/Object\s+future\s*=\s*client\.(future|reusableFuture)\((\w+)\)/gm,
+            'io.github.ccxt.ws.Future future = client.$1((String)$2)');
+        // Object future = Helpers.GetValue(client.futures, x) → cast to Future
+        content = content.replace(/Object\s+future\s*=\s*Helpers\.GetValue\(client\.futures,\s*(\w+)\)/gm,
+            'io.github.ccxt.ws.Future future = (io.github.ccxt.ws.Future)Helpers.GetValue(client.futures, $1)');
+
+        // ── Pattern 3: (String) cast on messageHash for client.future() / reusableFuture() ──
+        // client.future(messageHash) where messageHash is Object
+        content = content.replace(/client\.(future|reusableFuture)\(messageHash\)/gm, 'client.$1((String)messageHash)');
+
+        // ── Pattern 2: future.join() → future.getFuture().join() ──
+        // Only for local `future` variables (not this.xxx)
+        // When future is Object-typed (from safeValue etc), cast to Future first
+        content = content.replace(/(?<!\w)(future)\.getFuture\(\)\.join\(\)/gm,
+            '((io.github.ccxt.ws.Future)future).getFuture().join()');
+        content = content.replace(/(?<!\w)(future)\.join\(\)/gm,
+            '((io.github.ccxt.ws.Future)future).getFuture().join()');
+        // (future).join() pattern
+        content = content.replace(/\(future\)\.join\(\)/gm,
+            '((io.github.ccxt.ws.Future)future).getFuture().join()');
+        // client.future(...).join() → client.future(...).getFuture().join()
+        content = content.replace(/client\.(future|reusableFuture)\(([^)]+)\)\.join\(\)/gm,
+            'client.$1($2).getFuture().join()');
+        // (client.future(...)).join() → client.future(...).getFuture().join()
+        // Parenthesized form — use balanced parens since args may contain nested parens
+        content = this.replaceParenthesizedClientFutureJoin(content);
+        // But if future is already typed as io.github.ccxt.ws.Future, don't double-cast
+        content = content.replace(/\(\(io\.github\.ccxt\.ws\.Future\)(\(io\.github\.ccxt\.ws\.Future\))/gm, '($1');
+
+        // ── Pattern 10: (String) cast on Helpers.add() for exception constructors and client.future() ──
+        content = content.replace(/(throw new \w+\()Helpers\.add\(/gm, '$1(String)Helpers.add(');
+        content = content.replace(/(client\.(?:future|reusableFuture)\()Helpers\.add\(/gm, '$1(String)Helpers.add(');
+
+        // ── Pattern 5: ArrayCache .hashmap access ──
+        // Only match local variables, not this.xxx
+        content = content.replace(/(?<!this\.)(?<![\w.])([a-z]\w+)\.hashmap\b/gm, '((io.github.ccxt.ws.ArrayCache)$1).hashmap');
+        // this.xxx.hashmap → ((ArrayCache)this.xxx).hashmap
+        content = content.replace(/(this\.\w+)\.hashmap\b/gm, '((io.github.ccxt.ws.ArrayCache)$1).hashmap');
+        // Prevent double-wrapping
+        content = content.replace(/\(\(io\.github\.ccxt\.ws\.ArrayCache\)\(\(io\.github\.ccxt\.ws\.ArrayCache\)/gm,
+            '((io.github.ccxt.ws.ArrayCache)');
+
+        // ── Pattern: future.resolve(...) on Object-typed future variable ──
+        // future.resolve(x) where future is Object → cast
+        content = content.replace(/(?<!\w)future\.resolve\(([^)]+)\)/gm,
+            '((io.github.ccxt.ws.Future)future).resolve($1)');
+        // future.reject(x) on Object
+        content = content.replace(/(?<!\w)future\.reject\(([^)]+)\)/gm,
+            '((io.github.ccxt.ws.Future)future).reject($1)');
+        // promise.resolve(x) where promise is Object → cast
+        content = content.replace(/(?<!\w)promise\.resolve\(([^)]*)\)/gm,
+            '((io.github.ccxt.ws.Future)promise).resolve($1)');
+
+        // ── Dynamic method dispatch for Object-typed variables ──
+        // Dynamic method calls on Object-typed variables — use balanced paren matching
+        const dynamicMethods = ['append', 'reset', 'storeArray', 'store', 'getLimit'];
+        for (const method of dynamicMethods) {
+            content = this.replaceDynamicMethodCall(content, method);
+        }
+        content = content.replace(/(?<!this\.)(?<!Helpers\.)(?<![\w.])([a-z]\w+)\.limit\(\)/gm,
+            'Helpers.callDynamically($1, "limit", new Object[]{})');
+
+
+        // ── this.xxx.append/store/storeArray/reset calls on Object-typed fields ──
+        content = content.replace(/this\.(myTrades|positions|orders|trades|ohlcvs|tickers|orderbooks)\.(append|store|storeArray|reset)\(/gm,
+            'Helpers.callDynamically(this.$1, "$2", new Object[]{')
+        // Fix: the above leaves dangling ) from the original call, so fix the pattern
+        // Actually let's use balanced parens for this too
+        content = this.replaceThisFieldDynamicCall(content);
+
+        // ── Property access on Object-typed variables ──
+        content = content.replace(/(?<![.\w])([a-z]\w+)\.cache\b(?!\()/gm,
+            '((java.util.List<Object>)Helpers.GetValue($1, "cache"))');
+        content = content.replace(/(?<![.\w])([a-z]\w+)\.nonce\b(?!\()/gm, 'Helpers.GetValue($1, "nonce")');
+
+        // ── Method references in subscription maps → string name ──
+        content = content.replace(new RegExp(`${cap}\\.this\\.(handle\\w+)\\s*(?=[,;)\\s])`, 'gm'), '"$1"');
+        // Also match this.handleXyz as a value (not a call)
+        content = content.replace(/(?<!=\s)this\.(handle\w+)\s*(?=[,;)\s])/gm, '"$1"');
+        // method = this.handleXyz; → method = "handleXyz";
+        content = content.replace(/=\s*this\.(handle\w+)\s*;/gm, '= "$1";');
+        // Also for specific non-handle methods used as callback references
+        // Only match known callback method patterns, NOT field access like this.apiKey
+        const callbackMethods = ['ping', 'negotiate', 'negotiateHelper', 'keepAliveListenKey',
+            'fetchOrderBookSnapshot', 'loadOrderBook', 'loadBalanceSnapshot', 'loadPositionsSnapshot'];
+        for (const method of callbackMethods) {
+            content = content.replace(new RegExp(`${cap}\\.this\\.${method}\\s*(?=[,;)])`, 'gm'), `"${method}"`);
+        }
+
+        // ── .call(this, args) → reflection dispatch — use balanced parens ──
+        content = this.replaceCallPattern(content);
+
+        // ── this.spawn(this.method, args) → lambda (as statement ending with ;) ──
+        content = content.replace(/this\.spawn\(this\.(\w+),\s*([^)]*(?:\([^)]*\)[^)]*)*)\);/gm, (match: string, method: string, args: string) => {
+            return `this.spawn(() -> { try { this.${method}(${args}); } catch(Exception _e) { throw new RuntimeException(_e); } });`;
+        });
+        // this.spawn("methodName", arg1, arg2, ...) → this.spawn(() -> { ... }) (as statement)
+        content = content.replace(/this\.spawn\("(\w+)",\s*([^)]*(?:\([^)]*\)[^)]*)*)\);/gm, (match: string, method: string, args: string) => {
+            return `this.spawn(() -> { try { this.${method}(${args}); } catch(Exception _e) { throw new RuntimeException(_e); } });`;
+        });
+        // this.spawn(this.method, args) used as expression (value) — NOT ending with ;
+        content = content.replace(/this\.spawn\(this\.(\w+),\s*([^)]*(?:\([^)]*\)[^)]*)*)\)(?=\))/gm,
+            (match: string, method: string, args: string) => {
+                return `this.${method}(${args})`;
+            });
+
+        // ── watch/watchMultiple missing 5th arg ──
+        for (const method of ['watch', 'watchMultiple']) {
+            const pattern = new RegExp(`this\\.${method}\\(`, 'g');
+            let result2 = '';
+            let lastIdx2 = 0;
+            let m2;
+            while ((m2 = pattern.exec(content)) !== null) {
+                const startIdx = m2.index + m2[0].length;
+                let depth2 = 1;
+                let j2 = startIdx;
+                while (j2 < content.length && depth2 > 0) {
+                    if (content[j2] === '(') depth2++;
+                    if (content[j2] === ')') depth2--;
+                    j2++;
+                }
+                const args2 = content.substring(startIdx, j2 - 1);
+                let topLevelCommas = 0;
+                let d = 0;
+                for (const ch of args2) {
+                    if (ch === '(') d++;
+                    if (ch === ')') d--;
+                    if (ch === ',' && d === 0) topLevelCommas++;
+                }
+                const argCount = topLevelCommas + 1;
+                result2 += content.substring(lastIdx2, m2.index);
+                if (argCount === 4) {
+                    result2 += `this.${method}(${args2}, null)`;
+                } else if (argCount === 3) {
+                    result2 += `this.${method}(${args2}, null, null)`;
+                } else if (argCount === 2) {
+                    result2 += `this.${method}(${args2}, null, null, null)`;
+                } else {
+                    result2 += `this.${method}(${args2})`;
+                }
+                lastIdx2 = j2;
+            }
+            result2 += content.substring(lastIdx2);
+            content = result2;
+        }
+
+        // ── Client type handling ──
+        content = content.replace(/WsClient\b/gm, 'Client');
+        content = content.replace(/\(Object client\)/gm, '(Client client)');
+        content = content.replace(/\(Object client,/gm, '(Client client,');
+        content = content.replace(/,\s*Object client,/gm, ', Client client,');
+        content = content.replace(/,\s*Object client\)/gm, ', Client client)');
+        content = content.replace(/Object client =/gm, 'Client client =');
+        content = content.replace(/Object client = this\.client\(/gm, 'Client client = this.client(');
+        content = content.replace(/Client\s+client\s*=\s*Helpers\.GetValue\((\w+),\s*(\w+)\)/gm,
+            'Client client = (Client)Helpers.GetValue($1, $2)');
+        content = content.replace(/Client\s+client\s*=\s*this\.(safeValue|safeDict)\(/gm,
+            'Client client = (Client)this.$1(');
+
+        // ── Pattern 9: int/long from Object ──
+        content = content.replace(/int (\w+) = (?![\d(])/gm, 'Object $1 = ');
+        content = content.replace(/new ArrayCache\(this\.(safeInteger\([^)]+\))\)/gm,
+            'new ArrayCache(((Number)this.$1).intValue())');
+        content = content.replace(/new ArrayCache\(this\.(safeInteger\([^)]+\))\)/gm,
+            'new ArrayCache(((Number)this.$1).intValue())');
+        content = content.replace(/client\.lastPong\s*=\s*([^;]+);/gm, (match: string, rhs: string) => {
+            if (rhs.startsWith('((Number)') || /^\d+L?$/.test(rhs.trim())) return match;
+            return `client.lastPong = ((Number)${rhs}).longValue();`;
+        });
+        content = content.replace(/client\.keepAlive\s*=\s*([^;]+);/gm, (match: string, rhs: string) => {
+            if (rhs.startsWith('((Number)') || /^\d+L?$/.test(rhs.trim())) return match;
+            return `client.keepAlive = ((Number)${rhs}).longValue();`;
+        });
+
+        // ── this.delay → spawn with sleep ──
+        content = content.replace(/this\.delay\(([^,]+),\s*this\.(\w+),\s*([^)]+)\)/gm,
+            'this.spawn(() -> { try { Thread.sleep(((Number)$1).longValue()); this.$2($3); } catch(Exception _e) {} })');
+        content = content.replace(/this\.delay\(([^,]+),\s*this\.(\w+)\)/gm,
+            'this.spawn(() -> { try { Thread.sleep(((Number)$1).longValue()); this.$2(); } catch(Exception _e) {} })');
+
+        // ── String type fixes ──
+        content = content.replace(/String (\w+) = ((?:this\.\w+\(|Helpers\.)[^;]+);/gm, 'Object $1 = $2;');
+
+        // ── CompletableFuture<Void> → <Object> ──
+        content = content.replace(/CompletableFuture<Void>/gm, 'CompletableFuture<Object>');
+
+        // ── this.lockId()/this.unlockId() → synchronized with scoping fix ──
+        content = this.fixSynchronizedScoping(content);
+
+        // ── super.describeData() → call WS parent method ──
+        content = content.replace(/super\.describeData\(\)/gm, (match: string) => {
+            return `new io.github.ccxt.exchanges.pro.Binance().describeData()`;
+        });
+
+        // ── Fix effectively final: when url is captured in anonymous inner class ──
+        content = content.replace(/(this\.authenticate\(new java\.util\.HashMap[^}]*\{\{[^}]*put\(\s*"url",\s*)url(\s*\))/gm,
+            (match: string, before: string, after: string) => {
+                return match;
+            });
+        {
+            const lines2 = content.split('\n');
+            for (let j = 0; j < lines2.length; j++) {
+                if (lines2[j].includes('this.authenticate')) {
+                    for (let k = j; k < Math.min(j + 5, lines2.length); k++) {
+                        if (lines2[k].includes('put( "url", url )')) {
+                            const indent2 = lines2[j].match(/^\s*/)?.[0] || '';
+                            lines2.splice(j, 0, `${indent2}final Object finalUrl = url;`);
+                            lines2[k + 1] = lines2[k + 1].replace(/put\(\s*"url",\s*url\s*\)/, 'put( "url", finalUrl )');
+                            j = k + 2;
+                            break;
+                        }
+                    }
+                }
+            }
+            content = lines2.join('\n');
+        }
+
+        // ── Fix extra args in method calls when definition has fewer params ──
+        {
+            const defMatch = content.match(/loadPositionsSnapshot\(Client\s+\w+,\s*Object\s+\w+,\s*Object\s+\w+\)\s*$/m);
+            const callMatch = content.match(/this\.loadPositionsSnapshot\(\w+,\s*\w+,\s*\w+,\s*\w+\)/);
+            if (defMatch && callMatch) {
+                content = content.replace(
+                    /loadPositionsSnapshot\(Client\s+(\w+),\s*Object\s+(\w+),\s*Object\s+(\w+)\)\s*$/m,
+                    'loadPositionsSnapshot(Client $1, Object $2, Object $3, Object... _extraArgs)'
+                );
+            }
+        }
+
+        // ── Bids/Asks class references ──
+        content = content.replace(/new Bids\(/gm, 'new io.github.ccxt.ws.OrderBookSide.Bids(');
+        content = content.replace(/new Asks\(/gm, 'new io.github.ccxt.ws.OrderBookSide.Asks(');
+
+        // ── Exchange class name capitalization ──
+        content = content.replace(/new io\.github\.ccxt\.exchanges\.([a-z])(\w+)\(\)/gm,
+            (m: string, first: string, rest: string) => `new io.github.ccxt.exchanges.${first.toUpperCase()}${rest}()`);
+
+        // ── Assignment to map.get() → Helpers.addElementToObject ──
+        content = content.replace(/\(\(java\.util\.HashMap<String, Object>\)(\w+)\)\.get\("(\w+)"\)\s*=\s*([^;]+);/gm,
+            'Helpers.addElementToObject($1, "$2", $3);');
+        content = content.replace(/\(\(java\.util\.List<Object>\)Helpers\.GetValue\((\w+),\s*"(\w+)"\)\)\s*=\s*([^;]+);/gm,
+            'Helpers.addElementToObject($1, "$2", $3);');
+        content = content.replace(/\(\(java\.util\.List<Object>\)\(\(java\.util\.List<Object>\)Helpers\.GetValue\((\w+),\s*"(\w+)"\)\)\)\s*=\s*([^;]+);/gm,
+            'Helpers.addElementToObject($1, "$2", $3);');
+
+        // ── (List<String>) cast fix for ArrayList<Object> → List<String> ──
+        content = content.replace(/\(java\.util\.List<String>\)new java\.util\.ArrayList<Object>/gm,
+            '(java.util.List<String>)(java.util.List)new java.util.ArrayList<Object>');
+
+        // ── Fix final variable scoping across if/else blocks ──
+        content = this.hoistFinalVarsAcrossIfElse(content);
+
+        // ── Fix effectively final for anonymous inner class captures ──
+        content = this.fixEffectivelyFinal(content);
+
+        // ── Fix effectively final for lambda captures in spawn/delay ──
+        content = this.fixEffectivelyFinalLambda(content);
+
+        // ── Remove duplicate final variable declarations in same method ──
+        content = this.removeTrueDuplicateFinals(content);
+
+        // ── Void supplyAsync return null insertion ──
+        content = this.insertReturnNullInSupplyAsync(content);
+
+        return content;
+    }
+
+    fixSynchronizedScoping(content: string): string {
+        content = content.replace(/this\.lockId\(\);/gm, 'synchronized (this) {');
+        content = content.replace(/this\.unlockId\(\);/gm, '}');
+
+        const lines = content.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+            if (lines[i].trim() === 'synchronized (this) {') {
+                const syncStart = i;
+                let syncEnd = -1;
+                let braceCount = 0;
+                for (let j = i; j < lines.length; j++) {
+                    for (const ch of lines[j]) {
+                        if (ch === '{') braceCount++;
+                        if (ch === '}') braceCount--;
+                    }
+                    if (braceCount === 0) {
+                        syncEnd = j;
+                        break;
+                    }
+                }
+                if (syncEnd === -1) continue;
+
+                const declaredVars: {name: string, lineIdx: number}[] = [];
+                for (let j = syncStart + 1; j < syncEnd; j++) {
+                    const declMatch = lines[j].match(/^(\s*)Object\s+(\w+)\s*=\s*/);
+                    if (declMatch) {
+                        declaredVars.push({name: declMatch[2], lineIdx: j});
+                    }
+                }
+
+                for (const v of declaredVars) {
+                    let usedAfter = false;
+                    for (let j = syncEnd + 1; j < Math.min(syncEnd + 5, lines.length); j++) {
+                        if (lines[j].includes(v.name)) {
+                            usedAfter = true;
+                            break;
+                        }
+                    }
+                    if (usedAfter) {
+                        const indent = lines[v.lineIdx].match(/^(\s*)/)?.[1] || '';
+                        lines[v.lineIdx] = lines[v.lineIdx].replace(`Object ${v.name} =`, `${v.name} =`);
+                        lines.splice(syncStart, 0, `${indent}Object ${v.name};`);
+                        i++;
+                    }
+                }
+            }
+        }
+        return lines.join('\n');
+    }
+
+    hoistFinalVarsAcrossIfElse(content: string): string {
+        const lines = content.split('\n');
+
+        for (let i = 0; i < lines.length; i++) {
+            const finalMatch = lines[i].match(/^(\s*)final\s+Object\s+(final\w+)\s*=\s*(\w+)\s*;/);
+            if (!finalMatch) continue;
+            const indent = finalMatch[1];
+            const varName = finalMatch[2];
+            const sourceVar = finalMatch[3];
+
+            let braceDepth = 0;
+            let enclosingBlockStart = -1;
+            for (let j = i - 1; j >= 0; j--) {
+                for (let ci = lines[j].length - 1; ci >= 0; ci--) {
+                    if (lines[j][ci] === '}') braceDepth++;
+                    if (lines[j][ci] === '{') braceDepth--;
+                    if (braceDepth === -1) {
+                        enclosingBlockStart = j;
+                        break;
+                    }
+                }
+                if (enclosingBlockStart >= 0) break;
+            }
+            if (enclosingBlockStart < 0) continue;
+
+            braceDepth = 0;
+            let blockEnd = -1;
+            for (let j = enclosingBlockStart; j < lines.length; j++) {
+                for (const ch of lines[j]) {
+                    if (ch === '{') braceDepth++;
+                    if (ch === '}') braceDepth--;
+                }
+                if (braceDepth === 0) {
+                    blockEnd = j;
+                    break;
+                }
+            }
+            if (blockEnd < 0) continue;
+
+            let blockHeaderLine = enclosingBlockStart;
+            if (lines[enclosingBlockStart].trim() === '{') {
+                blockHeaderLine = enclosingBlockStart - 1;
+                while (blockHeaderLine >= 0 && lines[blockHeaderLine].trim() === '') blockHeaderLine--;
+            }
+            const blockHeader2 = blockHeaderLine >= 0 ? lines[blockHeaderLine].trim() : '';
+            if (!blockHeader2.startsWith('if ') && !blockHeader2.startsWith('if(') && !blockHeader2.includes('if (')) continue;
+
+            let usedAfter = false;
+            for (let j = blockEnd + 1; j < lines.length; j++) {
+                if (lines[j].match(/^\s*(?:public|private|protected)\s+/)) break;
+                if (lines[j].includes(varName) && !lines[j].match(/^\s*final\s+Object\s+/)) {
+                    usedAfter = true;
+                    break;
+                }
+            }
+
+            if (usedAfter) {
+                let stmtStart = enclosingBlockStart;
+                if (lines[enclosingBlockStart].trim() === '{') {
+                    stmtStart = enclosingBlockStart - 1;
+                    while (stmtStart >= 0 && lines[stmtStart].trim() === '') stmtStart--;
+                }
+                while (stmtStart > 0 && lines[stmtStart - 1].trim().endsWith('&&') ||
+                       (stmtStart > 0 && lines[stmtStart - 1].trim().endsWith('||'))) {
+                    stmtStart--;
+                }
+                lines[i] = '';
+                lines.splice(stmtStart, 0, `${indent}final Object ${varName} = ${sourceVar};`);
+                i++;
+            }
+        }
+
+        return lines.join('\n');
+    }
+
+    replaceThisFieldDynamicCall(content: string): string {
+        content = content.replace(/Helpers\.callDynamically\(this\.(myTrades|positions|orders|trades|ohlcvs|tickers|orderbooks), "(append|store|storeArray|reset)", new Object\[\]\{/gm,
+            'this.$1.$2(');
+        const fields = ['myTrades', 'positions', 'orders', 'trades', 'ohlcvs', 'tickers', 'orderbooks'];
+        const methods2 = ['append', 'store', 'storeArray', 'reset'];
+        for (const field of fields) {
+            for (const method of methods2) {
+                const pattern = new RegExp(`this\\.${field}\\.${method}\\(`, 'g');
+                let result = '';
+                let lastIdx = 0;
+                let match;
+                while ((match = pattern.exec(content)) !== null) {
+                    const startIdx = match.index + match[0].length;
+                    let depth = 1;
+                    let j = startIdx;
+                    while (j < content.length && depth > 0) {
+                        if (content[j] === '(') depth++;
+                        if (content[j] === ')') depth--;
+                        j++;
+                    }
+                    const args = content.substring(startIdx, j - 1);
+                    result += content.substring(lastIdx, match.index);
+                    result += `Helpers.callDynamically(this.${field}, "${method}", new Object[]{${args}})`;
+                    lastIdx = j;
+                }
+                result += content.substring(lastIdx);
+                content = result;
+            }
+        }
+        return content;
+    }
+
+    insertReturnNullInSupplyAsync(content: string): string {
+        const lines = content.split('\n');
+
+        let inSupplyAsync = 0;
+        for (let i = 0; i < lines.length; i++) {
+            if (lines[i].includes('CompletableFuture.supplyAsync')) inSupplyAsync++;
+            if (lines[i].includes('VIRTUAL_EXECUTOR)')) inSupplyAsync = Math.max(0, inSupplyAsync - 1);
+            if (inSupplyAsync > 0 && lines[i].trim() === 'return;') {
+                lines[i] = lines[i].replace('return;', 'return null;');
+            }
+        }
+
+        for (let i = 0; i < lines.length; i++) {
+            if (!lines[i].trim().startsWith('}, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR)')) continue;
+
+            let lastStmtIdx = i - 1;
+            while (lastStmtIdx >= 0 && lines[lastStmtIdx].trim() === '') lastStmtIdx--;
+            if (lastStmtIdx < 0) continue;
+
+            const stmt = lines[lastStmtIdx].trim();
+
+            const isReturn = (s: string) => s.startsWith('return ') || s.startsWith('return(') || s === 'return null;';
+            let hasReturn = isReturn(stmt);
+
+            if (!hasReturn) {
+                for (let k = lastStmtIdx - 1; k >= Math.max(0, lastStmtIdx - 30); k--) {
+                    const kLine = lines[k].trim();
+                    if (kLine.includes('-> {')) break;
+                    if (kLine.match(/^(?:public|private|protected)\s+/)) break;
+                    if (isReturn(kLine)) {
+                        hasReturn = true;
+                        break;
+                    }
+                    if (kLine.endsWith(';') && !kLine.includes('put(') && !kLine.includes('add(') && !kLine.startsWith('//')) {
+                        break;
+                    }
+                }
+            }
+
+            if (stmt === '}') {
+                let bd = 0;
+                let openingLine = lastStmtIdx;
+                for (let k = lastStmtIdx; k >= 0; k--) {
+                    for (let ci = lines[k].length - 1; ci >= 0; ci--) {
+                        if (lines[k][ci] === '}') bd++;
+                        if (lines[k][ci] === '{') bd--;
+                        if (bd === 0) {
+                            openingLine = k;
+                            break;
+                        }
+                    }
+                    if (bd === 0) break;
+                }
+                let openingStmt = lines[openingLine].trim();
+                if (openingStmt === '{') {
+                    let prevLine = openingLine - 1;
+                    while (prevLine >= 0 && lines[prevLine].trim() === '') prevLine--;
+                    if (prevLine >= 0) openingStmt = lines[prevLine].trim();
+                }
+                if (openingStmt.startsWith('} else') || openingStmt.startsWith('else')) {
+                    let innerLast = lastStmtIdx - 1;
+                    while (innerLast >= 0 && lines[innerLast].trim() === '') innerLast--;
+                    if (innerLast >= 0 && isReturn(lines[innerLast].trim())) {
+                        hasReturn = true;
+                    }
+                } else if (openingStmt.includes('catch')) {
+                    let innerLast = lastStmtIdx - 1;
+                    while (innerLast >= 0 && lines[innerLast].trim() === '') innerLast--;
+                    if (innerLast >= 0 && isReturn(lines[innerLast].trim())) {
+                        hasReturn = true;
+                    }
+                }
+                if (openingStmt.startsWith('for ') || openingStmt.startsWith('for(') ||
+                    openingStmt.startsWith('while ') || openingStmt.startsWith('while(')) {
+                    const indent3 = lines[i].match(/^\s*/)?.[0] || '';
+                    lines.splice(i, 0, indent3 + '    return null;');
+                    i++;
+                    hasReturn = true;
+                }
+            }
+
+            if (!hasReturn) {
+                const indent = lines[i].match(/^\s*/)?.[0] || '';
+                lines.splice(i, 0, indent + '    return null;');
+                i++;
+            }
+        }
+
+        return lines.join('\n');
+    }
+
+    fixEffectivelyFinal(content: string): string {
+        const lines = content.split('\n');
+
+        for (let i = 0; i < lines.length; i++) {
+            if (!lines[i].includes('new java.util.HashMap<String, Object>() {{')) continue;
+
+            let depth = 0;
+            let endLine = -1;
+            for (let j = i; j < lines.length; j++) {
+                for (const ch of lines[j]) {
+                    if (ch === '{') depth++;
+                    if (ch === '}') depth--;
+                }
+                if (depth === 0) {
+                    endLine = j;
+                    break;
+                }
+            }
+            if (endLine < 0) continue;
+
+            const capturedVars = new Set<string>();
+            for (let j = i; j <= endLine; j++) {
+                const putMatch = lines[j].match(/put\(\s*"[^"]+",\s*(?:new\s+)?([a-z]\w+)\s*\)/);
+                if (putMatch) {
+                    const varName = putMatch[1];
+                    if (['null', 'true', 'false', 'this'].includes(varName)) continue;
+                    if (varName.startsWith('final')) continue;
+                    capturedVars.add(varName);
+                }
+                const asListMatches = lines[j].matchAll(/java\.util\.Arrays\.asList\(([^)]+)\)/g);
+                for (const m of asListMatches) {
+                    const argsStr = m[1];
+                    const args = argsStr.split(',').map((a: string) => a.trim());
+                    for (const arg of args) {
+                        const varMatch = arg.match(/^([a-z]\w+)$/);
+                        if (varMatch) {
+                            const varName = varMatch[1];
+                            if (!['null', 'true', 'false', 'this'].includes(varName) && !varName.startsWith('final')) {
+                                capturedVars.add(varName);
+                            }
+                        }
+                    }
+                }
+                const extendMatch = lines[j].match(/\.extend\([^,]+,\s*([a-z]\w+)\)/);
+                if (extendMatch) {
+                    const varName = extendMatch[1];
+                    if (!['null', 'true', 'false', 'this'].includes(varName) && !varName.startsWith('final')) {
+                        capturedVars.add(varName);
+                    }
+                }
+                const isEqualMatch = lines[j].match(/Helpers\.isEqual\(([a-z]\w+),\s*"/);
+                if (isEqualMatch) {
+                    const varName = isEqualMatch[1];
+                    if (!['null', 'true', 'false', 'this'].includes(varName) && !varName.startsWith('final')) {
+                        capturedVars.add(varName);
+                    }
+                }
+                const innerAsListMatches = lines[j].matchAll(/asList\(([^()]+)\)/g);
+                for (const m2 of innerAsListMatches) {
+                    const innerArgs = m2[1].split(',').map((a: string) => a.trim());
+                    for (const arg of innerArgs) {
+                        const varMatch = arg.match(/^([a-z]\w+)$/);
+                        if (varMatch) {
+                            const vn = varMatch[1];
+                            if (!['null', 'true', 'false', 'this'].includes(vn) && !vn.startsWith('final')) {
+                                capturedVars.add(vn);
+                            }
+                        }
+                    }
+                }
+            }
+
+            for (const varName of capturedVars) {
+                let reassigned = false;
+                let methodStart = i;
+                for (let j = i - 1; j >= 0; j--) {
+                    if (lines[j].match(/^\s*(?:public|private|protected)\s+/)) {
+                        methodStart = j;
+                        break;
+                    }
+                }
+                for (let j = methodStart; j < lines.length; j++) {
+                    if (j > methodStart && lines[j].match(/^\s*(?:public|private|protected)\s+/)) break;
+                    const reassignRegex = new RegExp(`^\\s+${varName}\\s*=\\s`);
+                    if (reassignRegex.test(lines[j])) {
+                        reassigned = true;
+                        break;
+                    }
+                }
+
+                if (reassigned) {
+                    const baseFinalName = `final${varName.charAt(0).toUpperCase()}${varName.slice(1)}`;
+                    let nearbyExists = false;
+                    for (let j = Math.max(methodStart, i - 5); j < i; j++) {
+                        if (lines[j].includes(`final Object ${baseFinalName}`) || lines[j].includes(`final Object ${baseFinalName}2`)) {
+                            nearbyExists = true;
+                            break;
+                        }
+                    }
+                    let suffix = '';
+                    for (let j = methodStart; j < i; j++) {
+                        if (lines[j].includes(`final Object ${baseFinalName}`)) suffix = '2';
+                        if (lines[j].includes(`final Object ${baseFinalName}2`)) suffix = '3';
+                    }
+                    const finalVarName = baseFinalName + suffix;
+                    if (nearbyExists) {
+                        const existingFinal = baseFinalName;
+                        for (let j2 = i; j2 <= endLine; j2++) {
+                            if (lines[j2].includes(`final Object`)) continue;
+                            lines[j2] = lines[j2].replace(
+                                new RegExp(`\\b${varName}\\b`, 'g'),
+                                existingFinal
+                            );
+                        }
+                    } else {
+                        const indent = lines[i].match(/^\s*/)?.[0] || '';
+                        lines.splice(i, 0, `${indent}final Object ${finalVarName} = ${varName};`);
+                        i++; endLine++;
+                        for (let j = i; j <= endLine; j++) {
+                            if (lines[j].includes(`final Object ${finalVarName}`)) continue;
+                            lines[j] = lines[j].replace(
+                                new RegExp(`\\b${varName}\\b`, 'g'),
+                                finalVarName
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        return lines.join('\n');
+    }
+
+    fixEffectivelyFinalLambda(content: string): string {
+        const lines = content.split('\n');
+
+        for (let i = 0; i < lines.length; i++) {
+            const spawnMatch = lines[i].match(/this\.spawn\(\(\)\s*->\s*\{.*this\.(\w+)\(([^)]+)\)/);
+            if (!spawnMatch) continue;
+
+            const args = spawnMatch[2].split(',').map((a: string) => a.trim());
+
+            let methodStart = 0;
+            for (let j = i - 1; j >= 0; j--) {
+                if (lines[j].match(/^\s*(?:public|private|protected)\s+/)) {
+                    methodStart = j;
+                    break;
+                }
+            }
+
+            for (const arg of args) {
+                if (!arg.match(/^[a-z]\w+$/)) continue;
+                let reassigned = false;
+                for (let j = methodStart; j < i; j++) {
+                    if (new RegExp(`^\\s+${arg}\\s*=\\s`).test(lines[j])) {
+                        reassigned = true;
+                        break;
+                    }
+                }
+                if (reassigned) {
+                    const finalName = `_final_${arg}`;
+                    const indent = lines[i].match(/^\s*/)?.[0] || '';
+                    lines.splice(i, 0, `${indent}final Object ${finalName} = ${arg};`);
+                    i++;
+                    lines[i] = lines[i].replace(
+                        new RegExp(`this\\.(\\w+)\\(([^)]*\\b)${arg}\\b`),
+                        (m: string, method: string, before: string) => `this.${method}(${before}${finalName}`
+                    );
+                }
+            }
+        }
+
+        return lines.join('\n');
+    }
+
+    removeTrueDuplicateFinals(content: string): string {
+        const lines = content.split('\n');
+        let seen = new Set<string>();
+        for (let i = 0; i < lines.length; i++) {
+            if (lines[i].match(/^\s*(?:public|private|protected)\s+.*\(.*\)\s*$/)) {
+                seen = new Set<string>();
+            }
+            if (lines[i].match(/^\s*(?:public|private|protected)\s+.*\(.*\)\s*\{?\s*$/)) {
+                seen = new Set<string>();
+            }
+            const finalMatch = lines[i].match(/^\s*final\s+Object\s+(final\w+)\s*=\s*\w+\s*;/);
+            if (finalMatch) {
+                const varName = finalMatch[1];
+                if (seen.has(varName)) {
+                    lines[i] = '';
+                } else {
+                    seen.add(varName);
+                }
+            }
+        }
+        return lines.join('\n');
+    }
+
+    replaceParenthesizedClientFutureJoin(content: string): string {
+        const pattern = /\(client\.(future|reusableFuture)\(/g;
+        let result = '';
+        let lastIdx = 0;
+        let match;
+        while ((match = pattern.exec(content)) !== null) {
+            const method = match[1];
+            const argsStart = match.index + match[0].length;
+            let depth = 1;
+            let j = argsStart;
+            while (j < content.length && depth > 0) {
+                if (content[j] === '(') depth++;
+                if (content[j] === ')') depth--;
+                j++;
+            }
+            if (j < content.length && content[j] === ')' && content.substring(j + 1, j + 8) === '.join()') {
+                const args = content.substring(argsStart, j - 1);
+                result += content.substring(lastIdx, match.index);
+                result += `client.${method}(${args}).getFuture().join()`;
+                lastIdx = j + 8;
+            }
+        }
+        result += content.substring(lastIdx);
+        return result;
+    }
+
+    replaceCallPattern(content: string): string {
+        const pattern = /(\w+)\.call\(this,\s*/g;
+        let result = '';
+        let lastIdx = 0;
+        let match;
+        while ((match = pattern.exec(content)) !== null) {
+            const handler = match[1];
+            const startIdx = match.index + match[0].length;
+            let depth = 1;
+            let i = startIdx;
+            while (i < content.length && depth > 0) {
+                if (content[i] === '(') depth++;
+                if (content[i] === ')') depth--;
+                i++;
+            }
+            const args = content.substring(startIdx, i - 1);
+            result += content.substring(lastIdx, match.index);
+            result += `Helpers.callDynamically(this, ${handler}, new Object[] {${args}})`;
+            lastIdx = i;
+        }
+        result += content.substring(lastIdx);
+        return result;
+    }
+
+    replaceDynamicMethodCall(content: string, methodName: string): string {
+        const pattern = new RegExp(`(?<=[^\\w.])([a-z]\\w+)\\.${methodName}\\(`, 'g');
+        let result = '';
+        let lastIdx = 0;
+        let match;
+        while ((match = pattern.exec(content)) !== null) {
+            const varName = match[1];
+            const before = content.substring(Math.max(0, match.index - 20), match.index);
+            if (/(?:this\.|Helpers\.|new\s|\w\.)$/.test(before)) continue;
+            const skipVars = ['new', 'var', 'for', 'if', 'else', 'return', 'try', 'catch', 'throw',
+                'list', 'channel', 'response', 'request', 'message',
+                'data', 'params', 'options', 'config', 'entry', 'item', 'key', 'value',
+                'client', 'exchange', 'string', 'array', 'map', 'set',
+                'ticker', 'trade', 'order', 'balance', 'position', 'currency', 'market'];
+            if (skipVars.includes(varName)) continue;
+
+            const startIdx = match.index + match[0].length;
+            let depth = 1;
+            let i = startIdx;
+            while (i < content.length && depth > 0) {
+                if (content[i] === '(') depth++;
+                if (content[i] === ')') depth--;
+                i++;
+            }
+            const args = content.substring(startIdx, i - 1);
+            result += content.substring(lastIdx, match.index);
+            result += `Helpers.callDynamically(${varName}, "${methodName}", new Object[]{${args}})`;
+            lastIdx = i;
+        }
+        result += content.substring(lastIdx);
+        return result;
     }
 
     transpileDerivedExchangeFile(tsFolder: string, filename: string, options: any, csharpResult: any, force = false, ws = false) {
@@ -1042,7 +2138,9 @@ class NewTranspiler {
         const csharp = this.createJavaClass(fileNameNoExt, csharpResult, ws)
 
         if (javaFolder) {
-            overwriteFileAndFolder(javaFolder + this.capitalize(javaName), csharp)
+            // Both REST and WS classes get Core suffix (e.g., BinanceCore.java, pro/BinanceCore.java)
+            const outputName = this.capitalize(fileNameNoExt) + 'Core.java';
+            overwriteFileAndFolder(javaFolder + outputName, csharp)
         }
     }
 
@@ -1178,6 +2276,8 @@ class NewTranspiler {
             [/object exchange/g, 'Exchange exchange'],
             [/function test/g, finalName],
         ]).trim()
+        // cast callDynamically to CompletableFuture when .join() is called on the result
+        content = content.replace(/\(Helpers\.callDynamically\(([^)]+(?:\([^)]*\))*[^)]*)\)\)\.join\(\)/g, '((java.util.concurrent.CompletableFuture<Object>)Helpers.callDynamically($1)).join()');
 
         const contentLines = content.split('\n');
         const contentIdented = contentLines.map(line => '    ' + line).join('\n');
@@ -1193,7 +2293,7 @@ class NewTranspiler {
             contentIdented,
             '}',
         ].join('\n')
-        return [finalName, file];
+        return [className, file];
     }
 
     async transpileExchangeTestsToJava() {
@@ -1209,7 +2309,7 @@ class NewTranspiler {
         const inputFiles = fs.readdirSync('./ts/src/test/exchange');
         const files = inputFiles.filter(file => file.match(/\.ts$/)).filter(file => !ignore.includes(file));
         const transpiledFiles = files.map(file => this.transpileExchangeTest(file, inputDir + file));
-        await Promise.all(transpiledFiles.map((file, idx) => promisedWriteFile(outDir + file[0] + '.cs', file[1])))
+        await Promise.all(transpiledFiles.map((file, idx) => promisedWriteFile(outDir + file[0] + '.java', file[1])))
     }
 
     transpileBaseTestsToJava() {
@@ -1251,6 +2351,8 @@ class NewTranspiler {
                 [/\s*public\sObject\sequals(([^}]|\n)+)+}/gm, ''], // remove equals
                 [/testSharedMethods.AssertDeepEqual/gm, 'AssertDeepEqual'], // deepEqual added
             ]).trim()
+            // cast callDynamically to CompletableFuture when .join() is called on the result
+            content = content.replace(/\(Helpers\.callDynamically\(([^)]+(?:\([^)]*\))*[^)]*)\)\)\.join\(\)/g, '((java.util.concurrent.CompletableFuture<Object>)Helpers.callDynamically($1)).join()');
 
             if (correctedTestName === 'TestInit') {
                 content = this.regexAll(content, [
@@ -1438,6 +2540,8 @@ class NewTranspiler {
             // but that function is part of a different class.
 
             contentIndentend = this.regexAll(contentIndentend, regexes)
+            // cast callDynamically to CompletableFuture when .join() is called on the result
+            contentIndentend = contentIndentend.replace(/\(Helpers\.callDynamically\(([^)]+(?:\([^)]*\))*[^)]*)\)\)\.join\(\)/g, '((java.util.concurrent.CompletableFuture<Object>)Helpers.callDynamically($1)).join()');
             // const namespace = isWs ? 'using ccxt;\nusing ccxt.pro;' : 'using ccxt;';
             let parsedName = 'Test' + this.capitalize(filename.replace('test.', '').replace('tests.', ''));
             if (parsedName === 'TestOhlcv') parsedName = 'TestOHLCV'; // special case

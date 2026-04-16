@@ -532,7 +532,7 @@ public class Helpers {
     // }
 
 
-public static CompletableFuture<Object> callDynamically(Object obj, Object methodName, Object[] args) {
+public static Object callDynamically(Object obj, Object methodName, Object[] args) {
     if (args == null) args = new Object[]{};
 
     String name = (String) methodName;
@@ -542,20 +542,48 @@ public static CompletableFuture<Object> callDynamically(Object obj, Object metho
         m.setAccessible(true);
 
         Object[] invokeArgs = adaptForVarArgs(m, args);
+        coerceArgs(m, invokeArgs);
 
-        Object result = m.invoke(obj, invokeArgs);
-
-        if (result instanceof CompletableFuture<?> cf) {
-            @SuppressWarnings("unchecked")
-            CompletableFuture<Object> cast = (CompletableFuture<Object>) cf;
-            return cast;
-        }
-        return CompletableFuture.completedFuture(result);
+        return m.invoke(obj, invokeArgs);
 
     } catch (Exception e) {
-        CompletableFuture<Object> failed = new CompletableFuture<>();
-        failed.completeExceptionally(e);
-        return failed;
+        throw new RuntimeException(e);
+    }
+}
+
+/**
+ * Coerce arguments to match the method's parameter types.
+ * Handles common numeric type mismatches from JSON parsing
+ * (e.g., Integer→Long, Integer→Double, Long→Double).
+ */
+private static void coerceArgs(Method m, Object[] args) {
+    Class<?>[] ptypes = m.getParameterTypes();
+    int count = Math.min(args.length, ptypes.length);
+    for (int i = 0; i < count; i++) {
+        if (args[i] == null) continue;
+        Class<?> expected = ptypes[i];
+        if (expected == Object.class || expected == Object[].class) continue;
+        if (expected.isInstance(args[i])) continue;
+
+        // Numeric coercion
+        if (args[i] instanceof Number n) {
+            if (expected == Long.class || expected == long.class) {
+                args[i] = n.longValue();
+            } else if (expected == Double.class || expected == double.class) {
+                args[i] = n.doubleValue();
+            } else if (expected == Integer.class || expected == int.class) {
+                args[i] = n.intValue();
+            } else if (expected == Float.class || expected == float.class) {
+                args[i] = n.floatValue();
+            }
+        }
+        // String coercion for numeric strings
+        else if (args[i] instanceof String s && (expected == Long.class || expected == Double.class)) {
+            try {
+                if (expected == Long.class) args[i] = Long.parseLong(s);
+                else args[i] = Double.parseDouble(s);
+            } catch (NumberFormatException ignored) {}
+        }
     }
 }
 
@@ -681,24 +709,35 @@ private static Object[] adaptForVarArgs(Method m, Object[] args) {
     // --------- helpers ---------
 
     private static Method findMethod(Class<?> cls, String name, int argCount) {
-        // try exact arg count first
-        for (Method m : cls.getDeclaredMethods()) {
-            if (m.getName().equals(name) && m.getParameterCount() == argCount) {
-                return m;
-            }
-        }
-        // search up the hierarchy
-        Class<?> cur = cls.getSuperclass();
+        // Search child-first (normal Java resolution order) but collect candidates.
+        // Prefer varargs methods over non-varargs when both match — varargs methods
+        // are the untyped transpiled methods (Object... params, CompletableFuture returns)
+        // while non-varargs are typed overloads (String/Long/Map params, sync returns)
+        // that don't work with callDynamically's Object[] args.
+        Method nonVarArgsMatch = null;
+
+        Class<?> cur = cls;
         while (cur != null) {
             for (Method m : cur.getDeclaredMethods()) {
-                if (m.getName().equals(name) && m.getParameterCount() == argCount) {
+                if (!m.getName().equals(name)) continue;
+
+                // Varargs method that can accept this arg count: return immediately
+                if (m.isVarArgs() && argCount >= m.getParameterCount() - 1) {
                     return m;
+                }
+
+                // Exact arg count match: save as fallback (typed overload)
+                if (m.getParameterCount() == argCount && nonVarArgsMatch == null) {
+                    nonVarArgsMatch = m;
                 }
             }
             cur = cur.getSuperclass();
         }
-        // fallback: first by name
-        for (Method m : cls.getDeclaredMethods()) {
+
+        if (nonVarArgsMatch != null) return nonVarArgsMatch;
+
+        // last resort: first by name
+        for (Method m : cls.getMethods()) {
             if (m.getName().equals(name)) return m;
         }
         throw new RuntimeException("Method not found: " + name + " with " + argCount + " args on " + cls.getName());
@@ -769,7 +808,7 @@ private static Object[] adaptForVarArgs(Method m, Object[] args) {
     }
 
     public static Object getArg(Object[] v, int index, Object def) {
-        if (v.length <= index) {
+        if (v == null || v.length <= index) {
             return def;
         }
         return v[index];
@@ -808,6 +847,22 @@ private static Object[] adaptForVarArgs(Method m, Object[] args) {
                 "List requires (value) to append or (index(Integer), value) to insert");
         }
 
+        // Fallback: set field via reflection for arbitrary objects (e.g., WsOrderBook)
+        if (args.length == 2 && args[0] instanceof String fieldName) {
+            try {
+                java.lang.reflect.Field field = target.getClass().getField(fieldName);
+                field.setAccessible(true);
+                field.set(target, args[1]);
+                return;
+            } catch (NoSuchFieldException e) {
+                try {
+                    String setter = "set" + fieldName.substring(0, 1).toUpperCase() + fieldName.substring(1);
+                    java.lang.reflect.Method method = target.getClass().getMethod(setter, Object.class);
+                    method.invoke(target, args[1]);
+                    return;
+                } catch (Exception e2) { /* fall through */ }
+            } catch (Exception e) { /* fall through */ }
+        }
         throw new IllegalArgumentException("Target is neither Map nor List: " + typeName(target));
     }
 

@@ -6,6 +6,7 @@ import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeFormatterBuilder;
 import java.time.format.DateTimeParseException;
 import java.time.format.ResolverStyle;
 
@@ -66,7 +67,10 @@ public final class Time {
     // }
 
         private static final DateTimeFormatter SPACE_FORMAT =
-            DateTimeFormatter.ofPattern("uuuu-MM-dd HH:mm:ss")
+            new DateTimeFormatterBuilder()
+                    .appendPattern("uuuu-MM-dd HH:mm:ss")
+                    .optionalStart().appendFraction(java.time.temporal.ChronoField.NANO_OF_SECOND, 0, 9, true).optionalEnd()
+                    .toFormatter()
                     .withResolverStyle(ResolverStyle.STRICT);
 
     // Returns Long (epoch millis) or null
