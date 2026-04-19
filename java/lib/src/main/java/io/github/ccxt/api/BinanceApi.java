@@ -3879,6 +3879,11 @@ public class BinanceApi extends Exchange
         return this.callAsync ("papiPostUmFeeBurn", optionalArgs);
     }
 
+    public java.util.concurrent.CompletableFuture<Object>  papiPostUmStockContract (Object... optionalArgs)
+    {
+        return this.callAsync ("papiPostUmStockContract", optionalArgs);
+    }
+
     public java.util.concurrent.CompletableFuture<Object>  papiPutListenKey (Object... optionalArgs)
     {
         return this.callAsync ("papiPutListenKey", optionalArgs);

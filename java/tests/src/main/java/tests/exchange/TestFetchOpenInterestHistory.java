@@ -16,14 +16,14 @@ public class TestFetchOpenInterestHistory extends BaseTest {
         return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
 
         Object method = "fetchOpenInterestHistory";
-        Object openInterestHistory = (exchange.fetchOpenInterestHistory((Object) symbol)).join();
+        Object openInterestHistory = (exchange.fetchOpenInterestHistory(symbol)).join();
         TestSharedMethods.AssertNonEmtpyArray(exchange, skippedProperties, method, openInterestHistory, symbol);
         for (var i = 0; Helpers.isLessThan(i, Helpers.getArrayLength(openInterestHistory)); i++)
         {
             TestOpenInterest.testOpenInterest(exchange, skippedProperties, method, Helpers.GetValue(openInterestHistory, i));
         }
         return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 

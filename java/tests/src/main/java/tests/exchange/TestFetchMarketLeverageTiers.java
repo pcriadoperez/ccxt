@@ -16,14 +16,14 @@ public class TestFetchMarketLeverageTiers extends BaseTest {
         return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
 
         Object method = "fetchMarketLeverageTiers";
-        Object tiers = (exchange.fetchMarketLeverageTiers((Object) symbol)).join();
+        Object tiers = (exchange.fetchMarketLeverageTiers(symbol)).join();
         TestSharedMethods.AssertNonEmtpyArray(exchange, skippedProperties, method, tiers, symbol);
         for (var j = 0; Helpers.isLessThan(j, Helpers.getArrayLength(tiers)); j++)
         {
             TestLeverageTier.testLeverageTier(exchange, skippedProperties, method, Helpers.GetValue(tiers, j));
         }
         return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 

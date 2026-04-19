@@ -27,7 +27,7 @@ public class TestFetchOrderBooks extends BaseTest {
             TestOrderBook.testOrderBook(exchange, skippedProperties, method, Helpers.GetValue(orderBooks, symbolInner), symbolInner);
         }
         return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 

@@ -63,7 +63,7 @@ public class TestMain extends BaseTest
                 throw new RuntimeException(e);
             }
             return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 
@@ -121,7 +121,7 @@ public class TestMain extends BaseTest
             (this.startTest(exchange, symbolArgv)).join();
             exitScript(0); // needed to be explicitly finished for WS tests
             return true;  // required for c#
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 
@@ -165,7 +165,7 @@ public class TestMain extends BaseTest
                 this.testFiles = (getTestFiles(properties, this.wsTests)).join();
             }
             return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 
@@ -240,7 +240,6 @@ public class TestMain extends BaseTest
         // skipped tests
         Object skippedFile = Helpers.add(getRootDir(), "skip-tests.json");
         Object skippedSettings = ioFileRead(skippedFile);
-        
         this.skippedSettingsForExchange = exchange.safeValue(skippedSettings, exchangeId, new java.util.HashMap<String, Object>() {{}});
         Object skippedSettingsForExchange = this.skippedSettingsForExchange;
         // others
@@ -256,7 +255,6 @@ public class TestMain extends BaseTest
             exchange.wsProxy = exchange.safeString(skippedSettingsForExchange, "wsProxy");
             exchange.wssProxy = exchange.safeString(skippedSettingsForExchange, "wssProxy");
         }
-        
         this.skippedMethods = exchange.safeValue(skippedSettingsForExchange, "skipMethods", new java.util.HashMap<String, Object>() {{}});
         this.checkedPublicTests = new java.util.HashMap<String, Object>() {{}};
     }
@@ -320,7 +318,7 @@ public class TestMain extends BaseTest
             // exceptionally for `loadMarkets` call, we call it before it's even checked for "skip" as we need it to be called anyway (but can skip "test.loadMarket" for it)
             if (Helpers.isTrue(isLoadMarkets))
             {
-                (exchange.loadMarkets((Object) true)).join();
+                (exchange.loadMarkets(true)).join();
             }
             Object name = exchange.id;
             if (Helpers.isTrue(skipMessage))
@@ -353,7 +351,7 @@ public class TestMain extends BaseTest
                 Helpers.addElementToObject(this.checkedPublicTests, methodName, true);
             }
             return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 
@@ -448,6 +446,7 @@ public class TestMain extends BaseTest
                     Object isAuthError = (Helpers.isInstance(e, AuthenticationError.class));
                     Object isNotSupported = (Helpers.isInstance(e, NotSupported.class));
                     Object isOperationFailed = (Helpers.isInstance(e, OperationFailed.class)); // includes "DDoSProtection", "RateLimitExceeded", "RequestTimeout", "ExchangeNotAvailable", "OperationFailed", "InvalidNonce", ...
+                    Object lastUrlMsg = ((Helpers.isTrue(this.wsTests))) ? "" : Helpers.add(Helpers.add(" (Last url: ", exchange.last_request_url), " )");
                     if (Helpers.isTrue(isOperationFailed))
                     {
                         // if last retry was gone with same `tempFailure` error, then let's eventually return false
@@ -486,7 +485,7 @@ public class TestMain extends BaseTest
                             }
                             // output the message
                             Object failType = ((Helpers.isTrue(shouldFail))) ? "[TEST_FAILURE]" : "[TEST_WARNING]";
-                            dump(failType, "Method could not be tested due to a repeated Network/Availability issues", " | ", exchange.id, methodName, argsStringified, exceptionMessage(e));
+                            dump(failType, exchange.id, methodName, argsStringified, lastUrlMsg, "Method could not be tested due to a repeated Network/Availability issues", " | ", exceptionMessage(e));
                             return retSuccess;
                         } else
                         {
@@ -499,7 +498,7 @@ public class TestMain extends BaseTest
                         // if it's loadMarkets, then fail test, because it's mandatory for tests
                         if (Helpers.isTrue(isLoadMarkets))
                         {
-                            dump("[TEST_FAILURE]", "Exchange can not load markets", exceptionMessage(e), exchange.id, methodName, argsStringified);
+                            dump("[TEST_FAILURE]", exchange.id, methodName, argsStringified, lastUrlMsg, "Exchange can not load markets", exceptionMessage(e));
                             return false;
                         }
                         // if the specific arguments to the test method throws "NotSupported" exception
@@ -508,7 +507,7 @@ public class TestMain extends BaseTest
                         {
                             if (Helpers.isTrue(this.info))
                             {
-                                dump("[INFO] NOT_SUPPORTED", exceptionMessage(e), exchange.id, methodName, argsStringified);
+                                dump("[INFO] NOT_SUPPORTED", exchange.id, methodName, argsStringified, lastUrlMsg, exceptionMessage(e));
                             }
                             return true;
                         }
@@ -518,19 +517,19 @@ public class TestMain extends BaseTest
                             if (Helpers.isTrue(this.info))
                             {
                                 // todo - turn into warning
-                                dump("[INFO]", "Authentication problem for public method", exceptionMessage(e), exchange.id, methodName, argsStringified);
+                                dump("[INFO]", exchange.id, methodName, argsStringified, lastUrlMsg, "Authentication problem for public method", exceptionMessage(e));
                             }
                             return true;
                         } else
                         {
-                            dump("[TEST_FAILURE]", exceptionMessage(e), exchange.id, methodName, argsStringified);
+                            dump("[TEST_FAILURE]", exchange.id, methodName, argsStringified, lastUrlMsg, exceptionMessage(e));
                             return false;
                         }
                     }
                 }
             }
             return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 
@@ -587,7 +586,7 @@ public class TestMain extends BaseTest
             this.publicTests = tests;
             (this.runTests(exchange, tests, true)).join();
             return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 
@@ -629,7 +628,7 @@ public class TestMain extends BaseTest
                 dump(this.addPadding(Helpers.add(Helpers.add(Helpers.add("[INFO] END ", testPrefixString), " "), exchange.id), 25));
             }
             return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 
@@ -646,7 +645,7 @@ public class TestMain extends BaseTest
             Object exchangeSymbolsLength = Helpers.getArrayLength(exchange.symbols);
             dump("[INFO:MAIN] Exchange loaded", exchangeSymbolsLength, "symbols");
             return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 
@@ -844,7 +843,7 @@ public class TestMain extends BaseTest
                 }
             }
             return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 
@@ -931,7 +930,7 @@ public class TestMain extends BaseTest
             // const combinedTests = exchange.deepExtend (this.publicTests, privateTests);
             (this.runTests(exchange, tests, false)).join();
             return true;  // required in c#
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 
@@ -971,7 +970,7 @@ public class TestMain extends BaseTest
                 dump(Helpers.add("[TEST_WARNING]", errorMessage));
             }
             return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 
@@ -1000,7 +999,7 @@ public class TestMain extends BaseTest
                 return false;  // this test is only for binance exchange for now
             }
             exchange.returnResponseHeaders = true;
-            Object ticker = (exchange.fetchTicker((Object) "BTC/USDT")).join();
+            Object ticker = (exchange.fetchTicker("BTC/USDT")).join();
             Object info = Helpers.GetValue(ticker, "info");
             Object headers = Helpers.GetValue(info, "responseHeaders");
             Object headersKeys = new java.util.ArrayList<Object>(((java.util.Map<String, Object>)headers).keySet());
@@ -1009,7 +1008,7 @@ public class TestMain extends BaseTest
             Assert(Helpers.isGreaterThan(Helpers.getArrayLength(headerValues), 0), "Response headers values should not be empty");
             exchange.returnResponseHeaders = false;
             return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 
@@ -1058,7 +1057,7 @@ public class TestMain extends BaseTest
                 throw new RuntimeException(e);
             }
             return true;  // required in c#
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 
@@ -1468,7 +1467,7 @@ public class TestMain extends BaseTest
                 dump(Helpers.add("[TEST_FAILURE]", errorMessage));
             }
             return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 
@@ -1502,7 +1501,7 @@ public class TestMain extends BaseTest
             }
             setFetchResponse(exchange, null); // reset state
             return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 
@@ -1540,8 +1539,13 @@ public class TestMain extends BaseTest
                     }
                 } else
                 {
-                    // assume macos arm64
-                    libraryPath = Helpers.add(basePath, "lighter-signer-darwin-arm64.dylib");
+                    if (Helpers.isTrue(isAmd64()))
+                    {
+                        libraryPath = Helpers.add(basePath, "lighter-signer-darwin-x86.dylib");
+                    } else
+                    {
+                        libraryPath = Helpers.add(basePath, "lighter-signer-darwin-arm64.dylib");
+                    }
                 }
             }
         }
@@ -1679,7 +1683,6 @@ public class TestMain extends BaseTest
                     Object skipKeys = exchange.safeValue(exchangeData, "skipKeys", new java.util.ArrayList<Object>(java.util.Arrays.asList()));
                     (this.testRequestStatically(exchange, method, result, type, skipKeys)).join();
                     // reset options
-                    
                     exchange.options = exchange.convertToSafeDictionary(exchange.deepExtend(oldExchangeOptions, new java.util.HashMap<String, Object>() {{}}));
                 }
             }
@@ -1688,7 +1691,7 @@ public class TestMain extends BaseTest
                 (close(exchange)).join();
             }
             return true;  // in c# methods that will be used with promiseAll need to return something
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 
@@ -1782,7 +1785,7 @@ public class TestMain extends BaseTest
                 (close(exchange)).join();
             }
             return true;  // in c# methods that will be used with promiseAll need to return something
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 
@@ -1851,7 +1854,7 @@ public class TestMain extends BaseTest
             Object testName = Helpers.getArg(optionalArgs, 1, null);
             (this.runStaticTests("request", targetExchange, testName)).join();
             return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 
@@ -1924,7 +1927,7 @@ public class TestMain extends BaseTest
                 dump(Helpers.add("[INFO]", successMessage));
             }
             return true;  // required in c#
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 
@@ -1940,7 +1943,7 @@ public class TestMain extends BaseTest
             Object test = Helpers.getArg(optionalArgs, 1, null);
             (this.runStaticTests("response", exchangeName, test)).join();
             return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 
@@ -1952,13 +1955,13 @@ public class TestMain extends BaseTest
             //  -----------------------------------------------------------------------------
             //  --- Init of brokerId tests functions-----------------------------------------
             //  -----------------------------------------------------------------------------
-            Object promises = new java.util.ArrayList<Object>(java.util.Arrays.asList(this.testBinance(), this.testOkx(), this.testCryptocom(), this.testBybit(), this.testKucoin(), this.testKucoinfutures(), this.testBitget(), this.testMexc(), this.testHtx(), this.testWoo(), this.testBitmart(), this.testCoinex(), this.testBingx(), this.testPhemex(), this.testBlofin(), this.testCoinbaseinternational(), this.testCoinbaseAdvanced(), this.testWoofiPro(), this.testOxfun(), this.testXT(), this.testParadex(), this.testHashkey(), this.testCoincatch(), this.testCryptomus(), this.testDerive(), this.testModeTrade(), this.testBackpack(), this.testToobit()));
+            Object promises = new java.util.ArrayList<Object>(java.util.Arrays.asList(this.testBinance(), this.testOkx(), this.testCryptocom(), this.testBybit(), this.testKucoin(), this.testKucoinfutures(), this.testBitget(), this.testMexc(), this.testHtx(), this.testWoo(), this.testBitmart(), this.testCoinex(), this.testBingx(), this.testPhemex(), this.testBlofin(), this.testCoinbaseinternational(), this.testCoinbaseAdvanced(), this.testWoofiPro(), this.testOxfun(), this.testXT(), this.testParadex(), this.testHashkey(), this.testCryptomus(), this.testDerive(), this.testModeTrade(), this.testBackpack(), this.testToobit(), this.testWeex()));
             (Helpers.promiseAll(promises)).join();
             Object successMessage = Helpers.add(Helpers.add("[", this.lang), "][TEST_SUCCESS] brokerId tests passed.");
             dump(Helpers.add("[INFO]", successMessage));
             exitScript(0);
             return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 
@@ -1974,7 +1977,7 @@ public class TestMain extends BaseTest
             Object spotOrderRequest = null;
             try
             {
-                (exchange.createOrder((Object) "BTC/USDT", (Object) "limit", (Object) "buy", (Object) 1, (Object) 20000)).join();
+                (exchange.createOrder("BTC/USDT", "limit", "buy", 1, 20000)).join();
             } catch(Exception e)
             {
                 spotOrderRequest = this.urlencodedToDict(exchange.last_request_body);
@@ -1985,7 +1988,7 @@ public class TestMain extends BaseTest
             Object swapOrderRequest = null;
             try
             {
-                (exchange.createOrder((Object) "BTC/USDT:USDT", (Object) "limit", (Object) "buy", (Object) 1, (Object) 20000)).join();
+                (exchange.createOrder("BTC/USDT:USDT", "limit", "buy", 1, 20000)).join();
             } catch(Exception e)
             {
                 swapOrderRequest = this.urlencodedToDict(exchange.last_request_body);
@@ -1993,7 +1996,7 @@ public class TestMain extends BaseTest
             Object swapInverseOrderRequest = null;
             try
             {
-                (exchange.createOrder((Object) "BTC/USD:BTC", (Object) "limit", (Object) "buy", (Object) 1, (Object) 20000)).join();
+                (exchange.createOrder("BTC/USD:BTC", "limit", "buy", 1, 20000)).join();
             } catch(Exception e)
             {
                 swapInverseOrderRequest = this.urlencodedToDict(exchange.last_request_body);
@@ -2009,7 +2012,7 @@ public class TestMain extends BaseTest
             Object swapAlgoOrderRequest = null;
             try
             {
-                (exchange.createOrder((Object) "BTC/USDT:USDT", (Object) "limit", (Object) "buy", (Object) 0.002, (Object) 102000, (Object) new java.util.HashMap<String, Object>() {{
+                (exchange.createOrder("BTC/USDT:USDT", "limit", "buy", 0.002, 102000, new java.util.HashMap<String, Object>() {{
                     put( "triggerPrice", 101000 );
                 }})).join();
                 Object checkOrderRequest = this.urlencodedToDict(exchange.last_request_body);
@@ -2037,7 +2040,7 @@ public class TestMain extends BaseTest
         put( "side", "buy" );
         put( "amount", 1 );
     }}));
-                (exchange.createOrders((Object) orders)).join();
+                (exchange.createOrders(orders)).join();
             } catch(Exception e)
             {
                 createOrdersRequest = this.urlencodedToDict(exchange.last_request_body);
@@ -2054,7 +2057,7 @@ public class TestMain extends BaseTest
                 (close(exchange)).join();
             }
             return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 
@@ -2068,7 +2071,7 @@ public class TestMain extends BaseTest
             Object spotOrderRequest = null;
             try
             {
-                (exchange.createOrder((Object) "BTC/USDT", (Object) "limit", (Object) "buy", (Object) 1, (Object) 20000)).join();
+                (exchange.createOrder("BTC/USDT", "limit", "buy", 1, 20000)).join();
             } catch(Exception e)
             {
                 spotOrderRequest = jsonParse(exchange.last_request_body);
@@ -2081,7 +2084,7 @@ public class TestMain extends BaseTest
             Object swapOrderRequest = null;
             try
             {
-                (exchange.createOrder((Object) "BTC/USDT:USDT", (Object) "limit", (Object) "buy", (Object) 1, (Object) 20000)).join();
+                (exchange.createOrder("BTC/USDT:USDT", "limit", "buy", 1, 20000)).join();
             } catch(Exception e)
             {
                 swapOrderRequest = jsonParse(exchange.last_request_body);
@@ -2095,7 +2098,7 @@ public class TestMain extends BaseTest
                 (close(exchange)).join();
             }
             return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 
@@ -2110,7 +2113,7 @@ public class TestMain extends BaseTest
             Object request = null;
             try
             {
-                (exchange.createOrder((Object) "BTC/USDT", (Object) "limit", (Object) "buy", (Object) 1, (Object) 20000)).join();
+                (exchange.createOrder("BTC/USDT", "limit", "buy", 1, 20000)).join();
             } catch(Exception e)
             {
                 request = jsonParse(exchange.last_request_body);
@@ -2122,7 +2125,7 @@ public class TestMain extends BaseTest
                 (close(exchange)).join();
             }
             return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 
@@ -2137,7 +2140,7 @@ public class TestMain extends BaseTest
             Assert(Helpers.isEqual(Helpers.GetValue(exchange.options, "brokerId"), id), "id not in options");
             try
             {
-                (exchange.createOrder((Object) "BTC/USDT", (Object) "limit", (Object) "buy", (Object) 1, (Object) 20000)).join();
+                (exchange.createOrder("BTC/USDT", "limit", "buy", 1, 20000)).join();
             } catch(Exception e)
             {
                 // we expect an error here, we're only interested in the headers
@@ -2149,7 +2152,7 @@ public class TestMain extends BaseTest
                 (close(exchange)).join();
             }
             return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 
@@ -2171,7 +2174,7 @@ public class TestMain extends BaseTest
             Assert(Helpers.isEqual(futureKey, "1b327198-f30c-4f14-a0ac-918871282f15"), Helpers.add(Helpers.add("kucoin - key: ", futureKey), " not in options."));
             try
             {
-                (exchange.createOrder((Object) "BTC/USDT", (Object) "limit", (Object) "buy", (Object) 1, (Object) 20000)).join();
+                (exchange.createOrder("BTC/USDT", "limit", "buy", 1, 20000)).join();
             } catch(Exception e)
             {
                 // we expect an error here, we're only interested in the headers
@@ -2181,7 +2184,7 @@ public class TestMain extends BaseTest
             Assert(Helpers.isEqual(Helpers.GetValue(reqHeaders, "KC-API-PARTNER"), id), Helpers.add(Helpers.add("kucoin - id: ", id), " not in headers for spot orders."));
             try
             {
-                (exchange.createOrder((Object) "BTC/USDT", (Object) "limit", (Object) "buy", (Object) 1, (Object) 20000, (Object) new java.util.HashMap<String, Object>() {{
+                (exchange.createOrder("BTC/USDT", "limit", "buy", 1, 20000, new java.util.HashMap<String, Object>() {{
                     put( "uta", true );
                 }})).join();
             } catch(Exception e)
@@ -2192,7 +2195,7 @@ public class TestMain extends BaseTest
             id = "ccxtfutures";
             try
             {
-                (exchange.createOrder((Object) "BTC/USDT:USDT", (Object) "limit", (Object) "buy", (Object) 1, (Object) 20000)).join();
+                (exchange.createOrder("BTC/USDT:USDT", "limit", "buy", 1, 20000)).join();
             } catch(Exception e)
             {
                 reqHeaders = exchange.last_request_headers;
@@ -2200,7 +2203,7 @@ public class TestMain extends BaseTest
             Assert(Helpers.isEqual(Helpers.GetValue(reqHeaders, "KC-API-PARTNER"), id), Helpers.add(Helpers.add("kucoin - id: ", id), " not in headers for swap orders."));
             try
             {
-                (exchange.createOrder((Object) "BTC/USDT:USDT", (Object) "limit", (Object) "buy", (Object) 1, (Object) 20000, (Object) new java.util.HashMap<String, Object>() {{
+                (exchange.createOrder("BTC/USDT:USDT", "limit", "buy", 1, 20000, new java.util.HashMap<String, Object>() {{
                     put( "uta", true );
                 }})).join();
             } catch(Exception e)
@@ -2213,7 +2216,7 @@ public class TestMain extends BaseTest
                 (close(exchange)).join();
             }
             return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 
@@ -2231,7 +2234,7 @@ public class TestMain extends BaseTest
             Assert(Helpers.isEqual(futureKey, "1b327198-f30c-4f14-a0ac-918871282f15"), Helpers.add(Helpers.add("kucoinfutures - key: ", futureKey), " not in options."));
             try
             {
-                (exchange.createOrder((Object) "BTC/USDT:USDT", (Object) "limit", (Object) "buy", (Object) 1, (Object) 20000)).join();
+                (exchange.createOrder("BTC/USDT:USDT", "limit", "buy", 1, 20000)).join();
             } catch(Exception e)
             {
                 reqHeaders = exchange.last_request_headers;
@@ -2239,7 +2242,7 @@ public class TestMain extends BaseTest
             Assert(Helpers.isEqual(Helpers.GetValue(reqHeaders, "KC-API-PARTNER"), id), Helpers.add(Helpers.add("kucoinfutures - id: ", id), " not in headers."));
             try
             {
-                (exchange.createOrder((Object) "BTC/USDT:USDT", (Object) "limit", (Object) "buy", (Object) 1, (Object) 20000, (Object) new java.util.HashMap<String, Object>() {{
+                (exchange.createOrder("BTC/USDT:USDT", "limit", "buy", 1, 20000, new java.util.HashMap<String, Object>() {{
                     put( "uta", true );
                 }})).join();
             } catch(Exception e)
@@ -2252,7 +2255,7 @@ public class TestMain extends BaseTest
                 (close(exchange)).join();
             }
             return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 
@@ -2267,7 +2270,7 @@ public class TestMain extends BaseTest
             Assert(Helpers.isEqual(Helpers.GetValue(exchange.options, "broker"), id), Helpers.add(Helpers.add("bitget - id: ", id), " not in options"));
             try
             {
-                (exchange.createOrder((Object) "BTC/USDT", (Object) "limit", (Object) "buy", (Object) 1, (Object) 20000)).join();
+                (exchange.createOrder("BTC/USDT", "limit", "buy", 1, 20000)).join();
             } catch(Exception e)
             {
                 reqHeaders = exchange.last_request_headers;
@@ -2278,7 +2281,7 @@ public class TestMain extends BaseTest
                 (close(exchange)).join();
             }
             return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 
@@ -2294,7 +2297,7 @@ public class TestMain extends BaseTest
             (exchange.loadMarkets()).join();
             try
             {
-                (exchange.createOrder((Object) "BTC/USDT", (Object) "limit", (Object) "buy", (Object) 1, (Object) 20000)).join();
+                (exchange.createOrder("BTC/USDT", "limit", "buy", 1, 20000)).join();
             } catch(Exception e)
             {
                 reqHeaders = exchange.last_request_headers;
@@ -2305,7 +2308,7 @@ public class TestMain extends BaseTest
                 (close(exchange)).join();
             }
             return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 
@@ -2320,7 +2323,7 @@ public class TestMain extends BaseTest
             Object spotOrderRequest = null;
             try
             {
-                (exchange.createOrder((Object) "BTC/USDT", (Object) "limit", (Object) "buy", (Object) 1, (Object) 20000)).join();
+                (exchange.createOrder("BTC/USDT", "limit", "buy", 1, 20000)).join();
             } catch(Exception e)
             {
                 spotOrderRequest = jsonParse(exchange.last_request_body);
@@ -2332,7 +2335,7 @@ public class TestMain extends BaseTest
             Object swapOrderRequest = null;
             try
             {
-                (exchange.createOrder((Object) "BTC/USDT:USDT", (Object) "limit", (Object) "buy", (Object) 1, (Object) 20000)).join();
+                (exchange.createOrder("BTC/USDT:USDT", "limit", "buy", 1, 20000)).join();
             } catch(Exception e)
             {
                 swapOrderRequest = jsonParse(exchange.last_request_body);
@@ -2340,7 +2343,7 @@ public class TestMain extends BaseTest
             Object swapInverseOrderRequest = null;
             try
             {
-                (exchange.createOrder((Object) "BTC/USD:BTC", (Object) "limit", (Object) "buy", (Object) 1, (Object) 20000)).join();
+                (exchange.createOrder("BTC/USD:BTC", "limit", "buy", 1, 20000)).join();
             } catch(Exception e)
             {
                 swapInverseOrderRequest = jsonParse(exchange.last_request_body);
@@ -2354,7 +2357,7 @@ public class TestMain extends BaseTest
                 (close(exchange)).join();
             }
             return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 
@@ -2369,7 +2372,7 @@ public class TestMain extends BaseTest
             Object spotOrderRequest = null;
             try
             {
-                (exchange.createOrder((Object) "BTC/USDT", (Object) "limit", (Object) "buy", (Object) 1, (Object) 20000)).join();
+                (exchange.createOrder("BTC/USDT", "limit", "buy", 1, 20000)).join();
             } catch(Exception e)
             {
                 spotOrderRequest = jsonParse(exchange.last_request_body);
@@ -2381,7 +2384,7 @@ public class TestMain extends BaseTest
             Object stopOrderRequest = null;
             try
             {
-                (exchange.createOrder((Object) "BTC/USDT:USDT", (Object) "limit", (Object) "buy", (Object) 1, (Object) 20000, (Object) new java.util.HashMap<String, Object>() {{
+                (exchange.createOrder("BTC/USDT:USDT", "limit", "buy", 1, 20000, new java.util.HashMap<String, Object>() {{
                     put( "stopPrice", 30000 );
                 }})).join();
             } catch(Exception e)
@@ -2395,7 +2398,7 @@ public class TestMain extends BaseTest
                 (close(exchange)).join();
             }
             return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 
@@ -2411,7 +2414,7 @@ public class TestMain extends BaseTest
             (exchange.loadMarkets()).join();
             try
             {
-                (exchange.createOrder((Object) "BTC/USDT", (Object) "limit", (Object) "buy", (Object) 1, (Object) 20000)).join();
+                (exchange.createOrder("BTC/USDT", "limit", "buy", 1, 20000)).join();
             } catch(Exception e)
             {
                 reqHeaders = exchange.last_request_headers;
@@ -2422,7 +2425,7 @@ public class TestMain extends BaseTest
                 (close(exchange)).join();
             }
             return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 
@@ -2437,7 +2440,7 @@ public class TestMain extends BaseTest
             Object spotOrderRequest = null;
             try
             {
-                (exchange.createOrder((Object) "BTC/USDT", (Object) "limit", (Object) "buy", (Object) 1, (Object) 20000)).join();
+                (exchange.createOrder("BTC/USDT", "limit", "buy", 1, 20000)).join();
             } catch(Exception e)
             {
                 spotOrderRequest = jsonParse(exchange.last_request_body);
@@ -2450,7 +2453,7 @@ public class TestMain extends BaseTest
                 (close(exchange)).join();
             }
             return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 
@@ -2465,7 +2468,7 @@ public class TestMain extends BaseTest
             Assert(Helpers.isEqual(Helpers.GetValue(exchange.options, "broker"), id), Helpers.add(Helpers.add("bingx - id: ", id), " not in options"));
             try
             {
-                (exchange.createOrder((Object) "BTC/USDT", (Object) "limit", (Object) "buy", (Object) 1, (Object) 20000)).join();
+                (exchange.createOrder("BTC/USDT", "limit", "buy", 1, 20000)).join();
             } catch(Exception e)
             {
                 // we expect an error here, we're only interested in the headers
@@ -2477,7 +2480,7 @@ public class TestMain extends BaseTest
                 (close(exchange)).join();
             }
             return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 
@@ -2491,7 +2494,7 @@ public class TestMain extends BaseTest
             Object request = null;
             try
             {
-                (exchange.createOrder((Object) "BTC/USDT", (Object) "limit", (Object) "buy", (Object) 1, (Object) 20000)).join();
+                (exchange.createOrder("BTC/USDT", "limit", "buy", 1, 20000)).join();
             } catch(Exception e)
             {
                 request = jsonParse(exchange.last_request_body);
@@ -2504,7 +2507,7 @@ public class TestMain extends BaseTest
                 (close(exchange)).join();
             }
             return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 
@@ -2518,7 +2521,7 @@ public class TestMain extends BaseTest
             Object request = null;
             try
             {
-                (exchange.createOrder((Object) "LTC/USDT:USDT", (Object) "market", (Object) "buy", (Object) 1)).join();
+                (exchange.createOrder("LTC/USDT:USDT", "market", "buy", 1)).join();
             } catch(Exception e)
             {
                 request = jsonParse(exchange.last_request_body);
@@ -2531,7 +2534,7 @@ public class TestMain extends BaseTest
                 (close(exchange)).join();
             }
             return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 
@@ -2563,7 +2566,7 @@ public class TestMain extends BaseTest
             Object request = null;
             try
             {
-                (exchange.createOrder((Object) "BTC/USDC:USDC", (Object) "limit", (Object) "buy", (Object) 1, (Object) 20000)).join();
+                (exchange.createOrder("BTC/USDC:USDC", "limit", "buy", 1, 20000)).join();
             } catch(Exception e)
             {
                 request = jsonParse(exchange.last_request_body);
@@ -2575,7 +2578,7 @@ public class TestMain extends BaseTest
                 (close(exchange)).join();
             }
             return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 
@@ -2590,7 +2593,7 @@ public class TestMain extends BaseTest
             Object request = null;
             try
             {
-                (exchange.createOrder((Object) "BTC/USDC", (Object) "limit", (Object) "buy", (Object) 1, (Object) 20000)).join();
+                (exchange.createOrder("BTC/USDC", "limit", "buy", 1, 20000)).join();
             } catch(Exception e)
             {
                 request = jsonParse(exchange.last_request_body);
@@ -2602,7 +2605,7 @@ public class TestMain extends BaseTest
                 (close(exchange)).join();
             }
             return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 
@@ -2622,7 +2625,7 @@ public class TestMain extends BaseTest
             Object request = null;
             try
             {
-                (exchange.createOrder((Object) "BTC/USDC:USDC", (Object) "limit", (Object) "buy", (Object) 1, (Object) 20000)).join();
+                (exchange.createOrder("BTC/USDC:USDC", "limit", "buy", 1, 20000)).join();
             } catch(Exception e)
             {
                 request = jsonParse(exchange.last_request_body);
@@ -2634,7 +2637,7 @@ public class TestMain extends BaseTest
                 (close(exchange)).join();
             }
             return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 
@@ -2650,7 +2653,7 @@ public class TestMain extends BaseTest
             Object request = null;
             try
             {
-                (exchange.createOrder((Object) "BTC/USD:OX", (Object) "limit", (Object) "buy", (Object) 1, (Object) 20000)).join();
+                (exchange.createOrder("BTC/USD:OX", "limit", "buy", 1, 20000)).join();
             } catch(Exception e)
             {
                 request = jsonParse(exchange.last_request_body);
@@ -2660,7 +2663,7 @@ public class TestMain extends BaseTest
             Object brokerId = Helpers.GetValue(first, "source");
             Assert(Helpers.isEqual(brokerId, id), Helpers.add(Helpers.add(Helpers.add("oxfun - id: ", String.valueOf(id)), " different from  broker_id: "), String.valueOf(brokerId)));
             return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 
@@ -2674,7 +2677,7 @@ public class TestMain extends BaseTest
             Object spotOrderRequest = null;
             try
             {
-                (exchange.createOrder((Object) "BTC/USDT", (Object) "limit", (Object) "buy", (Object) 1, (Object) 20000)).join();
+                (exchange.createOrder("BTC/USDT", "limit", "buy", 1, 20000)).join();
             } catch(Exception e)
             {
                 spotOrderRequest = jsonParse(exchange.last_request_body);
@@ -2684,7 +2687,7 @@ public class TestMain extends BaseTest
             Object swapOrderRequest = null;
             try
             {
-                (exchange.createOrder((Object) "BTC/USDT:USDT", (Object) "limit", (Object) "buy", (Object) 1, (Object) 20000)).join();
+                (exchange.createOrder("BTC/USDT:USDT", "limit", "buy", 1, 20000)).join();
             } catch(Exception e)
             {
                 swapOrderRequest = jsonParse(exchange.last_request_body);
@@ -2696,7 +2699,7 @@ public class TestMain extends BaseTest
                 (close(exchange)).join();
             }
             return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 
@@ -2743,7 +2746,7 @@ public class TestMain extends BaseTest
             (exchange.loadMarkets()).join();
             try
             {
-                (exchange.createOrder((Object) "BTC/USD:USDC", (Object) "limit", (Object) "buy", (Object) 1, (Object) 20000)).join();
+                (exchange.createOrder("BTC/USD:USDC", "limit", "buy", 1, 20000)).join();
             } catch(Exception e)
             {
                 reqHeaders = exchange.last_request_headers;
@@ -2754,7 +2757,7 @@ public class TestMain extends BaseTest
                 (close(exchange)).join();
             }
             return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 
@@ -2768,7 +2771,7 @@ public class TestMain extends BaseTest
             Object id = "10000700011";
             try
             {
-                (exchange.createOrder((Object) "BTC/USDT", (Object) "limit", (Object) "buy", (Object) 1, (Object) 20000)).join();
+                (exchange.createOrder("BTC/USDT", "limit", "buy", 1, 20000)).join();
             } catch(Exception e)
             {
                 // we expect an error here, we're only interested in the headers
@@ -2780,33 +2783,7 @@ public class TestMain extends BaseTest
                 (close(exchange)).join();
             }
             return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
-
-    }
-
-    public java.util.concurrent.CompletableFuture<Object> testCoincatch()
-    {
-
-        return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
-
-            Exchange exchange = this.initOfflineExchange("coincatch");
-            Object reqHeaders = null;
-            Object id = "47cfy";
-            try
-            {
-                (exchange.createOrder((Object) "BTC/USDT", (Object) "limit", (Object) "buy", (Object) 1, (Object) 20000)).join();
-            } catch(Exception e)
-            {
-                // we expect an error here, we're only interested in the headers
-                reqHeaders = exchange.last_request_headers;
-            }
-            Assert(Helpers.isEqual(Helpers.GetValue(reqHeaders, "X-CHANNEL-API-CODE"), id), Helpers.add(Helpers.add("coincatch - id: ", id), " not in headers."));
-            if (!Helpers.isTrue(isSync()))
-            {
-                (close(exchange)).join();
-            }
-            return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 
@@ -2819,7 +2796,7 @@ public class TestMain extends BaseTest
             Object request = null;
             try
             {
-                (exchange.createOrder((Object) "BTC/USDT", (Object) "limit", (Object) "sell", (Object) 1, (Object) 20000)).join();
+                (exchange.createOrder("BTC/USDT", "limit", "sell", 1, 20000)).join();
             } catch(Exception e)
             {
                 request = jsonParse(exchange.last_request_body);
@@ -2831,7 +2808,7 @@ public class TestMain extends BaseTest
                 (close(exchange)).join();
             }
             return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 
@@ -2857,7 +2834,7 @@ public class TestMain extends BaseTest
                 }};
                 exchange.walletAddress = "0x0ad42b8e602c2d3d475ae52d678cf63d84ab2749";
                 exchange.privateKey = "0x7b77bb7b20e92bbb85f2a22b330b896959229a5790e35f2f290922de3fb22ad5";
-                (exchange.createOrder((Object) "LBTC/USDC", (Object) "limit", (Object) "sell", (Object) 0.01, (Object) 3000, (Object) parameters)).join();
+                (exchange.createOrder("LBTC/USDC", "limit", "sell", 0.01, 3000, parameters)).join();
             } catch(Exception e)
             {
                 request = jsonParse(exchange.last_request_body);
@@ -2868,7 +2845,7 @@ public class TestMain extends BaseTest
                 (close(exchange)).join();
             }
             return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 
@@ -2888,7 +2865,7 @@ public class TestMain extends BaseTest
             Object request = null;
             try
             {
-                (exchange.createOrder((Object) "BTC/USDC:USDC", (Object) "limit", (Object) "buy", (Object) 1, (Object) 20000)).join();
+                (exchange.createOrder("BTC/USDC:USDC", "limit", "buy", 1, 20000)).join();
             } catch(Exception e)
             {
                 request = jsonParse(exchange.last_request_body);
@@ -2900,7 +2877,7 @@ public class TestMain extends BaseTest
                 (close(exchange)).join();
             }
             return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 
@@ -2916,7 +2893,7 @@ public class TestMain extends BaseTest
             Object id = "1400";
             try
             {
-                (exchange.createOrder((Object) "ETH/USDC", (Object) "limit", (Object) "buy", (Object) 1, (Object) 5000)).join();
+                (exchange.createOrder("ETH/USDC", "limit", "buy", 1, 5000)).join();
             } catch(Exception e)
             {
                 // we expect an error here, we're only interested in the headers
@@ -2928,7 +2905,7 @@ public class TestMain extends BaseTest
                 (close(exchange)).join();
             }
             return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 
@@ -2942,7 +2919,7 @@ public class TestMain extends BaseTest
             Object id = "177321641268789";
             try
             {
-                (exchange.createOrder((Object) "BTC/USDT", (Object) "limit", (Object) "buy", (Object) 1, (Object) 20000)).join();
+                (exchange.createOrder("BTC/USDT", "limit", "buy", 1, 20000)).join();
             } catch(Exception e)
             {
                 // we expect an error here, we're only interested in the headers
@@ -2954,7 +2931,39 @@ public class TestMain extends BaseTest
                 (close(exchange)).join();
             }
             return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
+
+    }
+
+    public java.util.concurrent.CompletableFuture<Object> testWeex()
+    {
+
+        return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+
+            Exchange exchange = this.initOfflineExchange("weex");
+            Object id = "b-WEEX111125";
+            Assert(Helpers.isEqual(Helpers.GetValue(exchange.options, "partner"), id), Helpers.add(Helpers.add("weex - id: ", id), " not in options"));
+            Object request = null;
+            try
+            {
+                (exchange.createOrder("BTC/USDT", "limit", "buy", 1, 20000)).join();
+            } catch(Exception e)
+            {
+                request = jsonParse(exchange.last_request_body);
+            }
+            Object clientOrderId = Helpers.GetValue(request, "newClientOrderId");
+            Assert(((String)clientOrderId).startsWith(((String)id)), Helpers.add(Helpers.add(Helpers.add("weex - newClientOrderId: ", clientOrderId), " for spot order does not start with id: "), id));
+            try
+            {
+                (exchange.createOrder("BTC/USDT:USDT", "limit", "buy", 1, 20000)).join();
+            } catch(Exception e)
+            {
+                request = jsonParse(exchange.last_request_body);
+            }
+            clientOrderId = Helpers.GetValue(request, "newClientOrderId");
+            Assert(((String)clientOrderId).startsWith(((String)id)), Helpers.add(Helpers.add(Helpers.add("weex - newClientOrderId: ", clientOrderId), " for swap order does not start with id: "), id));
+            return null;
+        });
 
     }
 }

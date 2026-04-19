@@ -16,7 +16,7 @@ public class TestFetchLedger extends BaseTest {
         return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
 
         Object method = "fetchLedger";
-        Object items = (exchange.fetchLedger((Object) code)).join();
+        Object items = (exchange.fetchLedger(code)).join();
         TestSharedMethods.AssertNonEmtpyArray(exchange, skippedProperties, method, items, code);
         Object now = exchange.milliseconds();
         for (var i = 0; Helpers.isLessThan(i, Helpers.getArrayLength(items)); i++)
@@ -25,7 +25,7 @@ public class TestFetchLedger extends BaseTest {
         }
         TestSharedMethods.AssertTimestampOrder(exchange, method, code, items);
         return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 

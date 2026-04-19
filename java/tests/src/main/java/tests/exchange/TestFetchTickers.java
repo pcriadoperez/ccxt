@@ -20,7 +20,7 @@ public class TestFetchTickers extends BaseTest {
         Object results = (Helpers.promiseAll(new java.util.ArrayList<Object>(java.util.Arrays.asList(withoutSymbol, withSymbol)))).join();
         fetchTickersAmountsTest(exchange, skippedProperties, Helpers.GetValue(results, 0));
         return results;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
     public java.util.concurrent.CompletableFuture<Object> fetchTickersHelperTest(Exchange exchange, Object skippedProperties, Object argSymbols2, Object... optionalArgs)
@@ -30,7 +30,7 @@ public class TestFetchTickers extends BaseTest {
             Object argSymbols = argSymbols3;
         Object argParams = Helpers.getArg(optionalArgs, 0, new java.util.HashMap<String, Object>() {{}});
         Object method = "fetchTickers";
-        Object response = (exchange.fetchTickers((Object) argSymbols, (Object) argParams)).join();
+        Object response = (exchange.fetchTickers(argSymbols, argParams)).join();
         Assert((response instanceof java.util.Map), Helpers.add(Helpers.add(Helpers.add(Helpers.add(Helpers.add(Helpers.add(exchange.id, " "), method), " "), exchange.json(argSymbols)), " must return an object. "), exchange.json(response)));
         Object values = new java.util.ArrayList<Object>(((java.util.Map<String, Object>)response).values());
         Object checkedSymbol = null;
@@ -46,7 +46,7 @@ public class TestFetchTickers extends BaseTest {
             TestTicker.testTicker(exchange, skippedProperties, method, ticker, checkedSymbol);
         }
         return response;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
     public static void fetchTickersAmountsTest(Exchange exchange, Object skippedProperties, Object tickers)

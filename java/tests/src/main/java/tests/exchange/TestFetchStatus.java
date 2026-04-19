@@ -19,7 +19,7 @@ public class TestFetchStatus extends BaseTest {
         Object status = (exchange.fetchStatus()).join();
         TestStatus.testStatus(exchange, skippedProperties, method, status, exchange.milliseconds());
         return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 

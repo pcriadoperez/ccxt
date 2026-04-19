@@ -16,11 +16,11 @@ public class TestFetchTradingFee extends BaseTest {
         return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
 
         Object method = "fetchTradingFee";
-        Object fee = (exchange.fetchTradingFee((Object) symbol)).join();
+        Object fee = (exchange.fetchTradingFee(symbol)).join();
         Assert((fee instanceof java.util.Map), Helpers.add(Helpers.add(Helpers.add(Helpers.add(Helpers.add(Helpers.add(exchange.id, " "), method), " "), symbol), " must return an object. "), exchange.json(fee)));
         TestTradingFee.testTradingFee(exchange, skippedProperties, method, symbol, fee);
         return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 

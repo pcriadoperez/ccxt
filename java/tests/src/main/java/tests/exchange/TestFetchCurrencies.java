@@ -53,7 +53,7 @@ public class TestFetchCurrencies extends BaseTest {
                 Object deposit = exchange.safeBool(currency, "deposit");
                 if (Helpers.isTrue(exchange.inArray(code, requiredActiveCurrencies)))
                 {
-                    Assert(Helpers.isTrue(skipMajorCurrencyCheck) || Helpers.isTrue((Helpers.isTrue(withdraw) && Helpers.isTrue(deposit))), Helpers.add(Helpers.add("Major currency ", code), " should have withdraw and deposit flags enabled"));
+                    Assert(Helpers.isTrue(skipMajorCurrencyCheck) || Helpers.isTrue((Helpers.isTrue(withdraw) && Helpers.isTrue(deposit))), Helpers.add(Helpers.add(Helpers.add("Major currency ", code), " should have withdraw and deposit flags enabled ::: "), exchange.json(currency)));
                 }
             }
             // check at least X% of currencies are active
@@ -62,7 +62,7 @@ public class TestFetchCurrencies extends BaseTest {
             detectCurrencyConflicts(exchange, currencies);
         }
         return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
     public Object detectCurrencyConflicts(Exchange exchange, Object currencyValues)

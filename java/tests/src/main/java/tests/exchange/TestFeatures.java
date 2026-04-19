@@ -49,7 +49,7 @@ public class TestFeatures extends BaseTest {
             }
         }
         return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
     public static void testFeaturesInner(Exchange exchange, Object skippedProperties, Object featureObj)

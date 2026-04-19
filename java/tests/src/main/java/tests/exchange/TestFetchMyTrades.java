@@ -16,7 +16,7 @@ public class TestFetchMyTrades extends BaseTest {
         return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
 
         Object method = "fetchMyTrades";
-        Object trades = (exchange.fetchMyTrades((Object) symbol)).join();
+        Object trades = (exchange.fetchMyTrades(symbol)).join();
         TestSharedMethods.AssertNonEmtpyArray(exchange, skippedProperties, method, trades, symbol);
         Object now = exchange.milliseconds();
         for (var i = 0; Helpers.isLessThan(i, Helpers.getArrayLength(trades)); i++)
@@ -25,7 +25,7 @@ public class TestFetchMyTrades extends BaseTest {
         }
         TestSharedMethods.AssertTimestampOrder(exchange, method, symbol, trades);
         return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 

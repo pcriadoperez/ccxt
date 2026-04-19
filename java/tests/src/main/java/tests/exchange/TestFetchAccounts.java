@@ -23,7 +23,7 @@ public class TestFetchAccounts extends BaseTest {
             TestAccount.testAccount(exchange, skippedProperties, method, Helpers.GetValue(accounts, i));
         }
         return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 

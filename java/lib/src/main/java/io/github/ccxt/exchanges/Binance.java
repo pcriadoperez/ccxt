@@ -1611,6 +1611,27 @@ public class Binance extends BinanceCore {
     }
 
     @SuppressWarnings("unchecked")
+    public Order closePosition(String symbol, String side, Map<String, Object> params) {
+        Object res = super.closePosition(symbol, side, params).join();
+        return new Order(res);
+    }
+    public Order closePosition(String symbol) { return closePosition(symbol, (String) null, (Map<String, Object>) null); }
+    @SuppressWarnings("unchecked")
+    public CompletableFuture<Order> closePositionAsync(String symbol, String side, Map<String, Object> params) {
+        return super.closePosition(symbol, side, params).thenApply(Order::new);
+    }
+
+    @SuppressWarnings("unchecked")
+    public List<Position> closeAllPositions(Map<String, Object> params) {
+        Object res = super.closeAllPositions(params).join();
+        return toTypedList(res, Position::new);
+    }
+    @SuppressWarnings("unchecked")
+    public CompletableFuture<List<Position>> closeAllPositionsAsync(Map<String, Object> params) {
+        return super.closeAllPositions(params).thenApply(res -> toTypedList(res, Position::new));
+    }
+
+    @SuppressWarnings("unchecked")
     public OrderBook fetchL3OrderBook(String symbol, Long limit, Map<String, Object> params) {
         Object res = super.fetchL3OrderBook(symbol, limit, params).join();
         return new OrderBook(res);

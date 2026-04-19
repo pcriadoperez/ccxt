@@ -16,7 +16,7 @@ public class TestFetchDepositWithdrawals extends BaseTest {
         return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
 
         Object method = "fetchTransactions";
-        Object transactions = (exchange.fetchTransactions((Object) code)).join();
+        Object transactions = (exchange.fetchTransactions(code)).join();
         TestSharedMethods.AssertNonEmtpyArray(exchange, skippedProperties, method, transactions, code);
         Object now = exchange.milliseconds();
         for (var i = 0; Helpers.isLessThan(i, Helpers.getArrayLength(transactions)); i++)
@@ -25,7 +25,7 @@ public class TestFetchDepositWithdrawals extends BaseTest {
         }
         TestSharedMethods.AssertTimestampOrder(exchange, method, code, transactions);
         return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 

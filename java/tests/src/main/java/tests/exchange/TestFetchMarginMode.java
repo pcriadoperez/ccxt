@@ -16,10 +16,10 @@ public class TestFetchMarginMode extends BaseTest {
         return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
 
         Object method = "fetchMarginMode";
-        Object marginMode = (exchange.fetchMarginMode((Object) symbol)).join();
+        Object marginMode = (exchange.fetchMarginMode(symbol)).join();
         TestMarginMode.testMarginMode(exchange, skippedProperties, method, marginMode);
         return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 

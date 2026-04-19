@@ -19,7 +19,7 @@ public class TestFetchL2OrderBook extends BaseTest {
         Object orderBook = (exchange.fetchL2OrderBook(symbol)).join();
         TestOrderBook.testOrderBook(exchange, skippedProperties, method, orderBook, symbol);
         return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 

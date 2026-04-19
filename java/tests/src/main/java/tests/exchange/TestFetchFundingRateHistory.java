@@ -16,7 +16,7 @@ public class TestFetchFundingRateHistory extends BaseTest {
         return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
 
         Object method = "fetchFundingRateHistory";
-        Object fundingRatesHistory = (exchange.fetchFundingRateHistory((Object) symbol)).join();
+        Object fundingRatesHistory = (exchange.fetchFundingRateHistory(symbol)).join();
         TestSharedMethods.AssertNonEmtpyArray(exchange, skippedProperties, method, fundingRatesHistory, symbol);
         for (var i = 0; Helpers.isLessThan(i, Helpers.getArrayLength(fundingRatesHistory)); i++)
         {
@@ -24,7 +24,7 @@ public class TestFetchFundingRateHistory extends BaseTest {
         }
         TestSharedMethods.AssertTimestampOrder(exchange, method, symbol, fundingRatesHistory);
         return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 

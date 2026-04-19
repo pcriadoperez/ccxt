@@ -67,7 +67,7 @@ public class TestCreateOrder extends BaseTest {
         tcoDebug(exchange, symbol, "### SCENARIO 2 PASSED ###");
         // **************** [Scenario 3 - START] **************** //
         return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
     // ----------------------------------------------------------------------------
@@ -108,12 +108,10 @@ public class TestCreateOrder extends BaseTest {
             if (Helpers.isTrue(Helpers.isEqual(buyOrSell, "buy")))
             {
                 Object orderAmount = tcoGetMinimumAmountForLimitPrice(exchange, market, limitBuyPrice_nonFillable, predefinedAmount);
-                
                 createdOrder = (tcoCreateOrderSafe(exchange, symbol, "limit", "buy", orderAmount, limitBuyPrice_nonFillable, new java.util.HashMap<String, Object>() {{}}, skippedProperties)).join();
             } else
             {
                 Object orderAmount = tcoGetMinimumAmountForLimitPrice(exchange, market, limitSellPrice_nonFillable, predefinedAmount);
-                
                 createdOrder = (tcoCreateOrderSafe(exchange, symbol, "limit", "sell", orderAmount, limitSellPrice_nonFillable, new java.util.HashMap<String, Object>() {{}}, skippedProperties)).join();
             }
             Object fetchedOrder = (TestSharedMethods.fetchOrder(exchange, symbol, Helpers.GetValue(createdOrder, "id"), skippedProperties)).join();
@@ -131,7 +129,7 @@ public class TestCreateOrder extends BaseTest {
             throw new Error((String)Helpers.add(Helpers.add(logPrefix, " failed for Scenario 1: "), String.valueOf(e))) ;
         }
         return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
     public java.util.concurrent.CompletableFuture<Object> tcoCreateFillableOrder(Exchange exchange, Object market, Object logPrefix, Object skippedProperties, Object bestBid2, Object bestAsk2, Object limitPriceSafetyMultiplierFromMedian, Object buyOrSellString2, Object... optionalArgs)
@@ -180,7 +178,7 @@ public class TestCreateOrder extends BaseTest {
             throw new Error((String)Helpers.add("failed for Scenario 2: ", String.valueOf(e))) ;
         }
         return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
     public Object tcoAssertFilledOrder(Exchange exchange, Object market, Object logPrefix, Object skippedProperties, Object createdOrder, Object fetchedOrder, Object requestedSide, Object requestedAmount)
@@ -217,11 +215,11 @@ public class TestCreateOrder extends BaseTest {
         if (Helpers.isTrue(Helpers.isTrue(Helpers.GetValue(exchange.has, "cancelOrder")) && Helpers.isTrue(!Helpers.isEqual(orderId, null))))
         {
             usedMethod = "cancelOrder";
-            cancelResult = (exchange.cancelOrder((Object) orderId, (Object) symbol)).join();
+            cancelResult = (exchange.cancelOrder(orderId, symbol)).join();
         } else if (Helpers.isTrue(Helpers.GetValue(exchange.has, "cancelAllOrders")))
         {
             usedMethod = "cancelAllOrders";
-            cancelResult = (exchange.cancelAllOrders((Object) symbol)).join();
+            cancelResult = (exchange.cancelAllOrders(symbol)).join();
         } else if (Helpers.isTrue(Helpers.GetValue(exchange.has, "cancelOrders")))
         {
             throw new Error((String)Helpers.add(logPrefix, " cancelOrders method is not unified yet, coming soon...")) ;
@@ -231,7 +229,7 @@ public class TestCreateOrder extends BaseTest {
         // TestSharedMethods.AssertOrderState (exchange, skippedProperties, 'cancelOrder', cancelResult, 'canceled', false);
         // TestSharedMethods.AssertOrderState (exchange, skippedProperties, 'cancelOrder', cancelResult, 'closed', true);
         return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
     // ----------------------------------------------------------------------------
@@ -245,7 +243,7 @@ public class TestCreateOrder extends BaseTest {
         Object parameters = Helpers.getArg(optionalArgs, 1, new java.util.HashMap<String, Object>() {{}});
         Object skippedProperties = Helpers.getArg(optionalArgs, 2, new java.util.HashMap<String, Object>() {{}});
         tcoDebug(exchange, symbol, Helpers.add(Helpers.add(Helpers.add(Helpers.add(Helpers.add(Helpers.add(Helpers.add(Helpers.add(Helpers.add("Executing createOrder ", orderType), " "), side), " "), amount), " "), price), " "), exchange.json(parameters)));
-        Object order = (exchange.createOrder((Object) symbol, (Object) orderType, (Object) side, (Object) amount, (Object) price, (Object) parameters)).join();
+        Object order = (exchange.createOrder(symbol, orderType, side, amount, price, parameters)).join();
         try
         {
             TestOrder.testOrder(exchange, skippedProperties, "createOrder", order, symbol, System.currentTimeMillis());
@@ -259,7 +257,7 @@ public class TestCreateOrder extends BaseTest {
             throw new RuntimeException(e);
         }
         return order;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
     public Object tcoMininumAmount(Exchange exchange, Object market)
@@ -340,7 +338,7 @@ public class TestCreateOrder extends BaseTest {
             tcoDebug(exchange, symbol, "order is already closed/filled, no need to cancel it");
         }
         return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 

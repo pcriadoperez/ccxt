@@ -25,7 +25,7 @@ public class TestFetchTradingFees extends BaseTest {
             TestTradingFee.testTradingFee(exchange, skippedProperties, method, symbol, Helpers.GetValue(fees, symbol));
         }
         return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 

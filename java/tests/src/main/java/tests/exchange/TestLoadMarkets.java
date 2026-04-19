@@ -31,7 +31,7 @@ public class TestLoadMarkets extends BaseTest {
             TestMarket.testMarket(exchange, skippedProperties, method, Helpers.GetValue(marketValues, i));
         }
         return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 

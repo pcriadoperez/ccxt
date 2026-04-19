@@ -497,7 +497,7 @@ public class TestSharedMethods extends BaseTest {
         if (Helpers.isTrue(Helpers.GetValue(exchange.has, "fetchOrderBook")))
         {
             usedMethod = "fetchOrderBook";
-            Object orderbook = (exchange.fetchOrderBook((Object) symbol)).join();
+            Object orderbook = (exchange.fetchOrderBook(symbol)).join();
             Object bids = exchange.safeList(orderbook, "bids");
             Object asks = exchange.safeList(orderbook, "asks");
             Object bestBidArray = exchange.safeList(bids, 0);
@@ -507,20 +507,20 @@ public class TestSharedMethods extends BaseTest {
         } else if (Helpers.isTrue(Helpers.GetValue(exchange.has, "fetchBidsAsks")))
         {
             usedMethod = "fetchBidsAsks";
-            Object tickers = (exchange.fetchBidsAsks((Object) new java.util.ArrayList<Object>(java.util.Arrays.asList(symbol)))).join();
+            Object tickers = (exchange.fetchBidsAsks(new java.util.ArrayList<Object>(java.util.Arrays.asList(symbol)))).join();
             Object ticker = exchange.safeDict(tickers, symbol);
             bestBid = exchange.safeNumber(ticker, "bid");
             bestAsk = exchange.safeNumber(ticker, "ask");
         } else if (Helpers.isTrue(Helpers.GetValue(exchange.has, "fetchTicker")))
         {
             usedMethod = "fetchTicker";
-            Object ticker = (exchange.fetchTicker((Object) symbol)).join();
+            Object ticker = (exchange.fetchTicker(symbol)).join();
             bestBid = exchange.safeNumber(ticker, "bid");
             bestAsk = exchange.safeNumber(ticker, "ask");
         } else if (Helpers.isTrue(Helpers.GetValue(exchange.has, "fetchTickers")))
         {
             usedMethod = "fetchTickers";
-            Object tickers = (exchange.fetchTickers((Object) new java.util.ArrayList<Object>(java.util.Arrays.asList(symbol)))).join();
+            Object tickers = (exchange.fetchTickers(new java.util.ArrayList<Object>(java.util.Arrays.asList(symbol)))).join();
             Object ticker = exchange.safeDict(tickers, symbol);
             bestBid = exchange.safeNumber(ticker, "bid");
             bestAsk = exchange.safeNumber(ticker, "ask");
@@ -528,7 +528,7 @@ public class TestSharedMethods extends BaseTest {
         //
         Assert(Helpers.isTrue(!Helpers.isEqual(bestBid, null)) && Helpers.isTrue(!Helpers.isEqual(bestAsk, null)), Helpers.add(Helpers.add(Helpers.add(Helpers.add(Helpers.add(Helpers.add(Helpers.add(Helpers.add(logText, " "), exchange.id), " could not get best bid/ask for "), symbol), " using "), usedMethod), " while testing "), method));
         return new java.util.ArrayList<Object>(java.util.Arrays.asList(bestBid, bestAsk));
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
     public static java.util.concurrent.CompletableFuture<Object> fetchOrder(Exchange exchange, Object symbol, Object orderId, Object skippedProperties)
@@ -586,7 +586,7 @@ public class TestSharedMethods extends BaseTest {
             }
         }
         return fetchedOrder;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
     public static void AssertOrderState(Exchange exchange, Object skippedProperties, Object method, Object order, Object AssertedStatus, Object strictCheck)
@@ -750,6 +750,18 @@ public class TestSharedMethods extends BaseTest {
     {
         Object logText = logTemplate(exchange, method, new java.util.HashMap<String, Object>() {{}});
         Assert(deepEqual(exchange, a, b), Helpers.add(Helpers.add(Helpers.add(Helpers.add("two dicts do not match: ", exchange.json(a)), " != "), exchange.json(b)), logText));
+    }
+    public static Object exchangeProp(Exchange exchange, Object key, Object... optionalArgs)
+    {
+        Object defaultValue = Helpers.getArg(optionalArgs, 0, null);
+        Object value = exchange.getProperty(exchange, String.valueOf(key));
+        if (Helpers.isTrue(!Helpers.isEqual(value, null)))
+        {
+            return value;
+        }
+        // try UpperCase key also, for other langs
+        Object keyUpper = exchange.capitalize(String.valueOf(key));
+        return exchange.getProperty(exchange, keyUpper, defaultValue);
     }
 
 }

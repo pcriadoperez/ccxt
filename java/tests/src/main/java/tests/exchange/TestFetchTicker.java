@@ -16,10 +16,10 @@ public class TestFetchTicker extends BaseTest {
         return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
 
         Object method = "fetchTicker";
-        Object ticker = (exchange.fetchTicker((Object) symbol)).join();
+        Object ticker = (exchange.fetchTicker(symbol)).join();
         TestTicker.testTicker(exchange, skippedProperties, method, ticker, symbol);
         return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 

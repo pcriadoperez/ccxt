@@ -19,7 +19,7 @@ public class TestFetchBalance extends BaseTest {
         Object response = (exchange.fetchBalance()).join();
         TestBalance.testBalance(exchange, skippedProperties, method, response);
         return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 

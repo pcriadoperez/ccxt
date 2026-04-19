@@ -16,14 +16,14 @@ public class TestFetchBorrowInterest extends BaseTest {
         return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
 
         Object method = "fetchBorrowInterest";
-        Object borrowInterest = (exchange.fetchBorrowInterest((Object) code, (Object) symbol)).join();
+        Object borrowInterest = (exchange.fetchBorrowInterest(code, symbol)).join();
         TestSharedMethods.AssertNonEmtpyArray(exchange, skippedProperties, method, borrowInterest, code);
         for (var i = 0; Helpers.isLessThan(i, Helpers.getArrayLength(borrowInterest)); i++)
         {
             TestBorrowInterest.testBorrowInterest(exchange, skippedProperties, method, Helpers.GetValue(borrowInterest, i), code, symbol);
         }
         return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 

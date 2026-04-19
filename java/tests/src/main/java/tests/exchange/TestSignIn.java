@@ -21,7 +21,7 @@ public class TestSignIn extends BaseTest {
             (exchange.signIn()).join();
         }
         return true;
-        }, io.github.ccxt.Exchange.VIRTUAL_EXECUTOR);
+        });
 
     }
 
