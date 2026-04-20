@@ -1848,7 +1848,7 @@ export default class grvt extends Exchange {
 
     async loadAccountInfos () {
         if (this.safeString (this.options, 'userMainAccountId') !== undefined) {
-            return;
+            return false;
         }
         const promises = [];
         promises.push (this.privateTradingPostFullV1AggregatedAccountSummary ());
@@ -1901,6 +1901,7 @@ export default class grvt extends Exchange {
             const subAccountId = this.safeString (subAccountIds, 0);
             this.options['accountId'] = subAccountId;
         }
+        return true;
     }
 
     /**
@@ -1987,8 +1988,10 @@ export default class grvt extends Exchange {
             throw new InvalidOrder (this.id + ' createOrder(): order side must be either "buy" or "sell"');
         }
         const isMarketOrder = (type === 'market');
+        const subAccountId = this.getSubAccountId (params);
+        const isReduceOnly = this.safeBool (params, 'reduceOnly', false);
         const orderRequest = {
-            'sub_account_id': this.getSubAccountId (params),
+            'sub_account_id': subAccountId,
             'time_in_force': undefined,
             'legs': [ orderLeg ],
             'signature': this.defaultSignature (),
@@ -1997,7 +2000,7 @@ export default class grvt extends Exchange {
             },
             'is_market': isMarketOrder,
             'post_only': false,
-            'reduce_only': this.safeBool (params, 'reduceOnly', false),
+            'reduce_only': isReduceOnly,
             // 'order_id': null,
             // 'state': null,
         };
@@ -2636,8 +2639,9 @@ export default class grvt extends Exchange {
      */
     async fetchOrders (symbol: Str = undefined, since: Int = undefined, limit: Int = undefined, params = {}): Promise<Order[]> {
         await this.loadMarketsAndSignIn ();
+        const subAccountId = this.getSubAccountId (params);
         let request = {
-            'sub_account_id': this.getSubAccountId (params),
+            'sub_account_id': subAccountId,
         };
         let market = undefined;
         if (symbol !== undefined) {
@@ -2815,8 +2819,9 @@ export default class grvt extends Exchange {
      */
     async fetchOrder (id: string, symbol: Str = undefined, params = {}) {
         await this.loadMarketsAndSignIn ();
+        const subAccountId = this.getSubAccountId (params);
         const request = {
-            'sub_account_id': this.getSubAccountId (params),
+            'sub_account_id': subAccountId,
         };
         const clientOrderId = this.safeString2 (params, 'clientOrderId', 'client_order_id');
         if (clientOrderId !== undefined) {
@@ -3083,7 +3088,7 @@ export default class grvt extends Exchange {
         //    }
         //
         const result = this.safeDict (response, 'result', {});
-        return this.parseOrders ([ result ], undefined);
+        return this.parseOrders ([ result ]);
     }
 
     /**
@@ -3099,8 +3104,9 @@ export default class grvt extends Exchange {
      */
     async cancelOrder (id: string, symbol: Str = undefined, params = {}) {
         await this.loadMarketsAndSignIn ();
+        const subAccoubntId = this.getSubAccountId (params);
         const request = {
-            'sub_account_id': this.getSubAccountId (params),
+            'sub_account_id': subAccoubntId,
         };
         const clientOrderId = this.safeString2 (params, 'clientOrderId', 'client_order_id');
         if (clientOrderId !== undefined) {

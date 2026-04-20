@@ -574,6 +574,7 @@ export default class paradex extends Exchange {
         } else {
             expiry = undefined;
         }
+        const expireDatetime = (expiry === 0) ? undefined : this.iso8601 (expiry);
         return this.safeMarketStructure ({
             'id': marketId,
             'symbol': symbol,
@@ -597,7 +598,7 @@ export default class paradex extends Exchange {
             'maker': makerFee,
             'contractSize': this.parseNumber ('1'),
             'expiry': expiry,
-            'expiryDatetime': (expiry === 0) ? undefined : this.iso8601 (expiry),
+            'expiryDatetime': expireDatetime,
             'strike': this.parseNumber (strikePrice),
             'optionType': this.safeStringLower (market, 'option_type'),
             'precision': {
@@ -1347,7 +1348,7 @@ export default class paradex extends Exchange {
             'GTC': 'GTC',
             'POST_ONLY': 'PO',
         };
-        return this.safeString (timeInForces, timeInForce, undefined);
+        return this.safeString (timeInForces, timeInForce);
     }
 
     parseOrderStatus (status: Str) {

@@ -1,0 +1,456 @@
+#!/usr/bin/env tsx
+/**
+ * Java Typed Wrapper Generator for CCXT
+ *
+ * Generates per-exchange typed subclasses that extend the transpiled Core classes.
+ * Each typed class (e.g., Binance extends BinanceCore) adds typed method overloads
+ * that delegate to the parent's untyped methods via super.method().
+ *
+ * This is safe because Java resolves overloads at compile time: BinanceCore.java
+ * is compiled without knowledge of Binance.java's typed overloads, so internal
+ * calls always bind to the untyped varargs methods.
+ *
+ * Usage: tsx build/generateJavaWrappers.ts
+ */
+
+import Transpiler from "ast-transpiler";
+import * as fs from 'fs';
+
+const TS_BASE_FILE = './ts/src/base/Exchange.ts';
+const EXCHANGES_FOLDER = './java/lib/src/main/java/io/github/ccxt/exchanges/';
+const WS_EXCHANGES_FOLDER = './java/lib/src/main/java/io/github/ccxt/exchanges/pro/';
+
+// Known CCXT types that have Java equivalents in io.github.ccxt.types
+const KNOWN_TYPES = new Set([
+    'Ticker', 'Tickers', 'Trade', 'Order', 'OrderBook', 'OHLCV',
+    'MarketInterface', 'Currencies', 'CurrencyInterface', 'Account', 'Balance', 'Balances',
+    'Position', 'FundingRate', 'FundingRates', 'FundingRateHistory',
+    'OpenInterest', 'OpenInterests', 'Liquidation',
+    'LeverageTier', 'LeverageTiers', 'Leverage', 'Leverages',
+    'MarginMode', 'MarginModes', 'MarginModification',
+    'Transaction', 'DepositAddress', 'TransferEntry',
+    'LedgerEntry', 'TradingFeeInterface', 'TradingFees',
+    'Greeks', 'Option', 'OptionChain', 'Conversion',
+    'LastPrice', 'LastPrices', 'LongShortRatio',
+    'BorrowInterest', 'CrossBorrowRate', 'CrossBorrowRates',
+    'IsolatedBorrowRate', 'IsolatedBorrowRates',
+    'FundingHistory', 'DepositWithdrawFee',
+    'OrderRequest', 'CancellationRequest', 'WithdrawalResponse',
+]);
+
+// --- Type helpers ---
+function isStringType(t: string) { return t === 'Str' || t === 'string' || t === 'StringLiteral' || t === 'OrderSide' || t === 'OrderType' || t === 'MarketType'; }
+function isNumberType(t: string) { return t === 'Num' || t === 'number' || t === 'NumericLiteral'; }
+function isIntegerType(t: string) { return t !== undefined && t.toLowerCase() === 'int'; }
+function isBooleanType(t: string) { return t === 'boolean' || t === 'Bool'; }
+function isObjectType(t: string) { return t === 'any' || t === 'unknown' || t === 'Dict' || t === 'Object' || t === 'Dictionary<any>' || (t?.startsWith('{') && t?.endsWith('}')); }
+
+function tsTypeToJavaType(tsType: string | undefined, isReturn = false): string {
+    if (!tsType) return 'Object';
+    if (isStringType(tsType)) return 'String';
+    if (isIntegerType(tsType)) return 'Long';
+    if (isNumberType(tsType)) return 'Double';
+    if (isBooleanType(tsType)) return 'Boolean';
+    if (tsType === 'Strings') return 'List<String>';
+    if (isObjectType(tsType)) return isReturn ? 'Map<String, Object>' : 'Object';
+    if (KNOWN_TYPES.has(tsType)) return tsType;
+    return 'Object';
+}
+
+function tsReturnTypeToJava(methodName: string, tsReturnType: string): { javaType: string, isArray: boolean, elementType: string | null } | null {
+    if (methodName === 'fetchTime') return { javaType: 'Long', isArray: false, elementType: null };
+    if (methodName.startsWith('watchOrderBook')) return { javaType: 'OrderBook', isArray: false, elementType: null };
+    if (methodName === 'watchOHLCVForSymbols') return null;
+
+    const isPromise = tsReturnType.startsWith('Promise<') && tsReturnType.endsWith('>');
+    let inner = isPromise ? tsReturnType.slice(8, -1) : tsReturnType;
+
+    if (inner.endsWith('[]')) {
+        const elem = inner.slice(0, -2);
+        if (KNOWN_TYPES.has(elem)) return { javaType: `List<${elem}>`, isArray: true, elementType: elem };
+        if (elem === 'string') return { javaType: 'List<String>', isArray: true, elementType: null };
+        return null;
+    }
+    if (KNOWN_TYPES.has(inner)) return { javaType: inner, isArray: false, elementType: null };
+    if (isIntegerType(inner) || inner === 'number' && methodName === 'fetchTime') return { javaType: 'Long', isArray: false, elementType: null };
+    if (isNumberType(inner)) return { javaType: 'Double', isArray: false, elementType: null };
+    if (isStringType(inner)) return { javaType: 'String', isArray: false, elementType: null };
+    if (isBooleanType(inner)) return { javaType: 'Boolean', isArray: false, elementType: null };
+    if (isObjectType(inner)) return null;
+    if (inner === 'void') return null;
+    if (inner.startsWith('Dictionary<')) return null;
+    if (inner.startsWith('{')) return null;
+    if (inner === 'string[][]') return null;
+    return null;
+}
+
+// --- Allowed method filter ---
+const ALLOWED_PREFIXES = ['fetch', 'create', 'edit', 'cancel', 'close', 'setP', 'setM', 'setL', 'transfer', 'withdraw', 'watch', 'unWatch'];
+const BLACKLIST = new Set([
+    'fetch', 'fetchCurrenciesWs', 'fetchMarketsWs', 'setSandBoxMode', 'loadOrderBook',
+    'loadMarketsHelper', 'createNetworksByIdObject', 'setMarketsFromExchange',
+    'setProperty', 'setProxyAgents', 'watch', 'watchMultiple', 'watchMultipleSubscription',
+    'watchPrivate', 'watchPublic', 'setPositionsCache', 'setPositionCache',
+    'watchMany', 'watchMultiHelper', 'watchMultipleWrapper', 'watchMultiRequest',
+    'watchMultiTicker', 'watchMultiTickerHelper', 'watchPrivateMultiple',
+    'watchPrivateRequest', 'watchPrivateSubscribe', 'watchPublicMultiple',
+    'watchSpotPrivate', 'watchSwapPrivate', 'watchSpotPublic', 'watchSwapPublic',
+    'watchTopics', 'createContractOrder', 'createSpotOrder', 'createSwapOrder', 'createVault',
+    'fetchRestOrderBookSafe', 'fetchPortfolioDetails', 'unWatch', 'unWatchChannel', 'unWatchMultiple',
+    'unWatchPrivate', 'unWatchPublic', 'unWatchPublicMultiple', 'unWatchTopics',
+]);
+
+function shouldCreateWrapper(name: string): boolean {
+    if (BLACKLIST.has(name)) return false;
+    if (name.toLowerCase().includes('uta')) return false;
+    if (name.includes('Snapshot') || name.includes('Subscription') || name.includes('Cache')) return false;
+    return ALLOWED_PREFIXES.some(p => name.startsWith(p));
+}
+
+interface ParamInfo {
+    name: string;
+    javaType: string;
+    isOptional: boolean;
+    defaultValue: string | null;
+}
+
+interface MethodInfo {
+    name: string;
+    javaReturnType: string;
+    isArray: boolean;
+    elementType: string | null;
+    requiredParams: ParamInfo[];
+    optionalParams: ParamInfo[];
+    isWatch: boolean;
+}
+
+function parseMethodsFromTS(): MethodInfo[] {
+    const transpiler = new Transpiler({ verbose: false, csharp: { parser: { ELEMENT_ACCESS_WRAPPER_OPEN: "getValue(", ELEMENT_ACCESS_WRAPPER_CLOSE: ")" } } });
+    const baseFile: any = transpiler.transpileJavaByPath(TS_BASE_FILE);
+    const methodsTypes = baseFile.methodsTypes || [];
+
+    const methods: MethodInfo[] = [];
+
+    for (const m of methodsTypes) {
+        if (!m.async) continue;
+        if (!shouldCreateWrapper(m.name)) continue;
+
+        const ret = tsReturnTypeToJava(m.name, m.returnType);
+        if (!ret) continue;
+
+        const requiredParams: ParamInfo[] = [];
+        const optionalParams: ParamInfo[] = [];
+
+        for (const p of m.parameters) {
+            const isOptional = p.optional || p.initializer !== undefined;
+            const isParams = p.name === 'params';
+            const javaType = tsTypeToJavaType(p.type, false);
+
+            if (isParams) {
+                optionalParams.push({ name: 'params', javaType: 'Map<String, Object>', isOptional: true, defaultValue: 'null' });
+            } else if (isOptional) {
+                let defaultValue: string | null = null;
+                if (p.initializer && p.initializer !== 'undefined' && p.initializer !== '{}') {
+                    defaultValue = p.initializer.replace(/'/g, '"');
+                }
+                optionalParams.push({ name: safeName(p.name), javaType, isOptional: true, defaultValue });
+            } else {
+                requiredParams.push({ name: safeName(p.name), javaType, isOptional: false, defaultValue: null });
+            }
+        }
+
+        if (!optionalParams.some(p => p.name === 'params')) {
+            optionalParams.push({ name: 'params', javaType: 'Map<String, Object>', isOptional: true, defaultValue: 'null' });
+        }
+
+        methods.push({
+            name: m.name,
+            javaReturnType: ret.javaType,
+            isArray: ret.isArray,
+            elementType: ret.elementType,
+            requiredParams,
+            optionalParams,
+            isWatch: m.name.startsWith('watch'),
+        });
+    }
+
+    return methods;
+}
+
+function safeName(name: string): string {
+    const reserved: Record<string, string> = { 'type': 'type', 'params': 'params' };
+    return reserved[name] || name;
+}
+
+function camelCase(name: string): string {
+    return name.charAt(0).toLowerCase() + name.slice(1);
+}
+
+function capitalize(s: string): string {
+    return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+function genReturnExpr(m: MethodInfo): string {
+    if (m.isArray && m.elementType) return `toTypedList(res, ${m.elementType}::new)`;
+    if (m.javaReturnType === 'Long') return '(res instanceof Number n) ? n.longValue() : null';
+    if (m.javaReturnType === 'Double') return '(res instanceof Number n) ? n.doubleValue() : null';
+    if (m.javaReturnType === 'String') return '(String) res';
+    if (m.javaReturnType === 'Boolean') return '(Boolean) res';
+    if (m.javaReturnType === 'Map<String, Object>') return '(Map<String, Object>) res';
+    return `new ${m.javaReturnType}(res)`;
+}
+
+function genAsyncReturnExpr(m: MethodInfo): string {
+    if (m.isArray && m.elementType) return `res -> toTypedList(res, ${m.elementType}::new)`;
+    if (m.javaReturnType === 'Long') return 'res -> (res instanceof Number n) ? n.longValue() : null';
+    if (m.javaReturnType === 'Double') return 'res -> (res instanceof Number n) ? n.doubleValue() : null';
+    if (m.javaReturnType === 'String') return 'res -> (String) res';
+    if (m.javaReturnType === 'Boolean') return 'res -> (Boolean) res';
+    if (m.javaReturnType === 'Map<String, Object>') return 'res -> (Map<String, Object>) res';
+    return `${m.javaReturnType}::new`;
+}
+
+/**
+ * Generate the super.method() delegation call.
+ *
+ * For REST typed wrappers: simple super.method(args) works because the Core
+ * parent only has untyped methods (typed overloads are on this class).
+ *
+ * For WS typed wrappers: must cast all args to (Object) because the WS Core
+ * parent inherits REST typed overloads from the typed REST class. Without
+ * casts, super.watchTicker(symbol, params) would match the REST typed overload
+ * (returning List<Trade>) instead of the WS untyped implementation
+ * (returning CompletableFuture<Object>).
+ */
+function genDelegateCall(methodName: string, allParams: ParamInfo[], castToObject = false): string {
+    if (castToObject) {
+        // For WS: cast all args to (Object) and coalesce null params to empty map.
+        // This is needed because Helpers.getArg returns null for explicit null args
+        // instead of the default value, causing NPE in extend() calls.
+        const args = allParams.map(p => {
+            if (p.name === 'params') return `(Object) (${p.name} != null ? ${p.name} : new java.util.HashMap<String, Object>())`;
+            return `(Object) ${p.name}`;
+        }).join(', ');
+        return `super.${methodName}(${args})`;
+    }
+    const args = allParams.map(p => p.name).join(', ');
+    return `super.${methodName}(${args})`;
+}
+
+function genMethod(m: MethodInfo, castToObject = false): string {
+    const methodName = camelCase(m.name);
+    const allParams = [...m.requiredParams, ...m.optionalParams];
+    const fullParamDecl = allParams.map(p => `${p.javaType} ${p.name}`).join(', ');
+    const delegateCall = genDelegateCall(methodName, allParams, castToObject);
+
+    const lines: string[] = [];
+
+    // Full sync method with all params
+    lines.push(`    @SuppressWarnings("unchecked")`);
+    lines.push(`    public ${m.javaReturnType} ${methodName}(${fullParamDecl}) {`);
+    lines.push(`        Object res = ${delegateCall}.join();`);
+    lines.push(`        return ${genReturnExpr(m)};`);
+    lines.push(`    }`);
+
+    // Convenience overload: required params only
+    if (m.optionalParams.length > 0 && m.requiredParams.length > 0) {
+        const reqDecl = m.requiredParams.map(p => `${p.javaType} ${p.name}`).join(', ');
+        const reqArgs = m.requiredParams.map(p => p.name).join(', ');
+        const defaults = m.optionalParams.map(p => {
+            if (p.defaultValue && p.defaultValue !== 'null') return p.defaultValue;
+            return `(${p.javaType}) null`;
+        }).join(', ');
+        lines.push(`    public ${m.javaReturnType} ${methodName}(${reqDecl}) { return ${methodName}(${reqArgs}, ${defaults}); }`);
+    }
+
+    // Async method (full params)
+    if (!m.isWatch) {
+        lines.push(`    @SuppressWarnings("unchecked")`);
+        lines.push(`    public CompletableFuture<${m.javaReturnType}> ${methodName}Async(${fullParamDecl}) {`);
+        lines.push(`        return ${delegateCall}.thenApply(${genAsyncReturnExpr(m)});`);
+        lines.push(`    }`);
+    }
+
+    return lines.join('\n');
+}
+
+/**
+ * Generate a typed exchange wrapper class that extends the Core class.
+ *
+ * e.g., Binance extends BinanceCore with typed overloads.
+ */
+function generateTypedExchangeClass(exchangeId: string, methods: MethodInfo[]): string {
+    const className = capitalize(exchangeId);
+    const coreClassName = className + 'Core';
+
+    const lines: string[] = [];
+
+    // Header
+    lines.push(`package io.github.ccxt.exchanges;`);
+    lines.push(``);
+    lines.push(`import io.github.ccxt.types.*;`);
+    lines.push(``);
+    lines.push(`import java.util.List;`);
+    lines.push(`import java.util.Map;`);
+    lines.push(`import java.util.concurrent.CompletableFuture;`);
+    lines.push(`import java.util.stream.Collectors;`);
+    lines.push(``);
+    lines.push(`// PLEASE DO NOT EDIT THIS FILE, IT IS GENERATED AND WILL BE OVERWRITTEN:`);
+    lines.push(`// https://github.com/ccxt/ccxt/blob/master/CONTRIBUTING.md#how-to-contribute-code`);
+    lines.push(``);
+    lines.push(`/**`);
+    lines.push(` * Typed wrapper for ${exchangeId}. Extends ${coreClassName} with typed method overloads.`);
+    lines.push(` */`);
+    lines.push(`public class ${className} extends ${coreClassName} {`);
+    lines.push(``);
+
+    // Constructors
+    lines.push(`    public ${className}() {`);
+    lines.push(`        super();`);
+    lines.push(`    }`);
+    lines.push(``);
+    lines.push(`    public ${className}(Object options) {`);
+    lines.push(`        super(options);`);
+    lines.push(`    }`);
+    lines.push(``);
+
+    // toTypedList is inherited from Exchange (defined once, not duplicated per exchange)
+
+    // loadMarkets special overloads
+    lines.push(`    // --- loadMarkets (special: first arg is boolean reload) ---`);
+    lines.push(`    @SuppressWarnings("unchecked")`);
+    lines.push(`    public Map<String, MarketInterface> loadMarkets(boolean reload) {`);
+    lines.push(`        Object res = super.loadMarkets(reload).join();`);
+    lines.push(`        java.util.LinkedHashMap<String, MarketInterface> result = new java.util.LinkedHashMap<>();`);
+    lines.push(`        for (Map.Entry<String, Object> entry : ((Map<String, Object>) res).entrySet()) {`);
+    lines.push(`            result.put(entry.getKey(), new MarketInterface(entry.getValue()));`);
+    lines.push(`        }`);
+    lines.push(`        return result;`);
+    lines.push(`    }`);
+    lines.push(`    @SuppressWarnings("unchecked")`);
+    lines.push(`    public CompletableFuture<Map<String, MarketInterface>> loadMarketsAsync(boolean reload) {`);
+    lines.push(`        return super.loadMarkets(reload).thenApply(res -> {`);
+    lines.push(`            java.util.LinkedHashMap<String, MarketInterface> result = new java.util.LinkedHashMap<>();`);
+    lines.push(`            for (Map.Entry<String, Object> entry : ((Map<String, Object>) res).entrySet()) {`);
+    lines.push(`                result.put(entry.getKey(), new MarketInterface(entry.getValue()));`);
+    lines.push(`            }`);
+    lines.push(`            return result;`);
+    lines.push(`        });`);
+    lines.push(`    }`);
+    lines.push(``);
+
+    // All typed methods
+    for (const m of methods) {
+        lines.push(genMethod(m));
+        lines.push('');
+    }
+
+    lines.push(`}`);
+
+    return lines.join('\n');
+}
+
+/**
+ * Generate a typed WS wrapper that extends the WS Core class.
+ * Only includes watch method overloads (REST typed methods are inherited
+ * from the typed REST parent via the chain: pro.BinanceCore → Binance → BinanceCore).
+ */
+function generateTypedWsClass(exchangeId: string, watchMethods: MethodInfo[]): string {
+    const className = capitalize(exchangeId);
+    const coreClassName = className + 'Core';
+
+    const lines: string[] = [];
+
+    lines.push(`package io.github.ccxt.exchanges.pro;`);
+    lines.push(``);
+    lines.push(`import io.github.ccxt.types.*;`);
+    lines.push(``);
+    lines.push(`import java.util.List;`);
+    lines.push(`import java.util.Map;`);
+    lines.push(`import java.util.concurrent.CompletableFuture;`);
+    lines.push(``);
+    lines.push(`// PLEASE DO NOT EDIT THIS FILE, IT IS GENERATED AND WILL BE OVERWRITTEN:`);
+    lines.push(`// https://github.com/ccxt/ccxt/blob/master/CONTRIBUTING.md#how-to-contribute-code`);
+    lines.push(``);
+    lines.push(`/**`);
+    lines.push(` * Typed WS wrapper for ${exchangeId}. Extends ${coreClassName} with typed watch method overloads.`);
+    lines.push(` * REST typed methods (fetchTicker, createOrder, etc.) are inherited from the typed REST class.`);
+    lines.push(` */`);
+    lines.push(`public class ${className} extends ${coreClassName} {`);
+    lines.push(``);
+    lines.push(`    public ${className}() {`);
+    lines.push(`        super();`);
+    lines.push(`    }`);
+    lines.push(``);
+    lines.push(`    public ${className}(Object options) {`);
+    lines.push(`        super(options);`);
+    lines.push(`    }`);
+    lines.push(``);
+
+    // Only watch method overloads — REST overloads are inherited from typed REST parent.
+    // castToObject=true because the WS Core parent inherits REST typed overloads,
+    // so we need (Object) casts to force the untyped varargs WS implementation.
+    for (const m of watchMethods) {
+        lines.push(genMethod(m, true));
+        lines.push('');
+    }
+
+    lines.push(`}`);
+
+    return lines.join('\n');
+}
+
+// --- Main ---
+console.log('Parsing TypeScript Exchange.ts...');
+const methods = parseMethodsFromTS();
+const restCount = methods.filter(m => !m.isWatch).length;
+const wsCount = methods.filter(m => m.isWatch).length;
+console.log(`Found ${methods.length} methods (REST: ${restCount}, WS: ${wsCount})`);
+
+for (const m of methods.slice(0, 5)) {
+    const allParams = [...m.requiredParams, ...m.optionalParams];
+    console.log(`  ${m.name}(${allParams.map(p => `${p.javaType} ${p.name}${p.isOptional ? '?' : ''}`).join(', ')}) -> ${m.javaReturnType}`);
+}
+
+// Generate REST typed wrappers
+if (!fs.existsSync(EXCHANGES_FOLDER)) {
+    console.error(`Exchanges folder not found: ${EXCHANGES_FOLDER}`);
+    process.exit(1);
+}
+
+const coreFiles = fs.readdirSync(EXCHANGES_FOLDER).filter(f => f.endsWith('Core.java'));
+let generated = 0;
+
+for (const coreFile of coreFiles) {
+    const exchangeId = coreFile.replace('Core.java', '').toLowerCase();
+    const className = capitalize(exchangeId);
+    const outputPath = `${EXCHANGES_FOLDER}${className}.java`;
+
+    const content = generateTypedExchangeClass(exchangeId, methods);
+    fs.writeFileSync(outputPath, content, 'utf-8');
+    generated++;
+}
+
+console.log(`Generated ${generated} REST typed wrappers`);
+
+// Generate WS typed wrappers
+if (fs.existsSync(WS_EXCHANGES_FOLDER)) {
+    const wsCoreFiles = fs.readdirSync(WS_EXCHANGES_FOLDER).filter(f => f.endsWith('Core.java'));
+    const watchMethods = methods.filter(m => m.isWatch);
+    let wsGenerated = 0;
+
+    for (const coreFile of wsCoreFiles) {
+        const exchangeId = coreFile.replace('Core.java', '').toLowerCase();
+        const className = capitalize(exchangeId);
+        const outputPath = `${WS_EXCHANGES_FOLDER}${className}.java`;
+
+        const content = generateTypedWsClass(exchangeId, watchMethods);
+        fs.writeFileSync(outputPath, content, 'utf-8');
+        wsGenerated++;
+    }
+
+    console.log(`Generated ${wsGenerated} WS typed wrappers`);
+}
+
+console.log(`\nGenerated ${generated} typed exchange wrappers in ${EXCHANGES_FOLDER}`);
+console.log('Done!');

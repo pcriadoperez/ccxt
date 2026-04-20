@@ -2,7 +2,7 @@
 
 [![NPM Downloads](https://img.shields.io/npm/dy/ccxt.svg)](https://www.npmjs.com/package/ccxt) [![npm](https://img.shields.io/npm/v/ccxt.svg)](https://npmjs.com/package/ccxt) [![PyPI](https://img.shields.io/pypi/v/ccxt.svg)](https://pypi.python.org/pypi/ccxt) [![NuGet version](https://img.shields.io/nuget/v/ccxt)](https://www.nuget.org/packages/ccxt) [![GoDoc](https://pkg.go.dev/badge/github.com/ccxt/ccxt/go/v4?utm_source=godoc)](https://godoc.org/github.com/ccxt/ccxt/go/v4) [![Discord](https://img.shields.io/discord/690203284119617602?logo=discord&logoColor=white)](https://discord.gg/ccxt) [![Supported Exchanges](https://img.shields.io/badge/exchanges-111-blue.svg)](https://github.com/ccxt/ccxt/wiki/Exchange-Markets) [![Follow CCXT at x.com](https://img.shields.io/twitter/follow/ccxt_official.svg?style=social&label=CCXT)](https://x.com/ccxt_official)
 
-A cryptocurrency trading API with more than 100 exchanges in JavaScript / TypeScript / Python / C# / PHP / Go.
+A cryptocurrency trading API with more than 100 exchanges in JavaScript / TypeScript / Python / C# / PHP / Go / Java.
 
 ### [Install](#install) · [Usage](#usage) · [Manual](https://github.com/ccxt/ccxt/wiki) · [FAQ](https://github.com/ccxt/ccxt/wiki/FAQ) · [Examples](https://github.com/ccxt/ccxt/tree/master/examples) · [Contributing](https://github.com/ccxt/ccxt/blob/master/CONTRIBUTING.md) · [Disclaimer](#disclaimer) · [Social](#social)
 
@@ -16,7 +16,7 @@ Current feature list:
 - fully implemented public and private APIs
 - optional normalized data for cross-exchange analytics and arbitrage
 - an out of the box unified API that is extremely easy to integrate
-- works in Node 10.4+, Python 3, PHP 8.1+, netstandard2.0/2.1, Go 1.20+ and web browsers
+- works in Node 10.4+, Python 3, PHP 8.1+, netstandard2.0/2.1, Go 1.20+, Java 21+ and web browsers
 
 ## See Also
 
@@ -197,6 +197,7 @@ The easiest way to install the CCXT library is to use a package manager:
 - [ccxt in **Packagist/Composer**](https://packagist.org/packages/ccxt/ccxt) (PHP 8.1+)
 - [ccxt in **Nuget**](https://www.nuget.org/packages/ccxt) (netstandard 2.0)
 - [ccxt in **GO**](https://pkg.go.dev/github.com/ccxt/ccxt/go/v4)
+- ccxt in **Java** (Java 21+, Gradle)
 
 This library is shipped as an all-in-one module implementation with minimalistic dependencies and requirements:
 
@@ -205,6 +206,7 @@ This library is shipped as an all-in-one module implementation with minimalistic
 - [php/](https://github.com/ccxt/ccxt/blob/master/php/) in PHP (generated from TS)
 - [cs/](https://github.com/ccxt/ccxt/blob/master/cs/)  in C# (generated from TS)
 - [go/](https://github.com/ccxt/ccxt/blob/master/go/)  in Go (generated from TS)
+- [java/](https://github.com/ccxt/ccxt/blob/master/java/) in Java (generated from TS)
 
 You can also clone it into your project directory from [ccxt GitHub repository](https://github.com/ccxt/ccxt):
 
@@ -335,6 +337,55 @@ go install github.com/ccxt/ccxt/go/v4@latest
 import "ccxt"
 fmt.Println(ccxt.Exchanges)
 ```
+
+### Java
+
+Java version of CCXT requires Java 21+ and uses Gradle as its build system.
+
+Add the CCXT library as a local dependency in your `build.gradle.kts`:
+
+```kotlin
+dependencies {
+    implementation(project(":lib"))
+}
+```
+
+Or clone and build from source:
+
+```shell
+git clone https://github.com/ccxt/ccxt.git --depth 1
+cd ccxt/java
+./gradlew :lib:build
+```
+
+```Java
+import io.github.ccxt.exchanges.Binance;
+import io.github.ccxt.types.Ticker;
+
+Binance exchange = new Binance();
+exchange.loadMarkets(false);
+
+Ticker ticker = exchange.fetchTicker("BTC/USDT");
+System.out.println(ticker.symbol + " " + ticker.last);
+```
+
+Each exchange has its own typed subclass with strongly-typed return values. Async methods returning `CompletableFuture` are also available:
+
+```Java
+CompletableFuture<Ticker> future = exchange.fetchTickerAsync("BTC/USDT", null);
+```
+
+WebSocket support is available via the pro exchange classes:
+
+```Java
+import io.github.ccxt.exchanges.pro.Binance;
+
+Exchange exchange = new Binance();
+exchange.loadMarkets().join();
+Object ticker = exchange.watchTicker("BTC/USDT").get(30, TimeUnit.SECONDS);
+```
+
+See [java/examples/](https://github.com/ccxt/ccxt/tree/master/java/examples) for more usage examples.
 
 ### Docker
 
@@ -643,6 +694,91 @@ trades, error := exchange.FetchMyTrades(ccxt.withFetchMyTradesSymbol("BTC/USDT")
 Lastly, just because the signature dictates that some argument like `symbol` is optional, it will depend from exchange to exchange and you might need to provide it to avoid getting a `SymbolRequired` error.
 
 You can check different examples in the `examples/go` folder.
+
+### Java
+
+```Java
+import io.github.ccxt.exchanges.Kraken;
+import io.github.ccxt.exchanges.Bitfinex;
+import io.github.ccxt.exchanges.Binance;
+import io.github.ccxt.types.*;
+
+import java.util.HashMap;
+import java.util.Map;
+
+public class Example {
+    public static void main(String[] args) {
+        // Create exchange instances
+        Kraken kraken = new Kraken();
+        Bitfinex bitfinex = new Bitfinex();
+
+        Map<String, Object> config = new HashMap<>();
+        config.put("apiKey", "YOUR_API_KEY");
+        config.put("secret", "YOUR_SECRET");
+        Binance binance = new Binance(config);
+
+        // Load markets
+        kraken.loadMarkets(false);
+        binance.loadMarkets(false);
+
+        // Public API
+        OrderBook orderBook = kraken.fetchOrderBook("BTC/USDT");
+        Ticker ticker = bitfinex.fetchTicker("BTC/USD");
+        System.out.println(ticker.symbol + " last=" + ticker.last);
+
+        // Fetch OHLCV
+        var candles = binance.fetchOHLCV("BTC/USDT", "1h", null, 10L, null);
+        System.out.println("Got " + candles.size() + " candles");
+
+        // Private API (requires API keys)
+        Balances balance = binance.fetchBalance();
+        System.out.println("BTC free: " + balance.free.get("BTC"));
+
+        // Place a limit buy order
+        Order order = binance.createLimitBuyOrder("BTC/USDT", 0.001, 50000.0);
+        System.out.println("Order id: " + order.id + " status: " + order.status);
+
+        // Cancel it
+        binance.cancelOrder(order.id, "BTC/USDT", null);
+    }
+}
+```
+
+#### Async
+
+All methods are also available as async variants returning `CompletableFuture`:
+
+```Java
+import java.util.concurrent.CompletableFuture;
+
+// Fire multiple requests concurrently
+CompletableFuture<Ticker> btc = binance.fetchTickerAsync("BTC/USDT", null);
+CompletableFuture<Ticker> eth = binance.fetchTickerAsync("ETH/USDT", null);
+CompletableFuture.allOf(btc, eth).join();
+System.out.println("BTC: " + btc.get().last + " ETH: " + eth.get().last);
+```
+
+#### WebSocket
+
+WebSocket support is available via the pro exchange classes:
+
+```Java
+import io.github.ccxt.Exchange;
+import io.github.ccxt.exchanges.pro.Binance;
+
+import java.util.concurrent.TimeUnit;
+
+Exchange exchange = new Binance();
+exchange.loadMarkets().join();
+
+// Stream live ticker updates
+for (int i = 0; i < 10; i++) {
+    Object ticker = exchange.watchTicker("BTC/USDT").get(30, TimeUnit.SECONDS);
+    System.out.println(ticker);
+}
+```
+
+You can check different examples in the `java/examples` folder.
 
 ## Rate limiting
 
