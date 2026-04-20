@@ -24,6 +24,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BiConsumer;
 import java.util.function.Function;
 import java.util.zip.GZIPInputStream;
@@ -62,11 +63,15 @@ public class WsClient {
     public Object subscriptions = new ConcurrentHashMap<String, Object>();
     public Object rejections = new ConcurrentHashMap<String, Object>();
     public volatile boolean isConnected = false;
-    public volatile boolean startedConnecting = false;
+    public final AtomicBoolean startedConnecting = new AtomicBoolean(false);
     public volatile long connectionEstablished = 0;
     public volatile CompletableFuture<Boolean> connected;
     public volatile long lastPong = 0;
     public boolean error = false;
+
+    // Guards atomic complete-then-replace of `connected` and ping-thread bookkeeping.
+    private final Object connectedLock = new Object();
+    private volatile Thread pingThread;
 
     // Typed accessors for internal use
     @SuppressWarnings("unchecked")
@@ -162,8 +167,9 @@ public class WsClient {
                 rejectionsMap().put(messageHash, error);
             }
         } else {
-            // Reject all pending futures
-            for (String key : futuresMap().keySet()) {
+            // Reject all pending futures — snapshot keys to avoid ConcurrentModificationException.
+            var snapshot = new java.util.ArrayList<>(futuresMap().keySet());
+            for (String key : snapshot) {
                 Future f = futuresMap().remove(key);
                 if (f != null) {
                     f.reject(error);
@@ -192,8 +198,7 @@ public class WsClient {
      * If already connecting/connected, returns the existing future.
      */
     public CompletableFuture<Boolean> connect(int backoffDelay) {
-        if (!this.startedConnecting) {
-            this.startedConnecting = true;
+        if (this.startedConnecting.compareAndSet(false, true)) {
             if (backoffDelay > 0) {
                 CompletableFuture.delayedExecutor(backoffDelay,
                         java.util.concurrent.TimeUnit.MILLISECONDS)
@@ -295,8 +300,8 @@ public class WsClient {
         this.lastPong = this.connectionEstablished;
         this.connected.complete(true);
 
-        // Start ping loop on a virtual thread
-        Thread.ofVirtual().start(this::pingLoop);
+        // Start ping loop on a virtual thread; keep a reference so close() can interrupt it.
+        this.pingThread = Thread.ofVirtual().start(this::pingLoop);
     }
 
     void onMessage(Object message) {
@@ -327,7 +332,7 @@ public class WsClient {
             System.out.println("WsClient closed: " + this.url + " reason: " + reason);
         }
         this.isConnected = false;
-        this.startedConnecting = false;
+        this.startedConnecting.set(false);
         this.error = false;
         if (this.onCloseCallback != null) {
             this.onCloseCallback.accept(this, reason);
@@ -339,18 +344,22 @@ public class WsClient {
             System.err.println("WsClient error on " + this.url + ": " + err);
         }
         this.isConnected = false;
-        this.startedConnecting = false;
+        this.startedConnecting.set(false);
         this.error = true;
-        // Reset connected future for reconnection
-        if (this.connected.isDone()) {
-            this.connected = new CompletableFuture<>();
-        } else {
-            if (err instanceof Exception ex) {
-                this.connected.completeExceptionally(ex);
-            } else {
-                this.connected.completeExceptionally(new RuntimeException(String.valueOf(err)));
+
+        Throwable t = (err instanceof Throwable th)
+                ? th
+                : new RuntimeException(String.valueOf(err));
+
+        // Complete-then-replace: surface the error to current awaiters and
+        // install a fresh future for the next connect() attempt.
+        synchronized (connectedLock) {
+            if (!this.connected.isDone()) {
+                this.connected.completeExceptionally(t);
             }
+            this.connected = new CompletableFuture<>();
         }
+
         if (this.onErrorCallback != null) {
             this.onErrorCallback.accept(this, err);
         }
@@ -449,8 +458,17 @@ public class WsClient {
             this.channel.writeAndFlush(new CloseWebSocketFrame());
         }
         this.isConnected = false;
-        // Reject all pending futures
-        for (String key : futuresMap().keySet()) {
+        this.startedConnecting.set(false);
+
+        // Wake the ping loop so it exits without waiting for the next keepAlive tick.
+        Thread pt = this.pingThread;
+        if (pt != null) {
+            pt.interrupt();
+        }
+
+        // Snapshot keys before mutating the map to avoid ConcurrentModificationException.
+        var snapshot = new java.util.ArrayList<>(futuresMap().keySet());
+        for (String key : snapshot) {
             Future f = futuresMap().remove(key);
             if (f != null && !f.isDone()) {
                 f.reject(new RuntimeException("Connection closed by the user"));

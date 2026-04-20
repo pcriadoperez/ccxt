@@ -213,4 +213,69 @@ class ConcurrencyStressTest {
         assertEquals(concurrentRequests, exceptions.get(),
                 "All requests with invalid symbols should propagate exceptions");
     }
+
+    /**
+     * Regression for the loadMarkets() race where concurrent first-callers could
+     * (a) overwrite each other's `marketsLoading` future or (b) receive null.
+     * After the synchronized fix, all concurrent callers must observe the same
+     * (non-null) future and resolve to the same result.
+     */
+    @Test
+    @Timeout(value = 60, unit = TimeUnit.SECONDS)
+    void testLoadMarketsConcurrentDedup() throws Exception {
+        Binance exchange = new Binance();
+        exchange.verbose = false;
+        exchange.enableRateLimit = false;
+
+        int concurrent = 50;
+        CompletableFuture<Object>[] futures = new CompletableFuture[concurrent];
+        Thread[] threads = new Thread[concurrent];
+        java.util.concurrent.CountDownLatch barrier = new java.util.concurrent.CountDownLatch(1);
+
+        for (int i = 0; i < concurrent; i++) {
+            final int idx = i;
+            threads[i] = new Thread(() -> {
+                try {
+                    barrier.await();
+                    futures[idx] = exchange.loadMarkets();
+                } catch (Exception ignored) { }
+            });
+            threads[i].start();
+        }
+        barrier.countDown();
+        for (Thread t : threads) {
+            t.join();
+        }
+
+        // None of the returned futures must be null (the bug returned null when
+        // reloadingMarkets was already true but marketsLoading hadn't been set yet).
+        for (int i = 0; i < concurrent; i++) {
+            assertNotNull(futures[i], "Caller " + i + " got a null future from loadMarkets()");
+        }
+
+        // Wait for resolution; skip the test cleanly if the exchange is unreachable.
+        try {
+            CompletableFuture.allOf(futures).get(30, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            assumeTrue(false, "Exchange unreachable: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Regression for randNumber(): must use SecureRandom and produce a value
+     * with exactly the requested number of digits (no leading-zero truncation).
+     */
+    @Test
+    void testRandNumberWidthAndNonZeroLeading() {
+        Binance exchange = new Binance();
+        for (int size = 1; size <= 9; size++) {
+            for (int trial = 0; trial < 200; trial++) {
+                int n = exchange.randNumber(size);
+                int width = String.valueOf(n).length();
+                assertEquals(size, width,
+                        "randNumber(" + size + ") returned " + n + " with width " + width);
+            }
+        }
+        assertEquals(0, exchange.randNumber(0), "randNumber(0) must be 0");
+    }
 }

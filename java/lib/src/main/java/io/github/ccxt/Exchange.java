@@ -1461,26 +1461,44 @@ public class Exchange {
 
     }
 
+    private final Object marketsLock = new Object();
+
     public java.util.concurrent.CompletableFuture<Object> loadMarkets(Object... args) {
 
         var reload = (Boolean) Helpers.getArg(args, 0, false);
         if (this.marketsLoaded && !reload) {
             return this.marketsLoading;
         }
-        if (!this.reloadingMarkets || reload) {
-            this.reloadingMarkets = true;
-            try {
-                this.marketsLoading = this.loadMarketsHelper(reload)
-                        .thenApply(res -> {
-                            this.reloadingMarkets = false;
-                            this.marketsLoaded = true;
-                            return res;
-                        });
-            } catch (ExecutionException | InterruptedException e) {
-                throw new RuntimeException(e);
+        synchronized (marketsLock) {
+            // Re-check under the lock to collapse concurrent first-callers onto the same future.
+            if (this.marketsLoaded && !reload) {
+                return this.marketsLoading;
             }
+            if (!this.reloadingMarkets || reload) {
+                this.reloadingMarkets = true;
+                try {
+                    this.marketsLoading = this.loadMarketsHelper(reload)
+                            .thenApply(res -> {
+                                synchronized (marketsLock) {
+                                    this.reloadingMarkets = false;
+                                    this.marketsLoaded = true;
+                                }
+                                return res;
+                            })
+                            .exceptionallyCompose(ex -> {
+                                synchronized (marketsLock) {
+                                    this.reloadingMarkets = false;
+                                    this.marketsLoading = null;
+                                }
+                                return CompletableFuture.failedFuture(ex);
+                            });
+                } catch (ExecutionException | InterruptedException e) {
+                    this.reloadingMarkets = false;
+                    throw new RuntimeException(e);
+                }
+            }
+            return this.marketsLoading;
         }
-        return this.marketsLoading;
     }
 
     public CompletableFuture<Object> fetchCurrencies(Object... params) {
@@ -2233,13 +2251,15 @@ public class Exchange {
     }
 
     public int randNumber(int size) {
-        Random random = new Random();
-        StringBuilder number = new StringBuilder();
-
-        for (int i = 0; i < size; i++) {
-            number.append(random.nextInt(10)); // 0–9
+        if (size <= 0) {
+            return 0;
         }
-
+        StringBuilder number = new StringBuilder(size);
+        // Leading digit 1-9 so Integer.parseInt round-trips the requested width.
+        number.append(1 + secureRandom.nextInt(9));
+        for (int i = 1; i < size; i++) {
+            number.append(secureRandom.nextInt(10));
+        }
         return Integer.parseInt(number.toString());
     }
 
