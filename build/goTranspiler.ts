@@ -1641,6 +1641,9 @@ ${constStatements.join('\n')}
 
         // custom transformations needed for go
         baseClass = this.regexAll (baseClass, [
+            // ast-transpiler emits `any` (Go 1.18+ alias for `interface{}`); normalize to
+            // `interface{}` so downstream regexes that reference `interface{}` keep matching
+            [/\bany\b/g, 'interface{}'],
             [/\=\snew\s/gm, "= "],
             // baseClass = baseClass.replaceAll(/(?<!<-)this\.callInternal/gm, "<-this.callInternal");
             [/callDynamically\(/gm, 'this.CallDynamically('], //fix this on the transpiler
@@ -2152,6 +2155,9 @@ ${caseStatements.join('\n')}
 
         if (!ws) {
             content = this.regexAll(content, [
+                // ast-transpiler emits `any`; normalize so downstream regexes matching
+                // `interface{}` keep working
+                [/\bany\b/g, 'interface{}'],
                 [/base\.(\w+)\(/gm, "this.Exchange.$1("],
                 [/base\.Describe/gm, "this.Exchange.Describe"],
                 [/"\0"/gm, '"\/\/\" + "0"'], // check this later in bl3p
@@ -2167,6 +2173,9 @@ ${caseStatements.join('\n')}
             const inheritedInstatiation = isAlias ? `New${baseClass}()` : `&${inheritedClass}{}`;
             const wsRegexes = this.getWsRegexes();
             content = this.regexAll (content, [
+                // ast-transpiler emits `any`; normalize so downstream regexes matching
+                // `interface{}` keep working
+                [/\bany\b/g, 'interface{}'],
                 [ /type (\w+) struct \{\s+(\w+)\s*\n\s*/g, `type $1 struct {\n\t*${inheritedClass}\n\tbase *${inheritedClass}\n` ],      // adds 'base exchangeName'
                 [ /(p \:\= &.*$)/gm, `$1\n\tbase := ${inheritedInstatiation}\n\tp.base = base\n\tp.${baseClass} = base` ],  // could go in ast-transpiler if there is always a parameter named base
                 ...wsRegexes,
@@ -2233,6 +2242,7 @@ func (this *${className}) Init(userConfig map[string]interface{}) {
         splitParts.shift();
         content = splitParts.join('\n// --------------------------------------------------------------------------------------------------------------------\n');
         content = this.regexAll (content, [
+            [/\bany\b/g, 'interface{}'], // ast-transpiler emits `any`; normalize to `interface{}` so downstream regexes keep matching
             [/var (\w+) interface{} = GetValue\((\w+), "bids"\)/gm, '$1 := $2.Bids'],
             [/var (\w+) interface{} = GetValue\((\w+), "asks"\)/gm, '$1 := $2.Asks'],
             [/assert/g, 'Assert'],
@@ -2267,6 +2277,7 @@ func (this *${className}) Init(userConfig map[string]interface{}) {
         splitParts.shift();
         content = splitParts.join('\n// ----------------------------------------------------------------------------\n');
         content = this.regexAll (content, [
+            [/\bany\b/g, 'interface{}'], // ast-transpiler emits `any`; normalize to `interface{}` so downstream regexes keep matching
             [/assert/g, 'Assert'],
             [/GetValue\(cacheSymbolSide4/g, 'GetValue(cacheSymbolSide4.ToArray()' ],
             [/GetArrayLength\(cacheSymbolSide4\)/g  , 'GetArrayLength(cacheSymbolSide4.ToArray())'],
@@ -2299,6 +2310,7 @@ func (this *${className}) Init(userConfig map[string]interface{}) {
         const go = this.transpiler.transpileGoByPath(jsFile);
         let content = go.content;
         content = this.regexAll (content, [
+            [/\bany\b/g, 'interface{}'], // ast-transpiler emits `any`; normalize to `interface{}` so downstream regexes keep matching
             [ /Newccxt.Exchange.+\n.+\n.+/gm, 'ccxt.Exchange{}' ],
             [ /func Equals\(.+\n.*\n.*\n.*}/gm, '' ], // remove equals
         ]).trim ();
@@ -2393,6 +2405,7 @@ func (this *${className}) Init(userConfig map[string]interface{}) {
             const go = this.transpiler.transpileGoByPath(tsFile);
             let content = go.content;
             content = this.regexAll (content, [
+                [/\bany\b/g, 'interface{}'], // ast-transpiler emits `any`; normalize to `interface{}` so downstream regexes keep matching
                 [/(\w+) := NewCcxt\.Exchange\(([\S\s]+?)\)/gm, '$1 := ccxt.NewExchange().(*ccxt.Exchange); $1.DerivedExchange = $1; $1.InitParent($2, map[string]interface{}{}, $1)' ],
                 [/exchange interface\{\}, /g,'exchange *ccxt.Exchange, '], // in arguments
                 [/ interface\{\}(?= \= map\[string\]interface\{\} )/g, ' map[string]interface{}'], // fix incorrect variable type
@@ -2449,6 +2462,7 @@ func (this *${className}) Init(userConfig map[string]interface{}) {
 
         // ad-hoc fixes
         contentIndentend = this.regexAll (contentIndentend, [
+            [/\bany\b/g, 'interface{}'], // ast-transpiler emits `any`; normalize to `interface{}` so downstream regexes keep matching
             [/var (mockedExchange|exchange) interface{} =/g, 'var $1 ccxt.ICoreExchange ='],
             [/exchange interface\{\}([,)])/g, 'exchange ccxt.ICoreExchange$1'],
             [/exchange.(\w+)\s*=\s*(.+)/g, 'exchange.Set$1($2)'],
@@ -2544,6 +2558,7 @@ func (this *${className}) Init(userConfig map[string]interface{}) {
             let contentIndentend = file.content.split('\n').map((line: string) => line ? '    ' + line : line).join('\n');
 
             let regexes = [
+                [/\bany\b/g, 'interface{}'], // ast-transpiler emits `any`; normalize to `interface{}` so downstream regexes keep matching
                 [/exchange := (?:&)?ccxt\.Exchange\{\}/g, 'exchange := ccxt.NewExchange()'],
                 [/exchange interface\{\}([,)])/g, 'exchange ccxt.ICoreExchange$1'],
                 [/testSharedMethods\./g, ''], // no need of class reference
