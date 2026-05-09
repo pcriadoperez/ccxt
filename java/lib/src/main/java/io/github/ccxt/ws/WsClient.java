@@ -126,17 +126,23 @@ public class WsClient {
     private volatile Channel channel;
     private String proxy;
 
-    // Permissive permessage-deflate handshaker: accepts every parameter the server
-    // may advertise, including server_no_context_takeover and client_no_context_takeover.
-    // Netty's bundled WebSocketClientCompressionHandler.INSTANCE rejects those —
-    // Coinbase advertises both on every connection and gets killed with
-    // `CodecException: invalid WebSocket Extension handshake`. The flags below
-    // (allowClientNoContext=true, requestedServerNoContext=true) match the maximally-
-    // permissive defaults used by gorilla/websocket and the browser native WebSocket;
-    // wire-protocol semantics are unchanged, so existing exchanges keep working.
-    private static final WebSocketClientExtensionHandler PERMISSIVE_COMPRESSION_HANDLER =
-            new WebSocketClientExtensionHandler(
-                    new PerMessageDeflateClientExtensionHandshaker(6, true, 15, true, true));
+    // Build a permissive permessage-deflate handler. Each pipeline gets its own
+    // instance because WebSocketClientExtensionHandler is NOT annotated @Sharable
+    // (unlike the bundled WebSocketClientCompressionHandler.INSTANCE) — reusing
+    // one instance across pipelines crashes init on every connection past the
+    // first with `ChannelPipelineException: ... is not a @Sharable handler`.
+    //
+    // Why we replace the stock INSTANCE in the first place: its underlying
+    // PerMessageDeflateClientExtensionHandshaker rejects both
+    // server_no_context_takeover and client_no_context_takeover, which Coinbase
+    // advertises on every connection. The flags below
+    // (allowClientNoContext=true, requestedServerNoContext=true) match the
+    // maximally-permissive defaults used by gorilla/websocket and the browser
+    // native WebSocket; wire-protocol semantics are unchanged.
+    private static WebSocketClientExtensionHandler newPermissiveCompressionHandler() {
+        return new WebSocketClientExtensionHandler(
+                new PerMessageDeflateClientExtensionHandshaker(6, true, 15, true, true));
+    }
 
     // Per-client single-thread executor: serializes handleMessageCallback so that
     // frames from one connection are processed in arrival order (matches C# Client.cs
@@ -328,9 +334,9 @@ public class WsClient {
                             pipeline.addLast(new HttpObjectAggregator(65536 * 100));
 
                             // WebSocket compression (permessage-deflate) — see comment
-                            // on PERMISSIVE_COMPRESSION_HANDLER for why this replaces
+                            // on newPermissiveCompressionHandler() for why this replaces
                             // WebSocketClientCompressionHandler.INSTANCE.
-                            pipeline.addLast(PERMISSIVE_COMPRESSION_HANDLER);
+                            pipeline.addLast(newPermissiveCompressionHandler());
 
                             // WebSocket frame handler
                             pipeline.addLast(handler);
