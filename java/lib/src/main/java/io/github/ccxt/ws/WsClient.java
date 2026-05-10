@@ -126,11 +126,9 @@ public class WsClient {
     private volatile Channel channel;
     private String proxy;
 
-    // Per-exchange handshake headers (e.g. weex requires User-Agent: ccxt; gemini /
-    // bitopro / upbit also stage entries here via options.ws.options.headers).
-    // Populated by Exchange.client() before connect; left null when caller passes
-    // none, in which case createConnection() supplies sane defaults (User-Agent,
-    // Origin) so Cloudflare-fronted endpoints don't 403 on bot fingerprints.
+    // Headers attached to the upgrade request. Set by Exchange.client() from
+    // options.ws.options.headers; createConnection() defaults User-Agent + Origin
+    // when missing so Cloudflare-fronted endpoints don't 403 on the bot fingerprint.
     public java.util.Map<String, String> handshakeHeaders;
 
     // Build a permissive permessage-deflate handler. Each pipeline gets its own
@@ -300,10 +298,9 @@ public class WsClient {
                 sslCtx = null;
             }
 
+            // Netty doesn't auto-attach User-Agent/Origin like browser/node WebSocket
+            // libraries do, so we set them ourselves — caller-supplied values win.
             DefaultHttpHeaders requestHeaders = new DefaultHttpHeaders();
-            // JS WebSocket library auto-sends User-Agent; Netty does not. Some
-            // exchanges (weex explicitly via ts/src/pro/weex.ts; Cloudflare-fronted
-            // endpoints implicitly) reject empty User-Agent with 403 Forbidden.
             boolean hasUserAgent = false;
             boolean hasOrigin = false;
             if (this.handshakeHeaders != null) {
