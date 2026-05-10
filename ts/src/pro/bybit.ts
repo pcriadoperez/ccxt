@@ -2410,7 +2410,10 @@ export default class bybit extends bybitRest {
                     delete client.subscriptions[messageHash];
                 }
             } else {
-                const messageHash = this.safeString (message, 'reqId');
+                // Bybit's public-WS subscribe responses echo back `req_id` (snake-case,
+                // matches what watchTopics sends); the trading-WS order responses use
+                // `reqId` (camel). The handler runs for both paths, so read either.
+                const messageHash = this.safeString2 (message, 'req_id', 'reqId');
                 client.reject (error, messageHash);
             }
             return true;
