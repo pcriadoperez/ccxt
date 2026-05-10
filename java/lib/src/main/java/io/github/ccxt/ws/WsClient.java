@@ -126,6 +126,13 @@ public class WsClient {
     private volatile Channel channel;
     private String proxy;
 
+    // Per-exchange handshake headers (e.g. weex requires User-Agent: ccxt; gemini /
+    // bitopro / upbit also stage entries here via options.ws.options.headers).
+    // Populated by Exchange.client() before connect; left null when caller passes
+    // none, in which case createConnection() supplies sane defaults (User-Agent,
+    // Origin) so Cloudflare-fronted endpoints don't 403 on bot fingerprints.
+    public java.util.Map<String, String> handshakeHeaders;
+
     // Build a permissive permessage-deflate handler. Each pipeline gets its own
     // instance because WebSocketClientExtensionHandler is NOT annotated @Sharable
     // (unlike the bundled WebSocketClientCompressionHandler.INSTANCE) — reusing
@@ -293,9 +300,31 @@ public class WsClient {
                 sslCtx = null;
             }
 
+            DefaultHttpHeaders requestHeaders = new DefaultHttpHeaders();
+            // JS WebSocket library auto-sends User-Agent; Netty does not. Some
+            // exchanges (weex explicitly via ts/src/pro/weex.ts; Cloudflare-fronted
+            // endpoints implicitly) reject empty User-Agent with 403 Forbidden.
+            boolean hasUserAgent = false;
+            boolean hasOrigin = false;
+            if (this.handshakeHeaders != null) {
+                for (java.util.Map.Entry<String, String> e : this.handshakeHeaders.entrySet()) {
+                    if (e.getKey() == null || e.getValue() == null) continue;
+                    requestHeaders.add(e.getKey(), e.getValue());
+                    if ("User-Agent".equalsIgnoreCase(e.getKey())) hasUserAgent = true;
+                    if ("Origin".equalsIgnoreCase(e.getKey())) hasOrigin = true;
+                }
+            }
+            if (!hasUserAgent) {
+                requestHeaders.add("User-Agent", "ccxt/java");
+            }
+            if (!hasOrigin) {
+                String origin = ("wss".equalsIgnoreCase(scheme) ? "https://" : "http://") + host;
+                requestHeaders.add("Origin", origin);
+            }
+
             WebSocketClientHandshaker handshaker = WebSocketClientHandshakerFactory.newHandshaker(
                     uri, WebSocketVersion.V13, null, true,
-                    new DefaultHttpHeaders(), 65536 * 100);
+                    requestHeaders, 65536 * 100);
 
             final WsClientHandler handler = new WsClientHandler(handshaker, this);
             final int finalPort = port;
