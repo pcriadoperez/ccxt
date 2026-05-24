@@ -21,7 +21,7 @@ public class FetchCurrencies {
 
         Currencies currencies = exchange.fetchCurrencies((Map<String, Object>) null);
 
-        if (currencies.currencies.isEmpty()) {
+        if (currencies.isEmpty()) {
             System.out.println("No currencies returned (this exchange may require API keys for fetchCurrencies).");
             return;
         }
@@ -33,7 +33,7 @@ public class FetchCurrencies {
         System.out.println("-".repeat(50));
 
         for (String code : popular) {
-            CurrencyInterface c = currencies.currencies.get(code);
+            CurrencyInterface c = currencies.get(code);
             if (c != null) {
                 System.out.printf("%-8s %-20s %-8s %-10s%n",
                         c.code,
@@ -43,6 +43,6 @@ public class FetchCurrencies {
             }
         }
 
-        System.out.println("\nTotal currencies: " + currencies.currencies.size());
+        System.out.println("\nTotal currencies: " + currencies.size());
     }
 }

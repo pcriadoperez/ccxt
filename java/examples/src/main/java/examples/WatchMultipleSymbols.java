@@ -34,7 +34,7 @@ public class WatchMultipleSymbols {
             System.out.println("-".repeat(60));
 
             for (String sym : symbols) {
-                Ticker t = tickers.tickers.get(sym);
+                Ticker t = tickers.get(sym);
                 if (t != null) {
                     System.out.printf("%-12s %12s %12s %12s %10s%n",
                             t.symbol,

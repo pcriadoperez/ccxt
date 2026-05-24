@@ -1,24 +1,44 @@
 package io.github.ccxt.types;
 
+import java.util.AbstractMap;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.Set;
 
-public final class OptionChain {
-    public Map<String, Option> options;
+/**
+ * Unified dictionary of {@link Option} keyed by option symbol.
+ * Mirrors TypeScript {@code OptionChain extends Dictionary<Option>}.
+ * Insertion-ordered, immutable. See {@link Tickers} for the family contract.
+ */
+public final class OptionChain extends AbstractMap<String, Option> {
 
+    private final LinkedHashMap<String, Option> entries;
+
+    /** @apiNote Internal — invoked by generated CCXT wrappers. Prefer {@link #of(Map)}. */
     @SuppressWarnings("unchecked")
     public OptionChain(Object raw) {
-        Map<String, Object> data = TypeHelper.toMap(raw);
-        this.options = new LinkedHashMap<>();
-        for (Map.Entry<String, Object> entry : data.entrySet()) {
-            this.options.put(entry.getKey(), new Option(entry.getValue()));
+        LinkedHashMap<String, Option> m = new LinkedHashMap<>();
+        for (Map.Entry<String, Object> e : TypeHelper.toMap(raw).entrySet()) {
+            if (!"info".equals(e.getKey())) {
+                m.put(e.getKey(), new Option(e.getValue()));
+            }
         }
+        this.entries = m;
     }
 
-    public Option get(String key) {
-        Option o = options.get(key);
-        if (o == null) throw new NoSuchElementException("Key not found: " + key);
+    public static OptionChain of(Map<String, ?> raw) { return new OptionChain((Object) raw); }
+
+    @Override public Set<Map.Entry<String, Option>> entrySet() {
+        return Collections.unmodifiableSet(entries.entrySet());
+    }
+    @Override public Option get(Object key) { return entries.get(key); }
+    public Option get(String symbol) { return entries.get(symbol); }
+    public boolean containsKey(String symbol) { return entries.containsKey(symbol); }
+    public Option getOrThrow(String symbol) {
+        Option o = entries.get(symbol);
+        if (o == null) throw new NoSuchElementException("option not found: " + symbol);
         return o;
     }
 }

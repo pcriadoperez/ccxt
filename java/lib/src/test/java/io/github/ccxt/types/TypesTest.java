@@ -379,21 +379,43 @@ class TypesTest {
 
     @Test
     void testTickers() {
-        Map<String, Object> data = new HashMap<>();
+        Map<String, Object> data = new LinkedHashMap<>();
         data.put("BTC/USDT", Map.of("symbol", "BTC/USDT", "last", 37000.0));
         data.put("ETH/USDT", Map.of("symbol", "ETH/USDT", "last", 2000.0));
         Tickers tickers = new Tickers(data);
-        assertEquals(2, tickers.tickers.size());
+        // Map contract
+        assertEquals(2, tickers.size());
+        assertTrue(tickers.containsKey("BTC/USDT"));
+        assertEquals(List.of("BTC/USDT", "ETH/USDT"), new ArrayList<>(tickers.keySet()));
         assertEquals("BTC/USDT", tickers.get("BTC/USDT").symbol);
         assertEquals(37000.0, tickers.get("BTC/USDT").last);
         assertEquals(2000.0, tickers.get("ETH/USDT").last);
+        // Iteration
+        List<String> seen = new ArrayList<>();
+        tickers.forEach((k, v) -> seen.add(k));
+        assertEquals(List.of("BTC/USDT", "ETH/USDT"), seen);
     }
 
     @Test
-    void testTickersNotFound() {
-        Map<String, Object> data = new HashMap<>();
-        Tickers tickers = new Tickers(data);
-        assertThrows(java.util.NoSuchElementException.class, () -> tickers.get("MISSING"));
+    void testTickersMissReturnsNull() {
+        Tickers tickers = new Tickers(new HashMap<>());
+        assertNull(tickers.get("MISSING"));
+        assertFalse(tickers.containsKey("MISSING"));
+    }
+
+    @Test
+    void testTickersGetOrThrow() {
+        Tickers tickers = new Tickers(new HashMap<>());
+        assertThrows(NoSuchElementException.class, () -> tickers.getOrThrow("MISSING"));
+    }
+
+    @Test
+    void testTickersImmutable() {
+        Tickers tickers = new Tickers(Map.of("BTC/USDT", Map.of("symbol", "BTC/USDT")));
+        assertThrows(UnsupportedOperationException.class,
+                () -> tickers.put("X/Y", new Ticker(Map.of("symbol", "X/Y"))));
+        assertThrows(UnsupportedOperationException.class, () -> tickers.remove("BTC/USDT"));
+        assertThrows(UnsupportedOperationException.class, tickers::clear);
     }
 
     @Test
@@ -406,22 +428,41 @@ class TypesTest {
         data.put("USDT", Map.of("free", 5000.0, "used", 1000.0, "total", 6000.0));
         data.put("info", Map.of());
         Balances b = new Balances(data);
+        assertEquals(2, b.size());
+        assertEquals(Set.of("BTC", "USDT"), b.currencies());
         assertEquals(1.5, b.free.get("BTC"));
         assertEquals(6000.0, b.total.get("USDT"));
         assertNotNull(b.get("BTC"));
         assertEquals(1.5, b.get("BTC").free);
         assertEquals(0.5, b.get("BTC").used);
         assertEquals(2.0, b.get("BTC").total);
+        assertNull(b.get("MISSING"));
+        assertThrows(NoSuchElementException.class, () -> b.getOrThrow("MISSING"));
+    }
+
+    @Test
+    void testBalancesImmutable() {
+        Balances b = new Balances(Map.of("BTC", Map.of("free", 1.0, "used", 0.0, "total", 1.0)));
+        assertThrows(UnsupportedOperationException.class, () -> b.entries.put("X", null));
+        assertThrows(UnsupportedOperationException.class, () -> b.free.put("X", 0.0));
     }
 
     @Test
     void testCurrencies() {
-        Map<String, Object> data = new HashMap<>();
+        Map<String, Object> data = new LinkedHashMap<>();
         data.put("BTC", Map.of("id", "btc", "code", "BTC", "name", "Bitcoin"));
         data.put("ETH", Map.of("id", "eth", "code", "ETH", "name", "Ethereum"));
         Currencies currencies = new Currencies(data);
-        assertEquals(2, currencies.currencies.size());
+        assertEquals(2, currencies.size());
         assertEquals("Bitcoin", currencies.get("BTC").name);
         assertEquals("Ethereum", currencies.get("ETH").name);
+        assertNull(currencies.get("MISSING"));
+    }
+
+    @Test
+    void testOfFactory() {
+        Tickers t = Tickers.of(Map.of("BTC/USDT", Map.of("symbol", "BTC/USDT", "last", 1.0)));
+        assertEquals(1, t.size());
+        assertEquals(1.0, t.get("BTC/USDT").last);
     }
 }

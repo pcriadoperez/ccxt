@@ -161,7 +161,8 @@ class EdgeCaseTest {
         data.put("info", Map.of("raw", "data"));
         data.put("BTC/USDT", Map.of("symbol", "BTC/USDT", "last", 37000.0));
         Tickers t = new Tickers(data);
-        assertEquals(1, t.tickers.size()); // info should not be in tickers map
+        assertEquals(1, t.size()); // "info" key is filtered out, only real tickers remain
+        assertFalse(t.containsKey("info"));
         assertNotNull(t.get("BTC/USDT"));
     }
 
