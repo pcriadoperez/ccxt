@@ -154,6 +154,60 @@ public class BinanceUserSmokeTest {
                 }
                 return "3 batches in " + (System.currentTimeMillis() - start) + " ms";
             });
+
+            section("WS — async (CompletableFuture overloads)");
+
+            check("watchTickerAsync(BTC/USDT) x 3 (.get blocks)", () -> {
+                long start = System.currentTimeMillis();
+                for (int i = 0; i < 3; i++) {
+                    Ticker t = ws.watchTickerAsync(SYMBOL).get(10, TimeUnit.SECONDS);
+                    require(t != null && t.last != null, "no ticker");
+                }
+                return "3 updates in " + (System.currentTimeMillis() - start) + " ms";
+            });
+
+            check("watchOrderBookAsync(BTC/USDT) x 3 (.get blocks)", () -> {
+                long start = System.currentTimeMillis();
+                for (int i = 0; i < 3; i++) {
+                    OrderBook ob = ws.watchOrderBookAsync(SYMBOL).get(10, TimeUnit.SECONDS);
+                    require(!ob.bids.isEmpty() && !ob.asks.isEmpty(), "empty book");
+                }
+                return "3 updates in " + (System.currentTimeMillis() - start) + " ms";
+            });
+
+            check("watchTradesAsync(BTC/USDT) x 3 (.get blocks)", () -> {
+                long start = System.currentTimeMillis();
+                AtomicInteger total = new AtomicInteger();
+                for (int i = 0; i < 3; i++) {
+                    List<Trade> trades = ws.watchTradesAsync(SYMBOL).get(15, TimeUnit.SECONDS);
+                    require(trades != null && !trades.isEmpty(), "empty trades");
+                    total.addAndGet(trades.size());
+                }
+                return total.get() + " cumulative trades in " + (System.currentTimeMillis() - start) + " ms";
+            });
+
+            check("watchTickersAsync([BTC,ETH]) x 2 (.get blocks)", () -> {
+                long start = System.currentTimeMillis();
+                List<String> subs = List.of("BTC/USDT", "ETH/USDT");
+                for (int i = 0; i < 2; i++) {
+                    Tickers ts = ws.watchTickersAsync(subs, (Map<String, Object>) null).get(15, TimeUnit.SECONDS);
+                    int n = (ts == null) ? -1 : ts.size();
+                    require(n >= 1, "size=" + n);
+                }
+                return "2 batches in " + (System.currentTimeMillis() - start) + " ms";
+            });
+
+            // Non-blocking compose: three watch streams in parallel, joined once.
+            check("3 watchTickerAsync futures composed with allOf", () -> {
+                long start = System.currentTimeMillis();
+                CompletableFuture<Ticker> bt  = ws.watchTickerAsync("BTC/USDT");
+                CompletableFuture<Ticker> et  = ws.watchTickerAsync("ETH/USDT");
+                CompletableFuture<Ticker> st  = ws.watchTickerAsync("SOL/USDT");
+                CompletableFuture.allOf(bt, et, st).get(15, TimeUnit.SECONDS);
+                require(bt.get().last != null && et.get().last != null && st.get().last != null,
+                        "missing last on a future");
+                return "3 symbols joined in " + (System.currentTimeMillis() - start) + " ms";
+            });
         } finally {
             section("Cleanup");
             try {
