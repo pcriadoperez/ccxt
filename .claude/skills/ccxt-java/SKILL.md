@@ -581,7 +581,7 @@ and pattern-match the underlying ccxt error:
 import io.github.ccxt.Helpers;
 
 exchange.fetchTickerAsync("BTC/USDT")
-    .thenAccept(t -> System.out.println(t.last()))
+    .thenAccept(t -> System.out.println(t.last))
     .exceptionally(throwable -> {
         Throwable cause = Helpers.unwrap(throwable);          // peels CompletionException
         return switch (cause) {                                // pattern-matching switch (Java 21+)
