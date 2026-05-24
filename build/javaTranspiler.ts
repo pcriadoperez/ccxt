@@ -3049,6 +3049,7 @@ async function runMain() {
     const transpiler = new NewTranspiler();
     if (baseClassOnly) {
         transpiler.transpileBaseMethods('./ts/src/base/Exchange.ts');
+        transpiler.transpileErrorHierarchy();
     } else if (ws) {
         await transpiler.transpileWS(force)
     } else if (test) {
