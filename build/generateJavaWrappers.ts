@@ -171,6 +171,20 @@ export const ZERO_REQUIRED_TYPED_WHITELIST = new Set([
     'fetchPositionsWs',
 ]);
 
+// WS subscription methods (watch*) with all-optional parameters. They get
+// typed truncation overloads only — NO async siblings (watch* methods ship
+// sync-only by design) and NO base-class alias / regex rewrite (their
+// internal call sites don't trigger overload-resolution collisions; verified
+// via grep over ts/src/pro/*.ts). Keeps the user-facing surface symmetric
+// with their REST `fetch*` counterparts which already get truncations.
+const WATCH_ZERO_ARG_WHITELIST = new Set([
+    'watchTickers',
+    'watchBalance',
+    'watchOrders',
+    'watchMyTrades',
+    'watchPositions',
+]);
+
 function parseMethodsFromTS(): MethodInfo[] {
     const transpiler = new Transpiler({ verbose: false, csharp: { parser: { ELEMENT_ACCESS_WRAPPER_OPEN: "getValue(", ELEMENT_ACCESS_WRAPPER_CLOSE: ")" } } });
     const baseFile: any = transpiler.transpileJavaByPath(TS_BASE_FILE);
@@ -325,7 +339,8 @@ function genMethod(m: MethodInfo, castToObject = false): string {
     // Whitelisted methods have had their internal zero-arg call sites
     // audited and fixed in TS source — see the whitelist comment above.
     const emitTruncations = m.requiredParams.length > 0
-        || ZERO_REQUIRED_TYPED_WHITELIST.has(m.name);
+        || ZERO_REQUIRED_TYPED_WHITELIST.has(m.name)
+        || WATCH_ZERO_ARG_WHITELIST.has(m.name);
     if (emitTruncations) {
         const defaultExpr = (p: ParamInfo) =>
             p.defaultValue && p.defaultValue !== 'null'
@@ -341,20 +356,22 @@ function genMethod(m: MethodInfo, castToObject = false): string {
         }
     }
 
-    // Async method (full params)
-    if (!m.isWatch) {
-        lines.push(`    @SuppressWarnings("unchecked")`);
-        lines.push(`    public CompletableFuture<${m.javaReturnType}> ${methodName}Async(${fullParamDecl}) {`);
-        lines.push(`        return ${delegateCall}.thenApply(${genAsyncReturnExpr(m)});`);
-        lines.push(`    }`);
-    }
+    // Async method (full params). Emitted for both fetch* (REST) and watch*
+    // (WS) — symmetric typed-async surface. For watch*, the sync wrapper
+    // joins on the same `super.<method>(...)` Future; the async wrapper
+    // hands the typed Future back to the caller so they can compose without
+    // blocking the calling thread.
+    lines.push(`    @SuppressWarnings("unchecked")`);
+    lines.push(`    public CompletableFuture<${m.javaReturnType}> ${methodName}Async(${fullParamDecl}) {`);
+    lines.push(`        return ${delegateCall}.thenApply(${genAsyncReturnExpr(m)});`);
+    lines.push(`    }`);
 
     // Async truncation overloads — symmetric with the sync truncations above.
     // Without these, `binance.fetchOrdersAsync()` would fall through to the
     // base `Object...` method and return `CompletableFuture<Object>` instead
     // of `CompletableFuture<List<Order>>`. Gated on the same `emitTruncations`
     // flag so the whitelist applies symmetrically.
-    if (!m.isWatch && emitTruncations) {
+    if (emitTruncations) {
         const defaultExpr = (p: ParamInfo) =>
             p.defaultValue && p.defaultValue !== 'null'
                 ? p.defaultValue
@@ -392,9 +409,7 @@ function genMethod(m: MethodInfo, castToObject = false): string {
                 : p.name
         ).join(', ');
         lines.push(`    public ${m.javaReturnType} ${methodName}(${stringArrDecl}) { return ${methodName}(${delegateArgs}); }`);
-        if (!m.isWatch) {
-            lines.push(`    public CompletableFuture<${m.javaReturnType}> ${methodName}Async(${stringArrDecl}) { return ${methodName}Async(${delegateArgs}); }`);
-        }
+        lines.push(`    public CompletableFuture<${m.javaReturnType}> ${methodName}Async(${stringArrDecl}) { return ${methodName}Async(${delegateArgs}); }`);
     }
 
     return lines.join('\n');
