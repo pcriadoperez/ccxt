@@ -64,10 +64,12 @@ jobs:
           platforms: linux/arm64
           push: true
           # Consistent Server Actions encryption key across builds, so a client served by an
-          # earlier deploy doesn't hit "Failed to find Server Action" after a redeploy. If the
-          # secret is unset Next generates a random key per build (the bug); set it once with:
+          # earlier deploy doesn't hit "Failed to find Server Action" after a redeploy. Next reads it
+          # at build time; we hand it to the build as a BuildKit *secret* (mounted only for the build
+          # RUN, never persisted in an image layer or `docker history`), not a build-arg. The
+          # Dockerfile fails the build if it's empty. Set it once with:
           #   openssl rand -base64 32 | gh secret set NEXT_SERVER_ACTIONS_ENCRYPTION_KEY -R ccxt/ccxt
-          build-args: |
+          secrets: |
             NEXT_SERVER_ACTIONS_ENCRYPTION_KEY=${{ secrets.NEXT_SERVER_ACTIONS_ENCRYPTION_KEY }}
           # SHA tag enables canary validation + rollback; latest is moved only after smoke passes.
           tags: |
@@ -131,22 +133,34 @@ jobs:
           NEW_NAME="${CONTAINER}-${NEW_PORT}"
 
           docker rm -f "$NEW_NAME" 2>/dev/null || true
-          docker run -d --restart=always -p 127.0.0.1:${NEW_PORT}:${PORT} $ENVFILE_ARG --name "$NEW_NAME" "$IMAGE:$SHA"
+          # Cap container log growth (this box ran out of disk once on unbounded json-file logs).
+          docker run -d --restart=always --log-opt max-size=10m --log-opt max-file=3 \
+            -p 127.0.0.1:${NEW_PORT}:${PORT} $ENVFILE_ARG --name "$NEW_NAME" "$IMAGE:$SHA"
           if smoke "$NEW_PORT"; then
             sed -i "s/127\.0\.0\.1:${CUR_PORT}/127.0.0.1:${NEW_PORT}/g" "$NGINX_CONF"
-            if nginx -t 2>/dev/null; then
-              nginx -s reload
+            # Validate AND reload in one guard: if either fails, fall through to the revert branch.
+            # (A bare `nginx -s reload` after `nginx -t` could still fail under set -e and leave the
+            #  config pointing at the new port while nginx keeps serving the old one — a latent swap.)
+            if nginx -t 2>/dev/null && nginx -s reload; then
               sleep 3                                              # let in-flight requests on the old container finish
               docker rm -f "${CONTAINER}-${CUR_PORT}" "${CONTAINER}" 2>/dev/null || true
               docker tag "$IMAGE:$SHA" "$IMAGE:latest"
+              # Reclaim disk: drop every image tagged under $IMAGE except the two we still reference
+              # (:latest and :$SHA). `image prune -f` only removes dangling layers, so old SHA tags
+              # piled up and filled the disk; this removes them by id. Keep build-cache prune too.
+              KEEP=$(docker image inspect "$IMAGE:latest" "$IMAGE:$SHA" --format '{{.Id}}' 2>/dev/null | sort -u)
+              if [ -n "$KEEP" ]; then
+                docker images "$IMAGE" --format '{{.ID}}' | sort -u | grep -vxF "$KEEP" | xargs -r docker rmi -f 2>/dev/null || true
+              fi
               docker image prune -f
               docker logout ghcr.io || true
               echo "deployed $SHA on :${NEW_PORT} (zero-downtime; nginx ${CUR_PORT} -> ${NEW_PORT})"
             else
               sed -i "s/127\.0\.0\.1:${NEW_PORT}/127.0.0.1:${CUR_PORT}/g" "$NGINX_CONF"   # revert the port swap
+              nginx -s reload 2>/dev/null || true                  # restore the old upstream if a partial reload happened
               docker rm -f "$NEW_NAME" || true
               docker logout ghcr.io || true
-              echo "::error::nginx config invalid after port swap — reverted; live untouched on :${CUR_PORT}"
+              echo "::error::nginx validate/reload failed after port swap — reverted; live untouched on :${CUR_PORT}"
               exit 1
             fi
           else
