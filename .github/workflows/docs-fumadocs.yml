@@ -131,7 +131,9 @@ jobs:
           NEW_NAME="${CONTAINER}-${NEW_PORT}"
 
           docker rm -f "$NEW_NAME" 2>/dev/null || true
-          docker run -d --restart=always -p 127.0.0.1:${NEW_PORT}:${PORT} $ENVFILE_ARG --name "$NEW_NAME" "$IMAGE:$SHA"
+          # cap container log size so the json logs can't fill the disk over time
+          docker run -d --restart=always --log-opt max-size=10m --log-opt max-file=3 \
+            -p 127.0.0.1:${NEW_PORT}:${PORT} $ENVFILE_ARG --name "$NEW_NAME" "$IMAGE:$SHA"
           if smoke "$NEW_PORT"; then
             sed -i "s/127\.0\.0\.1:${CUR_PORT}/127.0.0.1:${NEW_PORT}/g" "$NGINX_CONF"
             if nginx -t 2>/dev/null; then
@@ -139,6 +141,11 @@ jobs:
               sleep 3                                              # let in-flight requests on the old container finish
               docker rm -f "${CONTAINER}-${CUR_PORT}" "${CONTAINER}" 2>/dev/null || true
               docker tag "$IMAGE:$SHA" "$IMAGE:latest"
+              # SHA tags accumulate and `prune -f` only clears dangling layers — explicitly drop
+              # docs images no longer used by a container (docker refuses the running one, so it's
+              # kept). Without this the box filled to 100% from ~40 old images and deploys failed
+              # to pull. Rollback is still possible by re-pulling a SHA tag from GHCR.
+              docker images "$IMAGE" -q | sort -u | xargs -r docker rmi 2>/dev/null || true
               docker image prune -f
               docker logout ghcr.io || true
               echo "deployed $SHA on :${NEW_PORT} (zero-downtime; nginx ${CUR_PORT} -> ${NEW_PORT})"
