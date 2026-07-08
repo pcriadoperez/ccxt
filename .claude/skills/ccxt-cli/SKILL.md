@@ -125,7 +125,7 @@ ccxt binance fetchBalance
 export OKX_APIKEY=... OKX_SECRET=... OKX_PASSWORD=...
 ```
 
-Pass `--no-keys` to ignore detected credentials and force unauthenticated calls.
+Pass `--no-keys` to skip environment-variable credential pickup. Note it does not remove credentials coming from the config files below — remove them there for a truly unauthenticated call.
 
 ### 2. Config file (persistent)
 
@@ -310,7 +310,7 @@ Errors print in red with the CCXT exception class name (`ExchangeError` subclass
 | `--verbose` | print raw HTTP request/response |
 | `--sandbox` / `--testnet` | use exchange testnet |
 | `--demo` | enable demo-trading mode |
-| `--no-keys` | ignore any detected credentials |
+| `--no-keys` | skip env-var credential pickup (config-file keys still apply) |
 | `--param k=v` | add key to the `params` object (repeatable) |
 | `--raw` | JSON-only output for piping |
 | `--no-table` | disable table rendering (tables are the default for arrays) |
