@@ -1,12 +1,27 @@
-import ccxt, { Exchange } from 'ccxt';
+import ccxt, { Exchange, type OrderBook } from 'ccxt';
 import type { OrderBookCache } from '../cache/orderBookCache.js';
+import type { FeeRegistry } from '../cache/feeRegistry.js';
 import type { Logger } from 'pino';
 
 const BACKOFF_START_MS = 500;
 const BACKOFF_MAX_MS = 30_000;
+// Spacing between starting individual watch loops (per-symbol loops on exchanges that don't
+// support watchOrderBookForSymbols, or per-chunk batched loops on ones that do) — without this,
+// N loops means N near-simultaneous subscribe messages at startup, which is exactly what
+// triggered exchange-side rate limiting and a reconnect storm when this connector was tested
+// against a 400+-symbol exchange.
+const LOOP_START_STAGGER_MS = 25;
 
 function sleep (ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Full jitter: spreads out retries so N loops that all failed at the same instant (e.g. a shared
+// WS connection dropping, which fails every per-symbol watchOrderBook call on that exchange at
+// once) don't all retry in lockstep and repeat the thundering-herd rate-limit hit every backoff
+// cycle.
+function jittered (ms: number): number {
+    return Math.random() * ms;
 }
 
 // One connector owns exactly one exchange's WS connection(s) and one or more
@@ -16,70 +31,155 @@ export class ExchangeConnector {
     readonly exchangeId: string;
     private exchange: Exchange;
     private cache: OrderBookCache;
+    private feeRegistry: FeeRegistry;
     private logger: Logger;
     private stopped = false;
     private symbols: string[] = [];
+    private maxSymbolsPerSubscription: number;
+    private maxSymbolsForExchange: number | undefined;
 
-    constructor (exchangeId: string, cache: OrderBookCache, logger: Logger) {
+    // `existingExchange` lets a caller that already ran loadMarkets() (e.g. discovery, which
+    // needs markets to compute the routable symbol universe before connectors exist) hand off
+    // that same instance instead of forcing a second loadMarkets() round-trip here. Only
+    // meaningful within a single process — a shard worker always constructs its own.
+    constructor (
+        exchangeId: string,
+        cache: OrderBookCache,
+        feeRegistry: FeeRegistry,
+        logger: Logger,
+        existingExchange?: Exchange,
+        maxSymbolsPerSubscription = 50,
+        maxSymbolsForExchange?: number,
+    ) {
         this.exchangeId = exchangeId;
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const ExchangeClass = (ccxt.pro as any)[exchangeId];
-        if (!ExchangeClass) {
-            throw new Error(`ccxt.pro does not support exchange '${exchangeId}'`);
+        this.maxSymbolsPerSubscription = maxSymbolsPerSubscription;
+        this.maxSymbolsForExchange = maxSymbolsForExchange;
+        if (existingExchange) {
+            this.exchange = existingExchange;
+        } else {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const ExchangeClass = (ccxt.pro as any)[exchangeId];
+            if (!ExchangeClass) {
+                throw new Error(`ccxt.pro does not support exchange '${exchangeId}'`);
+            }
+            this.exchange = new ExchangeClass({ enableRateLimit: true });
         }
-        this.exchange = new ExchangeClass({ enableRateLimit: true });
         this.cache = cache;
+        this.feeRegistry = feeRegistry;
         this.logger = logger.child({ exchange: exchangeId });
         this.cache.initHealth(exchangeId);
     }
 
-    getTakerFee (symbol: string): number {
-        const market = this.exchange.markets?.[symbol];
-        return market?.taker ?? this.exchange.fees?.trading?.taker ?? 0.001;
-    }
-
     async start (requestedSymbols: string[]): Promise<void> {
-        await this.exchange.loadMarkets();
+        if (!this.exchange.markets) {
+            await this.exchange.loadMarkets();
+        }
         this.symbols = requestedSymbols.filter((s) => {
-            const supported = Boolean(this.exchange.markets?.[s]);
-            if (!supported) {
+            const market = this.exchange.markets?.[s];
+            if (!market) {
                 this.logger.warn({ symbol: s }, 'symbol not supported on this exchange, skipping');
+                return false;
             }
-            return supported;
+            const takerFeeRate = market.taker ?? this.exchange.fees?.trading?.taker ?? 0.001;
+            this.feeRegistry.setFee(this.exchangeId, s, takerFeeRate);
+            return true;
         });
-        for (const symbol of this.symbols) {
-            void this.watchLoop(symbol);
+
+        if (this.maxSymbolsForExchange !== undefined && this.symbols.length > this.maxSymbolsForExchange) {
+            const dropped = this.symbols.length - this.maxSymbolsForExchange;
+            this.logger.warn(
+                { requested: this.symbols.length, cap: this.maxSymbolsForExchange, dropped },
+                'exceeds this exchange\'s configured total-symbol cap (session-wide subscription limit), truncating',
+            );
+            this.symbols = this.symbols.slice(0, this.maxSymbolsForExchange);
+        }
+
+        if (this.symbols.length === 0) return;
+
+        // Prefer batched subscriptions over independent per-symbol ones whenever the exchange
+        // supports it — that's what watchOrderBookForSymbols exists for. But even where
+        // supported, exchanges cap how many symbols one subscription/session can cover (observed
+        // directly: Coinbase "too many L2 streams", Bitget "subscribe over limit, max:1000",
+        // KuCoin rejecting an overlong topic string) — so still chunk into
+        // maxSymbolsPerSubscription-sized groups, each its own independent watch loop, rather
+        // than one unbounded call for every routable symbol on the exchange.
+        if (this.exchange.has?.watchOrderBookForSymbols && this.symbols.length > 1) {
+            const chunks: string[][] = [];
+            for (let i = 0; i < this.symbols.length; i += this.maxSymbolsPerSubscription) {
+                chunks.push(this.symbols.slice(i, i + this.maxSymbolsPerSubscription));
+            }
+            this.logger.info(
+                { symbolCount: this.symbols.length, chunkCount: chunks.length, chunkSize: this.maxSymbolsPerSubscription },
+                'using batched watchOrderBookForSymbols, chunked',
+            );
+            chunks.forEach((chunk, i) => {
+                void sleep(i * LOOP_START_STAGGER_MS).then(() => this.batchWatchLoop(chunk));
+            });
+        } else {
+            this.logger.info(
+                { symbolCount: this.symbols.length },
+                'watchOrderBookForSymbols not supported here, using per-symbol loops (staggered start)',
+            );
+            this.symbols.forEach((symbol, i) => {
+                void sleep(i * LOOP_START_STAGGER_MS).then(() => this.singleSymbolWatchLoop(symbol));
+            });
         }
     }
 
-    private async watchLoop (symbol: string): Promise<void> {
+    private applyOrderBook (symbol: string, ob: OrderBook, sequence: number): void {
+        this.cache.setBook({
+            exchangeId: this.exchangeId,
+            symbol,
+            bids: ob.bids
+                .filter((level): level is [number, number] => level[0] !== undefined && level[1] !== undefined)
+                .map(([price, amount]) => ({ price, amount })),
+            asks: ob.asks
+                .filter((level): level is [number, number] => level[0] !== undefined && level[1] !== undefined)
+                .map(([price, amount]) => ({ price, amount })),
+            exchangeTimestamp: ob.timestamp ?? undefined,
+            receivedAt: Date.now(),
+            sequence,
+        });
+        this.cache.recordUpdate(this.exchangeId);
+    }
+
+    private async batchWatchLoop (symbols: string[]): Promise<void> {
+        let backoff = BACKOFF_START_MS;
+        let sequence = 0;
+        while (!this.stopped) {
+            try {
+                const ob = await this.exchange.watchOrderBookForSymbols(symbols);
+                sequence += 1;
+                if (ob.symbol) {
+                    this.applyOrderBook(ob.symbol, ob, sequence);
+                }
+                backoff = BACKOFF_START_MS;
+            } catch (err) {
+                const message = err instanceof Error ? err.message : String(err);
+                this.logger.error({ err: message }, 'watchOrderBookForSymbols failed, backing off');
+                this.cache.recordError(this.exchangeId, message);
+                this.cache.recordReconnect(this.exchangeId);
+                await sleep(jittered(backoff));
+                backoff = Math.min(backoff * 2, BACKOFF_MAX_MS);
+            }
+        }
+    }
+
+    private async singleSymbolWatchLoop (symbol: string): Promise<void> {
         let backoff = BACKOFF_START_MS;
         let sequence = 0;
         while (!this.stopped) {
             try {
                 const ob = await this.exchange.watchOrderBook(symbol);
                 sequence += 1;
-                this.cache.setBook({
-                    exchangeId: this.exchangeId,
-                    symbol,
-                    bids: ob.bids
-                        .filter(([price, amount]) => price !== undefined && amount !== undefined)
-                        .map(([price, amount]) => ({ price: price as number, amount: amount as number })),
-                    asks: ob.asks
-                        .filter(([price, amount]) => price !== undefined && amount !== undefined)
-                        .map(([price, amount]) => ({ price: price as number, amount: amount as number })),
-                    exchangeTimestamp: ob.timestamp ?? undefined,
-                    receivedAt: Date.now(),
-                    sequence,
-                });
-                this.cache.recordUpdate(this.exchangeId);
+                this.applyOrderBook(symbol, ob, sequence);
                 backoff = BACKOFF_START_MS;
             } catch (err) {
                 const message = err instanceof Error ? err.message : String(err);
                 this.logger.error({ symbol, err: message }, 'watchOrderBook failed, backing off');
                 this.cache.recordError(this.exchangeId, message);
                 this.cache.recordReconnect(this.exchangeId);
-                await sleep(backoff);
+                await sleep(jittered(backoff));
                 backoff = Math.min(backoff * 2, BACKOFF_MAX_MS);
             }
         }

@@ -1,37 +1,128 @@
+import type { ChildProcess } from 'node:child_process';
+import type { Exchange } from 'ccxt';
 import { config } from './config.js';
 import { logger } from './logger.js';
 import { OrderBookCache } from './cache/orderBookCache.js';
+import { FeeRegistry } from './cache/feeRegistry.js';
 import { ExchangeConnector } from './connectors/exchangeConnector.js';
 import { buildServer } from './api/server.js';
+import { listWatchOrderBookExchanges } from './discovery/exchangeDiscovery.js';
+import { buildSymbolUniverse } from './discovery/symbolUniverse.js';
+import { partitionAssignments, startShards } from './sharding/orchestrator.js';
+import type { ShardAssignment } from './sharding/messages.js';
 
-async function main () {
-    const cache = new OrderBookCache();
-    const connectors = new Map<string, ExchangeConnector>();
-
-    for (const exchangeId of config.exchanges) {
-        const connector = new ExchangeConnector(exchangeId, cache, logger);
-        connectors.set(exchangeId, connector);
-    }
-
+async function startConnectors (
+    assignments: ShardAssignment[],
+    cache: OrderBookCache,
+    feeRegistry: FeeRegistry,
+    existingExchanges: Map<string, Exchange>,
+): Promise<ExchangeConnector[]> {
+    const connectors = assignments.map(
+        ({ exchangeId }) => new ExchangeConnector(
+            exchangeId,
+            cache,
+            feeRegistry,
+            logger,
+            existingExchanges.get(exchangeId),
+            config.maxSymbolsPerSubscription,
+            config.maxSymbolsPerExchangeOverrides.get(exchangeId),
+        ),
+    );
     await Promise.all(
-        Array.from(connectors.values()).map(async (connector) => {
+        assignments.map(async ({ exchangeId, symbols }, i) => {
             try {
-                await connector.start(config.symbols);
-                logger.info({ exchange: connector.exchangeId }, 'connector started');
+                await connectors[i]!.start(symbols);
+                logger.info({ exchange: exchangeId, symbolCount: symbols.length }, 'connector started');
             } catch (err) {
-                logger.error({ exchange: connector.exchangeId, err }, 'connector failed to start');
+                logger.error({ exchange: exchangeId, err }, 'connector failed to start');
             }
         }),
     );
+    return connectors;
+}
 
-    const app = await buildServer(cache, connectors, logger);
+async function main () {
+    const cache = new OrderBookCache();
+    const feeRegistry = new FeeRegistry();
+    const excludeSet = new Set(config.excludeExchanges);
+
+    let assignments: ShardAssignment[];
+    let existingExchanges = new Map<string, Exchange>();
+
+    if (config.discoverAllExchanges) {
+        const candidateIds = listWatchOrderBookExchanges(excludeSet);
+        logger.info({ count: candidateIds.length }, 'discovered ccxt.pro exchanges with watchOrderBook support');
+
+        const universe = await buildSymbolUniverse(
+            candidateIds,
+            config.minExchangesPerSymbol,
+            config.loadMarketsConcurrency,
+            logger,
+        );
+
+        for (const [exchangeId, message] of universe.exchangesFailed) {
+            logger.warn({ exchange: exchangeId, err: message }, 'excluded from discovery: loadMarkets failed');
+        }
+        logger.info(
+            {
+                exchangesLoaded: universe.loadedExchanges.size,
+                exchangesFailed: universe.exchangesFailed.size,
+                totalUniqueSymbols: universe.totalUniqueSymbols,
+                routableSymbolCount: universe.routableSymbolCount,
+                minExchangesPerSymbol: config.minExchangesPerSymbol,
+            },
+            'symbol universe built',
+        );
+
+        assignments = Array.from(universe.routableSymbolsByExchange.entries()).map(([exchangeId, symbols]) => ({
+            exchangeId,
+            symbols,
+        }));
+
+        if (assignments.length === 0) {
+            logger.error('no exchanges have any routable symbols (>= minExchangesPerSymbol) — nothing to do');
+        }
+
+        // Discovery instances only exist to compute the symbol universe. In single-process mode
+        // we hand the already-loaded exchange off to its connector directly (saves a second
+        // loadMarkets round trip); everything else (no routable symbols, or we're sharding and
+        // workers build their own instances) gets closed so we don't leak an unused ccxt.pro
+        // instance's sockets/handles.
+        if (config.shardCount <= 1) {
+            existingExchanges = universe.loadedExchanges;
+        }
+        const keepForReuse = new Set(config.shardCount <= 1 ? assignments.map((a) => a.exchangeId) : []);
+        await Promise.all(
+            Array.from(universe.loadedExchanges.entries())
+                .filter(([exchangeId]) => !keepForReuse.has(exchangeId))
+                .map(([, exchange]) => exchange.close()),
+        );
+    } else {
+        // Explicit exchange/symbol list — the conservative default for local dev (see config.ts).
+        assignments = config.exchanges
+            .filter((id) => !excludeSet.has(id))
+            .map((exchangeId) => ({ exchangeId, symbols: config.symbols }));
+    }
+
+    let connectors: ExchangeConnector[] = [];
+    let shardChildren: ChildProcess[] = [];
+
+    if (config.shardCount > 1) {
+        const groups = partitionAssignments(assignments, config.shardCount);
+        shardChildren = startShards(groups, cache, feeRegistry, logger);
+    } else {
+        connectors = await startConnectors(assignments, cache, feeRegistry, existingExchanges);
+    }
+
+    const app = await buildServer(cache, feeRegistry, logger);
     await app.listen({ port: config.port, host: config.host });
     logger.info({ port: config.port }, 'order-router listening');
 
     const shutdown = async (signal: string) => {
         logger.info({ signal }, 'shutting down');
         await app.close();
-        await Promise.all(Array.from(connectors.values()).map((c) => c.stop()));
+        await Promise.all(connectors.map((c) => c.stop()));
+        shardChildren.forEach((c) => c.disconnect());
         process.exit(0);
     };
     process.on('SIGTERM', () => void shutdown('SIGTERM'));

@@ -3,7 +3,7 @@ import websocketPlugin from '@fastify/websocket';
 import type { Logger } from 'pino';
 import { config } from '../config.js';
 import type { OrderBookCache } from '../cache/orderBookCache.js';
-import type { ExchangeConnector } from '../connectors/exchangeConnector.js';
+import type { FeeRegistry } from '../cache/feeRegistry.js';
 import { computeBestPrice } from '../routing/bestPrice.js';
 
 interface BestPriceQuery {
@@ -11,7 +11,7 @@ interface BestPriceQuery {
     amount?: string;
 }
 
-export async function buildServer (cache: OrderBookCache, connectors: Map<string, ExchangeConnector>, logger: Logger) {
+export async function buildServer (cache: OrderBookCache, feeRegistry: FeeRegistry, logger: Logger) {
     const app = Fastify({ loggerInstance: logger });
     await app.register(websocketPlugin);
 
@@ -45,7 +45,7 @@ export async function buildServer (cache: OrderBookCache, connectors: Map<string
                 reply.code(400);
                 return { error: 'amount query param must be a positive number' };
             }
-            return computeBestPrice(cache, connectors, symbol, side, amount, config.staleBookMs);
+            return computeBestPrice(cache, feeRegistry, symbol, side, amount, config.staleBookMs);
         },
     );
 
@@ -68,7 +68,7 @@ export async function buildServer (cache: OrderBookCache, connectors: Map<string
             const flush = () => {
                 flushPending = false;
                 if (socket.readyState !== socket.OPEN) return;
-                const result = computeBestPrice(cache, connectors, symbol, side, amount, config.staleBookMs);
+                const result = computeBestPrice(cache, feeRegistry, symbol, side, amount, config.staleBookMs);
                 socket.send(JSON.stringify(result));
             };
             const onUpdate = () => {

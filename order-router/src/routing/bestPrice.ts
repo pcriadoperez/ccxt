@@ -1,5 +1,5 @@
 import type { OrderBookCache } from '../cache/orderBookCache.js';
-import type { ExchangeConnector } from '../connectors/exchangeConnector.js';
+import type { FeeRegistry } from '../cache/feeRegistry.js';
 import type { BookLevel, RoutingQuote, RoutingResult } from '../types.js';
 
 // Walks book levels to fill `amount`, returns the volume-weighted average
@@ -23,7 +23,7 @@ function walkBook (levels: BookLevel[], amount: number): { averagePrice: number 
 
 export function computeBestPrice (
     cache: OrderBookCache,
-    connectors: Map<string, ExchangeConnector>,
+    feeRegistry: FeeRegistry,
     symbol: string,
     side: 'buy' | 'sell',
     amount: number,
@@ -38,8 +38,7 @@ export function computeBestPrice (
         // A buy order gets filled by walking the ask side (you're paying the ask), and vice versa.
         const levels = side === 'buy' ? book.asks : book.bids;
         const { averagePrice, filledAmount } = walkBook(levels, amount);
-        const connector = connectors.get(book.exchangeId);
-        const takerFeeRate = connector?.getTakerFee(symbol) ?? 0.001;
+        const takerFeeRate = feeRegistry.getFee(book.exchangeId, symbol);
         const effectivePriceWithFee = averagePrice === undefined
             ? undefined
             : side === 'buy'
