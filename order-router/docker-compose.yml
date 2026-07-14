@@ -1,0 +1,12 @@
+services:
+  order-router:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: "8080"
+      LOG_LEVEL: "info"
+      ORDER_ROUTER_EXCHANGES: "kraken,coinbase,kucoin,bitget,gate"
+      ORDER_ROUTER_SYMBOLS: "BTC/USDT,ETH/USDT"
+      ORDER_ROUTER_STALE_BOOK_MS: "5000"
+    restart: unless-stopped

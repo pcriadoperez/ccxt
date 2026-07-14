@@ -1,0 +1,25 @@
+{
+  "name": "order-router",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Smart order router: aggregates live order books across exchanges via ccxt and serves best-execution price lookups.",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "dev": "tsx watch src/index.ts",
+    "bench:ws": "node benchmark/ws-latency.mjs"
+  },
+  "dependencies": {
+    "ccxt": "4.5.64",
+    "fastify": "^5.1.0",
+    "@fastify/websocket": "^11.0.1",
+    "pino": "^9.5.0",
+    "pino-pretty": "^11.3.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "tsx": "^4.19.2",
+    "@types/node": "^22.9.0"
+  }
+}
