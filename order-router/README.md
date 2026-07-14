@@ -28,6 +28,59 @@ ExchangeConnector × N (one per exchange, isolated failure domain, ccxt.pro watc
 - **Per-exchange isolation.** Each `ExchangeConnector` owns its own WS connection(s) and
   reconnects with exponential backoff independently; one exchange misbehaving (rate limit,
   disconnect storm) never affects others or the API.
+- **Push-on-change, not polling.** `OrderBookCache` extends `EventEmitter` and emits
+  `update:<symbol>` whenever a book changes; `/stream/best/:symbol` subscribes to that instead of
+  polling on a fixed interval, coalescing bursts into at most one computed result per event-loop
+  tick via `setImmediate`. A poll-based design costs CPU proportional to `poll_rate x client_count`
+  regardless of whether anything changed — doesn't hold up once client/message volume is large.
+
+### Why single-process Node instead of splitting collector (TS) and API (e.g. Rust) via Redis
+
+Considered and rejected for now: a dedicated TS/ccxt collector process publishing to Redis, with a
+separate Rust API layer reading from Redis for speed. The math doesn't favor it:
+
+- An in-process `Map` read is ~100ns. Even a local (same-host) Redis read is ~0.1–0.3ms once you
+  count the round trip and (de)serialization — 1,000–3,000x slower — and that cost lands on every
+  request if the API queries Redis synchronously.
+- The gain from a Rust HTTP/serialization layer over Node's (Fastify) is on the order of tens of
+  µs per request. That's dwarfed by the Redis tax you'd introduce to get it, and both are dwarfed
+  by exchange WS round-trip time (tens of ms) — the actual latency floor.
+- Splitting also means two more language runtimes, two more build/deploy pipelines, and a
+  cross-language wire protocol, for a net-negative latency change.
+
+Redis becomes worth it only for **horizontal scaling across hosts**, not raw speed — and even then,
+each API replica should keep its own in-memory copy of the cache, updated **asynchronously** via
+Redis pub/sub in the background (never queried synchronously per-request):
+
+```
+Collector(s) --publish--> Redis pub/sub --async subscribe--> API replica 1 (own in-process Map)
+                                         --async subscribe--> API replica 2 (own in-process Map)
+```
+
+Under that pattern the API layer could legitimately be a different language later (including
+Rust) without paying a per-request Redis cost — but only build this once request volume actually
+requires multiple replicas, not preemptively.
+
+### WebSocket connection scale — connection count vs. message throughput
+
+These have very different limits and it's easy to conflate them:
+
+- **Connection count is not the bottleneck.** ccxt.pro multiplexes: most exchanges get one WS
+  connection per exchange (a few venues cap subscriptions-per-socket, e.g. ~200 streams, forcing a
+  handful of extra connections — ccxt handles this internally). Node's event loop handles
+  thousands of concurrent outbound sockets fine since I/O is async (epoll-backed); the real ceiling
+  is OS file descriptors (`ulimit -n`), trivially raised, not thread count. Going from 5 to 50
+  exchanges, or 2 to 500 symbols, is a non-issue in connection terms.
+- **Aggregate message throughput on the single JS thread is the actual risk.** Every WS message
+  still gets JSON-parsed and diff-merged on one thread. The benchmark above shows KuCoin alone at
+  ~480 msg/s for *one* symbol; many exchanges × many symbols could reach tens of thousands of
+  msg/s aggregate, at which point event-loop lag (and therefore added latency) is real. This needs
+  load-testing with production-scale exchange/symbol counts, not assumption.
+- **Mitigation path, in order of when you'd need it:** (1) already done — push-on-change instead
+  of polling, see above; (2) when profiling shows single-thread CPU is the bottleneck, shard
+  exchanges across multiple OS **processes** (not `worker_threads` sharing one event loop — a CPU
+  spike on one exchange's connector shouldn't add latency to another's), each with its own
+  in-memory cache for its shard.
 
 ## Endpoints
 

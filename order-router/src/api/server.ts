@@ -56,11 +56,30 @@ export async function buildServer (cache: OrderBookCache, connectors: Map<string
             const symbol = decodeURIComponent(request.params.symbol);
             const side = request.query.side === 'sell' ? 'sell' : 'buy';
             const amount = Number(request.query.amount ?? '0.01');
-            const interval = setInterval(() => {
+
+            // Push-on-change rather than polling: with N clients x a fixed
+            // poll interval, CPU cost scales with N regardless of whether
+            // anything changed, which doesn't hold up at scale. A single
+            // pending-flush flag coalesces bursts (a fast-moving symbol can
+            // emit hundreds of book updates/sec) into at most one computed
+            // result per event-loop tick, still bounded by the connected
+            // socket's own backpressure.
+            let flushPending = false;
+            const flush = () => {
+                flushPending = false;
+                if (socket.readyState !== socket.OPEN) return;
                 const result = computeBestPrice(cache, connectors, symbol, side, amount, config.staleBookMs);
                 socket.send(JSON.stringify(result));
-            }, 250);
-            socket.on('close', () => clearInterval(interval));
+            };
+            const onUpdate = () => {
+                if (flushPending) return;
+                flushPending = true;
+                setImmediate(flush);
+            };
+
+            cache.on(`update:${symbol}`, onUpdate);
+            flush();
+            socket.on('close', () => cache.off(`update:${symbol}`, onUpdate));
         },
     );
 

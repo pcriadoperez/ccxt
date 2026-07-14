@@ -1,11 +1,26 @@
+import { EventEmitter } from 'node:events';
 import type { CachedOrderBook, ExchangeHealth } from '../types.js';
 
 // In-process hot-path cache. Reads are plain Map lookups (no network hop) —
 // this is deliberate: a single router instance should never touch Redis on
 // the read path. See order-router/README.md for the multi-instance story.
-export class OrderBookCache {
+//
+// Emits 'update:<symbol>' whenever a book for that symbol changes, so
+// consumers (e.g. the WS stream endpoint) can push on change instead of
+// polling — polling on a fixed interval per connected client wastes CPU
+// proportional to (poll rate x client count) regardless of whether anything
+// changed, which matters once WS message/client volume is large.
+export class OrderBookCache extends EventEmitter {
     private books = new Map<string, CachedOrderBook>();
     private health = new Map<string, ExchangeHealth>();
+
+    constructor () {
+        super();
+        // Each 'update:<symbol>' event can have many WS stream subscribers;
+        // Node's default cap of 10 listeners/event is for leak detection on
+        // typical emitters, not applicable here.
+        this.setMaxListeners(0);
+    }
 
     private key (exchangeId: string, symbol: string): string {
         return `${exchangeId}:${symbol}`;
@@ -13,6 +28,7 @@ export class OrderBookCache {
 
     setBook (book: CachedOrderBook): void {
         this.books.set(this.key(book.exchangeId, book.symbol), book);
+        this.emit(`update:${book.symbol}`);
     }
 
     getBook (exchangeId: string, symbol: string): CachedOrderBook | undefined {
