@@ -136,6 +136,40 @@ same "write path is async, read path is always local" shape, is a natural extens
 | GET | `/price/best/:symbol?side=buy\|sell&amount=<qty>` | book-walked, fee-adjusted best execution price across exchanges |
 | WS | `/stream/best/:symbol?side=&amount=` | pushes on book change (event-driven, not polled) |
 
+## MCP server (`src/mcp/`)
+
+A separate process (`npm run mcp` / `npm run mcp:dev`) exposing the same public endpoints as MCP
+tools over the [Streamable HTTP transport](https://modelcontextprotocol.io/), so an MCP client
+(Claude Code, Claude Desktop, etc.) can query the router directly. It's a thin proxy — `src/mcp/tools.ts`
+just calls the router's own REST API (`ORDER_ROUTER_API_URL`, default `http://localhost:8080`) —
+not a second implementation of the routing logic, so its behavior is exactly the REST API's
+behavior. Runs on its own port (`ORDER_ROUTER_MCP_PORT`, default `8081`) and its own process,
+decoupled from the router's hot path — an MCP client's traffic never touches the router's
+in-memory cache or event loop directly.
+
+| Tool | Maps to |
+|---|---|
+| `get_health` | `GET /health` |
+| `get_exchanges_status` | `GET /exchanges/status` |
+| `list_symbols` | `GET /symbols` |
+| `get_order_book` (`exchange`, `symbol`) | `GET /orderbook/:exchange/:symbol` |
+| `get_best_price` (`symbol`, `side`, `amount`) | `GET /price/best/:symbol?side=&amount=` |
+
+Run both together:
+
+```bash
+npm run build
+node dist/index.js &                          # router on :8080
+ORDER_ROUTER_API_URL=http://localhost:8080 node dist/mcp/server.js &  # MCP on :8081
+```
+
+or `docker compose up --build`, which starts both as separate containers on the same network
+(the MCP container points `ORDER_ROUTER_API_URL` at the router container's Docker DNS name).
+
+To connect from an MCP client: add an HTTP MCP server pointed at `http://<host>:8081/mcp`. Verified
+live end-to-end (real `Client`/`StreamableHTTPClientTransport` from `@modelcontextprotocol/sdk`
+against a running router with live exchange data) during development — not just the unit tests.
+
 ## Config (env vars)
 
 | Var | Default | Notes |
@@ -168,6 +202,34 @@ docker compose up --build
 
 Sharding (`ORDER_ROUTER_SHARD_COUNT>1`) forks compiled `dist/sharding/shardWorker.js` — build first
 (`npm run build`) before using it; `npm run dev` (tsx) does not support sharding today.
+
+## Testing
+
+```bash
+npm test    # node:test via tsx, no network required
+```
+
+49 tests, all offline — no live exchange connections, no mocked `fetch` (HTTP-touching code is
+tested against real local fixtures: `node:http` servers for the MCP proxy layer, Fastify's
+`inject()` for the REST API, `node:child_process`-free logic-only tests for sharding). Coverage:
+
+| Area | File | What's covered |
+|---|---|---|
+| Book-walking / fee ranking | `src/routing/bestPrice.test.ts` | VWAP across levels, fee-adjusted ranking beats raw-price ranking, partial fills, buy vs. sell side, stale-book exclusion |
+| In-memory cache | `src/cache/orderBookCache.test.ts` | get/set, per-symbol event scoping, health lifecycle, unknown-exchange no-ops |
+| Fee registry | `src/cache/feeRegistry.test.ts` | fallback, per-(exchange,symbol) scoping, event emission (used for shard IPC) |
+| Symbol universe filtering | `src/discovery/symbolUniverse.test.ts` | the ≥N-exchange routability rule, threshold edge cases, empty input |
+| Subscription chunking | `src/connectors/exchangeConnector.test.ts` | `chunkSymbols`/`normalizeLevels` pure helpers extracted from the connector |
+| Shard load-balancing | `src/sharding/orchestrator.test.ts` | every exchange assigned exactly once, greedy balance, shard-count edge cases |
+| REST API | `src/api/server.test.ts` | all 5 HTTP routes via Fastify `inject()` against a real in-memory cache |
+| MCP proxy layer | `src/mcp/tools.test.ts` | URL construction, error propagation, against a real local HTTP fixture |
+| MCP protocol | `src/mcp/server.test.ts` | real `Client`/`McpServer` over `InMemoryTransport` — tool listing, tool calls, Zod input validation surfacing as MCP tool errors |
+
+Not covered by unit tests (needs live exchanges, covered by manual verification during
+development instead — see git history / PR description): `ExchangeConnector`'s actual WS
+lifecycle (reconnect/backoff/jitter against a real socket), discovery's `loadMarkets()` network
+calls, and sharding's actual `child_process` IPC (verified live, not by an automated test, since
+that requires spawning real subprocesses with real network access).
 
 ## Benchmark (`benchmark/ws-latency.mjs`)
 

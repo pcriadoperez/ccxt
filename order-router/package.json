@@ -8,18 +8,23 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
-    "bench:ws": "node benchmark/ws-latency.mjs"
+    "mcp": "node dist/mcp/server.js",
+    "mcp:dev": "tsx watch src/mcp/server.ts",
+    "bench:ws": "node benchmark/ws-latency.mjs",
+    "test": "tsx --test src/**/*.test.ts"
   },
   "dependencies": {
+    "@fastify/websocket": "^11.0.1",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "ccxt": "4.5.64",
     "fastify": "^5.1.0",
-    "@fastify/websocket": "^11.0.1",
     "pino": "^9.5.0",
-    "pino-pretty": "^11.3.0"
+    "pino-pretty": "^11.3.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
-    "typescript": "^5.6.3",
+    "@types/node": "^22.9.0",
     "tsx": "^4.19.2",
-    "@types/node": "^22.9.0"
+    "typescript": "^5.6.3"
   }
 }

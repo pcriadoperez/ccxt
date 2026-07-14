@@ -12,6 +12,12 @@ export interface SymbolUniverse {
     routableSymbolCount: number;
 }
 
+export interface RoutableSymbols {
+    routableSymbolsByExchange: Map<string, string[]>;
+    totalUniqueSymbols: number;
+    routableSymbolCount: number;
+}
+
 async function runWithConcurrency<T, R> (
     items: T[],
     limit: number,
@@ -29,11 +35,53 @@ async function runWithConcurrency<T, R> (
     return results;
 }
 
+// Pure: given each exchange's already-loaded market symbol list, keeps only symbols that appear
+// on >= minExchangesPerSymbol exchanges. A symbol on exactly one exchange has nothing to route
+// between, so it's excluded from the routable set (though its exchange can still appear in the
+// input — it just won't get any watch loops started for it). Split out from buildSymbolUniverse
+// so this logic — the actual "what's worth subscribing to" decision — is unit-testable without a
+// network call.
+export function computeRoutableSymbols (
+    marketsByExchange: Map<string, string[]>,
+    minExchangesPerSymbol: number,
+): RoutableSymbols {
+    const exchangesBySymbol = new Map<string, Set<string>>();
+    for (const [exchangeId, symbols] of marketsByExchange) {
+        for (const symbol of symbols) {
+            let set = exchangesBySymbol.get(symbol);
+            if (!set) {
+                set = new Set();
+                exchangesBySymbol.set(symbol, set);
+            }
+            set.add(exchangeId);
+        }
+    }
+
+    const routableSymbols = new Set<string>();
+    for (const [symbol, exchangeSet] of exchangesBySymbol) {
+        if (exchangeSet.size >= minExchangesPerSymbol) {
+            routableSymbols.add(symbol);
+        }
+    }
+
+    const routableSymbolsByExchange = new Map<string, string[]>();
+    for (const [exchangeId, symbols] of marketsByExchange) {
+        const routable = symbols.filter((s) => routableSymbols.has(s));
+        if (routable.length > 0) {
+            routableSymbolsByExchange.set(exchangeId, routable);
+        }
+    }
+
+    return {
+        routableSymbolsByExchange,
+        totalUniqueSymbols: exchangesBySymbol.size,
+        routableSymbolCount: routableSymbols.size,
+    };
+}
+
 // Loads markets for every candidate exchange (bounded concurrency, tolerant of individual
 // failures — one geo-blocked/rate-limited exchange doesn't abort discovery for the rest), then
-// keeps only symbols that appear on >= minExchangesPerSymbol exchanges. A symbol on exactly one
-// exchange has nothing to route between, so it's excluded from the routable set even though its
-// exchange stays in loadedExchanges (it just won't get any watch loops started for it).
+// delegates to computeRoutableSymbols for the actual filtering decision.
 export async function buildSymbolUniverse (
     exchangeIds: string[],
     minExchangesPerSymbol: number,
@@ -65,38 +113,11 @@ export async function buildSymbolUniverse (
         }
     });
 
-    const exchangesBySymbol = new Map<string, Set<string>>();
-    for (const [exchangeId, symbols] of marketsByExchange) {
-        for (const symbol of symbols) {
-            let set = exchangesBySymbol.get(symbol);
-            if (!set) {
-                set = new Set();
-                exchangesBySymbol.set(symbol, set);
-            }
-            set.add(exchangeId);
-        }
-    }
-
-    const routableSymbols = new Set<string>();
-    for (const [symbol, exchangeSet] of exchangesBySymbol) {
-        if (exchangeSet.size >= minExchangesPerSymbol) {
-            routableSymbols.add(symbol);
-        }
-    }
-
-    const routableSymbolsByExchange = new Map<string, string[]>();
-    for (const [exchangeId, symbols] of marketsByExchange) {
-        const routable = symbols.filter((s) => routableSymbols.has(s));
-        if (routable.length > 0) {
-            routableSymbolsByExchange.set(exchangeId, routable);
-        }
-    }
+    const routable = computeRoutableSymbols(marketsByExchange, minExchangesPerSymbol);
 
     return {
-        routableSymbolsByExchange,
+        ...routable,
         loadedExchanges,
         exchangesFailed,
-        totalUniqueSymbols: exchangesBySymbol.size,
-        routableSymbolCount: routableSymbols.size,
     };
 }

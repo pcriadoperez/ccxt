@@ -1,7 +1,27 @@
 import ccxt, { Exchange, type OrderBook } from 'ccxt';
 import type { OrderBookCache } from '../cache/orderBookCache.js';
 import type { FeeRegistry } from '../cache/feeRegistry.js';
+import type { BookLevel } from '../types.js';
 import type { Logger } from 'pino';
+
+// Pure, unit-testable in isolation from the network/WS machinery below.
+
+export function chunkSymbols (symbols: string[], size: number): string[][] {
+    const chunks: string[][] = [];
+    for (let i = 0; i < symbols.length; i += size) {
+        chunks.push(symbols.slice(i, i + size));
+    }
+    return chunks;
+}
+
+// ccxt's raw [price, amount] tuples type price/amount as possibly-undefined (Num = number |
+// undefined); drop any level missing either before it reaches the cache, which assumes complete
+// numeric levels.
+export function normalizeLevels (levels: [number | undefined, number | undefined][]): BookLevel[] {
+    return levels
+        .filter((level): level is [number, number] => level[0] !== undefined && level[1] !== undefined)
+        .map(([price, amount]) => ({ price, amount }));
+}
 
 const BACKOFF_START_MS = 500;
 const BACKOFF_MAX_MS = 30_000;
@@ -104,10 +124,7 @@ export class ExchangeConnector {
         // maxSymbolsPerSubscription-sized groups, each its own independent watch loop, rather
         // than one unbounded call for every routable symbol on the exchange.
         if (this.exchange.has?.watchOrderBookForSymbols && this.symbols.length > 1) {
-            const chunks: string[][] = [];
-            for (let i = 0; i < this.symbols.length; i += this.maxSymbolsPerSubscription) {
-                chunks.push(this.symbols.slice(i, i + this.maxSymbolsPerSubscription));
-            }
+            const chunks = chunkSymbols(this.symbols, this.maxSymbolsPerSubscription);
             this.logger.info(
                 { symbolCount: this.symbols.length, chunkCount: chunks.length, chunkSize: this.maxSymbolsPerSubscription },
                 'using batched watchOrderBookForSymbols, chunked',
@@ -130,12 +147,8 @@ export class ExchangeConnector {
         this.cache.setBook({
             exchangeId: this.exchangeId,
             symbol,
-            bids: ob.bids
-                .filter((level): level is [number, number] => level[0] !== undefined && level[1] !== undefined)
-                .map(([price, amount]) => ({ price, amount })),
-            asks: ob.asks
-                .filter((level): level is [number, number] => level[0] !== undefined && level[1] !== undefined)
-                .map(([price, amount]) => ({ price, amount })),
+            bids: normalizeLevels(ob.bids),
+            asks: normalizeLevels(ob.asks),
             exchangeTimestamp: ob.timestamp ?? undefined,
             receivedAt: Date.now(),
             sequence,

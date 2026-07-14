@@ -10,3 +10,16 @@ services:
       ORDER_ROUTER_SYMBOLS: "BTC/USDT,ETH/USDT"
       ORDER_ROUTER_STALE_BOOK_MS: "5000"
     restart: unless-stopped
+
+  order-router-mcp:
+    build: .
+    command: ["node", "dist/mcp/server.js"]
+    ports:
+      - "8081:8081"
+    environment:
+      ORDER_ROUTER_API_URL: "http://order-router:8080"
+      ORDER_ROUTER_MCP_PORT: "8081"
+      LOG_LEVEL: "info"
+    depends_on:
+      - order-router
+    restart: unless-stopped
