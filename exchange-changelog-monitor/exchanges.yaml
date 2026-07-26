@@ -1,0 +1,612 @@
+# Exchange Changelog Monitor — Exchange Registry
+# Each exchange has: name + changelog_urls (list of {label, url})
+# Exchanges with empty changelog_urls will trigger a "needs review" GitHub issue.
+# The monitor also auto-detects new CCXT exchanges not listed here.
+
+aftermath:
+  name: Aftermath
+  changelog_urls: []
+
+alpaca:
+  name: Alpaca
+  changelog_urls:
+    - label: changelog
+      url: "https://docs.alpaca.markets/changelog"
+
+apex:
+  name: ApeX
+  changelog_urls: []
+
+arkham:
+  name: Arkham
+  changelog_urls:
+    - label: announcements
+      url: "https://info.arkm.com/announcements"
+
+ascendex:
+  name: AscendEX
+  changelog_urls:
+    - label: spot-changelog
+      url: "https://ascendex.github.io/ascendex-pro-api/"
+    - label: futures-changelog
+      url: "https://ascendex.github.io/ascendex-futures-pro-api-v2/"
+
+aster:
+  name: Aster
+  changelog_urls:
+    - label: product-releases
+      url: "https://docs.asterdex.com/product/product-releases"
+
+backpack:
+  name: Backpack
+  changelog_urls:
+    - label: changelog
+      url: "https://docs.backpack.exchange/"
+
+bequant:
+  name: Bequant
+  changelog_urls:
+    - label: api-changelog
+      url: "https://api.bequant.io/"
+
+bigone:
+  name: BigONE
+  changelog_urls: []
+
+binance:
+  name: Binance
+  changelog_urls:
+    - label: spot
+      url: "https://raw.githubusercontent.com/binance/binance-spot-api-docs/master/CHANGELOG.md"
+    - label: derivatives
+      url: "https://developers.binance.com/docs/derivatives/change-log"
+
+binancecoinm:
+  name: Binance COIN-M
+  changelog_urls: []  # same derivatives changelog as 'binance', monitored there
+
+binanceus:
+  name: Binance US
+  changelog_urls:
+    - label: docs
+      url: "https://docs.binance.us/"
+
+binanceusdm:
+  name: Binance USDM
+  changelog_urls: []  # same derivatives changelog as 'binance', monitored there
+
+bingx:
+  name: BingX
+  changelog_urls:
+    - label: changelog
+      url: "https://bingx-api.github.io/docs/#/en-us/common/changelog"
+
+bit2c:
+  name: Bit2C
+  changelog_urls: []
+
+bitbank:
+  name: bitbank
+  changelog_urls:
+    - label: changelog
+      url: "https://github.com/bitbankinc/bitbank-api-docs/blob/master/CHANGELOG.md"
+
+bitbns:
+  name: Bitbns
+  changelog_urls:
+    - label: announcements
+      url: "https://bitbns.freshdesk.com/support/solutions/folders/35000216391"
+
+bitfinex:
+  name: Bitfinex
+  changelog_urls:
+    - label: changelog
+      url: "https://docs.bitfinex.com/docs/changelog"
+
+bitflyer:
+  name: bitFlyer
+  changelog_urls: []
+
+bitget:
+  name: Bitget
+  changelog_urls:
+    - label: common
+      url: "https://www.bitget.com/api-doc/common/changelog"
+    - label: uta
+      url: "https://www.bitget.com/api-doc/uta/changelog"
+
+bithumb:
+  name: Bithumb
+  changelog_urls:
+    - label: changelog
+      url: "https://apidocs.bithumb.com/changelog"
+
+bitmart:
+  name: BitMart
+  changelog_urls:
+    - label: spot-changelog
+      url: "https://developer-pro.bitmart.com/en/spot/#change-log"
+    - label: futures-changelog
+      url: "https://developer-pro.bitmart.com/en/futuresv2/"
+
+bitmex:
+  name: BitMEX
+  changelog_urls:
+    - label: changelog
+      url: "https://www.bitmex.com/app/apiChangelog"
+
+bitopro:
+  name: BitoPro
+  changelog_urls:
+    - label: changelog
+      url: "https://github.com/bitoex/bitopro-offical-api-docs/blob/master/changelog.md"
+    - label: announcements
+      url: "https://www.bitopro.com/ns/en-US/announcements"
+
+bitrue:
+  name: Bitrue
+  changelog_urls:
+    - label: spot-api-docs
+      url: "https://github.com/Bitrue-exchange/Spot-official-api-docs"
+
+bitso:
+  name: Bitso
+  changelog_urls:
+    - label: changelog
+      url: "https://docs.bitso.com/bitso-api/docs/history-of-changes"
+
+bitstamp:
+  name: Bitstamp
+  changelog_urls: []
+
+bitteam:
+  name: BitTeam
+  changelog_urls: []
+
+bittrade:
+  name: BitTrade
+  changelog_urls:
+    - label: releases
+      url: "https://github.com/BitTrade-Inc/BitTrade-api-docs/releases"
+
+bitvavo:
+  name: Bitvavo
+  changelog_urls:
+    - label: releases
+      url: "https://docs.bitvavo.com/releases/"
+
+blockchaincom:
+  name: Blockchain.com
+  changelog_urls: []
+
+blofin:
+  name: BloFin
+  changelog_urls: []
+
+btcbox:
+  name: BtcBox
+  changelog_urls:
+    - label: notifications
+      url: "https://blog.btcbox.jp/en/archives/category/notification-en"
+
+btcmarkets:
+  name: BTC Markets
+  changelog_urls:
+    - label: support-api
+      url: "https://support.btcmarkets.net/hc/en-us/sections/360000329408-API"
+
+btcturk:
+  name: BTCTurk
+  changelog_urls:
+    - label: changes
+      url: "https://docs.btcturk.com/recent-changes"
+
+bullish:
+  name: Bullish
+  changelog_urls:
+    - label: releases
+      url: "https://github.com/bullish-exchange/api-docs/releases"
+
+bybit:
+  name: Bybit
+  changelog_urls:
+    - label: v5-changelog
+      url: "https://bybit-exchange.github.io/docs/changelog/v5"
+
+bydfi:
+  name: BYDFi
+  changelog_urls: []
+
+cex:
+  name: CEX.IO
+  changelog_urls:
+    - label: api-docs-changelog
+      url: "https://trade.cex.io/docs/"
+    - label: announcements
+      url: "https://support.cex.io/en/collections/3710267-announcements"
+
+coinbase:
+  name: Coinbase
+  changelog_urls:
+    - label: app-changelog
+      url: "https://docs.cdp.coinbase.com/coinbase-app/docs/changelog"
+
+coinbaseadvanced:
+  name: Coinbase Advanced
+  changelog_urls:
+    - label: changelog
+      url: "https://docs.cdp.coinbase.com/advanced-trade/docs/changelog"
+
+coinbaseexchange:
+  name: Coinbase Exchange
+  changelog_urls:
+    - label: changelog
+      url: "https://docs.cdp.coinbase.com/exchange/changes/changelog"
+    - label: upcoming-changes
+      url: "https://docs.cdp.coinbase.com/exchange/changes/upcoming-changes"
+
+coinbaseinternational:
+  name: Coinbase International
+  changelog_urls:
+    - label: changelog
+      url: "https://docs.cdp.coinbase.com/international-exchange/changes/changelog"
+
+coincatch:
+  name: CoinCatch
+  changelog_urls:
+    - label: api-trading-updates
+      url: "https://www.coincatch.com/en/support/categories/417"
+
+coincheck:
+  name: Coincheck
+  changelog_urls:
+    - label: corporate-news
+      url: "https://corporate.coincheck.com/news"
+
+coinex:
+  name: CoinEx
+  changelog_urls:
+    - label: changelog
+      url: "https://docs.coinex.com/api/v2/changelog"
+
+coinmate:
+  name: CoinMate
+  changelog_urls: []
+
+coinmetro:
+  name: CoinMetro
+  changelog_urls: []
+
+coinone:
+  name: Coinone
+  changelog_urls:
+    - label: changelog
+      url: "https://docs.coinone.co.kr/changelog"
+
+coinsph:
+  name: Coins.ph
+  changelog_urls:
+    - label: api-changelog
+      url: "https://docs.coins.ph/rest-api/"
+
+coinspot:
+  name: CoinSpot
+  changelog_urls:
+    - label: announcements
+      url: "https://coinspot.zendesk.com/hc/en-us/categories/360000087515-General-Announcements-Updates"
+
+cryptocom:
+  name: Crypto.com
+  changelog_urls:
+    - label: exchange-changelog
+      url: "https://exchange-docs.crypto.com/exchange/v1/rest-ws/index.html#change-logs"
+
+cryptomus:
+  name: Cryptomus
+  changelog_urls: []
+
+deepcoin:
+  name: Deepcoin
+  changelog_urls: []
+
+delta:
+  name: Delta Exchange
+  changelog_urls:
+    - label: api-announcements
+      url: "https://community.delta.exchange/c/api-updates-announcements/11"
+
+deribit:
+  name: Deribit
+  changelog_urls:
+    - label: releases
+      url: "https://support.deribit.com/hc/en-us/sections/25944734788637-Releases"
+
+derive:
+  name: Derive
+  changelog_urls: []
+
+digifinex:
+  name: DigiFinex
+  changelog_urls:
+    - label: announcements
+      url: "https://support.digifinex.com/hc/en-us/categories/360000845433-Announcement-Center"
+
+dydx:
+  name: dYdX
+  changelog_urls:
+    - label: indexer-changelog
+      url: "https://docs.dydx.exchange/api_integration-indexer/indexer_api_changelog"
+
+exmo:
+  name: EXMO
+  changelog_urls: []
+
+fmfwio:
+  name: FMFW.io
+  changelog_urls:
+    - label: api-changelog
+      url: "https://api.fmfw.io/"
+
+foxbit:
+  name: Foxbit
+  changelog_urls:
+    - label: changelog
+      url: "https://docs.foxbit.com.br/rest/v3/changelog"
+
+gate:
+  name: Gate.io
+  changelog_urls:
+    - label: announcements
+      url: "https://www.gate.com/announcements/apiupdates"
+
+gateio:
+  name: Gate.io
+  changelog_urls: []  # same exchange as 'gate', monitored there
+
+gemini:
+  name: Gemini
+  changelog_urls:
+    - label: revision-history
+      url: "https://docs.gemini.com/changelog/revision-history"
+
+grvt:
+  name: GRVT
+  changelog_urls:
+    - label: sdk-changelog
+      url: "https://github.com/gravity-technologies/grvt-pysdk/blob/main/CHANGELOG.md"
+
+hashkey:
+  name: HashKey
+  changelog_urls:
+    - label: api-changelog
+      url: "https://hashkeyglobal-apidoc.readme.io/reference/change-log"
+    - label: announcements
+      url: "https://group.hashkey.com/en/news/categories/announcement-1"
+
+hibachi:
+  name: Hibachi
+  changelog_urls: []
+
+hitbtc:
+  name: HitBTC
+  changelog_urls:
+    - label: api-changelog
+      url: "https://api.hitbtc.com/#changelog"
+    - label: platform-changelog
+      url: "https://hitbtc.com/changelog"
+
+hollaex:
+  name: HollaEx
+  changelog_urls:
+    - label: versions
+      url: "https://docs.hollaex.com/releases/versions"
+
+htx:
+  name: HTX
+  changelog_urls:
+    - label: spot-changelog
+      url: "https://huobiapi.github.io/docs/spot/v1/en/#change-log"
+
+huobi:
+  name: Huobi
+  changelog_urls: []  # same as 'htx', monitored there
+
+hyperliquid:
+  name: Hyperliquid
+  changelog_urls:
+    - label: changelog
+      url: "https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/changelog"
+
+independentreserve:
+  name: Independent Reserve
+  changelog_urls: []
+
+indodax:
+  name: INDODAX
+  changelog_urls:
+    - label: changelog
+      url: "https://github.com/btcid/indodax-official-api-docs/blob/master/CHANGELOG.md"
+
+kraken:
+  name: Kraken
+  changelog_urls:
+    - label: change-log
+      url: "https://docs.kraken.com/api/docs/change-log/"
+
+krakenfutures:
+  name: Kraken Futures
+  changelog_urls: []  # same changelog as 'kraken', monitored there
+
+kucoin:
+  name: KuCoin
+  changelog_urls:
+    - label: change-log
+      url: "https://www.kucoin.com/docs-new/change-log"
+
+kucoinfutures:
+  name: KuCoin Futures
+  changelog_urls: []  # same changelog as 'kucoin', monitored there
+
+latoken:
+  name: LATOKEN
+  changelog_urls: []
+
+lbank:
+  name: LBank
+  changelog_urls:
+    - label: announcements
+      url: "https://www.lbank.com/support/announcement"
+
+lighter:
+  name: Lighter
+  changelog_urls:
+    - label: changelog
+      url: "https://app.lighter.xyz/changelog"
+
+luno:
+  name: Luno
+  changelog_urls:
+    - label: go-sdk-releases
+      url: "https://github.com/luno/luno-go/releases"
+
+mercado:
+  name: Mercado Bitcoin
+  changelog_urls: []
+
+mexc:
+  name: MEXC
+  changelog_urls:
+    - label: spot-changelog
+      url: "https://www.mexc.com/api-docs/spot-v3/change-log"
+
+modetrade:
+  name: Mode Trade
+  changelog_urls:
+    - label: orderly-changelog
+      url: "https://orderly.network/docs/changelog/evm"
+
+myokx:
+  name: MyOKX
+  changelog_urls: []  # same as 'okx', monitored there
+
+ndax:
+  name: NDAX
+  changelog_urls:
+    - label: changelog
+      url: "https://feedback.ndax.io/changelog"
+
+novadax:
+  name: NovaDAX
+  changelog_urls: []
+
+okx:
+  name: OKX
+  changelog_urls:
+    - label: upcoming-changes
+      url: "https://www.okx.com/docs-v5/log_en/"
+    - label: api-announcements
+      url: "https://www.okx.com/help/section/announcements-api"
+
+okxus:
+  name: OKX US
+  changelog_urls: []  # same as 'okx', monitored there
+
+onetrading:
+  name: One Trading
+  changelog_urls: []
+
+oxfun:
+  name: OXFUN
+  changelog_urls: []
+
+p2b:
+  name: P2B
+  changelog_urls: []
+
+pacifica:
+  name: Pacifica
+  changelog_urls: []
+
+paradex:
+  name: Paradex
+  changelog_urls:
+    - label: release-notes
+      url: "https://docs.paradex.trade/release-notes/archive/v-1-122"
+
+paymium:
+  name: Paymium
+  changelog_urls: []
+
+phemex:
+  name: Phemex
+  changelog_urls:
+    - label: changelog
+      url: "https://phemex-docs.github.io/#change-log"
+
+poloniex:
+  name: Poloniex
+  changelog_urls:
+    - label: spot-changelog
+      url: "https://api-docs.poloniex.com/changelog/spot"
+
+tokocrypto:
+  name: Tokocrypto
+  changelog_urls:
+    - label: api-changelog
+      url: "https://www.tokocrypto.com/apidocs/"
+
+toobit:
+  name: Toobit
+  changelog_urls:
+    - label: changelog
+      url: "https://toobit-docs.github.io/apidocs/spot/v1/en/#change-log"
+
+upbit:
+  name: Upbit
+  changelog_urls:
+    - label: changelog
+      url: "https://global-docs.upbit.com/changelog/notice-changes-of-open-api"
+
+wavesexchange:
+  name: Waves Exchange
+  changelog_urls: []
+
+whitebit:
+  name: WhiteBIT
+  changelog_urls:
+    - label: changelog
+      url: "https://docs.whitebit.com/changelog"
+
+woo:
+  name: WOO X
+  changelog_urls:
+    - label: changelog
+      url: "https://developer.woox.io/changelog/release_note_v3"
+
+woofipro:
+  name: WOOFi Pro
+  changelog_urls: []  # same Orderly Network changelog as 'modetrade', monitored there
+
+xt:
+  name: XT.COM
+  changelog_urls:
+    - label: announcements
+      url: "https://xtsupport.zendesk.com/hc/en-us/categories/10304894611993-Important-Announcements"
+
+yobit:
+  name: YoBit
+  changelog_urls: []
+
+zaif:
+  name: Zaif
+  changelog_urls: []
+
+zebpay:
+  name: ZebPay
+  changelog_urls: []
+
+zonda:
+  name: Zonda
+  changelog_urls:
+    - label: news
+      url: "https://zondacrypto.com/en/news"
