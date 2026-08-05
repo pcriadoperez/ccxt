@@ -44,3 +44,4 @@ obj/
 __debug*
 *.o
 .custom_gitignore
+.claude/worktrees/
