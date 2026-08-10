@@ -1,0 +1,111 @@
+name: Order Router
+
+# Scoped to the order-router service only. It is a standalone Node/TypeScript app that depends on
+# the published ccxt package — it is not part of the transpile pipeline, so it deliberately does
+# not run on changes elsewhere in the repo, and nothing here touches ts/src or generated output.
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'order-router/**'
+      - '.github/workflows/order-router.yml'
+  pull_request:
+    paths:
+      - 'order-router/**'
+      - '.github/workflows/order-router.yml'
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: order-router
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: order-router/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check and build
+        run: npm run build
+
+      - name: Unit tests
+        # Offline by design: no live exchange connections, no network. Anything needing a real
+        # exchange lives in benchmark/ and is run manually (see order-router/README.md).
+        run: npm test
+
+      - name: Verify the service boots and serves authenticated requests
+        # Smoke test that catches wiring regressions unit tests can't: real process, real HTTP
+        # listener, real auth middleware. Uses a single exchange to keep it quick, and tolerates
+        # exchange unreachability from the runner (asserted endpoints do not require live data).
+        env:
+          ORDER_ROUTER_API_KEY: ci-smoke-key
+          ORDER_ROUTER_EXCHANGES: kraken
+          ORDER_ROUTER_SYMBOLS: BTC/USDT
+          LOG_LEVEL: warn
+        run: |
+          node dist/index.js > /tmp/router.log 2>&1 &
+          ROUTER_PID=$!
+          trap 'kill $ROUTER_PID 2>/dev/null || true' EXIT
+
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8080/health > /dev/null; then break; fi
+            if ! kill -0 $ROUTER_PID 2>/dev/null; then
+              echo "::error::router process exited during startup"; cat /tmp/router.log; exit 1
+            fi
+            sleep 1
+          done
+
+          echo "--- /health must be reachable without credentials (probe path) ---"
+          curl -sf http://localhost:8080/health | grep -q '"status":"ok"'
+
+          echo "--- protected route must reject an unauthenticated request with 401 ---"
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/symbols)
+          if [ "$code" != "401" ]; then echo "::error::expected 401, got $code"; exit 1; fi
+
+          echo "--- protected route must accept a valid key ---"
+          code=$(curl -s -o /dev/null -w '%{http_code}' -H 'x-api-key: ci-smoke-key' http://localhost:8080/symbols)
+          if [ "$code" != "200" ]; then echo "::error::expected 200, got $code"; cat /tmp/router.log; exit 1; fi
+
+          echo "--- a wrong key must still be rejected ---"
+          code=$(curl -s -o /dev/null -w '%{http_code}' -H 'x-api-key: wrong-key' http://localhost:8080/symbols)
+          if [ "$code" != "401" ]; then echo "::error::expected 401, got $code"; exit 1; fi
+
+          echo "smoke test passed"
+
+      - name: Verify the MCP server boots and enforces auth
+        env:
+          ORDER_ROUTER_API_KEY: ci-smoke-key
+          ORDER_ROUTER_MCP_PORT: 8081
+          LOG_LEVEL: warn
+        run: |
+          node dist/mcp/server.js > /tmp/mcp.log 2>&1 &
+          MCP_PID=$!
+          trap 'kill $MCP_PID 2>/dev/null || true' EXIT
+
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8081/health > /dev/null; then break; fi
+            if ! kill -0 $MCP_PID 2>/dev/null; then
+              echo "::error::MCP process exited during startup"; cat /tmp/mcp.log; exit 1
+            fi
+            sleep 1
+          done
+
+          echo "--- /mcp must reject an unauthenticated JSON-RPC call ---"
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8081/mcp \
+            -H 'content-type: application/json' \
+            -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}')
+          if [ "$code" != "401" ]; then echo "::error::expected 401, got $code"; cat /tmp/mcp.log; exit 1; fi
+
+          echo "MCP smoke test passed"

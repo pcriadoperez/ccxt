@@ -136,6 +136,42 @@ same "write path is async, read path is always local" shape, is a natural extens
 | GET | `/price/best/:symbol?side=buy\|sell&amount=<qty>` | book-walked, fee-adjusted best execution price across exchanges |
 | WS | `/stream/best/:symbol?side=&amount=` | pushes on book change (event-driven, not polled) |
 
+## Security
+
+> **Status: stopgap, not an auth system.** A single shared API key with a hardcoded development
+> fallback. No rotation, no per-client keys, no revocation, no scopes, no TLS termination of its
+> own. It closes the "anyone on the network can read everything" hole; it is not what this should
+> ship with to a real public audience. See Known gaps.
+
+**Authentication** (`src/api/auth.ts`). All routes except `/health` require a key, supplied as
+either `X-API-Key: <key>` or `Authorization: Bearer <key>`.
+
+- `/health` is deliberately unauthenticated so orchestrator liveness probes work before any
+  credential is injectable; it exposes only `status` and process uptime. Everything else —
+  including `/exchanges/status`, which leaks the venue list — is protected.
+- Keys are compared through SHA-256 digests + `timingSafeEqual`, not `===`. Digesting first makes
+  both sides a fixed 32 bytes, so the comparison leaks neither key length nor common prefix
+  through timing, and can't throw on a length mismatch.
+- The auth hook runs at `onRequest`, i.e. **before routing**, so unknown paths return `401` rather
+  than `404` — no oracle for enumerating which routes exist. Missing and wrong keys produce
+  byte-identical responses for the same reason.
+- Unset `ORDER_ROUTER_API_KEY` falls back to the well-known literal `dev-local-key-change-me` and
+  logs a loud warning at startup. That default grants no security; it exists so local dev works
+  and so an unconfigured deployment is obviously wrong rather than subtly wrong.
+
+**Rate limiting** (`@fastify/rate-limit`). Default 600 requests / 60s.
+
+- Registered *before* the auth hook, so a flood of invalid keys burns rate-limit budget instead of
+  reaching the key comparison unbounded.
+- Bucketed **per API key** (falling back to IP only where no key is present), so one client can't
+  exhaust another's budget and clients behind a shared NAT aren't collectively throttled.
+- `/health` is exempt — a throttled liveness probe reads as an outage to an orchestrator and would
+  trigger restarts under exactly the load where that's worst.
+- Responses carry `x-ratelimit-*` and `retry-after`.
+
+The MCP server authenticates its own callers with the same key and forwards it upstream; without
+that it would be an unauthenticated bypass around the router's auth.
+
 ## MCP server (`src/mcp/`)
 
 A separate process (`npm run mcp` / `npm run mcp:dev`) exposing the same public endpoints as MCP
@@ -185,6 +221,9 @@ against a running router with live exchange data) during development — not jus
 | `ORDER_ROUTER_EXCHANGES` | `kraken,coinbase,kucoin,bitget,gate` | Explicit mode only. |
 | `ORDER_ROUTER_SYMBOLS` | `BTC/USDT,ETH/USDT` | Explicit mode only. |
 | `ORDER_ROUTER_STALE_BOOK_MS` | `5000` | Quotes from books older than this are excluded from ranking. |
+| `ORDER_ROUTER_API_KEY` | `dev-local-key-change-me` | **Set this in any real deployment.** The default grants no security and logs a warning. |
+| `ORDER_ROUTER_RATE_LIMIT_MAX` | `600` | Requests per window, per API key. |
+| `ORDER_ROUTER_RATE_LIMIT_WINDOW_MS` | `60000` | Rate limit window. |
 | `LOG_LEVEL` | `info` | |
 
 ## Run
@@ -231,11 +270,77 @@ lifecycle (reconnect/backoff/jitter against a real socket), discovery's `loadMar
 calls, and sharding's actual `child_process` IPC (verified live, not by an automated test, since
 that requires spawning real subprocesses with real network access).
 
-## Benchmark (`benchmark/ws-latency.mjs`)
+## Continuous integration
 
-`npm run bench:ws` measures WS update rate, message latency, and cached book depth per exchange.
+`.github/workflows/order-router.yml` runs on any change under `order-router/` (and nothing else —
+this service is not part of ccxt's transpile pipeline). On Node 22 it runs `npm ci`, `npm run build`
+(type-check), `npm test` (the offline suite), then two smoke steps that boot the real processes and
+assert over HTTP that `/health` is reachable unauthenticated, that a protected route returns `401`
+without a key and `200` with the right one, that a *wrong* key is still rejected, and that the MCP
+endpoint rejects an unauthenticated JSON-RPC call. Those smoke assertions were verified locally
+before being committed.
 
-### Results from this dev sandbox — read the caveats before trusting these numbers
+## Benchmarks
+
+### `npm run bench:multi-connect` — simultaneous multi-exchange connections
+
+Answers "does this actually hold N live exchange connections at once", which no unit test can.
+Connects to each candidate exchange, holds for a set duration, reports message counts and failures.
+
+**Measured from this sandbox — 34 attempted, 28 connected simultaneously, 75s hold:**
+
+| | |
+|---|---|
+| Connected | **28 / 34** |
+| Total messages | 28,518 (~380 msg/s aggregate) |
+| Errors | 0 on 27 of 28 connected exchanges (lbank: 3) |
+| Peak RSS | 230 MB |
+| Heap used | 62 MB |
+
+Highest-volume: kucoin (14,809 msgs), poloniex (7,500), gate (1,791), htx (676), bitget (563),
+coinbase (493). Median time-to-first-message ~1.8s.
+
+The 6 failures are all explainable, none are router bugs:
+
+| Exchange | Reason |
+|---|---|
+| `mexc` | needs the optional `protobufjs` peer dep to decode WS frames — installable, not yet done |
+| `cex`, `luno` | require API credentials even for public WS |
+| `okx`, `binanceus`, `independentreserve` | no data within 20s — the same egress geo-restriction that blocks Binance/Bybit from this sandbox |
+
+Note this is 28 exchanges × 1 symbol. It validates *connection* concurrency, not the full
+55k-subscription symbol load — that still needs unrestricted infra (see Known gaps).
+
+### `npm run bench:load` — REST API load test
+
+`autocannon` against a **running** router, so numbers include real auth, rate limiting, book
+walking and serialization. Raise `ORDER_ROUTER_RATE_LIMIT_MAX` for the run or you'll measure the
+limiter instead of the service.
+
+**Measured: 50 connections, 8s per scenario, 5 live exchanges cached, 0 non-2xx on every
+authenticated path:**
+
+| Scenario | req/s | p50 | p90 | p99 | max |
+|---|---|---|---|---|---|
+| `/health` (baseline, no auth, no cache read) | 13,779 | 3ms | 5ms | 9ms | 244ms |
+| `/symbols` (iterates whole cache) | 8,138 | 5ms | 7ms | 11ms | 28ms |
+| `/orderbook/:ex/:sym` (map lookup + serialize full book) | 6,628 | 7ms | 9ms | 13ms | 209ms |
+| `/price/best` small order (walks every exchange book) | 6,397 | 7ms | 9ms | 12ms | 254ms |
+| `/price/best` large order (walks deeper) | 4,302 | 11ms | 13ms | 18ms | 292ms |
+| unauthenticated (expect 401) | 13,693 | 3ms | 4ms | 6ms | 179ms |
+
+Two things worth reading off this: the routing work itself is cheap (best-price with a large order
+still clears 4.3k req/s), and **auth rejection is as cheap as `/health`** — so an unauthenticated
+flood costs the server roughly nothing per request and isn't a DoS amplifier.
+
+Caveat: single machine, client and server sharing CPU, so absolute throughput is a floor rather
+than a ceiling, and the `max` outliers (~250ms) include client-side scheduling noise.
+
+### `npm run bench:ws` — per-exchange WS latency and book depth
+
+Measures WS update rate, message latency, and cached book depth per exchange.
+
+#### Results from this dev sandbox — read the caveats before trusting these numbers
 
 1. **Binance, Bybit, OKX were unreachable from this sandbox.** Binance/Bybit REST calls returned
    `451`/`403` geo-compliance blocks; OKX's WS connection timed out. This is specific to this
@@ -259,10 +364,32 @@ Takeaway: Kraken/Gate cap streamed depth at 10/50 levels, which limits how large
 routed confidently before you'd need a periodic REST depth-snapshot fallback for those venues.
 Coinbase streams close to the full book.
 
+## Production readiness
+
+Not ready to expose publicly. Honest status of the blockers:
+
+| Blocker | Status |
+|---|---|
+| No authentication | **Partly closed** — shared-key auth exists and is tested, but it's a stopgap: no rotation, no per-client keys, no revocation, no scopes (see Security) |
+| No rate limiting | **Closed** — per-key limiting, tested, `/health` exempt |
+| Never load tested | **Closed** — see Benchmarks; 4.3k–13.8k req/s depending on endpoint |
+| Never run against many exchanges at once | **Closed for connection concurrency** — 28 simultaneous live exchanges verified. **Still open for full symbol load** (55k subscriptions) |
+| Not in CI | **Closed** — build + tests + boot/auth smoke tests on every change |
+| Binance/Bybit/OKX never live-tested | **Open** — geo-blocked from every environment available here |
+| No TLS, runs plain HTTP | **Open** — assumes a terminating proxy in front; not documented or provisioned |
+| No soak testing | **Open** — longest continuous run is minutes, not hours/days |
+| No metrics/alerting | **Open** — only `/exchanges/status` |
+| No HA/failover | **Open** — a dead process is an outage |
+
 ## Known gaps / next steps
 
 - Re-run the benchmark from unrestricted, NTP-synced infra, including Binance/Bybit/OKX, and at
   full discovery scale (76 exchanges) rather than the 5-exchange subset reachable from this sandbox.
+- Replace shared-key auth with something real (per-client keys + rotation + revocation) before any
+  public exposure, and put TLS termination in front.
+- Install `protobufjs` to unblock `mexc` WS decoding (one dependency; not yet done).
+- Soak test: hours-to-days continuous run with `process.memoryUsage()` tracked, to find leaks and
+  slow connection drift that a 75-second test can't.
 - `ORDER_ROUTER_MAX_SYMBOLS_PER_EXCHANGE` needs real per-exchange tuning under production load —
   the value used in testing (`coinbase:25`) got that one exchange stable but is a starting point,
   not a researched limit. KuCoin also still showed a nonzero (but much reduced, ~30 vs ~1,500

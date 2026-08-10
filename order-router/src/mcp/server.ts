@@ -3,6 +3,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
 import { logger } from '../logger.js';
+import { extractApiKey, resolveApiKey, safeCompare } from '../api/auth.js';
 import * as routerClient from './tools.js';
 import type { RouterClientOptions } from './tools.js';
 
@@ -106,8 +107,8 @@ export function buildMcpServer (clientOptions: RouterClientOptions): McpServer {
     return server;
 }
 
-async function handleMcpRequest (req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const server = buildMcpServer({ baseUrl: API_BASE_URL });
+async function handleMcpRequest (req: IncomingMessage, res: ServerResponse, apiKey: string): Promise<void> {
+    const server = buildMcpServer({ baseUrl: API_BASE_URL, apiKey });
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     res.on('close', () => {
         void transport.close();
@@ -118,9 +119,27 @@ async function handleMcpRequest (req: IncomingMessage, res: ServerResponse): Pro
 }
 
 async function main (): Promise<void> {
+    const { apiKey, isDefault } = resolveApiKey();
+    if (isDefault) {
+        logger.warn(
+            'ORDER_ROUTER_API_KEY is not set — MCP server is using the well-known development key '
+            + 'for both inbound auth and upstream calls. Set ORDER_ROUTER_API_KEY before exposing it.',
+        );
+    }
+
     const httpServer = createServer((req, res) => {
         if (req.url === '/mcp' && req.method === 'POST') {
-            void handleMcpRequest(req, res).catch((err) => {
+            // The MCP endpoint proxies privileged router data, so it authenticates its own callers
+            // with the same key it uses upstream — otherwise it would be an open bypass around the
+            // router's auth.
+            const provided = extractApiKey(req.headers as Record<string, unknown>);
+            if (provided === undefined || !safeCompare(provided, apiKey)) {
+                res.writeHead(401, { 'content-type': 'application/json' }).end(
+                    JSON.stringify({ jsonrpc: '2.0', error: { code: -32001, message: 'unauthorized' }, id: null }),
+                );
+                return;
+            }
+            void handleMcpRequest(req, res, apiKey).catch((err) => {
                 logger.error({ err }, 'MCP request handling failed');
                 if (!res.headersSent) {
                     res.writeHead(500, { 'content-type': 'application/json' }).end(

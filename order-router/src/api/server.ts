@@ -1,18 +1,67 @@
 import Fastify from 'fastify';
 import websocketPlugin from '@fastify/websocket';
+import rateLimit from '@fastify/rate-limit';
 import type { Logger } from 'pino';
 import { config } from '../config.js';
 import type { OrderBookCache } from '../cache/orderBookCache.js';
 import type { FeeRegistry } from '../cache/feeRegistry.js';
 import { computeBestPrice } from '../routing/bestPrice.js';
+import { extractApiKey, isPublicPath, makeAuthHook, resolveApiKey } from './auth.js';
 
 interface BestPriceQuery {
     side?: string;
     amount?: string;
 }
 
-export async function buildServer (cache: OrderBookCache, feeRegistry: FeeRegistry, logger: Logger) {
+export interface ServerOptions {
+    // Overrides for the module-level config defaults. Injected rather than read from the global
+    // config so tests can exercise the real middleware chain at a low limit without mutating
+    // process env (config.ts snapshots env at import time, so env mutation can't reach it).
+    rateLimitMax?: number;
+    rateLimitWindowMs?: number;
+}
+
+export async function buildServer (
+    cache: OrderBookCache,
+    feeRegistry: FeeRegistry,
+    logger: Logger,
+    options: ServerOptions = {},
+) {
     const app = Fastify({ loggerInstance: logger });
+
+    const rateLimitMax = options.rateLimitMax ?? config.rateLimitMax;
+    const rateLimitWindowMs = options.rateLimitWindowMs ?? config.rateLimitWindowMs;
+    const { apiKey, isDefault } = resolveApiKey();
+    if (isDefault) {
+        logger.warn(
+            'ORDER_ROUTER_API_KEY is not set — falling back to the well-known development key. '
+            + 'This grants no security. Set ORDER_ROUTER_API_KEY before exposing this service.',
+        );
+    }
+
+    // Rate limit before auth so that unauthenticated brute-force attempts are themselves capped:
+    // registering it first puts its onRequest hook ahead of the auth hook in the lifecycle, so a
+    // flood of bad keys burns rate-limit budget rather than reaching the comparison unbounded.
+    await app.register(rateLimit, {
+        max: rateLimitMax,
+        timeWindow: rateLimitWindowMs,
+        // Bucket by API key so one misbehaving client can't consume another's budget, and so
+        // clients behind a shared NAT/egress IP aren't collectively throttled. Falls back to IP
+        // when no key is present (only reachable on /health, which is allowlisted below anyway).
+        keyGenerator: (request) => extractApiKey(request.headers as Record<string, unknown>) ?? request.ip,
+        // Liveness probes must never be throttled — a throttled /health reads as an outage to an
+        // orchestrator and would trigger pod restarts under exactly the load where that's worst.
+        allowList: (request) => isPublicPath(request.url),
+        addHeaders: {
+            'x-ratelimit-limit': true,
+            'x-ratelimit-remaining': true,
+            'x-ratelimit-reset': true,
+            'retry-after': true,
+        },
+    });
+
+    app.addHook('onRequest', makeAuthHook(apiKey));
+
     await app.register(websocketPlugin);
 
     app.get('/health', async () => ({ status: 'ok', uptimeSec: process.uptime() }));

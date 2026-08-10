@@ -83,4 +83,11 @@ export const config = {
 
     staleBookMs: Number(process.env['ORDER_ROUTER_STALE_BOOK_MS'] ?? 5000),
     logLevel: process.env['LOG_LEVEL'] ?? 'info',
+
+    // Rate limiting. Applied per API key (falling back to client IP when the key is absent, which
+    // only happens on the unauthenticated /health path). Defaults are deliberately generous — this
+    // is abuse/runaway-client protection, not a quota system; the read path is an in-memory map
+    // lookup, so the server can sustain far more than this.
+    rateLimitMax: Number(process.env['ORDER_ROUTER_RATE_LIMIT_MAX'] ?? 600),
+    rateLimitWindowMs: Number(process.env['ORDER_ROUTER_RATE_LIMIT_WINDOW_MS'] ?? 60_000),
 };

@@ -5,12 +5,19 @@
 
 export interface RouterClientOptions {
     baseUrl: string;
+    // Forwarded upstream as X-API-Key. The MCP server authenticates its own callers separately;
+    // this is the credential it uses to call the router on their behalf.
+    apiKey?: string;
     fetchImpl?: typeof fetch;
 }
 
 async function getJson (path: string, options: RouterClientOptions): Promise<unknown> {
     const fetchImpl = options.fetchImpl ?? fetch;
-    const response = await fetchImpl(`${options.baseUrl}${path}`);
+    const headers: Record<string, string> = {};
+    if (options.apiKey) {
+        headers['x-api-key'] = options.apiKey;
+    }
+    const response = await fetchImpl(`${options.baseUrl}${path}`, { headers });
     const body = await response.json();
     if (!response.ok) {
         const message = typeof body === 'object' && body && 'error' in body ? String((body as { error: unknown }).error) : response.statusText;
