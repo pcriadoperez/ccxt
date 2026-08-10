@@ -242,3 +242,43 @@ test('rate limit buckets are per API key, not global', async () => {
         await app.close();
     }
 });
+
+test('failed auth attempts are themselves rate limited (key brute-force is throttled)', async () => {
+    // Regression test for a real bug: registering the auth hook with a bare app.addHook placed it
+    // AHEAD of @fastify/rate-limit's deferred hook, so every 401 short-circuited before the
+    // limiter counted it — leaving API key brute-force completely unthrottled while authenticated
+    // traffic appeared correctly limited. Asserting only the authenticated case (as the original
+    // tests did) cannot catch this.
+    const { app } = await buildRateLimitedServer(5);
+    const codes: number[] = [];
+    for (let i = 0; i < 12; i++) {
+        const response = await app.inject({ method: 'GET', url: '/symbols', headers: { 'x-api-key': 'wrong-key' } });
+        codes.push(response.statusCode);
+    }
+    assert.ok(codes.includes(429), `repeated bad keys must eventually 429, got ${JSON.stringify(codes)}`);
+    await app.close();
+});
+
+test('rotating the API key does not mint unlimited fresh rate-limit buckets', async () => {
+    // The limiter buckets by the attacker-supplied key header. If a fresh key value always got a
+    // fresh bucket, an attacker could rotate the header per request and brute-force without limit.
+    const { app } = await buildRateLimitedServer(5);
+    const codes: number[] = [];
+    for (let i = 0; i < 15; i++) {
+        const response = await app.inject({ method: 'GET', url: '/symbols', headers: { 'x-api-key': `guess-${i}` } });
+        codes.push(response.statusCode);
+    }
+    assert.ok(codes.includes(429), `rotating keys must still be throttled, got ${JSON.stringify(codes)}`);
+    await app.close();
+});
+
+test('unauthenticated requests with no key at all are rate limited', async () => {
+    const { app } = await buildRateLimitedServer(5);
+    const codes: number[] = [];
+    for (let i = 0; i < 12; i++) {
+        const response = await app.inject({ method: 'GET', url: '/symbols' });
+        codes.push(response.statusCode);
+    }
+    assert.ok(codes.includes(429), `unauthenticated flood must be throttled, got ${JSON.stringify(codes)}`);
+    await app.close();
+});

@@ -1,12 +1,13 @@
 import Fastify from 'fastify';
 import websocketPlugin from '@fastify/websocket';
 import rateLimit from '@fastify/rate-limit';
+import fastifyPlugin from 'fastify-plugin';
 import type { Logger } from 'pino';
 import { config } from '../config.js';
 import type { OrderBookCache } from '../cache/orderBookCache.js';
 import type { FeeRegistry } from '../cache/feeRegistry.js';
 import { computeBestPrice } from '../routing/bestPrice.js';
-import { extractApiKey, isPublicPath, makeAuthHook, resolveApiKey } from './auth.js';
+import { extractApiKey, isPublicPath, makeAuthHook, resolveApiKey, safeCompare } from './auth.js';
 
 interface BestPriceQuery {
     side?: string;
@@ -39,16 +40,27 @@ export async function buildServer (
         );
     }
 
-    // Rate limit before auth so that unauthenticated brute-force attempts are themselves capped:
-    // registering it first puts its onRequest hook ahead of the auth hook in the lifecycle, so a
-    // flood of bad keys burns rate-limit budget rather than reaching the comparison unbounded.
+    // Rate limiting runs ahead of auth (see the preValidation note below for why that ordering is
+    // not automatic), so unauthenticated brute-force attempts consume budget rather than probing
+    // the key comparison without limit.
     await app.register(rateLimit, {
         max: rateLimitMax,
         timeWindow: rateLimitWindowMs,
-        // Bucket by API key so one misbehaving client can't consume another's budget, and so
-        // clients behind a shared NAT/egress IP aren't collectively throttled. Falls back to IP
-        // when no key is present (only reachable on /health, which is allowlisted below anyway).
-        keyGenerator: (request) => extractApiKey(request.headers as Record<string, unknown>) ?? request.ip,
+        // Bucket by API key ONLY when the key is actually valid, so one legitimate client can't
+        // consume another's budget and NAT'd clients aren't collectively throttled. Everything
+        // else — wrong key, absent key — buckets by IP.
+        //
+        // Bucketing unconditionally on the caller-supplied header is the trap: an attacker just
+        // rotates the header per request, mints a fresh bucket every time, and brute-forces keys
+        // without ever being throttled. It is also an unbounded-memory vector, since each distinct
+        // attacker-chosen value would allocate its own counter.
+        keyGenerator: (request) => {
+            const provided = extractApiKey(request.headers as Record<string, unknown>);
+            if (provided !== undefined && safeCompare(provided, apiKey)) {
+                return provided;
+            }
+            return request.ip;
+        },
         // Liveness probes must never be throttled — a throttled /health reads as an outage to an
         // orchestrator and would trigger pod restarts under exactly the load where that's worst.
         allowList: (request) => isPublicPath(request.url),
@@ -60,7 +72,31 @@ export async function buildServer (
         },
     });
 
-    app.addHook('onRequest', makeAuthHook(apiKey));
+    // Auth runs at preValidation, NOT onRequest. @fastify/rate-limit attaches its check as a
+    // per-route hook, and route-level onRequest hooks run *after* all instance-level onRequest
+    // hooks — so an instance-level auth hook lands ahead of the limiter no matter what order the
+    // two are registered in. That silently inverts the intended order: every 401 short-circuits
+    // before the limiter counts it, leaving API key brute-force entirely unthrottled while
+    // authenticated traffic still appears correctly limited. preValidation runs after the whole
+    // onRequest chain, so the limiter fires first and failed auth consumes budget.
+    // Verified empirically, and regression-tested in server.test.ts.
+    const authHook = makeAuthHook(apiKey);
+    await app.register(fastifyPlugin(async (instance) => {
+        instance.addHook('preValidation', authHook);
+    }, { name: 'order-router-auth' }));
+
+    // preValidation only runs for *matched* routes, so without this an unknown path would 404
+    // before auth ever ran — handing an unauthenticated caller a 404-vs-401 oracle for
+    // enumerating which routes exist. Re-checking auth here keeps unknown paths indistinguishable
+    // from protected ones for anyone without a key, while still giving authenticated callers a
+    // truthful 404 for a genuine typo.
+    app.setNotFoundHandler(async (request, reply) => {
+        const provided = extractApiKey(request.headers as Record<string, unknown>);
+        if (!isPublicPath(request.url) && (provided === undefined || !safeCompare(provided, apiKey))) {
+            return reply.code(401).send({ error: 'unauthorized' });
+        }
+        return reply.code(404).send({ error: 'not found' });
+    });
 
     await app.register(websocketPlugin);
 

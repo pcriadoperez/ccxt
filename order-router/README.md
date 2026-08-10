@@ -152,19 +152,30 @@ either `X-API-Key: <key>` or `Authorization: Bearer <key>`.
 - Keys are compared through SHA-256 digests + `timingSafeEqual`, not `===`. Digesting first makes
   both sides a fixed 32 bytes, so the comparison leaks neither key length nor common prefix
   through timing, and can't throw on a length mismatch.
-- The auth hook runs at `onRequest`, i.e. **before routing**, so unknown paths return `401` rather
-  than `404` — no oracle for enumerating which routes exist. Missing and wrong keys produce
-  byte-identical responses for the same reason.
+- The auth hook runs at **`preValidation`**, not `onRequest` — deliberately, and this ordering is
+  load-bearing (see Rate limiting below). Unknown paths still return `401` rather than `404` for
+  unauthenticated callers, via a custom not-found handler that re-checks the key, so there's no
+  oracle for enumerating which routes exist; authenticated callers still get a truthful `404`.
+  Missing and wrong keys produce byte-identical responses for the same reason.
 - Unset `ORDER_ROUTER_API_KEY` falls back to the well-known literal `dev-local-key-change-me` and
   logs a loud warning at startup. That default grants no security; it exists so local dev works
   and so an unconfigured deployment is obviously wrong rather than subtly wrong.
 
 **Rate limiting** (`@fastify/rate-limit`). Default 600 requests / 60s.
 
-- Registered *before* the auth hook, so a flood of invalid keys burns rate-limit budget instead of
-  reaching the key comparison unbounded.
-- Bucketed **per API key** (falling back to IP only where no key is present), so one client can't
-  exhaust another's budget and clients behind a shared NAT aren't collectively throttled.
+- Runs **before** auth, so a flood of invalid keys burns rate-limit budget instead of probing the
+  key comparison unbounded. This ordering is *not* automatic and was originally wrong: because
+  `@fastify/rate-limit` attaches its check as a per-route hook, and route-level `onRequest` hooks
+  run after all instance-level ones, an instance-level auth hook at `onRequest` always preceded
+  the limiter regardless of registration order — so every `401` short-circuited before being
+  counted, and key brute-force was completely unthrottled while authenticated traffic looked
+  correctly limited. Auth therefore runs at `preValidation`, which is after the whole `onRequest`
+  chain. Regression-tested, since testing only the authenticated path cannot catch this.
+- Bucketed **per API key only once the key is valid**; wrong or absent keys bucket by IP. Bucketing
+  unconditionally on the caller-supplied header is a trap — an attacker rotates the header per
+  request, mints a fresh bucket each time, and brute-forces without ever being throttled (it is
+  also an unbounded-memory vector). Valid clients still get per-key fairness, so one can't exhaust
+  another's budget and NAT'd clients aren't collectively throttled.
 - `/health` is exempt — a throttled liveness probe reads as an outage to an orchestrator and would
   trigger restarts under exactly the load where that's worst.
 - Responses carry `x-ratelimit-*` and `retry-after`.
