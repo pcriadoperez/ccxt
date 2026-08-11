@@ -140,7 +140,20 @@ export async function buildServer (
         (socket, request) => {
             const symbol = decodeURIComponent(request.params.symbol);
             const side = request.query.side === 'sell' ? 'sell' : 'buy';
+
+            // Validate amount exactly as the REST handler does. Previously this path took
+            // Number(...) unchecked, so `amount=abc` produced NaN — which defeats the
+            // `remaining <= 0` termination check in walkBook, making it traverse every level of
+            // every book and then stream {amount: null, filledAmount: null, averagePrice: null}
+            // forever. `amount=-5` and absurd magnitudes were likewise accepted. A streaming
+            // endpoint repeating that work on every book update is strictly worse than the
+            // one-shot REST equivalent, so it needs at least the same validation.
             const amount = Number(request.query.amount ?? '0.01');
+            if (!Number.isFinite(amount) || amount <= 0) {
+                socket.send(JSON.stringify({ error: 'amount query param must be a positive finite number' }));
+                socket.close(1008, 'invalid amount');
+                return;
+            }
 
             // Push-on-change rather than polling: with N clients x a fixed
             // poll interval, CPU cost scales with N regardless of whether

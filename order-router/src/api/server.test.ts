@@ -282,3 +282,37 @@ test('unauthenticated requests with no key at all are rate limited', async () =>
     assert.ok(codes.includes(429), `unauthenticated flood must be throttled, got ${JSON.stringify(codes)}`);
     await app.close();
 });
+
+// --- WebSocket stream endpoint input validation ---
+
+test('WS /stream/best rejects a non-numeric, negative, or zero amount', async () => {
+    // The WS path originally took Number(amount) unchecked while the REST path validated it.
+    // NaN defeats walkBook's `remaining <= 0` termination check, so it traversed every level of
+    // every book and then streamed nulls — repeatedly, on every book update. Needs a real
+    // listening server (not inject()) because the bug lives in the upgrade handler.
+    const { WebSocket } = await import('ws');
+    const previous = process.env['ORDER_ROUTER_API_KEY'];
+    process.env['ORDER_ROUTER_API_KEY'] = TEST_API_KEY;
+    const app = await buildServer(new OrderBookCache(), new FeeRegistry(), silentLogger, { rateLimitMax: 100000 });
+    try {
+        await app.listen({ port: 0, host: '127.0.0.1' });
+        const address = app.server.address();
+        const port = typeof address === 'object' && address ? address.port : 0;
+
+        for (const bad of ['amount=abc', 'amount=-5', 'amount=0']) {
+            const closeCode = await new Promise<number>((resolve) => {
+                const ws = new WebSocket(`ws://127.0.0.1:${port}/stream/best/BTC%2FUSDT?${bad}`, {
+                    headers: { 'x-api-key': TEST_API_KEY },
+                });
+                ws.on('close', (code: number) => resolve(code));
+                ws.on('error', () => resolve(-1));
+                setTimeout(() => { ws.close(); resolve(0); }, 2000);
+            });
+            assert.equal(closeCode, 1008, `${bad} should be rejected with a policy-violation close`);
+        }
+    } finally {
+        await app.close();
+        if (previous === undefined) delete process.env['ORDER_ROUTER_API_KEY'];
+        else process.env['ORDER_ROUTER_API_KEY'] = previous;
+    }
+});
