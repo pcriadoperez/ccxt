@@ -316,3 +316,51 @@ test('WS /stream/best rejects a non-numeric, negative, or zero amount', async ()
         else process.env['ORDER_ROUTER_API_KEY'] = previous;
     }
 });
+
+test('rejected WebSocket upgrades do not leak server-side sockets', async () => {
+    // Regression test for a confirmed unauthenticated FD-exhaustion DoS. When auth ran at
+    // onRequest, its 401 set reply.sent, which halts Fastify's hook chain — so @fastify/websocket's
+    // own onRequest hook (the one that sets request.ws) never ran, its onResponse cleanup
+    // (`if (request.ws) ...destroy()`) no-oped, and the socket Node had already handed off via the
+    // upgrade event was held for the life of the process. No timeout reaps a post-upgrade socket.
+    // Measured on the original code: 1200 upgrades leaked 1200 FDs in ~700ms.
+    //
+    // Must drive a real TCP upgrade: app.inject() never touches the socket path where this lives.
+    const net = await import('node:net');
+    const previous = process.env['ORDER_ROUTER_API_KEY'];
+    process.env['ORDER_ROUTER_API_KEY'] = TEST_API_KEY;
+    const app = await buildServer(new OrderBookCache(), new FeeRegistry(), silentLogger, { rateLimitMax: 100000 });
+    try {
+        await app.listen({ port: 0, host: '127.0.0.1' });
+        const address = app.server.address();
+        const port = typeof address === 'object' && address ? address.port : 0;
+
+        const upgrade = (path: string) => new Promise<void>((resolve) => {
+            const socket = net.connect(port, '127.0.0.1', () => {
+                socket.write(
+                    `GET ${path} HTTP/1.1\r\nHost: h\r\nUpgrade: websocket\r\n`
+                    + 'Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n'
+                    + 'Sec-WebSocket-Version: 13\r\n\r\n');
+            });
+            let buf = '';
+            socket.on('data', (d) => { buf += d; if (buf.includes('\r\n\r\n')) { socket.destroy(); resolve(); } });
+            socket.on('error', () => resolve());
+            socket.setTimeout(3000, () => { socket.destroy(); resolve(); });
+        });
+
+        // Path-independent on the original bug: matched WS route, matched non-WS route, and an
+        // unmatched path all leaked, so all three are covered here.
+        for (const path of ['/stream/best/BTC%2FUSDT', '/symbols', '/nonexistent']) {
+            for (let i = 0; i < 10; i++) await upgrade(path);
+        }
+        await new Promise((r) => setTimeout(r, 1500));
+
+        const held = await new Promise<number>((resolve, reject) =>
+            app.server.getConnections((e, c) => (e ? reject(e) : resolve(c))));
+        assert.ok(held <= 2, `rejected upgrades must not accumulate sockets, ${held} still held`);
+    } finally {
+        await app.close();
+        if (previous === undefined) delete process.env['ORDER_ROUTER_API_KEY'];
+        else process.env['ORDER_ROUTER_API_KEY'] = previous;
+    }
+});
