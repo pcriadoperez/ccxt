@@ -4,12 +4,15 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { z } from 'zod';
 import { logger } from '../logger.js';
 import { extractApiKey, resolveApiKey, safeCompare } from '../api/auth.js';
+import { FixedWindowRateLimiter } from '../api/rateLimiter.js';
 import * as routerClient from './tools.js';
 import type { RouterClientOptions } from './tools.js';
 
 const API_BASE_URL = process.env['ORDER_ROUTER_API_URL'] ?? 'http://localhost:8080';
 const MCP_PORT = Number(process.env['ORDER_ROUTER_MCP_PORT'] ?? 8081);
 const MCP_HOST = process.env['ORDER_ROUTER_MCP_HOST'] ?? '0.0.0.0';
+const MCP_RATE_LIMIT_MAX = Number(process.env['ORDER_ROUTER_RATE_LIMIT_MAX'] ?? 600);
+const MCP_RATE_LIMIT_WINDOW_MS = Number(process.env['ORDER_ROUTER_RATE_LIMIT_WINDOW_MS'] ?? 60_000);
 
 function textResult (data: unknown) {
     return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
@@ -127,13 +130,35 @@ async function main (): Promise<void> {
         );
     }
 
+    const limiter = new FixedWindowRateLimiter(MCP_RATE_LIMIT_MAX, MCP_RATE_LIMIT_WINDOW_MS);
+
     const httpServer = createServer((req, res) => {
         if (req.url === '/mcp' && req.method === 'POST') {
             // The MCP endpoint proxies privileged router data, so it authenticates its own callers
             // with the same key it uses upstream — otherwise it would be an open bypass around the
             // router's auth.
             const provided = extractApiKey(req.headers as Record<string, unknown>);
-            if (provided === undefined || !safeCompare(provided, apiKey)) {
+            const keyIsValid = provided !== undefined && safeCompare(provided, apiKey);
+
+            // Rate limit BEFORE returning the auth verdict, and bucket by key only when the key is
+            // valid. Without this the MCP port is a second, equivalent brute-force door: the
+            // router's limiter lives in a different process on a different port and does not cover
+            // it, so unlimited key guessing here would defeat the fix applied there.
+            const bucketKey = keyIsValid ? (provided as string) : (req.socket.remoteAddress ?? 'unknown');
+            const decision = limiter.consume(bucketKey);
+            if (!decision.allowed) {
+                res.writeHead(429, {
+                    'content-type': 'application/json',
+                    'retry-after': String(decision.resetSeconds),
+                    'x-ratelimit-limit': String(decision.limit),
+                    'x-ratelimit-remaining': String(decision.remaining),
+                }).end(
+                    JSON.stringify({ jsonrpc: '2.0', error: { code: -32002, message: 'rate limit exceeded' }, id: null }),
+                );
+                return;
+            }
+
+            if (!keyIsValid) {
                 res.writeHead(401, { 'content-type': 'application/json' }).end(
                     JSON.stringify({ jsonrpc: '2.0', error: { code: -32001, message: 'unauthorized' }, id: null }),
                 );

@@ -181,7 +181,11 @@ either `X-API-Key: <key>` or `Authorization: Bearer <key>`.
 - Responses carry `x-ratelimit-*` and `retry-after`.
 
 The MCP server authenticates its own callers with the same key and forwards it upstream; without
-that it would be an unauthenticated bypass around the router's auth.
+that it would be an unauthenticated bypass around the router's auth. It runs in a separate process
+on a separate port, so the Fastify limiter does not cover it — it therefore has its own limiter
+(`src/api/rateLimiter.ts`, a small fixed-window implementation mirroring the same
+bucket-by-key-only-when-valid semantics). Omitting it left a second, equivalent brute-force door
+open on :8081 after the first was closed on :8080.
 
 ## MCP server (`src/mcp/`)
 
