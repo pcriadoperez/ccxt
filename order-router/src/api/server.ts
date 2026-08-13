@@ -20,6 +20,8 @@ export interface ServerOptions {
     // process env (config.ts snapshots env at import time, so env mutation can't reach it).
     rateLimitMax?: number;
     rateLimitWindowMs?: number;
+    wsMaxConnectionsPerKey?: number;
+    wsIdleTimeoutMs?: number;
 }
 
 export async function buildServer (
@@ -32,6 +34,10 @@ export async function buildServer (
 
     const rateLimitMax = options.rateLimitMax ?? config.rateLimitMax;
     const rateLimitWindowMs = options.rateLimitWindowMs ?? config.rateLimitWindowMs;
+    const wsMaxConnectionsPerKey = options.wsMaxConnectionsPerKey ?? config.wsMaxConnectionsPerKey;
+    const wsIdleTimeoutMs = options.wsIdleTimeoutMs ?? config.wsIdleTimeoutMs;
+    // Live count of open /stream/best sockets per API key, enforcing wsMaxConnectionsPerKey.
+    const wsConnectionsByKey = new Map<string, number>();
     const { apiKey, isDefault } = resolveApiKey();
     if (isDefault) {
         logger.warn(
@@ -155,6 +161,20 @@ export async function buildServer (
                 return;
             }
 
+            // Cap concurrent streams per key. Rate limiting bounds how fast connections open, not
+            // how many stay open, and each one costs a cache listener plus recomputation on every
+            // book update for its symbol. Counted per key so one client cannot starve another.
+            const connectionKey = extractApiKey(request.headers as Record<string, unknown>) ?? 'unknown';
+            const openForKey = wsConnectionsByKey.get(connectionKey) ?? 0;
+            if (openForKey >= wsMaxConnectionsPerKey) {
+                socket.send(JSON.stringify({
+                    error: `too many concurrent stream connections (limit ${wsMaxConnectionsPerKey})`,
+                }));
+                socket.close(1013, 'connection limit reached');
+                return;
+            }
+            wsConnectionsByKey.set(connectionKey, openForKey + 1);
+
             // Push-on-change rather than polling: with N clients x a fixed
             // poll interval, CPU cost scales with N regardless of whether
             // anything changed, which doesn't hold up at scale. A single
@@ -175,9 +195,44 @@ export async function buildServer (
                 setImmediate(flush);
             };
 
+            // Heartbeat reaper. A socket that dies without a close frame (half-open TCP, suspended
+            // client) would otherwise hold its listener and its slot against the cap forever, so
+            // liveness is asserted actively rather than waiting for a close that may never arrive.
+            let alive = true;
+            socket.on('pong', () => { alive = true; });
+            const heartbeat = setInterval(() => {
+                if (!alive) {
+                    // terminate(), not close(): an unresponsive peer will not complete a closing
+                    // handshake, so a graceful close could hang indefinitely.
+                    socket.terminate();
+                    return;
+                }
+                alive = false;
+                socket.ping();
+            }, wsIdleTimeoutMs);
+
             cache.on(`update:${symbol}`, onUpdate);
             flush();
-            socket.on('close', () => cache.off(`update:${symbol}`, onUpdate));
+
+            // Idempotent: 'close' can fire after terminate(), and releasing twice would corrupt
+            // the per-key count and eventually lock a legitimate client out of its own budget.
+            let released = false;
+            const release = () => {
+                if (released) return;
+                released = true;
+                clearInterval(heartbeat);
+                cache.off(`update:${symbol}`, onUpdate);
+                const remaining = (wsConnectionsByKey.get(connectionKey) ?? 1) - 1;
+                if (remaining > 0) {
+                    wsConnectionsByKey.set(connectionKey, remaining);
+                } else {
+                    // Delete rather than store 0 — connectionKey is client-supplied, so keeping
+                    // empty entries would let key rotation grow this map without bound.
+                    wsConnectionsByKey.delete(connectionKey);
+                }
+            };
+            socket.on('close', release);
+            socket.on('error', release);
         },
     );
 

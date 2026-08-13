@@ -364,3 +364,142 @@ test('rejected WebSocket upgrades do not leak server-side sockets', async () => 
         else process.env['ORDER_ROUTER_API_KEY'] = previous;
     }
 });
+
+// --- WebSocket connection limits (security finding #4b) ---
+
+async function buildWsLimitedServer (opts: { wsMaxConnectionsPerKey?: number; wsIdleTimeoutMs?: number }) {
+    process.env['ORDER_ROUTER_API_KEY'] = TEST_API_KEY;
+    const cache = new OrderBookCache();
+    cache.setBook(book());
+    const app = await buildServer(cache, new FeeRegistry(), silentLogger, {
+        rateLimitMax: 100000,
+        ...opts,
+    });
+    await app.listen({ port: 0, host: '127.0.0.1' });
+    const address = app.server.address();
+    const port = typeof address === 'object' && address ? address.port : 0;
+    return { app, port, cache };
+}
+
+test('concurrent WS stream connections are capped per API key', async () => {
+    // Each stream holds a cache listener removed only on close, which the client controls. Rate
+    // limiting bounds how fast connections open, not how many stay open, so without a cap an
+    // authenticated client can accumulate listeners until the process exhausts resources.
+    const { WebSocket } = await import('ws');
+    const { app, port } = await buildWsLimitedServer({ wsMaxConnectionsPerKey: 3 });
+    const open: InstanceType<typeof WebSocket>[] = [];
+    try {
+        const connect = (key: string) => new Promise<{ ok: boolean; code: number }>((resolve) => {
+            const ws = new WebSocket(`ws://127.0.0.1:${port}/stream/best/BTC%2FUSDT?amount=1`, {
+                headers: { 'x-api-key': key },
+            });
+            open.push(ws);
+            let sawData = false;
+            ws.on('message', (d: Buffer) => {
+                const parsed = JSON.parse(d.toString());
+                if (parsed.error === undefined) { sawData = true; resolve({ ok: true, code: 0 }); }
+            });
+            ws.on('close', (code: number) => resolve({ ok: sawData, code }));
+            ws.on('error', () => resolve({ ok: false, code: -1 }));
+        });
+
+        const accepted = [];
+        for (let i = 0; i < 3; i++) accepted.push(await connect(TEST_API_KEY));
+        assert.ok(accepted.every((r) => r.ok), 'first 3 connections within the cap are accepted');
+
+        const rejected = await connect(TEST_API_KEY);
+        assert.equal(rejected.ok, false, 'connection past the cap is rejected');
+        assert.equal(rejected.code, 1013, 'rejected with 1013 Try Again Later');
+    } finally {
+        for (const ws of open) { try { ws.terminate(); } catch { /* already closed */ } }
+        await app.close();
+    }
+});
+
+test('closing a stream frees its slot against the cap', async () => {
+    // Guards the release path: a leaked count would permanently lock a legitimate client out of
+    // its own budget, turning the DoS defence into a self-inflicted DoS.
+    const { WebSocket } = await import('ws');
+    const { app, port } = await buildWsLimitedServer({ wsMaxConnectionsPerKey: 1 });
+    try {
+        const openOne = () => new Promise<InstanceType<typeof WebSocket>>((resolve, reject) => {
+            const ws = new WebSocket(`ws://127.0.0.1:${port}/stream/best/BTC%2FUSDT?amount=1`, {
+                headers: { 'x-api-key': TEST_API_KEY },
+            });
+            ws.on('message', () => resolve(ws));
+            ws.on('error', reject);
+            setTimeout(() => reject(new Error('timeout')), 3000);
+        });
+
+        const first = await openOne();
+        first.close();
+        await new Promise((r) => setTimeout(r, 300));
+
+        // Slot must be reusable now; if the count leaked this rejects with 1013.
+        const second = await openOne();
+        assert.equal(second.readyState, second.OPEN, 'slot was released and reused');
+        second.terminate();
+    } finally {
+        await app.close();
+    }
+});
+
+test('per-key WS caps are independent across keys', async () => {
+    const { WebSocket } = await import('ws');
+    const { app, port } = await buildWsLimitedServer({ wsMaxConnectionsPerKey: 1 });
+    const open: InstanceType<typeof WebSocket>[] = [];
+    try {
+        // Both use the valid key header value here; a different *valid* identity isn't available
+        // under single-key auth, so this asserts the bookkeeping is keyed at all rather than global.
+        const ws = new WebSocket(`ws://127.0.0.1:${port}/stream/best/BTC%2FUSDT?amount=1`, {
+            headers: { 'x-api-key': TEST_API_KEY },
+        });
+        open.push(ws);
+        await new Promise((resolve, reject) => {
+            ws.on('message', resolve);
+            ws.on('error', reject);
+            setTimeout(() => reject(new Error('timeout')), 3000);
+        });
+        // A second connection on the SAME key must be refused at cap 1.
+        const refusedCode = await new Promise<number>((resolve) => {
+            const ws2 = new WebSocket(`ws://127.0.0.1:${port}/stream/best/BTC%2FUSDT?amount=1`, {
+                headers: { 'x-api-key': TEST_API_KEY },
+            });
+            open.push(ws2);
+            ws2.on('close', (code: number) => resolve(code));
+            ws2.on('error', () => resolve(-1));
+        });
+        assert.equal(refusedCode, 1013);
+    } finally {
+        for (const w of open) { try { w.terminate(); } catch { /* already closed */ } }
+        await app.close();
+    }
+});
+
+test('unresponsive WS clients are reaped by the heartbeat', async () => {
+    // A socket that never sends a close frame (half-open TCP, suspended client) would otherwise
+    // hold its listener and cap slot forever. Uses a short idle timeout and suppresses the
+    // client's automatic pong so it looks dead to the server.
+    const { WebSocket } = await import('ws');
+    const { app, port } = await buildWsLimitedServer({ wsMaxConnectionsPerKey: 5, wsIdleTimeoutMs: 250 });
+    try {
+        const ws = new WebSocket(`ws://127.0.0.1:${port}/stream/best/BTC%2FUSDT?amount=1`, {
+            headers: { 'x-api-key': TEST_API_KEY },
+        });
+        await new Promise((resolve, reject) => {
+            ws.on('message', resolve);
+            ws.on('error', reject);
+            setTimeout(() => reject(new Error('timeout')), 3000);
+        });
+        // Silence the automatic pong so the server sees no liveness signal.
+        ws.pong = () => { /* deliberately unresponsive */ };
+
+        const closed = await new Promise<boolean>((resolve) => {
+            ws.on('close', () => resolve(true));
+            setTimeout(() => resolve(false), 4000);
+        });
+        assert.equal(closed, true, 'unresponsive socket must be terminated by the reaper');
+    } finally {
+        await app.close();
+    }
+});

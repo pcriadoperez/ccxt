@@ -90,4 +90,15 @@ export const config = {
     // lookup, so the server can sustain far more than this.
     rateLimitMax: Number(process.env['ORDER_ROUTER_RATE_LIMIT_MAX'] ?? 600),
     rateLimitWindowMs: Number(process.env['ORDER_ROUTER_RATE_LIMIT_WINDOW_MS'] ?? 60_000),
+
+    // WebSocket stream limits. Each /stream/best connection holds an EventEmitter listener on the
+    // cache that is only removed on socket close — which the client controls. Without a cap, an
+    // authenticated client can accumulate connections (and listeners, and per-connection compute on
+    // every book update) until the process exhausts sockets or CPU. Rate limiting does not help:
+    // it bounds the rate of new connections, not the number held open.
+    wsMaxConnectionsPerKey: Number(process.env['ORDER_ROUTER_WS_MAX_CONNECTIONS_PER_KEY'] ?? 50),
+    // Belt to the cap's braces: reaps sockets that stop responding to pings without cleanly
+    // closing (half-open TCP, suspended laptop, hostile client that never sends a close frame).
+    // Without it those connections hold their listener slot against the cap indefinitely.
+    wsIdleTimeoutMs: Number(process.env['ORDER_ROUTER_WS_IDLE_TIMEOUT_MS'] ?? 120_000),
 };

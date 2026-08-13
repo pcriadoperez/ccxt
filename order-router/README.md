@@ -161,6 +161,15 @@ either `X-API-Key: <key>` or `Authorization: Bearer <key>`.
   logs a loud warning at startup. That default grants no security; it exists so local dev works
   and so an unconfigured deployment is obviously wrong rather than subtly wrong.
 
+**WebSocket stream limits.** Each `/stream/best` connection holds a cache listener removed only on
+socket close — which the client controls — and costs a recomputation on every book update for its
+symbol. Rate limiting bounds how fast connections open, not how many stay open, so it does not
+help here. Two mechanisms bound it: a per-key concurrency cap (`ORDER_ROUTER_WS_MAX_CONNECTIONS_PER_KEY`,
+default 50, refused with a `1013` close), and a ping/pong heartbeat that terminates sockets which
+stop responding without ever sending a close frame (half-open TCP, suspended clients) and would
+otherwise hold their listener and cap slot forever. Slot release is idempotent — releasing twice
+would corrupt the count and eventually lock a legitimate client out of its own budget.
+
 **Rate limiting** (`@fastify/rate-limit`). Default 600 requests / 60s.
 
 - Runs **before** auth, so a flood of invalid keys burns rate-limit budget instead of probing the
@@ -239,6 +248,8 @@ against a running router with live exchange data) during development — not jus
 | `ORDER_ROUTER_API_KEY` | `dev-local-key-change-me` | **Set this in any real deployment.** The default grants no security and logs a warning. |
 | `ORDER_ROUTER_RATE_LIMIT_MAX` | `600` | Requests per window, per API key. |
 | `ORDER_ROUTER_RATE_LIMIT_WINDOW_MS` | `60000` | Rate limit window. |
+| `ORDER_ROUTER_WS_MAX_CONNECTIONS_PER_KEY` | `50` | Max concurrent `/stream/best` sockets per API key. |
+| `ORDER_ROUTER_WS_IDLE_TIMEOUT_MS` | `120000` | Heartbeat interval; a socket that misses two beats is terminated. |
 | `LOG_LEVEL` | `info` | |
 
 ## Run
@@ -315,11 +326,11 @@ Connects to each candidate exchange, holds for a set duration, reports message c
 Highest-volume: kucoin (14,809 msgs), poloniex (7,500), gate (1,791), htx (676), bitget (563),
 coinbase (493). Median time-to-first-message ~1.8s.
 
-The 6 failures are all explainable, none are router bugs:
+The 6 failures are all explainable, none are router bugs (`mexc` has since been fixed by adding
+`protobufjs`, verified live — 104 bids / 108 asks — so the reachable count is now 29):
 
 | Exchange | Reason |
 |---|---|
-| `mexc` | needs the optional `protobufjs` peer dep to decode WS frames — installable, not yet done |
 | `cex`, `luno` | require API credentials even for public WS |
 | `okx`, `binanceus`, `independentreserve` | no data within 20s — the same egress geo-restriction that blocks Binance/Bybit from this sandbox |
 
@@ -395,6 +406,7 @@ Not ready to expose publicly. Honest status of the blockers:
 | No soak testing | **Open** — longest continuous run is minutes, not hours/days |
 | No metrics/alerting | **Open** — only `/exchanges/status` |
 | No HA/failover | **Open** — a dead process is an outage |
+| Unbounded WS connections (finding #4b) | **Closed** — per-key concurrency cap + heartbeat reaper, regression-tested |
 
 ## Known gaps / next steps
 
@@ -402,7 +414,6 @@ Not ready to expose publicly. Honest status of the blockers:
   full discovery scale (76 exchanges) rather than the 5-exchange subset reachable from this sandbox.
 - Replace shared-key auth with something real (per-client keys + rotation + revocation) before any
   public exposure, and put TLS termination in front.
-- Install `protobufjs` to unblock `mexc` WS decoding (one dependency; not yet done).
 - Soak test: hours-to-days continuous run with `process.memoryUsage()` tracked, to find leaks and
   slow connection drift that a 75-second test can't.
 - `ORDER_ROUTER_MAX_SYMBOLS_PER_EXCHANGE` needs real per-exchange tuning under production load —
