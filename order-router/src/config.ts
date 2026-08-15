@@ -100,5 +100,21 @@ export const config = {
     // Belt to the cap's braces: reaps sockets that stop responding to pings without cleanly
     // closing (half-open TCP, suspended laptop, hostile client that never sends a close frame).
     // Without it those connections hold their listener slot against the cap indefinitely.
-    wsIdleTimeoutMs: Number(process.env['ORDER_ROUTER_WS_IDLE_TIMEOUT_MS'] ?? 120_000),
+    // 30s, deliberately BELOW nginx's 60s default proxy_read_timeout. A reverse proxy closes an
+    // idle upstream connection on its own timer, so a heartbeat slower than that timer never fires
+    // — the proxy kills the stream first. Only shows up on quiet symbols: an active book keeps the
+    // connection busy with real data, so the bug hides until you subscribe to an illiquid pair.
+    // If you raise proxy_read_timeout, this can rise with it; it must stay under it either way.
+    wsIdleTimeoutMs: Number(process.env['ORDER_ROUTER_WS_IDLE_TIMEOUT_MS'] ?? 30_000),
+
+    // Whether to derive the client IP from X-Forwarded-For. MUST stay false unless a trusted proxy
+    // actually fronts this service and overwrites that header.
+    //
+    // The failure is symmetric, which is why it is opt-in rather than auto-detected:
+    //   - false behind nginx  -> every request appears to come from the proxy, so all unauthenticated
+    //     traffic shares ONE rate-limit bucket and per-client fairness is lost.
+    //   - true when NOT behind a proxy -> any client can set X-Forwarded-For itself, mint a fresh
+    //     bucket per request, and bypass rate limiting entirely. That is strictly worse: it hands
+    //     back the exact brute-force hole the limiter exists to close.
+    trustProxy: process.env['ORDER_ROUTER_TRUST_PROXY'] === 'true',
 };

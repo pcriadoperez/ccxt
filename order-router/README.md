@@ -249,7 +249,8 @@ against a running router with live exchange data) during development — not jus
 | `ORDER_ROUTER_RATE_LIMIT_MAX` | `600` | Requests per window, per API key. |
 | `ORDER_ROUTER_RATE_LIMIT_WINDOW_MS` | `60000` | Rate limit window. |
 | `ORDER_ROUTER_WS_MAX_CONNECTIONS_PER_KEY` | `50` | Max concurrent `/stream/best` sockets per API key. |
-| `ORDER_ROUTER_WS_IDLE_TIMEOUT_MS` | `120000` | Heartbeat interval; a socket that misses two beats is terminated. |
+| `ORDER_ROUTER_WS_IDLE_TIMEOUT_MS` | `30000` | Heartbeat interval; a socket that misses two beats is terminated. Must stay below the reverse proxy's `proxy_read_timeout`. |
+| `ORDER_ROUTER_TRUST_PROXY` | `false` | Derive client IP from `X-Forwarded-For`. Enable **only** behind a trusted proxy — see "Deploying behind nginx". |
 | `LOG_LEVEL` | `info` | |
 
 ## Run
@@ -295,6 +296,76 @@ development instead — see git history / PR description): `ExchangeConnector`'s
 lifecycle (reconnect/backoff/jitter against a real socket), discovery's `loadMarkets()` network
 calls, and sharding's actual `child_process` IPC (verified live, not by an automated test, since
 that requires spawning real subprocesses with real network access).
+
+## Deploying behind nginx on a VPS
+
+nginx terminates TLS, so the service does not do TLS itself and there is no certificate handling
+in this codebase. Three things must be configured or the deployment is subtly broken.
+
+**1. Bind to loopback.** Set `HOST=127.0.0.1` (default is `0.0.0.0`). Otherwise the service is
+reachable directly on port 8080, bypassing nginx and therefore bypassing TLS — the API key would
+cross the wire in cleartext to anyone who skips the proxy.
+
+**2. Set `ORDER_ROUTER_TRUST_PROXY=true`.** The rate limiter buckets failed-auth attempts by client
+IP. Behind a proxy every request arrives from nginx's address, so without this **all
+unauthenticated traffic shares one bucket** and one abuser throttles every other client's
+legitimate retries. The flag is opt-in rather than automatic because the opposite mistake is worse:
+turning it on with no proxy in front lets any client set `X-Forwarded-For` itself, mint a fresh
+bucket per request, and bypass rate limiting completely. Only enable it when nginx really is in
+front **and** overwrites the header (`proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for`,
+as below — never pass a client-supplied value through).
+
+**3. Keep the WS heartbeat under `proxy_read_timeout`.** nginx closes an idle upstream connection
+on its own timer (default 60s). `ORDER_ROUTER_WS_IDLE_TIMEOUT_MS` now defaults to 30s for that
+reason. If you raise one, raise the other. This bug hides on liquid pairs — a busy book keeps the
+connection full of real data — and only appears on quiet symbols, where the stream silently drops
+about once a minute.
+
+```nginx
+upstream order_router { server 127.0.0.1:8080; }
+
+server {
+    listen 443 ssl http2;
+    server_name router.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/router.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/router.example.com/privkey.pem;
+
+    location / {
+        proxy_pass http://order_router;
+        proxy_set_header Host              $host;
+        # $proxy_add_x_forwarded_for appends the real peer; it does not trust what the client sent.
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # /stream/best needs the upgrade headers; without them the handshake 400s.
+    location /stream/ {
+        proxy_pass http://order_router;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade    $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host       $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        # Must exceed ORDER_ROUTER_WS_IDLE_TIMEOUT_MS or nginx reaps quiet streams first.
+        proxy_read_timeout 120s;
+        proxy_send_timeout 120s;
+    }
+
+    # /metrics is authenticated, but there is no reason to expose it publicly as well.
+    location /metrics {
+        allow 10.0.0.0/8;   # scraper network
+        deny  all;
+        proxy_pass http://order_router;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}
+```
+
+nginx also gives you a second, IP-level rate limit (`limit_req_zone`) in front of the app's
+per-key limit, and can enforce client certificates or IP allowlists if you want a second factor
+alongside the shared API key. What it does **not** solve: the API key is still a single shared
+secret with no rotation or revocation, so per-client identity remains an open gap.
 
 ## Metrics
 
@@ -434,7 +505,7 @@ Not ready to expose publicly. Honest status of the blockers:
 | Never run against many exchanges at once | **Closed for connection concurrency** — 28 simultaneous live exchanges verified. **Still open for full symbol load** (55k subscriptions) |
 | Not in CI | **Closed** — build + tests + boot/auth smoke tests on every change |
 | Binance/Bybit/OKX never live-tested | **Open** — geo-blocked from every environment available here |
-| No TLS, runs plain HTTP | **Open** — assumes a terminating proxy in front; not documented or provisioned |
+| No TLS, runs plain HTTP | **Closed for a proxied deployment** — nginx terminates TLS; config, loopback binding, `trustProxy` and WS timeout pitfalls documented above. Still no TLS if run without a proxy. |
 | No soak testing | **Open** — longest continuous run is minutes, not hours/days |
 | No metrics/alerting | **Closed for instrumentation** — Prometheus `/metrics` with staleness, reconnect, throughput and event-loop-lag signals. **Still open:** nothing scrapes it and no alerts are wired up; the suggested rules above are untested. |
 | No HA/failover | **Open** — a dead process is an outage |

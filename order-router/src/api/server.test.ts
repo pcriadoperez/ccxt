@@ -503,3 +503,67 @@ test('unresponsive WS clients are reaped by the heartbeat', async () => {
         await app.close();
     }
 });
+
+// --- Reverse-proxy (nginx) deployment behaviour ---
+
+test('without trustProxy, a spoofed X-Forwarded-For cannot mint fresh rate-limit buckets', async () => {
+    // The dangerous direction: if trustProxy were on by default and no proxy overwrote the header,
+    // any client could rotate X-Forwarded-For per request and bypass rate limiting entirely —
+    // handing back the exact brute-force hole the limiter exists to close.
+    const previous = process.env['ORDER_ROUTER_API_KEY'];
+    process.env['ORDER_ROUTER_API_KEY'] = TEST_API_KEY;
+    const app = await buildServer(new OrderBookCache(), new FeeRegistry(), silentLogger, {
+        rateLimitMax: 3,
+        trustProxy: false,
+    });
+    try {
+        const codes: number[] = [];
+        for (let i = 0; i < 6; i++) {
+            const response = await app.inject({
+                method: 'GET',
+                url: '/symbols',
+                headers: { 'x-api-key': 'wrong', 'x-forwarded-for': `10.0.0.${i}` },
+            });
+            codes.push(response.statusCode);
+        }
+        assert.ok(codes.includes(429), 'rotating X-Forwarded-For must NOT evade the limiter');
+    } finally {
+        await app.close();
+        if (previous === undefined) delete process.env['ORDER_ROUTER_API_KEY'];
+        else process.env['ORDER_ROUTER_API_KEY'] = previous;
+    }
+});
+
+test('with trustProxy, distinct forwarded client IPs get independent buckets', async () => {
+    // The nginx direction: without this, every request arrives from the proxy's address and all
+    // unauthenticated traffic shares one bucket, so one abuser throttles every other client.
+    const previous = process.env['ORDER_ROUTER_API_KEY'];
+    process.env['ORDER_ROUTER_API_KEY'] = TEST_API_KEY;
+    const app = await buildServer(new OrderBookCache(), new FeeRegistry(), silentLogger, {
+        rateLimitMax: 2,
+        trustProxy: true,
+    });
+    try {
+        const exhaust = async (ip: string) => {
+            const codes: number[] = [];
+            for (let i = 0; i < 3; i++) {
+                const response = await app.inject({
+                    method: 'GET',
+                    url: '/symbols',
+                    headers: { 'x-api-key': 'wrong', 'x-forwarded-for': ip },
+                });
+                codes.push(response.statusCode);
+            }
+            return codes;
+        };
+        const first = await exhaust('203.0.113.10');
+        assert.equal(first[2], 429, 'first client exhausts its own bucket');
+
+        const second = await exhaust('203.0.113.99');
+        assert.equal(second[0], 401, 'a different forwarded IP starts with a fresh bucket');
+    } finally {
+        await app.close();
+        if (previous === undefined) delete process.env['ORDER_ROUTER_API_KEY'];
+        else process.env['ORDER_ROUTER_API_KEY'] = previous;
+    }
+});

@@ -23,6 +23,7 @@ export interface ServerOptions {
     rateLimitWindowMs?: number;
     wsMaxConnectionsPerKey?: number;
     wsIdleTimeoutMs?: number;
+    trustProxy?: boolean;
 }
 
 export async function buildServer (
@@ -31,7 +32,10 @@ export async function buildServer (
     logger: Logger,
     options: ServerOptions = {},
 ) {
-    const app = Fastify({ loggerInstance: logger });
+    // trustProxy makes request.ip read X-Forwarded-For instead of the socket address. Required for
+    // the limiter's IP bucketing to mean anything behind nginx; dangerous if enabled without a
+    // proxy that overwrites the header (see config.ts). Off by default.
+    const app = Fastify({ loggerInstance: logger, trustProxy: options.trustProxy ?? config.trustProxy });
 
     const rateLimitMax = options.rateLimitMax ?? config.rateLimitMax;
     const rateLimitWindowMs = options.rateLimitWindowMs ?? config.rateLimitWindowMs;
