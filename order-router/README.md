@@ -296,6 +296,38 @@ lifecycle (reconnect/backoff/jitter against a real socket), discovery's `loadMar
 calls, and sharding's actual `child_process` IPC (verified live, not by an automated test, since
 that requires spawning real subprocesses with real network access).
 
+## Metrics
+
+`GET /metrics` serves Prometheus text format. **Authenticated like every other non-`/health` route**
+— it exposes the venue list, traffic volume and internal health, which is exactly the
+reconnaissance an attacker would want, so scrapers must send the API key.
+
+Values are **derived from cache state at scrape time** rather than incremented alongside it. The
+cache already owns the authoritative counters, and mirroring them into separate Prometheus counters
+would create two sources of truth that can drift, where a missed increment is invisible. Reading
+through a `collect()` callback makes disagreement with `/exchanges/status` structurally impossible.
+The trade-off is that cumulative series are Gauges whose values happen to be monotonic rather than
+Counters — `rate()`/`increase()` still work, and a restart resets to 0 exactly as a Counter would.
+
+| Metric | Why it's here |
+|---|---|
+| `order_router_exchange_last_update_age_seconds` | **The most important alert.** An exchange can hold an open socket while its subscription is silently dead — `connected` stays 1, nothing errors, and the router keeps ranking on rotting data. Connection state alone will not catch this. An exchange that has *never* updated reports process uptime rather than 0, so a connector that never produced a message is loud instead of indistinguishable from one that just updated. |
+| `order_router_stale_books` | How much of the cache is currently too old to rank with — i.e. actively degrading answer quality. |
+| `order_router_exchange_reconnects_total` | Reconnect storms were a real failure in live testing (1,000–2,500 in 15s); this is the signal that they have returned. |
+| `order_router_exchange_connected` / `_updates_total` | Per-exchange liveness and throughput; a flat update count on a connected exchange is a dead subscription. |
+| `order_router_cached_books` / `_cached_symbols` | Coverage — a drop means discovery or subscriptions regressed. |
+| `order_router_ws_stream_connections` | Open `/stream/best` sockets, to watch pressure against the per-key cap. |
+| `order_router_http_request_duration_seconds` | Latency histogram; its `_count` doubles as the request counter. Buckets are tuned sub-10ms because reads are in-memory map lookups. |
+| `order_router_nodejs_*` | Default process metrics. **Event loop lag** matters most — it is the first thing to degrade when WS message volume outruns the single thread. |
+
+Histogram labels use the **route template** (`/orderbook/:exchange/:symbol`), never the raw URL.
+Labelling by concrete symbol would mint one series per symbol across a ~10k routable universe and
+blow up Prometheus cardinality.
+
+Suggested alerts: `order_router_exchange_last_update_age_seconds > 60` (dead subscription),
+`order_router_stale_books / order_router_cached_books > 0.2` (widespread staleness),
+`rate(order_router_exchange_reconnects_total[5m])` above a per-exchange baseline (reconnect storm).
+
 ## Continuous integration
 
 `.github/workflows/order-router.yml` runs on any change under `order-router/` (and nothing else —
@@ -404,7 +436,7 @@ Not ready to expose publicly. Honest status of the blockers:
 | Binance/Bybit/OKX never live-tested | **Open** — geo-blocked from every environment available here |
 | No TLS, runs plain HTTP | **Open** — assumes a terminating proxy in front; not documented or provisioned |
 | No soak testing | **Open** — longest continuous run is minutes, not hours/days |
-| No metrics/alerting | **Open** — only `/exchanges/status` |
+| No metrics/alerting | **Closed for instrumentation** — Prometheus `/metrics` with staleness, reconnect, throughput and event-loop-lag signals. **Still open:** nothing scrapes it and no alerts are wired up; the suggested rules above are untested. |
 | No HA/failover | **Open** — a dead process is an outage |
 | Unbounded WS connections (finding #4b) | **Closed** — per-key concurrency cap + heartbeat reaper, regression-tested |
 

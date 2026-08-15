@@ -8,6 +8,7 @@ import type { OrderBookCache } from '../cache/orderBookCache.js';
 import type { FeeRegistry } from '../cache/feeRegistry.js';
 import { computeBestPrice } from '../routing/bestPrice.js';
 import { extractApiKey, isPublicPath, makeAuthHook, resolveApiKey, safeCompare } from './auth.js';
+import { buildHttpHistogram, buildMetricsRegistry } from '../metrics.js';
 
 interface BestPriceQuery {
     side?: string;
@@ -106,7 +107,39 @@ export async function buildServer (
 
     await app.register(websocketPlugin);
 
+    // Total open /stream/best sockets across all keys, for the gauge.
+    const countWsConnections = () => {
+        let total = 0;
+        for (const n of wsConnectionsByKey.values()) total += n;
+        return total;
+    };
+    const metricsRegistry = buildMetricsRegistry({
+        cache,
+        staleBookMs: config.staleBookMs,
+        getWsConnectionCount: countWsConnections,
+    });
+    const httpDuration = buildHttpHistogram(metricsRegistry);
+
+    app.addHook('onResponse', async (request, reply) => {
+        // Label with the ROUTE TEMPLATE, never the raw URL: /orderbook/:exchange/:symbol has tens
+        // of thousands of concrete values across the routable universe, and one series per symbol
+        // would blow up Prometheus cardinality. Unmatched requests collapse to a single bucket.
+        const route = request.routeOptions?.url ?? 'unmatched';
+        httpDuration.observe(
+            { method: request.method, route, status_code: String(reply.statusCode) },
+            reply.elapsedTime / 1000,
+        );
+    });
+
     app.get('/health', async () => ({ status: 'ok', uptimeSec: process.uptime() }));
+
+    // Authenticated like every other non-health route: it exposes the venue list, traffic volume
+    // and internal health, which is exactly the reconnaissance an attacker wants. Scrapers must
+    // send the API key. Not added to PUBLIC_PATHS for that reason.
+    app.get('/metrics', async (_request, reply) => {
+        reply.header('content-type', metricsRegistry.contentType);
+        return metricsRegistry.metrics();
+    });
 
     app.get('/exchanges/status', async () => ({ exchanges: cache.getHealth() }));
 

@@ -59,6 +59,24 @@ export class OrderBookCache extends EventEmitter {
         return Array.from(symbols);
     }
 
+    getBookCount (): number {
+        return this.books.size;
+    }
+
+    // Books too old to be used for ranking. Uses receivedAt rather than the exchange-supplied
+    // timestamp deliberately: exchange clocks drift and some venues omit the field entirely, so
+    // local arrival time is the only measure that is consistently present and monotonic here.
+    countStaleBooks (staleBookMs: number): number {
+        const cutoff = Date.now() - staleBookMs;
+        let stale = 0;
+        for (const book of this.books.values()) {
+            if (book.receivedAt < cutoff) {
+                stale += 1;
+            }
+        }
+        return stale;
+    }
+
     initHealth (exchangeId: string): void {
         const h: ExchangeHealth = {
             exchangeId,
