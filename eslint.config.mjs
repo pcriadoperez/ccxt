@@ -327,6 +327,18 @@ export default [
         },
     },
     {
+        files: ['migrate/ts/**/*.ts'],
+        languageOptions: sharedLanguageOptions,
+        plugins: sharedPlugins,
+        settings: sharedSettings,
+        rules: {
+            ...mainRulesWithoutJsdoc,
+            'no-console': 'off',
+            'no-use-before-define': 'off',
+            'lines-between-class-members': 'error',
+        },
+    },
+    {
         files: ['examples/ts/**/*.ts'],
         languageOptions: sharedLanguageOptions,
         plugins: sharedPlugins,

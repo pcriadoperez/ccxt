@@ -22,7 +22,7 @@ Each skill includes:
 
 ## Available Skills
 
-Five language-specific skills are available:
+Language-specific skills, plus two task skills:
 
 | Skill | Language | Coverage |
 |-------|----------|----------|
@@ -31,8 +31,15 @@ Five language-specific skills are available:
 | **ccxt-php** | PHP | Sync, async (ReactPHP), REST & WebSocket |
 | **ccxt-csharp** | C#/.NET | .NET Standard 2.0+, REST & WebSocket |
 | **ccxt-go** | Go | REST & WebSocket |
+| **ccxt-cli** | CLI | Query exchanges from the terminal, no code |
+| **ccxt-migrate** | Migration | Move a pmxt (`pmxtjs` / `pmxt`) project onto CCXT, TypeScript or Python |
 
-Each skill is tailored to the specific language with appropriate idioms, naming conventions, and best practices.
+Each language skill is tailored to that language with appropriate idioms, naming conventions, and best practices.
+
+`ccxt-migrate` is a task skill rather than a language skill: it teaches an assistant the
+full pmxt-to-CCXT mapping — venues, methods, errors, response shapes, the CCXT Pro
+subscription pattern — and pairs with the [`ccxt-migrate` codemod](Migrate-From-PMXT.md).
+Use it together with `ccxt-typescript` or `ccxt-python`.
 
 ## Installation
 

@@ -34,6 +34,7 @@ const GUIDES: Record<string, { route: string; title: string }> = {
     'Requirements.md':                 { route: 'requirements',                title: 'Requirements' },
     'Awesome.md':                      { route: 'examples/awesome',            title: 'Awesome CCXT' },
     'AI-Skills.md':                    { route: 'ai-skills',                   title: 'AI Skills' },
+    'Migrate-From-PMXT.md':            { route: 'migrate-from-pmxt',           title: 'Migrate from pmxt' },
     'Stats.md':                        { route: 'stats',                       title: 'Statistics' },
     'Certification.md':                { route: 'certification',               title: 'Certification' },
     'baseSpec.md':                     { route: 'base-spec',                   title: 'API Spec by Method' },
@@ -324,6 +325,7 @@ const ROUTE_DESC: Record<string, string> = {
     'prediction-markets': 'Trade prediction markets (Polymarket, Kalshi, Limitless, Myriad, Hyperliquid) with the CCXT unified API.',
     'exchange-markets': 'All cryptocurrency and prediction-market exchanges supported by CCXT.',
     'exchange-markets-by-country': 'CCXT-supported cryptocurrency and prediction-market exchanges grouped by country.',
+    'migrate-from-pmxt': 'Move a TypeScript or Python project from pmxt to CCXT with the ccxt-migrate codemod or an AI agent.',
 };
 
 // Code-fence languages Shiki recognises (lowercased). Anything else -> plain fence.
@@ -656,7 +658,7 @@ function main () {
     // 4) top-level (Guides) nav meta.json. exchanges/examples are their own root tabs.
     const topPages = [
         'index', 'install', 'manual', '[Prediction Markets](/docs/prediction)', 'pro-manual', 'pro', 'cli', 'mcp', 'examples-overview',
-        'faq', 'requirements', 'contributing',
+        'faq', 'migrate-from-pmxt', 'requirements', 'contributing',
         '---Reference---', 'base-spec', 'exchange-markets', 'exchange-markets-by-country',
         'ai-skills', 'stats', 'certification', 'changelog',
     ];

@@ -22,7 +22,7 @@ BLUE=$(printf '\033[0;34m')
 NC=$(printf '\033[0m') # No Color
 
 # Skill names (space-separated list instead of a bash array)
-ALL_SKILLS="ccxt-typescript ccxt-python ccxt-php ccxt-csharp ccxt-go ccxt-cli ccxt-mcp"
+ALL_SKILLS="ccxt-typescript ccxt-python ccxt-php ccxt-csharp ccxt-go ccxt-cli ccxt-mcp ccxt-migrate"
 
 # GitHub URL for remote installation
 GITHUB_RAW_URL="https://raw.githubusercontent.com/ccxt/ccxt/master/.claude/skills"
@@ -74,6 +74,7 @@ OPTIONS:
     --csharp        Install only ccxt-csharp skill
     --go            Install only ccxt-go skill
     --cli           Install only ccxt-cli skill
+    --migrate       Install only ccxt-migrate skill (pmxt -> CCXT migration)
     --all           Install all skills (default)
     --remote        Force download from GitHub, even inside the repo
     --github        Alias for --remote
@@ -349,6 +350,9 @@ main() {
                 ;;
             --cli)
                 selected_skills="$selected_skills ccxt-cli"
+                ;;
+            --migrate)
+                selected_skills="$selected_skills ccxt-migrate"
                 ;;
             --all)
                 selected_skills="$ALL_SKILLS"
