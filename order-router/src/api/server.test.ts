@@ -103,8 +103,13 @@ test('GET /price/best/:symbol returns a ranked result for a valid request', asyn
     const response = await app.inject({ method: 'GET', url: '/price/best/BTC%2FUSDT?side=buy&amount=1', headers: AUTH });
     assert.equal(response.statusCode, 200);
     const body = response.json();
-    assert.equal(body.best.exchangeId, 'kraken');
-    assert.equal(body.best.fullyFillable, true);
+    // The contract is route-based: best_single is simply a route of length 1.
+    assert.equal(body.route.length, 1);
+    assert.equal(body.route[0].exchangeId, 'kraken');
+    assert.equal(body.fullyFillable, true);
+    assert.equal(body.strategy, 'best_single');
+    assert.ok(body.requestId, 'every recommendation must carry an audit id');
+    assert.ok(body.calculatedAt > 0);
     await app.close();
 });
 
@@ -115,7 +120,7 @@ test('GET /price/best/:symbol defaults to buy side when side is omitted', async 
     const response = await app.inject({ method: 'GET', url: '/price/best/BTC%2FUSDT?amount=1', headers: AUTH });
     const body = response.json();
     assert.equal(body.side, 'buy');
-    assert.equal(body.best.averagePrice, 101);
+    assert.equal(body.route[0].averagePrice, 101);
     await app.close();
 });
 
@@ -566,4 +571,33 @@ test('with trustProxy, distinct forwarded client IPs get independent buckets', a
         if (previous === undefined) delete process.env['ORDER_ROUTER_API_KEY'];
         else process.env['ORDER_ROUTER_API_KEY'] = previous;
     }
+});
+
+test('rejects an unknown strategy rather than silently defaulting', async () => {
+    const { app } = await buildTestServer();
+    const r = await app.inject({ method: 'GET', url: '/price/best/BTC%2FUSDT?amount=1&strategy=nonsense', headers: AUTH });
+    assert.equal(r.statusCode, 400);
+    await app.close();
+});
+
+test('echoes a caller-supplied x-request-id so traces line up on both sides', async () => {
+    const { app, cache } = await buildTestServer();
+    cache.setBook(book());
+    const r = await app.inject({
+        method: 'GET', url: '/price/best/BTC%2FUSDT?amount=1',
+        headers: { ...AUTH, 'x-request-id': 'caller-supplied-id' },
+    });
+    assert.equal(r.json().requestId, 'caller-supplied-id');
+    assert.equal(r.headers['x-request-id'], 'caller-supplied-id');
+    await app.close();
+});
+
+test('mints a request id when the caller does not supply one', async () => {
+    const { app, cache } = await buildTestServer();
+    cache.setBook(book());
+    const r = await app.inject({ method: 'GET', url: '/price/best/BTC%2FUSDT?amount=1', headers: AUTH });
+    const id = r.json().requestId;
+    assert.match(id, /^[0-9a-f-]{36}$/, 'expected a uuid');
+    assert.equal(r.headers['x-request-id'], id, 'header and body must agree');
+    await app.close();
 });

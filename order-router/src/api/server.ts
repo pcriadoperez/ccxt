@@ -7,12 +7,18 @@ import { config } from '../config.js';
 import type { OrderBookCache } from '../cache/orderBookCache.js';
 import type { FeeRegistry } from '../cache/feeRegistry.js';
 import { computeBestPrice } from '../routing/bestPrice.js';
+import { computeRoute, ROUTE_STRATEGIES, type RouteStrategy } from '../routing/route.js';
+import { randomUUID } from 'node:crypto';
 import { extractApiKey, isPublicPath, makeAuthHook, resolveApiKey, safeCompare } from './auth.js';
 import { buildHttpHistogram, buildMetricsRegistry } from '../metrics.js';
 
 interface BestPriceQuery {
     side?: string;
     amount?: string;
+    strategy?: string;
+    maxVenues?: string;
+    includeFees?: string;
+    minLegNotional?: string;
 }
 
 export interface ServerOptions {
@@ -169,11 +175,59 @@ export async function buildServer (
             const symbol = decodeURIComponent(request.params.symbol);
             const side = request.query.side === 'sell' ? 'sell' : 'buy';
             const amount = Number(request.query.amount ?? '0');
-            if (!(amount > 0)) {
+            if (!Number.isFinite(amount) || amount <= 0) {
                 reply.code(400);
                 return { error: 'amount query param must be a positive number' };
             }
-            return computeBestPrice(cache, feeRegistry, symbol, side, amount, config.staleBookMs);
+
+            const strategy = (request.query.strategy ?? 'best_single') as RouteStrategy;
+            if (!ROUTE_STRATEGIES.includes(strategy)) {
+                reply.code(400);
+                return { error: `strategy must be one of: ${ROUTE_STRATEGIES.join(', ')}` };
+            }
+            const maxVenues = Number(request.query.maxVenues ?? '3');
+            if (!Number.isFinite(maxVenues) || maxVenues < 1) {
+                reply.code(400);
+                return { error: 'maxVenues must be a positive integer' };
+            }
+            const minLegNotional = Number(request.query.minLegNotional ?? '0');
+            if (!Number.isFinite(minLegNotional) || minLegNotional < 0) {
+                reply.code(400);
+                return { error: 'minLegNotional must be zero or a positive number' };
+            }
+            const includeFees = request.query.includeFees !== 'false';
+
+            // Honour a caller-supplied x-request-id so their trace id and ours match in both
+            // logs; otherwise mint one. Echoed as a header too, so a client can correlate even
+            // on responses it fails to parse.
+            const headerId = request.headers['x-request-id'];
+            const requestId = (typeof headerId === 'string' && headerId.length > 0 && headerId.length <= 200)
+                ? headerId
+                : randomUUID();
+            reply.header('x-request-id', requestId);
+
+            const result = computeRoute(cache, feeRegistry, symbol, side, amount, {
+                strategy, includeFees, maxVenues, minLegNotional,
+                staleBookMs: config.staleBookMs, requestId,
+            });
+
+            // Audit record: one line per recommendation, keyed by requestId. This is the trail
+            // that makes a future billing dispute or "why did you route it there?" answerable
+            // after the fact, so it logs the decision and its inputs, not just the outcome.
+            logger.info({
+                requestId,
+                calculatedAt: result.calculatedAt,
+                symbol, side, amount, strategy, includeFees, maxVenues, minLegNotional,
+                route: result.route.map((l) => ({ ex: l.exchangeId, amt: l.amount, eff: l.effectivePrice })),
+                filledAmount: result.filledAmount,
+                fullyFillable: result.fullyFillable,
+                routeVwap: result.routeVwap,
+                totalFeeCost: result.totalFeeCost,
+                savingVsBestSingleBps: result.savingVsBestSingleBps,
+                venuesConsidered: result.quotes.length,
+            }, 'route recommendation');
+
+            return result;
         },
     );
 

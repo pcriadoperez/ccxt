@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: CCXT Order Router API
-  version: 0.1.0
+  version: 0.2.0
   description: |
     Smart order router over live L2 order books from ~60 exchanges (ccxt.pro WebSocket).
 
@@ -72,13 +72,44 @@ paths:
           required: true
           description: Order size in BASE currency units. Must be positive and finite.
           schema: { type: number, format: double, exclusiveMinimum: 0 }
-          example: 0.5
+          example: 5
+        - name: strategy
+          in: query
+          description: |
+            `best_single` — one venue (a route of length 1).
+            `split_optimal` — minimum cost across the consolidated fee-adjusted book, unlimited venues.
+            `split_capped` — best price using at most `maxVenues`. Greedy approximation, not a proven
+            optimum: it solves unconstrained, keeps the highest-volume venues, then re-solves.
+          schema: { type: string, enum: [best_single, split_optimal, split_capped], default: best_single }
+        - name: maxVenues
+          in: query
+          description: Venue cap for `split_capped`. Fewer venues means less execution risk and fewer funded accounts.
+          schema: { type: integer, minimum: 1, default: 3 }
+        - name: includeFees
+          in: query
+          description: Set false to rank on raw price only — useful with negotiated tiers or maker rebates. Then feeCost is 0 and effectivePrice equals averagePrice.
+          schema: { type: boolean, default: true }
+        - name: minLegNotional
+          in: query
+          description: |
+            Suppress legs below this quote-currency notional and reallocate the freed size, so a
+            split does not produce legs that would be rejected by venue minimum-order rules.
+            If EVERY leg falls below it the route is kept rather than emptied.
+          schema: { type: number, minimum: 0, default: 0 }
+        - name: x-request-id
+          in: header
+          description: Optional caller-supplied audit id. Echoed in the body and the `x-request-id` response header; one is minted if absent.
+          schema: { type: string, maxLength: 200 }
       responses:
         '200':
-          description: Ranked quotes. `best` may be null — see the description above.
+          description: The fill plan. `route` is empty when nothing sufficiently fresh could fill.
+          headers:
+            x-request-id:
+              schema: { type: string }
+              description: Audit id, matching `requestId` in the body.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/RoutingResult' }
+              schema: { $ref: '#/components/schemas/RouteResult' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '429': { $ref: '#/components/responses/RateLimited' }
@@ -247,20 +278,54 @@ components:
         bookAgeMs:
           type: integer
           description: Age of the underlying book. Quotes older than the staleness threshold are excluded from `best`.
-    RoutingResult:
+    RouteLeg:
       type: object
       properties:
+        exchangeId: { type: string, example: lbank }
+        amount: { type: number, format: double, description: Size to fill on this venue. }
+        averagePrice: { type: number, format: double, description: Raw VWAP for this leg, before fees. }
+        takerFeeRate: { type: number, format: double, example: 0.001 }
+        feeCost: { type: number, format: double, description: What the fee costs on this leg, in quote currency. }
+        effectivePrice: { type: number, format: double, description: Fee-adjusted price for this leg. }
+    RouteResult:
+      type: object
+      description: |
+        There is deliberately no `best` field. A single-venue answer is just a route of length 1,
+        so strategy determines the length and nothing else changes. Two fields carrying the same
+        answer would be two sources of truth, and callers would eventually read the wrong one and
+        under-fill.
+      properties:
+        requestId:
+          type: string
+          description: Audit id for this recommendation. Logged server-side alongside the full decision.
+        calculatedAt:
+          type: integer
+          description: Epoch ms at which the route was computed — subtract from your receive time to measure network delay.
+        calculatedAtIso: { type: string, format: date-time }
         symbol: { type: string, example: BTC/USDT }
         side: { type: string, enum: [buy, sell] }
         amount: { type: number, format: double }
-        best:
-          oneOf:
-            - $ref: '#/components/schemas/RoutingQuote'
-            - type: 'null'
-          description: Winning quote, or null when no venue has a sufficiently fresh book.
+        strategy: { type: string, enum: [best_single, split_optimal, split_capped] }
+        includeFees: { type: boolean }
+        route:
+          type: array
+          description: The fill plan, largest leg first. Empty when nothing fresh enough could fill.
+          items: { $ref: '#/components/schemas/RouteLeg' }
+        filledAmount: { type: number, format: double }
+        fullyFillable:
+          type: boolean
+          description: False means cached depth could not cover the requested size; filledAmount shows how far it got.
+        routeVwap:
+          type: [number, 'null']
+          description: Fee-adjusted VWAP across the whole route.
+        routeNotional: { type: number, format: double }
+        totalFeeCost: { type: number, format: double }
+        savingVsBestSingleBps:
+          type: [number, 'null']
+          description: How much the route beats the best single venue, in basis points. Positive means better, for both sides.
         quotes:
           type: array
-          description: Every venue considered, including stale and unfillable ones.
+          description: Every venue considered, including stale and unfillable ones — the "why these?" diagnostic.
           items: { $ref: '#/components/schemas/RoutingQuote' }
     ExchangeHealth:
       type: object
