@@ -1,36 +1,83 @@
 // Typed WebSocket API demo — the `ccxt_pro::<Exchange>` wrappers expose each
 // `watch_*` method with a native Rust return type (one decoded update per call)
 // instead of the dynamic `Value`. This is the WS analog of `iexchange_demo`
-// (REST). Compile-check only: the futures are constructed to prove the types,
-// never `.await`-ed to completion in `main`, so no live traffic is generated.
+// (REST).
 //
-// Build: `cargo run --example ws_typed_demo --features ws` (or `--bin`).
+// This demo actually connects and consumes a few live updates from public
+// streams. No credentials, no private data.
+//
+// Build/run:
+//   cargo run --bin ws_typed_demo --features ws
+//   CCXT_EXCHANGE=kraken CCXT_SYMBOL=BTC/USD cargo run --bin ws_typed_demo --features ws
+use std::time::Duration;
+
 use ccxt::Value;
-use ccxt_pro::{Binance, TypedExchange, TypedExchangeExt};
+use ccxt_pro::{from_id, TypedExchange, TypedExchangeExt};
 
-// ── A. concrete wrapper — typed returns ──────────────────────────────────────
-#[allow(dead_code)]
-async fn demo() {
-    let mut b = Binance::new(None);
-    b.load_markets(false).await;
+// Each watch_* resolves once per update, so a quiet market simply never
+// returns. Every await is bounded so the demo always terminates.
+const UPDATE_TIMEOUT: Duration = Duration::from_secs(30);
+const UPDATES: usize = 3;
 
-    // Each typed `watch_*` resolves to one decoded, statically-typed update:
-    match b.watch_ticker("BTC/USDT", Value::Null).await {
-        Ok(t) => println!("ticker {} last={:?}", t.symbol, t.last),
-        Err(e) => println!("watch_ticker unsupported: {e}"),
-    }
-    // `-> Result<OrderBook>` / `Result<Vec<Trade>>` — bound and dropped here.
-    let _book = b.watch_order_book("BTC/USDT", Some(20), Value::Null).await;
-    let _trades = b.watch_trades("BTC/USDT", None, Some(50), Value::Null).await;
-    let _tickers = b.watch_tickers(None, Value::Null).await;
-
-    // ── B. generic / dynamic via the `ccxt_pro::TypedExchange` trait ─────────
-    // Same object-safe pattern as the REST `iexchange_demo`, but over `watch_*`.
-    let mut ex: Box<dyn TypedExchange> = Box::new(Binance::new(None));
-    ex.load_markets(false).await;
-    let _ = ex.watch_ticker("BTC/USDT", Value::Null).await; // via TypedExchangeExt
+fn env_or(key: &str, default: &str) -> String {
+    std::env::var(key).unwrap_or_else(|_| default.to_string())
 }
 
-fn main() {
-    println!("ws_typed_demo: compile-check only — ccxt_pro typed watch_* -> Result<T>");
+#[tokio::main]
+async fn main() {
+    let id = env_or("CCXT_EXCHANGE", "binance");
+    let symbol = env_or("CCXT_SYMBOL", "BTC/USDT");
+
+    println!("=== ccxt_pro typed watch_* demo — {id} {symbol} ===\n");
+
+    // ── A. pick the venue at runtime ─────────────────────────────────────────
+    // `from_id` returns a boxed `TypedExchange`; the typed `watch_*` methods
+    // come from `TypedExchangeExt`.
+    let mut ex: Box<dyn TypedExchange> = match from_id(&id, None) {
+        Some(e) => e,
+        None => {
+            eprintln!("unknown/unsupported WS exchange: {id}");
+            std::process::exit(1);
+        }
+    };
+    ex.load_markets(false).await;
+
+    // ── B. watch_ticker -> Result<Ticker> ────────────────────────────────────
+    println!("→ watch_ticker");
+    for i in 1..=UPDATES {
+        match tokio::time::timeout(UPDATE_TIMEOUT, ex.watch_ticker(&symbol, Value::Null)).await {
+            Ok(Ok(t)) => println!("   #{i} last={:?} bid={:?} ask={:?}", t.last, t.bid, t.ask),
+            Ok(Err(e)) => { eprintln!("   x [{}] {}", e.kind, e.message); break; }
+            Err(_) => { eprintln!("   x no update within {UPDATE_TIMEOUT:?}"); break; }
+        }
+    }
+
+    // ── C. watch_order_book -> Result<OrderBook> ─────────────────────────────
+    // `limit` is best-effort: some venues only publish a full book, so expect
+    // more levels than requested.
+    println!("\n→ watch_order_book (limit 10)");
+    for i in 1..=UPDATES {
+        match tokio::time::timeout(UPDATE_TIMEOUT, ex.watch_order_book(&symbol, Some(10), Value::Null)).await {
+            Ok(Ok(ob)) => println!("   #{i} bids={} asks={} top_bid={:?}",
+                                   ob.bids.len(), ob.asks.len(), ob.bids.first()),
+            Ok(Err(e)) => { eprintln!("   x [{}] {}", e.kind, e.message); break; }
+            Err(_) => { eprintln!("   x no update within {UPDATE_TIMEOUT:?}"); break; }
+        }
+    }
+
+    // ── D. watch_trades -> Result<Vec<Trade>> ────────────────────────────────
+    // One update carries the batch of trades the venue published.
+    println!("\n→ watch_trades");
+    for i in 1..=UPDATES {
+        match tokio::time::timeout(UPDATE_TIMEOUT, ex.watch_trades(&symbol, None, None, Value::Null)).await {
+            Ok(Ok(tr)) => println!("   #{i} {} trade(s), first px={:?} amount={:?}",
+                                   tr.len(),
+                                   tr.first().and_then(|t| t.price),
+                                   tr.first().and_then(|t| t.amount)),
+            Ok(Err(e)) => { eprintln!("   x [{}] {}", e.kind, e.message); break; }
+            Err(_) => { eprintln!("   x no update within {UPDATE_TIMEOUT:?}"); break; }
+        }
+    }
+
+    println!("\ndone.");
 }
