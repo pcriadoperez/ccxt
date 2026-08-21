@@ -367,6 +367,17 @@ per-key limit, and can enforce client certificates or IP allowlists if you want 
 alongside the shared API key. What it does **not** solve: the API key is still a single shared
 secret with no rotation or revocation, so per-client identity remains an open gap.
 
+## OpenAPI spec
+
+`openapi/openapi.yaml` (OpenAPI 3.1) — importable into Postman, Insomnia, Swagger UI, or
+any client generator. Validated against the live deployment: `RoutingResult` and
+`RoutingQuote` match the real response field-for-field.
+
+It documents the two behaviours callers most often get wrong: `best` can be `null` (a
+deliberate refusal to quote books older than the staleness threshold — common at full
+discovery scale, and not an error), and `fullyFillable: false` means `averagePrice`
+covers only the portion that filled.
+
 ## Metrics
 
 `GET /metrics` serves Prometheus text format. **Authenticated like every other non-`/health` route**

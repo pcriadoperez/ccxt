@@ -1,0 +1,273 @@
+openapi: 3.1.0
+info:
+  title: CCXT Order Router API
+  version: 0.1.0
+  description: |
+    Smart order router over live L2 order books from ~60 exchanges (ccxt.pro WebSocket).
+
+    **Prices are book-walked, not top-of-book.** `/price/best` requires an `amount` and
+    walks each venue's cached book to that size, returning the volume-weighted average
+    price plus taker fee. For any non-trivial size the venue with the best top-of-book
+    price is frequently *not* the venue with the best price for your actual size.
+
+    **Rank on `effectivePriceWithFee`, never `averagePrice`.** Fees differ by up to ~4x
+    between venues and routinely invert the ranking.
+
+    ### Two responses callers must handle
+    - `best` may be `null` when every venue's book is older than the staleness
+      threshold. This is a deliberate refusal to quote stale data, not an error.
+      It is common at full discovery scale — treat it as "no reliable price".
+    - `fullyFillable: false` means the requested size exceeds cached depth.
+      `averagePrice` then reflects only the portion that filled; do not treat it as
+      a fillable price for the full amount.
+  license:
+    name: MIT
+servers:
+  - url: https://docs.ccxt.com/router
+    description: Live deployment (path-mounted; provider firewall permits only 22/80/443)
+  - url: http://localhost:8080
+    description: Local development
+security:
+  - ApiKeyHeader: []
+  - BearerToken: []
+tags:
+  - name: Routing
+  - name: Market data
+  - name: Operations
+paths:
+  /health:
+    get:
+      tags: [Operations]
+      summary: Liveness probe
+      description: The only unauthenticated route, so orchestrator probes work before credentials are injectable. Exposes nothing but status and uptime.
+      security: []
+      responses:
+        '200':
+          description: Service is up
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  uptimeSec: { type: number, example: 1183.4 }
+  /price/best/{symbol}:
+    get:
+      tags: [Routing]
+      summary: Best execution price across venues for a given size
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          description: Unified ccxt symbol, URL-encoded (`BTC/USDT` -> `BTC%2FUSDT`).
+          schema: { type: string }
+          example: BTC%2FUSDT
+        - name: side
+          in: query
+          required: false
+          description: Buy walks the ask side, sell walks the bid side. Defaults to buy.
+          schema: { type: string, enum: [buy, sell], default: buy }
+        - name: amount
+          in: query
+          required: true
+          description: Order size in BASE currency units. Must be positive and finite.
+          schema: { type: number, format: double, exclusiveMinimum: 0 }
+          example: 0.5
+      responses:
+        '200':
+          description: Ranked quotes. `best` may be null — see the description above.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RoutingResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /orderbook/{exchange}/{symbol}:
+    get:
+      tags: [Market data]
+      summary: Cached L2 order book for one venue
+      parameters:
+        - name: exchange
+          in: path
+          required: true
+          schema: { type: string }
+          example: binance
+        - name: symbol
+          in: path
+          required: true
+          description: URL-encoded unified symbol.
+          schema: { type: string }
+          example: BTC%2FUSDT
+      responses:
+        '200':
+          description: Cached book
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CachedOrderBook' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404':
+          description: No cached book for that exchange/symbol pair
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /symbols:
+    get:
+      tags: [Market data]
+      summary: Symbols currently cached
+      responses:
+        '200':
+          description: Symbol list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  symbols:
+                    type: array
+                    items: { type: string }
+                    example: [BTC/USDT, ETH/USDT]
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /exchanges/status:
+    get:
+      tags: [Operations]
+      summary: Per-exchange connection health
+      responses:
+        '200':
+          description: Health per venue
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  exchanges:
+                    type: array
+                    items: { $ref: '#/components/schemas/ExchangeHealth' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /metrics:
+    get:
+      tags: [Operations]
+      summary: Prometheus metrics
+      description: |
+        Authenticated deliberately — it exposes the venue list, traffic volume and
+        internal health, which is exactly the reconnaissance an attacker wants.
+        Scrapers must send the API key.
+
+        The signal that matters most is `order_router_exchange_last_update_age_seconds`:
+        a venue can hold an open socket while its subscription is silently dead, so
+        `connected` stays 1 while data rots. Connection state alone will not catch it.
+      responses:
+        '200':
+          description: Prometheus text exposition format
+          content:
+            text/plain:
+              schema: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+components:
+  securitySchemes:
+    ApiKeyHeader:
+      type: apiKey
+      in: header
+      name: x-api-key
+    BearerToken:
+      type: http
+      scheme: bearer
+  responses:
+    Unauthorized:
+      description: |
+        Missing or invalid key. Both cases return an identical body by design, so the
+        response is not an oracle for probing. Unknown paths also return 401 rather
+        than 404, to avoid revealing which routes exist.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { error: unauthorized }
+    BadRequest:
+      description: Invalid parameters (e.g. missing, non-numeric, or non-positive amount)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { error: amount query param must be a positive number }
+    RateLimited:
+      description: Rate limit exceeded. Bucketed per API key once the key is valid, otherwise per client IP.
+      headers:
+        retry-after: { schema: { type: integer }, description: Seconds until the window resets }
+        x-ratelimit-limit: { schema: { type: integer } }
+        x-ratelimit-remaining: { schema: { type: integer } }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+  schemas:
+    Error:
+      type: object
+      properties:
+        error: { type: string }
+    BookLevel:
+      type: object
+      properties:
+        price: { type: number, format: double }
+        amount: { type: number, format: double }
+    CachedOrderBook:
+      type: object
+      properties:
+        exchangeId: { type: string, example: binance }
+        symbol: { type: string, example: BTC/USDT }
+        bids:
+          type: array
+          items: { $ref: '#/components/schemas/BookLevel' }
+        asks:
+          type: array
+          items: { $ref: '#/components/schemas/BookLevel' }
+        exchangeTimestamp:
+          type: [integer, 'null']
+          description: Venue-supplied timestamp in ms. Absent on some venues and subject to clock drift; prefer receivedAt for freshness.
+        receivedAt:
+          type: integer
+          description: Local arrival time in ms. The authoritative freshness measure.
+        sequence: { type: integer }
+    RoutingQuote:
+      type: object
+      properties:
+        exchangeId: { type: string, example: binance }
+        side: { type: string, enum: [buy, sell] }
+        requestedAmount: { type: number, format: double }
+        filledAmount:
+          type: number
+          format: double
+          description: How much of the requested size the cached book could actually fill.
+        averagePrice:
+          type: [number, 'null']
+          description: Volume-weighted price across the levels walked. Null if nothing could fill.
+        effectivePriceWithFee:
+          type: [number, 'null']
+          description: averagePrice adjusted for the venue's taker fee. RANK ON THIS.
+        takerFeeRate: { type: number, format: double, example: 0.001 }
+        fullyFillable:
+          type: boolean
+          description: False means the requested size exceeded cached depth.
+        bookAgeMs:
+          type: integer
+          description: Age of the underlying book. Quotes older than the staleness threshold are excluded from `best`.
+    RoutingResult:
+      type: object
+      properties:
+        symbol: { type: string, example: BTC/USDT }
+        side: { type: string, enum: [buy, sell] }
+        amount: { type: number, format: double }
+        best:
+          oneOf:
+            - $ref: '#/components/schemas/RoutingQuote'
+            - type: 'null'
+          description: Winning quote, or null when no venue has a sufficiently fresh book.
+        quotes:
+          type: array
+          description: Every venue considered, including stale and unfillable ones.
+          items: { $ref: '#/components/schemas/RoutingQuote' }
+    ExchangeHealth:
+      type: object
+      properties:
+        exchangeId: { type: string }
+        connected: { type: boolean }
+        lastUpdateAt: { type: [integer, 'null'] }
+        updateCount: { type: integer }
+        reconnectCount: { type: integer }
+        lastError: { type: [string, 'null'] }
