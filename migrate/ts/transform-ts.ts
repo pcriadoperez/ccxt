@@ -1,6 +1,6 @@
 // pmxtjs -> ccxt transform for TypeScript / JavaScript sources.
 
-import { VENUES, METHODS, ERRORS, OPTIONS, methodRule } from './rules.js';
+import { VENUES, ERRORS, OPTIONS, methodRule } from './rules.js';
 import { Patch, matchBracket, parsePairs, splitArgs } from './util.js';
 import { adaptArgs } from './argmap.js';
 

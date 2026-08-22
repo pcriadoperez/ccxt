@@ -73,7 +73,12 @@ export function transformPython (source: string): PyResult {
     const isAsync = /\bawait\s|\basync\s+def\s/.test (source);
 
     // --- 1. imports -------------------------------------------------------
-    const ccxtModule = needsPro ? 'ccxt.pro' : (isAsync ? 'ccxt.async_support' : 'ccxt');
+    let ccxtModule = 'ccxt';
+    if (needsPro) {
+        ccxtModule = 'ccxt.pro';
+    } else if (isAsync) {
+        ccxtModule = 'ccxt.async_support';
+    }
     const importLine = (indent: string) => {
         if (ccxtModule === 'ccxt') {
             return indent + 'import ccxt';

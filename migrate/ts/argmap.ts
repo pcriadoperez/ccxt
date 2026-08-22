@@ -71,13 +71,13 @@ function trim (parts: (string | undefined)[], nil: string): string[] {
     return out;
 }
 
-type Adapter = (args: ParsedArgs, nil: string) => Adapted;
+type Adapter = (params: ParsedArgs, defaultValue: string) => Adapted;
 
 const ADAPTERS: Record<string, Adapter> = {
 
     // pmxt: fetchMarkets({ query, limit, offset, sort, slug })
     // ccxt: loadMarkets(reload?)
-    'fetchMarkets': (args, nil) => {
+    'fetchMarkets': (args, defaultValue) => {
         const dropped = Object.keys (args.object).concat (Object.keys (args.named));
         return {
             'text': '',

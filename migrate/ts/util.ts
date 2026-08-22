@@ -20,15 +20,17 @@ export type Unsupported = {
 };
 
 export class Patch {
-
     /** The source as it was handed to the transform. All indices are into this. */
     readonly original: string;
 
     private edits: { start: number; end: number; text: string; insert: boolean }[] = [];
+
     private lineStarts: number[];
 
     todos: Todo[] = [];
+
     changes: Change[] = [];
+
     unsupported: Unsupported[] = [];
 
     constructor (source: string) {
