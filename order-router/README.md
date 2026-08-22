@@ -534,6 +534,24 @@ authenticated path:**
 | `/route` large order (walks deeper) | 4,302 | 11ms | 13ms | 18ms | 292ms |
 | unauthenticated (expect 401) | 13,693 | 3ms | 4ms | 6ms | 179ms |
 
+### Routing cost at full-discovery scale
+
+`benchmark/route-scale.mjs` isolates the compute from HTTP and the network, against a cache the
+size of full discovery (60 exchanges x 702 symbols x 50 levels = 42,120 books):
+
+| Route | p50 | p95 | p99 |
+|---|---|---|---|
+| single hop, small order | 0.31ms | 0.84ms | 0.96ms |
+| single hop, deep order | 0.35ms | 0.92ms | 1.02ms |
+| single hop, notional (`amountIn`) | 0.41ms | 0.92ms | 1.06ms |
+| bridged (two hops) | 0.78ms | 1.40ms | 1.47ms |
+
+This was **10.8ms** before the cache gained a symbol index. `getBooksForSymbol` scanned every
+cached book on every call, and routing calls it once per venue considered — so cost scaled with
+the product of total books and venues, and the router got slower as discovery widened. Indexing
+symbol -> venue -> book made it proportional to the venues on that one symbol: 27x faster, and
+now flat in cache size.
+
 Two things worth reading off this: the routing work itself is cheap (best-price with a large order
 still clears 4.3k req/s), and **auth rejection is as cheap as `/health`** — so an unauthenticated
 flood costs the server roughly nothing per request and isn't a DoS amplifier.

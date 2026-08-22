@@ -5,6 +5,9 @@ export type RouteStrategy = (typeof ROUTE_STRATEGIES)[number];
 
 export type UnroutableReason =
     | 'no_market'
+    // Distinct from no_market: a path DOES exist, the router just cannot solve this shape. Kept
+    // separate so a caller can retry with amountIn instead of concluding the assets are unlisted.
+    | 'exact_out_multi_hop_unsupported'
     | 'no_venues_matched_filter'
     | 'all_books_stale'
     | 'no_liquidity'

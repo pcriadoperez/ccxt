@@ -112,3 +112,31 @@ test('setHealth overwrites wholesale (mirrors a shard worker\'s already-computed
     assert.equal(health?.updateCount, 99);
     assert.equal(health?.reconnectCount, 3);
 });
+
+test('the symbol index stays consistent as books are replaced', () => {
+    // getBooksForSymbol is answered from a secondary index rather than a scan, so a stale index
+    // would silently route on an old book — worse than a slow lookup.
+    const cache = new OrderBookCache();
+    const mk = (ex: string, sym: string, price: number): CachedOrderBook => ({
+        exchangeId: ex, symbol: sym,
+        asks: [{ price, amount: 1 }], bids: [{ price: price - 1, amount: 1 }],
+        exchangeTimestamp: Date.now(), receivedAt: Date.now(), sequence: 1,
+    });
+    cache.setBook(mk('a', 'BTC/USDT', 100));
+    cache.setBook(mk('b', 'BTC/USDT', 101));
+    cache.setBook(mk('a', 'ETH/USDT', 5));
+
+    assert.equal(cache.getBooksForSymbol('BTC/USDT').length, 2);
+    assert.equal(cache.getBooksForSymbol('ETH/USDT').length, 1);
+    assert.deepEqual(cache.getBooksForSymbol('NOPE/USDT'), []);
+    assert.equal(cache.hasSymbol('BTC/USDT'), true);
+    assert.equal(cache.hasSymbol('NOPE/USDT'), false);
+    assert.deepEqual(cache.listSymbols().sort(), ['BTC/USDT', 'ETH/USDT']);
+
+    // An update for an existing (exchange, symbol) must REPLACE, not duplicate.
+    cache.setBook(mk('a', 'BTC/USDT', 200));
+    const books = cache.getBooksForSymbol('BTC/USDT');
+    assert.equal(books.length, 2, 'replacing a book must not add a second entry for the same venue');
+    assert.equal(books.find((b) => b.exchangeId === 'a')!.asks[0]!.price, 200);
+    assert.equal(cache.getBookCount(), 3, 'the primary map and the index must agree');
+});

@@ -125,3 +125,57 @@ test('the failing hop is identified by index on a multi-hop route', () => {
     assert.equal(r.unroutableHopIndex, 1, 'hop 0 succeeded; the failure is downstream');
     assert.equal(r.hops.length, 2, 'the partial path is still returned for diagnosis');
 });
+
+test('quotes report raw and fee-adjusted prices as different numbers', () => {
+    // These two fields exist precisely so a caller can see what the fee costs. Reporting the
+    // adjusted price as both would hide it while still looking correct.
+    const cache = new OrderBookCache(); const fees = new FeeRegistry();
+    cache.setBook(book('a', 'BTC/USDT', [[100, 10]], [[99, 10]]));
+    fees.setFee('a', 'BTC/USDT', 0.01);
+
+    const r = computeRoute(cache, fees, { from: 'USDT', to: 'BTC', amountOut: 1, bridges: [] },
+        OPTS({ includeFees: true }));
+    const q = r.hops[0]!.quotes[0]!;
+    assert.equal(q.averagePrice, 100, 'averagePrice must be the RAW book VWAP');
+    assert.ok(Math.abs(q.effectivePriceWithFee! - 101) < 1e-9, 'effectivePriceWithFee must include the 1% taker fee');
+});
+
+test('exact-out over a bridge is refused distinctly from an unreachable pair', () => {
+    // Both are "we cannot route this", but the caller's next move differs: retry with amountIn
+    // versus give up on the asset. Collapsing them into no_market would send them the wrong way.
+    const cache = new OrderBookCache(); const fees = new FeeRegistry();
+    cache.setBook(book('a', 'SOL/USDT', [[10, 1000]], [[10, 1000]]));
+    cache.setBook(book('a', 'BTC/USDT', [[50, 1000]], [[50, 1000]]));
+
+    const r = computeRoute(cache, fees, { from: 'SOL', to: 'BTC', amountOut: 1, bridges: ['USDT'] }, OPTS());
+    assert.equal(r.unroutableReason, 'exact_out_multi_hop_unsupported');
+    const unreachable = computeRoute(cache, fees, { from: 'DOGE', to: 'SHIB', amountOut: 1, bridges: ['USDT'] }, OPTS());
+    assert.equal(unreachable.unroutableReason, 'no_market');
+});
+
+test('the pinned side is reported as exactly the requested amount, not float noise', () => {
+    // The notional walk divides by price and multiplies back, so the spend accumulates residue:
+    // this exact book fills 100 USDT as 99.99999999999999. Left unsnapped, a caller checking
+    // `amountIn >= 100` or `fillRatio === 1` reads a complete fill as a partial one.
+    const cache = new OrderBookCache(); const fees = new FeeRegistry();
+    cache.setBook(book('a', 'BTC/USDT', [[3.3, 0.7], [7.7, 0.9], [11.1, 500]], [[1, 1]]));
+
+    const r = computeRoute(cache, fees, { from: 'USDT', to: 'BTC', amountIn: 100, bridges: [] }, OPTS());
+    assert.notEqual(r.hops[0]!.amountIn, 100, 'precondition: the raw walk really does leave residue here');
+    assert.equal(r.amountIn, 100, 'the pinned side must be reported as exactly what was requested');
+    assert.equal(r.fillRatio, 1);
+    assert.equal(r.fullyFillable, true);
+    assert.deepEqual(r.warnings, [], 'float noise must not surface as a partial-fill warning');
+});
+
+test('a real shortfall is never snapped away as float noise', () => {
+    // The counterpart to the snap: it must be tight enough that an actual partial fill still
+    // reads as one. A 1% shortfall is not rounding.
+    const cache = new OrderBookCache(); const fees = new FeeRegistry();
+    cache.setBook(book('a', 'BTC/USDT', [[100, 0.99]], [[99, 1]]));
+
+    const r = computeRoute(cache, fees, { from: 'USDT', to: 'BTC', amountOut: 1, bridges: [] }, OPTS());
+    assert.equal(r.fullyFillable, false);
+    assert.ok(r.amountOut < 1, `expected a partial fill, got ${r.amountOut}`);
+    assert.ok(r.warnings.some((w) => w.startsWith('partial_fill')));
+});

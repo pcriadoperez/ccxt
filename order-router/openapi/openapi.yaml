@@ -214,6 +214,15 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/RouteResult' }
         '429': { $ref: '#/components/responses/RateLimited' }
+        '501':
+          description: |
+            `amountOut` was requested for a conversion that only routes over a bridge. Exact-out
+            across hops requires solving backwards from the destination, which is not implemented;
+            it is refused rather than silently approximated. Re-ask with `amountIn`. The body is a
+            RouteResult carrying `unroutableReason: exact_out_multi_hop_unsupported`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RouteResult' }
   /orderbook/{exchange}/{symbol}:
     get:
       tags: [Market data]
@@ -375,10 +384,15 @@ components:
           description: How much this venue's cached book could fill, always in BASE units.
         averagePrice:
           type: [number, 'null']
-          description: Volume-weighted price across the levels walked. Null if nothing could fill.
+          description: |
+            RAW volume-weighted price across the levels walked, before fees and before any
+            staleness penalty. Null if nothing could fill. Shown alongside effectivePriceWithFee
+            so the cost of the fee is visible; do not rank on it.
         effectivePriceWithFee:
           type: [number, 'null']
-          description: averagePrice adjusted for the venue's taker fee. RANK ON THIS.
+          description: |
+            averagePrice adjusted for the venue's taker fee (and the staleness penalty, when
+            `stalenessPenaltyBps` is set). RANK ON THIS.
         takerFeeRate: { type: number, format: double, example: 0.001 }
         fullyFillable:
           type: boolean
@@ -505,11 +519,14 @@ components:
         unfilledAmount: { type: number, format: double }
         unroutableReason:
           type: [string, 'null']
-          enum: [no_market, no_venues_matched_filter, all_books_stale, no_liquidity, insufficient_depth, null]
+          enum: [no_market, exact_out_multi_hop_unsupported, no_venues_matched_filter, all_books_stale, no_liquidity, insufficient_depth, null]
           description: |
             Why `hops` is empty; null when routing succeeded. An empty route is a deliberate
             refusal to quote, not a failure:
             `no_market` — no direct market and no bridge path exists between the two assets (404).
+            `exact_out_multi_hop_unsupported` — the assets ARE reachable, but only over a bridge,
+            and exact-out across hops needs a backwards solve the router does not implement (501).
+            Re-ask with `amountIn`.
             `no_venues_matched_filter` — the exchanges/certified filters excluded everything.
             `all_books_stale` — venues exist but every book exceeded the freshness cutoff.
             `no_liquidity` — fresh books exist but none had depth to fill any of the size.

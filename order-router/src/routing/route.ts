@@ -51,8 +51,10 @@ export function computeRoute (
 
     // Exact-out on a multi-hop route would require solving backwards from the destination, which
     // is a different traversal per hop; not supported yet rather than silently approximated.
+    // Reported distinctly from no_market so the caller knows to retry with amountIn rather than
+    // concluding the two assets are unreachable.
     if (exactSide === 'out' && path.length > 1) {
-        return emptyResult(req, opts, now, 'no_market', null);
+        return emptyResult(req, opts, now, 'exact_out_multi_hop_unsupported', null);
     }
 
     const hops: RouteHop[] = [];
@@ -88,8 +90,17 @@ export function computeRoute (
         }
     }
 
-    const amountIn = hops[0]!.amountIn;
-    const amountOut = hops[hops.length - 1]!.amountOut;
+    let amountIn = hops[0]!.amountIn;
+    let amountOut = hops[hops.length - 1]!.amountOut;
+    // Snap the pinned side back to exactly what was asked for when the gap is float accumulation
+    // (walking many levels leaves 0.9999999999999998 for a requested 1). Left unsnapped, a caller
+    // doing `amountOut >= requested` sees a full fill as a partial one. The tolerance is relative
+    // and far below any real dust: a genuine shortfall is orders of magnitude larger.
+    const pinned = exactSide === 'in' ? amountIn : amountOut;
+    if (pinned !== requested && Math.abs(pinned - requested) <= requested * 1e-9) {
+        if (exactSide === 'in') amountIn = requested;
+        else amountOut = requested;
+    }
     const achieved = exactSide === 'in' ? amountIn : amountOut;
     const fillRatio = requested > 0 ? achieved / requested : 0;
     const fullyFillable = hops.every((h) => h.fullyFillable);

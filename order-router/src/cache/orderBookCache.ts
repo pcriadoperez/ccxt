@@ -17,6 +17,13 @@ import type { CachedOrderBook, ExchangeHealth } from '../types.js';
 // on these and pays nothing for them.
 export class OrderBookCache extends EventEmitter {
     private books = new Map<string, CachedOrderBook>();
+    // Secondary index symbol -> exchangeId -> book. Routing asks "every venue quoting this
+    // symbol" many times per request, and answering that by scanning the whole book map is
+    // O(total books) each time — at full discovery scale (~42k books) that dominated route
+    // latency entirely. The index makes the lookup proportional to the number of venues on that
+    // one symbol instead. Writes stay O(1); the extra memory is one Map per symbol holding
+    // references to books already stored.
+    private bySymbol = new Map<string, Map<string, CachedOrderBook>>();
     private health = new Map<string, ExchangeHealth>();
 
     constructor () {
@@ -33,6 +40,12 @@ export class OrderBookCache extends EventEmitter {
 
     setBook (book: CachedOrderBook): void {
         this.books.set(this.key(book.exchangeId, book.symbol), book);
+        let venues = this.bySymbol.get(book.symbol);
+        if (venues === undefined) {
+            venues = new Map();
+            this.bySymbol.set(book.symbol, venues);
+        }
+        venues.set(book.exchangeId, book);
         this.emit(`update:${book.symbol}`);
         this.emit('book', book);
     }
@@ -42,21 +55,18 @@ export class OrderBookCache extends EventEmitter {
     }
 
     getBooksForSymbol (symbol: string): CachedOrderBook[] {
-        const result: CachedOrderBook[] = [];
-        for (const book of this.books.values()) {
-            if (book.symbol === symbol) {
-                result.push(book);
-            }
-        }
-        return result;
+        const venues = this.bySymbol.get(symbol);
+        return venues === undefined ? [] : Array.from(venues.values());
+    }
+
+    // Whether ANY venue quotes this symbol. Routing resolves an asset pair to a market by asking
+    // this two to four times per request, so it must not materialise the symbol list to answer.
+    hasSymbol (symbol: string): boolean {
+        return this.bySymbol.has(symbol);
     }
 
     listSymbols (): string[] {
-        const symbols = new Set<string>();
-        for (const book of this.books.values()) {
-            symbols.add(book.symbol);
-        }
-        return Array.from(symbols);
+        return Array.from(this.bySymbol.keys());
     }
 
     getBookCount (): number {

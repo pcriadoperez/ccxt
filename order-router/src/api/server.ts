@@ -315,6 +315,12 @@ export async function buildServer (
                 // No pair and no bridge path exists at all — that is a request-level problem the
                 // caller must fix (wrong ticker, unsupported asset), not an empty market result.
                 reply.code(404);
+            } else if (result.unroutableReason === 'exact_out_multi_hop_unsupported') {
+                // The request is well-formed and the path exists; the router just cannot solve
+                // this shape yet. 501 rather than 400 (nothing to correct in the syntax) and
+                // rather than 404 (the assets ARE reachable) — the caller's move is to re-ask
+                // with amountIn, which the body's unroutableReason names.
+                reply.code(501);
             }
             return result;
         },

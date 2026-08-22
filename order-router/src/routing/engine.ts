@@ -121,14 +121,19 @@ export function solveHop (
         const single = allocate(
             buildBook(cache, fees, hop, { ...opts, staleBookMs: Number.MAX_SAFE_INTEGER }, new Set([book.exchangeId])),
             target, byBase);
-        const avg = single.baseFilled > 0 ? single.quoteSpent / single.baseFilled : undefined;
+        // averagePrice must stay RAW and effectivePriceWithFee adjusted — reporting the adjusted
+        // number as both would hide the fee from anyone comparing the two, which is the whole
+        // point of showing them side by side.
+        const venue = single.perVenue.get(book.exchangeId);
+        const rawAvg = (venue && single.baseFilled > 0) ? venue.rawNotional / single.baseFilled : undefined;
+        const effAvg = single.baseFilled > 0 ? single.quoteSpent / single.baseFilled : undefined;
         quotes.push({
             exchangeId: book.exchangeId,
             side: hop.side,
             requestedAmount: target,
             filledAmount: single.baseFilled,
-            averagePrice: avg,
-            effectivePriceWithFee: avg,
+            averagePrice: rawAvg,
+            effectivePriceWithFee: effAvg,
             takerFeeRate: fee,
             fullyFillable: byBase ? single.baseFilled >= target - 1e-12 : single.quoteSpent >= target - 1e-9,
             bookAgeMs: now - book.receivedAt,

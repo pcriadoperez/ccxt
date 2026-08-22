@@ -143,6 +143,21 @@ test('GET /route reverses direction when from and to are swapped', async () => {
     await app.close();
 });
 
+test('GET /route is 501, not 404, for a reachable pair the router cannot solve', async () => {
+    const { app, cache } = await buildTestServer();
+    cache.setBook(book());
+    cache.setBook(book({ exchangeId: 'kraken', symbol: 'SOL/USDT' }));
+    // SOL -> BTC is reachable over USDT, but exact-out across hops is not implemented. That is a
+    // different answer from "these assets are unreachable", and the status code must say so.
+    const r = await app.inject({ method: 'GET', url: '/route?from=SOL&to=BTC&amountOut=1', headers: AUTH });
+    assert.equal(r.statusCode, 501);
+    assert.equal(r.json().unroutableReason, 'exact_out_multi_hop_unsupported');
+    // The same conversion the other way round is supported and must still succeed.
+    const ok = await app.inject({ method: 'GET', url: '/route?from=SOL&to=BTC&amountIn=1', headers: AUTH });
+    assert.equal(ok.statusCode, 200);
+    await app.close();
+});
+
 test('GET /route is 404 when no market and no bridge path exists', async () => {
     const { app, cache } = await buildTestServer();
     cache.setBook(book());

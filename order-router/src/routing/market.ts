@@ -11,13 +11,15 @@ export interface ResolvedHop {
 // determines the side, which is why the caller never supplies it. This is what makes symbol+side
 // a special case of asset-to-asset addressing rather than a separate mode.
 export function resolveDirectHop (cache: OrderBookCache, from: string, to: string): ResolvedHop | null {
-    const symbols = new Set(cache.listSymbols());
+    // Asks the cache directly rather than materialising the symbol list — at full discovery that
+    // list is thousands of strings, and building it per request to answer two membership
+    // questions was pure waste on the hot path.
     const buy = `${to}/${from}`;    // acquiring `to` by spending `from`
-    if (symbols.has(buy)) {
+    if (cache.hasSymbol(buy)) {
         return { pair: buy, base: to, quote: from, side: 'buy' };
     }
     const sell = `${from}/${to}`;   // disposing of `from` to receive `to`
-    if (symbols.has(sell)) {
+    if (cache.hasSymbol(sell)) {
         return { pair: sell, base: from, quote: to, side: 'sell' };
     }
     return null;
