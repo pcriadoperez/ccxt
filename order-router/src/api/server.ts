@@ -11,6 +11,7 @@ import { computeRoute, ROUTE_STRATEGIES, type RouteStrategy } from '../routing/r
 import { randomUUID } from 'node:crypto';
 import { extractApiKey, isPublicPath, makeAuthHook, resolveApiKey, safeCompare } from './auth.js';
 import { buildHttpHistogram, buildMetricsRegistry } from '../metrics.js';
+import { LoopRegistry } from '../cache/loopRegistry.js';
 
 interface BestPriceQuery {
     side?: string;
@@ -40,6 +41,7 @@ export async function buildServer (
     feeRegistry: FeeRegistry,
     logger: Logger,
     options: ServerOptions = {},
+    loopRegistry: LoopRegistry = new LoopRegistry(),
 ) {
     // trustProxy makes request.ip read X-Forwarded-For instead of the socket address. Required for
     // the limiter's IP bucketing to mean anything behind nginx; dangerous if enabled without a
@@ -130,6 +132,7 @@ export async function buildServer (
         cache,
         staleBookMs: config.staleBookMs,
         getWsConnectionCount: countWsConnections,
+        loopRegistry,
     });
     const httpDuration = buildHttpHistogram(metricsRegistry);
 

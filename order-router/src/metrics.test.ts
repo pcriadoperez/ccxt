@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { OrderBookCache } from './cache/orderBookCache.js';
 import { buildMetricsRegistry } from './metrics.js';
+import { LoopRegistry } from './cache/loopRegistry.js';
 import type { CachedOrderBook } from './types.js';
 
 function book (overrides: Partial<CachedOrderBook> = {}): CachedOrderBook {
@@ -18,7 +19,7 @@ function book (overrides: Partial<CachedOrderBook> = {}): CachedOrderBook {
 }
 
 function makeRegistry (cache: OrderBookCache, staleBookMs = 5000, wsCount = 0) {
-    return buildMetricsRegistry({ cache, staleBookMs, getWsConnectionCount: () => wsCount });
+    return buildMetricsRegistry({ cache, staleBookMs, getWsConnectionCount: () => wsCount, loopRegistry: new LoopRegistry() });
 }
 
 test('exposes exchange health as metrics derived from the cache', async () => {
@@ -98,4 +99,30 @@ test('includes default process metrics for event loop lag and heap', async () =>
     const text = await makeRegistry(new OrderBookCache()).metrics();
     assert.match(text, /order_router_nodejs_eventloop_lag_seconds/);
     assert.match(text, /order_router_nodejs_heap_size_used_bytes/);
+});
+
+test('exposes per-shard event loop utilisation so saturation is visible', async () => {
+    // Starvation is otherwise SILENT: a saturated shard keeps its sockets open, logs nothing, and
+    // simply stops delivering book updates. Utilisation is the only clean signal.
+    const cache = new OrderBookCache();
+    const loopRegistry = new LoopRegistry();
+    loopRegistry.set('shard-0', { utilization: 0.97, lagP50Ms: 12, lagP99Ms: 340, lagMaxMs: 900 });
+    loopRegistry.set('shard-1', { utilization: 0.21, lagP50Ms: 1, lagP99Ms: 4, lagMaxMs: 9 });
+    const text = await buildMetricsRegistry({
+        cache, staleBookMs: 5000, getWsConnectionCount: () => 0, loopRegistry,
+    }).metrics();
+
+    assert.match(text, /order_router_shard_event_loop_utilization\{shard="shard-0"\} 0\.97/);
+    assert.match(text, /order_router_shard_event_loop_utilization\{shard="shard-1"\} 0\.21/);
+    assert.match(text, /order_router_shard_event_loop_lag_p99_ms\{shard="shard-0"\} 340/);
+});
+
+test('a shard that stops reporting shows a rising report age', async () => {
+    // Distinguishes "shard is busy" from "shard is gone" — a dead shard reports nothing at all.
+    const loopRegistry = new LoopRegistry();
+    loopRegistry.set('shard-0', { utilization: 0.5, lagP50Ms: 1, lagP99Ms: 2, lagMaxMs: 3 });
+    const text = await buildMetricsRegistry({
+        cache: new OrderBookCache(), staleBookMs: 5000, getWsConnectionCount: () => 0, loopRegistry,
+    }).metrics();
+    assert.match(text, /order_router_shard_loop_report_age_seconds\{shard="shard-0"\}/);
 });

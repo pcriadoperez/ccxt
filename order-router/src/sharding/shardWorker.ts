@@ -1,4 +1,5 @@
 import { config } from '../config.js';
+import { createLoopMonitor } from '../loopHealth.js';
 import { logger } from '../logger.js';
 import { OrderBookCache } from '../cache/orderBookCache.js';
 import { FeeRegistry } from '../cache/feeRegistry.js';
@@ -30,6 +31,15 @@ async function runShard (assignments: ShardInitMessage['assignments']): Promise<
         for (const health of cache.getHealth()) {
             send({ type: 'health', health });
         }
+    }, HEALTH_FLUSH_MS);
+
+    // The shards do all the WebSocket work, so the parent's own loop health says nothing about
+    // whether the system is keeping up. Without this, saturation is invisible: a starved shard
+    // holds its sockets open and logs nothing while its books quietly rot.
+    const loopMonitor = createLoopMonitor();
+    setInterval(() => {
+        const h = loopMonitor.sample();
+        send({ type: 'loop', shardPid: process.pid, ...h });
     }, HEALTH_FLUSH_MS);
 
     const connectors = assignments.map(

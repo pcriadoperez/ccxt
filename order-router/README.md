@@ -400,6 +400,8 @@ Counters — `rate()`/`increase()` still work, and a restart resets to 0 exactly
 | `order_router_cached_books` / `_cached_symbols` | Coverage — a drop means discovery or subscriptions regressed. |
 | `order_router_ws_stream_connections` | Open `/stream/best` sockets, to watch pressure against the per-key cap. |
 | `order_router_http_request_duration_seconds` | Latency histogram; its `_count` doubles as the request counter. Buckets are tuned sub-10ms because reads are in-memory map lookups. |
+| `order_router_shard_event_loop_utilization` | **The saturation signal.** Fraction of wall-clock each shard's loop spent active, 0..1. Sustained >0.9 means no headroom and books will silently rot. Starvation is otherwise invisible: a saturated shard keeps its sockets open, logs nothing, and simply stops delivering updates — CPU%, load average and `stale_books` all fail to show it cleanly (`stale_books` is dominated by the illiquid tail and reads ~75% on a healthy system). |
+| `order_router_shard_loop_report_age_seconds` | Distinguishes "shard is busy" from "shard is gone" — a dead shard reports nothing at all. |
 | `order_router_nodejs_*` | Default process metrics. **Event loop lag** matters most — it is the first thing to degrade when WS message volume outruns the single thread. |
 
 Histogram labels use the **route template** (`/orderbook/:exchange/:symbol`), never the raw URL.

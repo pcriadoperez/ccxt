@@ -1,5 +1,6 @@
 import { Registry, Gauge, Histogram, collectDefaultMetrics } from 'prom-client';
 import type { OrderBookCache } from './cache/orderBookCache.js';
+import type { LoopRegistry } from './cache/loopRegistry.js';
 
 // Metrics are DERIVED FROM CACHE STATE AT SCRAPE TIME rather than incremented alongside it.
 // The cache already owns the authoritative counters (updateCount, reconnectCount, lastUpdateAt);
@@ -17,6 +18,7 @@ export interface MetricsDeps {
     // Live count of open /stream/best sockets. Injected as a getter because the server owns the
     // connection map and metrics must not hold a reference that could keep sockets alive.
     getWsConnectionCount: () => number;
+    loopRegistry: LoopRegistry;
 }
 
 export function buildMetricsRegistry (deps: MetricsDeps): Registry {
@@ -119,6 +121,41 @@ export function buildMetricsRegistry (deps: MetricsDeps): Registry {
         registers: [registry],
         collect () {
             this.set(deps.getWsConnectionCount());
+        },
+    });
+
+    // Event loop utilisation per shard: the fraction of wall-clock each loop spent ACTIVE rather
+    // than idle. This is the saturation signal that CPU%, load average and stale_books all fail to
+    // give cleanly — starvation here is otherwise SILENT, since a starved shard keeps its sockets
+    // open, logs nothing, and simply stops delivering updates.
+    new Gauge({
+        name: 'order_router_shard_event_loop_utilization',
+        help: 'Event loop utilisation per shard, 0..1. Sustained >0.9 means no headroom and books will go stale.',
+        labelNames: ['shard'],
+        registers: [registry],
+        collect () {
+            for (const [shard, h] of deps.loopRegistry.entries()) this.set({ shard }, h.utilization);
+        },
+    });
+
+    new Gauge({
+        name: 'order_router_shard_event_loop_lag_p99_ms',
+        help: 'p99 event loop delay per shard, milliseconds.',
+        labelNames: ['shard'],
+        registers: [registry],
+        collect () {
+            for (const [shard, h] of deps.loopRegistry.entries()) this.set({ shard }, h.lagP99Ms);
+        },
+    });
+
+    new Gauge({
+        name: 'order_router_shard_loop_report_age_seconds',
+        help: 'Seconds since a shard last reported loop health. Rising without bound means the shard is gone or wedged.',
+        labelNames: ['shard'],
+        registers: [registry],
+        collect () {
+            const now = Date.now();
+            for (const [shard, h] of deps.loopRegistry.entries()) this.set({ shard }, (now - h.updatedAt) / 1000);
         },
     });
 

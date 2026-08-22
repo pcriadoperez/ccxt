@@ -31,4 +31,14 @@ export interface ShardFeeMessage {
     takerFeeRate: number;
 }
 
-export type ShardToParentMessage = ShardBookMessage | ShardHealthMessage | ShardFeeMessage;
+export interface ShardLoopMessage {
+    type: 'loop';
+    shardPid: number;
+    utilization: number;
+    lagP50Ms: number;
+    lagP99Ms: number;
+    lagMaxMs: number;
+}
+
+export type ShardToParentMessage =
+    | ShardBookMessage | ShardHealthMessage | ShardFeeMessage | ShardLoopMessage;

@@ -2,6 +2,7 @@ import { fork, type ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import type { Logger } from 'pino';
 import type { OrderBookCache } from '../cache/orderBookCache.js';
+import type { LoopRegistry } from '../cache/loopRegistry.js';
 import type { FeeRegistry } from '../cache/feeRegistry.js';
 import type { ShardAssignment, ShardToParentMessage } from './messages.js';
 
@@ -36,6 +37,7 @@ export function startShards (
     cache: OrderBookCache,
     feeRegistry: FeeRegistry,
     logger: Logger,
+    loopRegistry: LoopRegistry,
 ): ChildProcess[] {
     const children: ChildProcess[] = [];
     groups.forEach((assignments, shardIndex) => {
@@ -53,6 +55,14 @@ export function startShards (
                     break;
                 case 'fee':
                     feeRegistry.setFee(message.exchangeId, message.symbol, message.takerFeeRate);
+                    break;
+                case 'loop':
+                    loopRegistry.set(`shard-${shardIndex}`, {
+                        utilization: message.utilization,
+                        lagP50Ms: message.lagP50Ms,
+                        lagP99Ms: message.lagP99Ms,
+                        lagMaxMs: message.lagMaxMs,
+                    });
                     break;
             }
         };

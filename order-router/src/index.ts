@@ -9,6 +9,8 @@ import { buildServer } from './api/server.js';
 import { listWatchOrderBookExchanges } from './discovery/exchangeDiscovery.js';
 import { buildSymbolUniverse } from './discovery/symbolUniverse.js';
 import { partitionAssignments, startShards } from './sharding/orchestrator.js';
+import { LoopRegistry } from './cache/loopRegistry.js';
+import { createLoopMonitor } from './loopHealth.js';
 import type { ShardAssignment } from './sharding/messages.js';
 
 async function startConnectors (
@@ -44,6 +46,7 @@ async function startConnectors (
 async function main () {
     const cache = new OrderBookCache();
     const feeRegistry = new FeeRegistry();
+    const loopRegistry = new LoopRegistry();
     const excludeSet = new Set(config.excludeExchanges);
 
     let assignments: ShardAssignment[];
@@ -109,12 +112,16 @@ async function main () {
 
     if (config.shardCount > 1) {
         const groups = partitionAssignments(assignments, config.shardCount);
-        shardChildren = startShards(groups, cache, feeRegistry, logger);
+        shardChildren = startShards(groups, cache, feeRegistry, logger, loopRegistry);
     } else {
         connectors = await startConnectors(assignments, cache, feeRegistry, existingExchanges);
+        // Unsharded: this process runs the connectors, so instrument its own loop under the same
+        // label scheme the sharded path uses.
+        const selfMonitor = createLoopMonitor();
+        setInterval(() => loopRegistry.set('main', selfMonitor.sample()), 2000).unref();
     }
 
-    const app = await buildServer(cache, feeRegistry, logger);
+    const app = await buildServer(cache, feeRegistry, logger, {}, loopRegistry);
     await app.listen({ port: config.port, host: config.host });
     logger.info({ port: config.port }, 'order-router listening');
 
