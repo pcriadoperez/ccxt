@@ -24,6 +24,7 @@ interface BestPriceQuery {
     certified?: string;
     maxStalenessMs?: string;
     requireFullFill?: string;
+    stalenessPenaltyBps?: string;
 }
 
 export interface ServerOptions {
@@ -205,6 +206,11 @@ export async function buildServer (
             const includeFees = request.query.includeFees !== 'false';
             const certifiedOnly = request.query.certified === 'true';
             const requireFullFill = request.query.requireFullFill === 'true';
+            const stalenessPenaltyBps = Number(request.query.stalenessPenaltyBps ?? '0');
+            if (!Number.isFinite(stalenessPenaltyBps) || stalenessPenaltyBps < 0) {
+                reply.code(400);
+                return { error: 'stalenessPenaltyBps must be zero or a positive number' };
+            }
 
             // Escape hatch: a caller who would rather have an old price than no price can widen
             // the freshness window. Deliberately opt-in — defaulting loose would hand out prices
@@ -237,7 +243,7 @@ export async function buildServer (
 
             const result = computeRoute(cache, feeRegistry, symbol, side, amount, {
                 strategy, includeFees, maxVenues, minLegNotional,
-                staleBookMs: maxStalenessMs, requestId, exchanges, certifiedOnly, requireFullFill,
+                staleBookMs: maxStalenessMs, requestId, exchanges, certifiedOnly, requireFullFill, stalenessPenaltyBps,
             });
 
             // Audit record: one line per recommendation, keyed by requestId. This is the trail
@@ -258,7 +264,7 @@ export async function buildServer (
                 freshVenueCount: result.freshVenueCount,
                 unroutableReason: result.unroutableReason,
                 fillRatio: result.fillRatio,
-                requireFullFill,
+                requireFullFill, stalenessPenaltyBps,
                 maxStalenessMs,
             }, 'route recommendation');
 

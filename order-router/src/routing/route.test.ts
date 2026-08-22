@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { OrderBookCache } from '../cache/orderBookCache.js';
 import { FeeRegistry } from '../cache/feeRegistry.js';
-import { computeRoute, type RouteOptions } from './route.js';
+import { computeRoute, stalenessPenaltyFraction, type RouteOptions } from './route.js';
 import type { CachedOrderBook } from '../types.js';
 
 function book (exchangeId: string, asks: [number, number][], bids: [number, number][] = [[1, 1]]): CachedOrderBook {
@@ -15,7 +15,7 @@ function book (exchangeId: string, asks: [number, number][], bids: [number, numb
 }
 const OPTS = (o: Partial<RouteOptions> = {}): RouteOptions => ({
     strategy: 'split_optimal', includeFees: true, maxVenues: 3,
-    minLegNotional: 0, staleBookMs: 5000, requestId: 'test-req', certifiedOnly: false, requireFullFill: false, ...o,
+    minLegNotional: 0, staleBookMs: 5000, requestId: 'test-req', certifiedOnly: false, requireFullFill: false, stalenessPenaltyBps: 0, ...o,
 });
 
 test('split_optimal beats best_single by consuming cheap levels across venues', () => {
@@ -285,4 +285,58 @@ test('a full fill carries no warnings and a fill ratio of 1', () => {
     const r = computeRoute(cache, fees, 'BTC/USDT', 'buy', 5, OPTS());
     assert.equal(r.fillRatio, 1);
     assert.deepEqual(r.warnings, []);
+});
+
+test('split_capped must not return an unfillable set when a fillable one exists', () => {
+    // The top-N-by-volume heuristic picks venues by how much they carried in the UNCONSTRAINED
+    // solve — which favours venues that were cheap at the top, not venues that are deep. With
+    // N=2 that can select two thin venues and miss a fillable pair entirely. This is a
+    // correctness failure, not an approximation-quality one.
+    // Unconstrained fill of 10: thin1 takes 4, thin2 takes 4, deep takes the remaining 2.
+    // Top-2 BY VOLUME is therefore {thin1, thin2} = 8 units — cannot fill 10. Yet {thin1, deep}
+    // fills it easily. The heuristic selects on the wrong quantity.
+    const cache = new OrderBookCache(); const fees = new FeeRegistry();
+    cache.setBook(book('cheapThin1', [[100, 4]]));
+    cache.setBook(book('cheapThin2', [[100.1, 4]]));
+    cache.setBook(book('deepPricey', [[200, 1000]]));
+    for (const ex of ['cheapThin1', 'cheapThin2', 'deepPricey']) fees.setFee(ex, 'BTC/USDT', 0);
+
+    const r = computeRoute(cache, fees, 'BTC/USDT', 'buy', 10, OPTS({ strategy: 'split_capped', maxVenues: 2 }));
+    assert.equal(r.fullyFillable, true,
+        `a 2-venue route exists (deep + either thin) but got ${r.filledAmount} of 10 from ${r.route.map((l) => l.exchangeId)}`);
+});
+
+test('staleness penalty demotes an older book even when its raw price is better', () => {
+    // A stale quote is not the same product as a live one — the price may no longer exist. With
+    // no penalty the older, cheaper venue wins; with a penalty the fresh one should.
+    const cache = new OrderBookCache(); const fees = new FeeRegistry();
+    const old = book('staleButCheap', [[100, 10]]); old.receivedAt = Date.now() - 4000;
+    cache.setBook(old);
+    cache.setBook(book('freshDearer', [[100.5, 10]]));
+    fees.setFee('staleButCheap', 'BTC/USDT', 0); fees.setFee('freshDearer', 'BTC/USDT', 0);
+
+    assert.equal(computeRoute(cache, fees, 'BTC/USDT', 'buy', 1, OPTS()).route[0]!.exchangeId,
+        'staleButCheap', 'unpenalised, the cheaper stale book wins');
+    assert.equal(
+        computeRoute(cache, fees, 'BTC/USDT', 'buy', 1, OPTS({ stalenessPenaltyBps: 50 })).route[0]!.exchangeId,
+        'freshDearer', 'penalised, freshness outweighs a 50bp-equivalent price edge');
+});
+
+test('staleness penalty grows with the square root of age', () => {
+    assert.equal(stalenessPenaltyFraction(0, 100), 0);
+    assert.equal(stalenessPenaltyFraction(5000, 0), 0, 'zero bps disables it');
+    const oneSec = stalenessPenaltyFraction(1000, 100);
+    const fourSec = stalenessPenaltyFraction(4000, 100);
+    assert.ok(Math.abs(fourSec / oneSec - 2) < 1e-9, '4x the age should double the penalty, not quadruple it');
+});
+
+test('zero-amount legs are not emitted', () => {
+    // Float accumulation can leave a venue with an effectively-zero share; surfacing that as a
+    // leg would be an unplaceable order.
+    const cache = new OrderBookCache(); const fees = new FeeRegistry();
+    cache.setBook(book('a', [[100, 1]]));
+    cache.setBook(book('b', [[101, 1]]));
+    fees.setFee('a', 'BTC/USDT', 0); fees.setFee('b', 'BTC/USDT', 0);
+    const r = computeRoute(cache, fees, 'BTC/USDT', 'buy', 1, OPTS());
+    assert.ok(r.route.every((l) => l.amount > 0), `got a zero leg: ${JSON.stringify(r.route)}`);
 });

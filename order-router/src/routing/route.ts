@@ -61,6 +61,14 @@ export interface RouteOptions {
     // When true, refuse to return a partial fill at all: either the whole size routes, or the
     // route is empty with reason 'insufficient_depth'. For callers who cannot act on a partial.
     requireFullFill: boolean;
+    // Per-venue price penalty for quote staleness, in basis points scaled by sqrt(age seconds).
+    // A stale quote is not the same product as a live one: the price may simply no longer exist.
+    // The sqrt shape follows the standard latency-cost result (uncertainty grows with the square
+    // root of elapsed time, like a random walk's standard deviation). 0 disables.
+    //
+    // Because this is a CONSTANT shift per venue, each venue's marginal cost stays non-decreasing,
+    // so the greedy consolidated walk remains provably optimal — no algorithm change needed.
+    stalenessPenaltyBps: number;
     requestId: string;
     // Explicit venue allowlist. Undefined means "no restriction"; an EMPTY set means the caller
     // asked for nothing, which must yield an empty route rather than silently meaning "all".
@@ -82,6 +90,14 @@ interface ConsolidatedLevel {
     effectivePrice: number;
     takerFeeRate: number;
     amount: number;
+}
+
+// Penalty as a fraction of price: bps * sqrt(age in seconds) / 10_000. The caller's bps figure
+// absorbs the asset's volatility, so one tunable number covers it rather than requiring a
+// per-symbol volatility feed the service does not have.
+export function stalenessPenaltyFraction (ageMs: number, penaltyBps: number): number {
+    if (penaltyBps <= 0 || ageMs <= 0) return 0;
+    return (penaltyBps * Math.sqrt(ageMs / 1000)) / 10_000;
 }
 
 function walkBook (levels: { price: number; amount: number }[], amount: number) {
@@ -118,12 +134,17 @@ function buildConsolidatedBook (
         if (allowedExchanges && !allowedExchanges.has(book.exchangeId)) continue;
         if (!isVenueAllowed(book.exchangeId, opts)) continue;
         const fee = opts.includeFees ? feeRegistry.getFee(book.exchangeId, symbol) : 0;
+        const stalePenalty = stalenessPenaltyFraction(now - book.receivedAt, opts.stalenessPenaltyBps);
         for (const lvl of (side === 'buy' ? book.asks : book.bids)) {
+            const feeAdjusted = side === 'buy' ? lvl.price * (1 + fee) : lvl.price * (1 - fee);
             levels.push({
                 exchangeId: book.exchangeId,
                 rawPrice: lvl.price,
-                // Buy: fees make the level dearer. Sell: fees cut your proceeds.
-                effectivePrice: side === 'buy' ? lvl.price * (1 + fee) : lvl.price * (1 - fee),
+                // Buy: fees make the level dearer. Sell: fees cut your proceeds. Staleness is
+                // penalised in the same direction — an old quote should look worse, not better.
+                effectivePrice: side === 'buy'
+                    ? feeAdjusted * (1 + stalePenalty)
+                    : feeAdjusted * (1 - stalePenalty),
                 takerFeeRate: fee,
                 amount: lvl.amount,
             });
@@ -160,6 +181,9 @@ function routeVwapPreview (legs: RouteLeg[], filled: number): string {
 function toLegs (perVenue: ReturnType<typeof allocate>['perVenue'], side: 'buy' | 'sell'): RouteLeg[] {
     const legs: RouteLeg[] = [];
     for (const [exchangeId, v] of perVenue) {
+        // Floating-point accumulation can leave a venue with an effectively-zero allocation.
+        // Emitting it as a leg is noise at best and an unplaceable order at worst.
+        if (v.amount <= 1e-12) continue;
         const averagePrice = v.rawNotional / v.amount;
         legs.push({
             exchangeId,
@@ -241,6 +265,24 @@ export function computeRoute (
                     .map(([ex]) => ex),
             );
             res = allocate(buildConsolidatedBook(cache, feeRegistry, symbol, side, opts, keep), amount);
+
+            // Feasibility repair. Top-N-by-volume selects venues by how much they carried in the
+            // UNCONSTRAINED solve, which favours venues that were cheap at the top rather than
+            // venues that are deep. That can return a set which cannot fill the size even when a
+            // fillable set of the same cardinality exists — a correctness failure, not a pricing
+            // one. If the restricted set falls short, retry with the N deepest venues, which
+            // maximises fillable quantity by construction, and keep whichever actually fills.
+            if (res.filledAmount < amount) {
+                const depthByVenue = new Map<string, number>();
+                for (const lvl of buildConsolidatedBook(cache, feeRegistry, symbol, side, opts)) {
+                    depthByVenue.set(lvl.exchangeId, (depthByVenue.get(lvl.exchangeId) ?? 0) + lvl.amount);
+                }
+                const deepest = new Set(
+                    [...depthByVenue.entries()].sort((a, b) => b[1] - a[1]).slice(0, opts.maxVenues).map(([ex]) => ex),
+                );
+                const repaired = allocate(buildConsolidatedBook(cache, feeRegistry, symbol, side, opts, deepest), amount);
+                if (repaired.filledAmount > res.filledAmount) res = repaired;
+            }
         }
 
         // Drop dust legs that would be rejected by venue minimum-order rules, then re-solve
