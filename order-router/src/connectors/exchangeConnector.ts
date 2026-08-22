@@ -44,6 +44,24 @@ function jittered (ms: number): number {
     return Math.random() * ms;
 }
 
+// Some failures can never succeed on retry: missing credentials, an unsupported method, a symbol
+// the venue does not list. Retrying them is not resilience, it is a busy loop — one such exchange
+// generated 22M log lines and ~930MB of disk while burning CPU that working venues needed. These
+// must be detected and abandoned, not backed off.
+const PERMANENT_ERROR_PATTERNS = [
+    /requires .*credential/i,
+    /requires .*apiKey/i,
+    /apiKey.*required/i,
+    /authentication/i,
+    /not supported/i,
+    /does not have/i,
+    /is invalid/i,
+];
+
+export function isPermanentError (message: string): boolean {
+    return PERMANENT_ERROR_PATTERNS.some((re) => re.test(message));
+}
+
 // One connector owns exactly one exchange's WS connection(s) and one or more
 // symbol watch loops. A crash/error in one connector never touches another —
 // each catches its own errors and reconnects with backoff independently.
@@ -169,6 +187,12 @@ export class ExchangeConnector {
                 backoff = BACKOFF_START_MS;
             } catch (err) {
                 const message = err instanceof Error ? err.message : String(err);
+                if (isPermanentError(message)) {
+                    this.logger.error({ err: message, symbolCount: symbols.length },
+                        'permanent failure, abandoning this subscription (will not retry)');
+                    this.cache.recordError(this.exchangeId, message);
+                    return;
+                }
                 this.logger.error({ err: message }, 'watchOrderBookForSymbols failed, backing off');
                 this.cache.recordError(this.exchangeId, message);
                 this.cache.recordReconnect(this.exchangeId);
@@ -189,6 +213,12 @@ export class ExchangeConnector {
                 backoff = BACKOFF_START_MS;
             } catch (err) {
                 const message = err instanceof Error ? err.message : String(err);
+                if (isPermanentError(message)) {
+                    this.logger.error({ symbol, err: message },
+                        'permanent failure, abandoning this subscription (will not retry)');
+                    this.cache.recordError(this.exchangeId, message);
+                    return;
+                }
                 this.logger.error({ symbol, err: message }, 'watchOrderBook failed, backing off');
                 this.cache.recordError(this.exchangeId, message);
                 this.cache.recordReconnect(this.exchangeId);
