@@ -1,6 +1,7 @@
 import type { OrderBookCache } from '../cache/orderBookCache.js';
 import type { FeeRegistry } from '../cache/feeRegistry.js';
 import type { RoutingQuote } from '../types.js';
+import { isCertified } from '../exchangeMeta.js';
 
 export const ROUTE_STRATEGIES = ['best_single', 'split_optimal', 'split_capped'] as const;
 export type RouteStrategy = (typeof ROUTE_STRATEGIES)[number];
@@ -23,13 +24,17 @@ export interface RouteResult {
     amount: number;
     strategy: RouteStrategy;
     includeFees: boolean;
+    // Explicitly null (not omitted) when unrestricted: a key that sometimes disappears is harder
+    // for consumers to handle than one that is always present.
+    exchangesFilter: string[] | null;
+    certifiedOnly: boolean;
     route: RouteLeg[];
     filledAmount: number;
     fullyFillable: boolean;
-    routeVwap: number | undefined;
+    routeVwap: number | null;
     routeNotional: number;
     totalFeeCost: number;
-    savingVsBestSingleBps: number | undefined;
+    savingVsBestSingleBps: number | null;
     quotes: RoutingQuote[];
 }
 
@@ -40,6 +45,18 @@ export interface RouteOptions {
     minLegNotional: number;
     staleBookMs: number;
     requestId: string;
+    // Explicit venue allowlist. Undefined means "no restriction"; an EMPTY set means the caller
+    // asked for nothing, which must yield an empty route rather than silently meaning "all".
+    exchanges?: Set<string>;
+    certifiedOnly: boolean;
+}
+
+// Both filters compose as an intersection: `exchanges=a,b` with `certified=true` considers only
+// those of a and b that are also certified.
+export function isVenueAllowed (exchangeId: string, opts: Pick<RouteOptions, 'exchanges' | 'certifiedOnly'>): boolean {
+    if (opts.exchanges && !opts.exchanges.has(exchangeId)) return false;
+    if (opts.certifiedOnly && !isCertified(exchangeId)) return false;
+    return true;
 }
 
 interface ConsolidatedLevel {
@@ -82,6 +99,7 @@ function buildConsolidatedBook (
     for (const book of cache.getBooksForSymbol(symbol)) {
         if (now - book.receivedAt > opts.staleBookMs) continue;
         if (allowedExchanges && !allowedExchanges.has(book.exchangeId)) continue;
+        if (!isVenueAllowed(book.exchangeId, opts)) continue;
         const fee = opts.includeFees ? feeRegistry.getFee(book.exchangeId, symbol) : 0;
         for (const lvl of (side === 'buy' ? book.asks : book.bids)) {
             levels.push({
@@ -147,6 +165,8 @@ export function computeRoute (
     // excluded" view — they are not what the route is computed from.
     const quotes: RoutingQuote[] = [];
     for (const book of cache.getBooksForSymbol(symbol)) {
+        // quotes[] is the "what was considered" view, so an excluded venue must not appear in it.
+        if (!isVenueAllowed(book.exchangeId, opts)) continue;
         const bookAgeMs = now - book.receivedAt;
         const fee = opts.includeFees ? feeRegistry.getFee(book.exchangeId, symbol) : 0;
         const { averagePrice, filledAmount } = walkBook(side === 'buy' ? book.asks : book.bids, amount);
@@ -221,10 +241,10 @@ export function computeRoute (
 
     const routeNotional = legs.reduce((s, l) => s + l.amount * l.effectivePrice, 0);
     const totalFeeCost = legs.reduce((s, l) => s + l.feeCost, 0);
-    const routeVwap = filledAmount > 0 ? routeNotional / filledAmount : undefined;
+    const routeVwap = filledAmount > 0 ? routeNotional / filledAmount : null;
 
-    let savingVsBestSingleBps: number | undefined;
-    if (routeVwap !== undefined && bestSingle?.effectivePriceWithFee !== undefined) {
+    let savingVsBestSingleBps: number | null = null;
+    if (routeVwap !== null && bestSingle?.effectivePriceWithFee !== undefined) {
         const single = bestSingle.effectivePriceWithFee;
         // Buy: cheaper is better. Sell: richer is better. Positive always means "the route beat
         // the single-venue baseline".
@@ -241,6 +261,8 @@ export function computeRoute (
         amount,
         strategy: opts.strategy,
         includeFees: opts.includeFees,
+        exchangesFilter: opts.exchanges ? [...opts.exchanges].sort() : null,
+        certifiedOnly: opts.certifiedOnly,
         route: legs,
         filledAmount,
         fullyFillable: filledAmount >= amount,

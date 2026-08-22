@@ -19,6 +19,8 @@ interface BestPriceQuery {
     maxVenues?: string;
     includeFees?: string;
     minLegNotional?: string;
+    exchanges?: string;
+    certified?: string;
 }
 
 export interface ServerOptions {
@@ -196,6 +198,16 @@ export async function buildServer (
                 return { error: 'minLegNotional must be zero or a positive number' };
             }
             const includeFees = request.query.includeFees !== 'false';
+            const certifiedOnly = request.query.certified === 'true';
+
+            // An explicitly empty list (`exchanges=`) is treated as "no venues", not "all venues".
+            // Silently widening an empty allowlist would be the opposite of what the caller asked.
+            let exchanges: Set<string> | undefined;
+            if (request.query.exchanges !== undefined) {
+                exchanges = new Set(
+                    request.query.exchanges.split(',').map((e) => e.trim()).filter((e) => e.length > 0),
+                );
+            }
 
             // Honour a caller-supplied x-request-id so their trace id and ours match in both
             // logs; otherwise mint one. Echoed as a header too, so a client can correlate even
@@ -208,7 +220,7 @@ export async function buildServer (
 
             const result = computeRoute(cache, feeRegistry, symbol, side, amount, {
                 strategy, includeFees, maxVenues, minLegNotional,
-                staleBookMs: config.staleBookMs, requestId,
+                staleBookMs: config.staleBookMs, requestId, exchanges, certifiedOnly,
             });
 
             // Audit record: one line per recommendation, keyed by requestId. This is the trail
@@ -218,6 +230,7 @@ export async function buildServer (
                 requestId,
                 calculatedAt: result.calculatedAt,
                 symbol, side, amount, strategy, includeFees, maxVenues, minLegNotional,
+                exchangesFilter: result.exchangesFilter, certifiedOnly,
                 route: result.route.map((l) => ({ ex: l.exchangeId, amt: l.amount, eff: l.effectivePrice })),
                 filledAmount: result.filledAmount,
                 fullyFillable: result.fullyFillable,

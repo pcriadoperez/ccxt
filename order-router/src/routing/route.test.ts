@@ -15,7 +15,7 @@ function book (exchangeId: string, asks: [number, number][], bids: [number, numb
 }
 const OPTS = (o: Partial<RouteOptions> = {}): RouteOptions => ({
     strategy: 'split_optimal', includeFees: true, maxVenues: 3,
-    minLegNotional: 0, staleBookMs: 5000, requestId: 'test-req', ...o,
+    minLegNotional: 0, staleBookMs: 5000, requestId: 'test-req', certifiedOnly: false, ...o,
 });
 
 test('split_optimal beats best_single by consuming cheap levels across venues', () => {
@@ -112,7 +112,7 @@ test('empty cache yields an empty route rather than a null special case', () => 
     assert.deepEqual(r.route, []);
     assert.equal(r.filledAmount, 0);
     assert.equal(r.fullyFillable, false);
-    assert.equal(r.routeVwap, undefined);
+    assert.equal(r.routeVwap, null);
 });
 
 test('carries the request id and a calculation timestamp for auditing', () => {
@@ -144,4 +144,55 @@ test('when every leg is below minLegNotional the route is kept rather than empti
     const r = computeRoute(cache, fees, 'BTC/USDT', 'buy', 0.01, OPTS({ minLegNotional: 1_000_000 }));
     assert.equal(r.route.length, 1);
     assert.equal(r.filledAmount, 0.01);
+});
+
+test('exchanges filter restricts routing to the named venues', () => {
+    const cache = new OrderBookCache(); const fees = new FeeRegistry();
+    cache.setBook(book('binance', [[100, 10]]));
+    cache.setBook(book('kraken', [[101, 10]]));
+    cache.setBook(book('someother', [[99, 10]]));   // cheapest, but not requested
+    for (const ex of ['binance', 'kraken', 'someother']) fees.setFee(ex, 'BTC/USDT', 0);
+
+    const r = computeRoute(cache, fees, 'BTC/USDT', 'buy', 1,
+        OPTS({ exchanges: new Set(['binance', 'kraken']) }));
+
+    assert.deepEqual(r.route.map((l) => l.exchangeId), ['binance']);
+    assert.ok(!r.quotes.some((q) => q.exchangeId === 'someother'), 'excluded venue must not appear in quotes either');
+    assert.deepEqual(r.exchangesFilter, ['binance', 'kraken']);
+});
+
+test('an empty exchanges list means no venues, not all venues', () => {
+    // Widening an explicitly empty allowlist would be the opposite of what was asked.
+    const cache = new OrderBookCache(); const fees = new FeeRegistry();
+    cache.setBook(book('binance', [[100, 10]]));
+    fees.setFee('binance', 'BTC/USDT', 0);
+
+    const r = computeRoute(cache, fees, 'BTC/USDT', 'buy', 1, OPTS({ exchanges: new Set() }));
+    assert.deepEqual(r.route, []);
+    assert.equal(r.filledAmount, 0);
+});
+
+test('certified flag restricts to ccxt-certified venues', () => {
+    const cache = new OrderBookCache(); const fees = new FeeRegistry();
+    cache.setBook(book('binance', [[101, 10]]));    // certified
+    cache.setBook(book('p2b', [[100, 10]]));        // cheaper, NOT certified
+    fees.setFee('binance', 'BTC/USDT', 0); fees.setFee('p2b', 'BTC/USDT', 0);
+
+    const open = computeRoute(cache, fees, 'BTC/USDT', 'buy', 1, OPTS());
+    assert.equal(open.route[0]!.exchangeId, 'p2b', 'unfiltered should take the cheaper venue');
+
+    const cert = computeRoute(cache, fees, 'BTC/USDT', 'buy', 1, OPTS({ certifiedOnly: true }));
+    assert.equal(cert.route[0]!.exchangeId, 'binance', 'certified-only must skip the cheaper uncertified venue');
+    assert.equal(cert.certifiedOnly, true);
+});
+
+test('exchanges and certified compose as an intersection', () => {
+    const cache = new OrderBookCache(); const fees = new FeeRegistry();
+    cache.setBook(book('binance', [[101, 10]]));    // in list AND certified
+    cache.setBook(book('p2b', [[100, 10]]));        // in list, NOT certified
+    fees.setFee('binance', 'BTC/USDT', 0); fees.setFee('p2b', 'BTC/USDT', 0);
+
+    const r = computeRoute(cache, fees, 'BTC/USDT', 'buy', 1,
+        OPTS({ exchanges: new Set(['binance', 'p2b']), certifiedOnly: true }));
+    assert.deepEqual(r.route.map((l) => l.exchangeId), ['binance']);
 });

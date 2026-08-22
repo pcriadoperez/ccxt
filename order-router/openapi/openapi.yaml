@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: CCXT Order Router API
-  version: 0.2.0
+  version: 0.3.0
   description: |
     Smart order router over live L2 order books from ~60 exchanges (ccxt.pro WebSocket).
 
@@ -96,6 +96,21 @@ paths:
             split does not produce legs that would be rejected by venue minimum-order rules.
             If EVERY leg falls below it the route is kept rather than emptied.
           schema: { type: number, minimum: 0, default: 0 }
+        - name: exchanges
+          in: query
+          description: |
+            Comma-separated venue allowlist — only these are considered, e.g. `binance,kraken,bybit`.
+            Omit for no restriction. An explicitly EMPTY value means no venues (yielding an empty
+            route), not all venues.
+          schema: { type: string }
+          example: binance,kraken,bybit
+        - name: certified
+          in: query
+          description: |
+            When true, consider only exchanges CCXT marks as certified — the subset it actively
+            maintains and tests to a higher bar (22 of 80 pro classes at time of writing).
+            Composes with `exchanges` as an intersection.
+          schema: { type: boolean, default: false }
         - name: x-request-id
           in: header
           description: Optional caller-supplied audit id. Echoed in the body and the `x-request-id` response header; one is minted if absent.
@@ -307,6 +322,13 @@ components:
         amount: { type: number, format: double }
         strategy: { type: string, enum: [best_single, split_optimal, split_capped] }
         includeFees: { type: boolean }
+        exchangesFilter:
+          type: [array, 'null']
+          items: { type: string }
+          description: The venue allowlist actually applied, echoed back for auditability. Null when unrestricted.
+        certifiedOnly:
+          type: boolean
+          description: Whether the certified-only filter was applied.
         route:
           type: array
           description: The fill plan, largest leg first. Empty when nothing fresh enough could fill.
