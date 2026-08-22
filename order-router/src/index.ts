@@ -8,7 +8,8 @@ import { ExchangeConnector } from './connectors/exchangeConnector.js';
 import { buildServer } from './api/server.js';
 import { listWatchOrderBookExchanges } from './discovery/exchangeDiscovery.js';
 import { buildSymbolUniverse } from './discovery/symbolUniverse.js';
-import { partitionAssignments, startShards } from './sharding/orchestrator.js';
+import { rankSymbolsByLiquidity } from './discovery/liquidity.js';
+import { partitionAssignments, imbalanceRatio, startShards, type ShardHandle } from './sharding/orchestrator.js';
 import { LoopRegistry } from './cache/loopRegistry.js';
 import { createLoopMonitor } from './loopHealth.js';
 import type { ShardAssignment } from './sharding/messages.js';
@@ -82,6 +83,21 @@ async function main () {
             symbols,
         }));
 
+        // Trim to the most-traded symbols before any connector starts. Ingest cost is driven by
+        // message volume, and the long tail contributes almost no routing value for its cost.
+        if (config.topSymbols > 0) {
+            const allSymbols = [...new Set(assignments.flatMap((a) => a.symbols))];
+            const ranked = await rankSymbolsByLiquidity(allSymbols, config.liquidityReferenceExchanges, logger);
+            const keep = new Set(ranked.slice(0, config.topSymbols));
+            assignments = assignments
+                .map((a) => ({ exchangeId: a.exchangeId, symbols: a.symbols.filter((sym) => keep.has(sym)) }))
+                .filter((a) => a.symbols.length > 0);
+            logger.info(
+                { from: allSymbols.length, to: keep.size, exchanges: assignments.length, top: [...keep].slice(0, 10) },
+                'symbol universe trimmed to most-liquid',
+            );
+        }
+
         if (assignments.length === 0) {
             logger.error('no exchanges have any routable symbols (>= minExchangesPerSymbol) — nothing to do');
         }
@@ -108,11 +124,44 @@ async function main () {
     }
 
     let connectors: ExchangeConnector[] = [];
-    let shardChildren: ChildProcess[] = [];
+    let shardHandle: ShardHandle | undefined;
 
     if (config.shardCount > 1) {
         const groups = partitionAssignments(assignments, config.shardCount);
-        shardChildren = startShards(groups, cache, feeRegistry, logger, loopRegistry);
+        shardHandle = startShards(groups, cache, feeRegistry, logger, loopRegistry);
+
+        // One-shot rebalance once real traffic has been observed. Symbol count is only a guess at
+        // cost; updateCount is the actual message volume each venue produced. Deliberately not a
+        // continuous loop — every rebalance restarts shards and drops their books, so churn would
+        // cost more than the imbalance it corrects.
+        if (config.rebalanceAfterMs > 0) {
+            const baseline = new Map(cache.getHealth().map((h) => [h.exchangeId, h.updateCount]));
+            setTimeout(() => {
+                const rates = new Map<string, number>();
+                for (const h of cache.getHealth()) {
+                    rates.set(h.exchangeId, Math.max(1, h.updateCount - (baseline.get(h.exchangeId) ?? 0)));
+                }
+                const weightOf = (a: ShardAssignment) => rates.get(a.exchangeId) ?? 1;
+                const currentLoads = partitionAssignments(assignments, config.shardCount)
+                    .map((g) => g.reduce((sum, a) => sum + weightOf(a), 0));
+                const ratio = imbalanceRatio(currentLoads);
+                if (ratio < config.rebalanceMinImbalance) {
+                    logger.info({ ratio }, 'shard load already balanced, skipping rebalance');
+                    return;
+                }
+                const rebalanced = partitionAssignments(assignments, config.shardCount, weightOf);
+                logger.warn(
+                    {
+                        imbalanceRatio: ratio,
+                        before: currentLoads,
+                        after: rebalanced.map((g) => g.reduce((sum, a) => sum + weightOf(a), 0)),
+                    },
+                    'rebalancing shards by observed message rate',
+                );
+                shardHandle?.stop();
+                shardHandle = startShards(rebalanced, cache, feeRegistry, logger, loopRegistry);
+            }, config.rebalanceAfterMs).unref();
+        }
     } else {
         connectors = await startConnectors(assignments, cache, feeRegistry, existingExchanges);
         // Unsharded: this process runs the connectors, so instrument its own loop under the same
@@ -129,7 +178,7 @@ async function main () {
         logger.info({ signal }, 'shutting down');
         await app.close();
         await Promise.all(connectors.map((c) => c.stop()));
-        shardChildren.forEach((c) => c.disconnect());
+        shardHandle?.stop();
         process.exit(0);
     };
     process.on('SIGTERM', () => void shutdown('SIGTERM'));

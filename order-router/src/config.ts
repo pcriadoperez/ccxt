@@ -46,6 +46,20 @@ export const config = {
     // zero routing value. Raise this to restrict to more-liquid, more-cross-listed symbols.
     minExchangesPerSymbol: Number(process.env['ORDER_ROUTER_MIN_EXCHANGES_PER_SYMBOL'] ?? 2),
 
+    // Cap the routable universe to the N most-traded symbols. Listing breadth is a poor proxy for
+    // liquidity — an obscure token can appear on 20 venues and trade nothing — so this ranks by
+    // quoteVolume from reference exchanges. 0 disables the cap.
+    topSymbols: Number(process.env['ORDER_ROUTER_TOP_SYMBOLS'] ?? 50),
+    liquidityReferenceExchanges: listFromEnv('ORDER_ROUTER_LIQUIDITY_REFERENCE', ['binance', 'okx']),
+
+    // Shards are first partitioned by symbol count, which is a bad proxy for CPU cost: a venue
+    // sending 3,000-level books costs far more per symbol than one sending 20. After this delay
+    // the parent re-partitions using each exchange's OBSERVED message rate and restarts the
+    // shards. 0 disables. Measured motivation: shard-0 at 0.90 event-loop utilisation while two
+    // shards idled at 0.10.
+    rebalanceAfterMs: Number(process.env['ORDER_ROUTER_REBALANCE_AFTER_MS'] ?? 120_000),
+    rebalanceMinImbalance: Number(process.env['ORDER_ROUTER_REBALANCE_MIN_IMBALANCE'] ?? 1.5),
+
     // Bounded concurrency for the discovery-phase loadMarkets() fan-out, to avoid hammering many
     // exchanges' REST endpoints simultaneously at startup.
     loadMarketsConcurrency: Number(process.env['ORDER_ROUTER_LOAD_MARKETS_CONCURRENCY'] ?? 8),

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: CCXT Order Router API
-  version: 0.4.0
+  version: 0.5.0
   description: |
     Smart order router over live L2 order books from ~60 exchanges (ccxt.pro WebSocket).
 
@@ -118,6 +118,13 @@ paths:
             Opt-in by design: defaulting loose would hand out prices minutes out of date without
             the caller ever choosing that risk. Widen it only if a stale price beats no price.
           schema: { type: number, exclusiveMinimum: 0 }
+        - name: requireFullFill
+          in: query
+          description: |
+            Refuse partial fills. When the cached depth cannot cover the whole size the route is
+            empty with `unroutableReason: insufficient_depth`, rather than returning a partial
+            whose routeVwap prices only the filled portion.
+          schema: { type: boolean, default: false }
         - name: x-request-id
           in: header
           description: Optional caller-supplied audit id. Echoed in the body and the `x-request-id` response header; one is minted if absent.
@@ -344,7 +351,7 @@ components:
           description: How many considered venues were within the freshness cutoff.
         unroutableReason:
           type: [string, 'null']
-          enum: [no_venues_matched_filter, all_books_stale, no_liquidity, null]
+          enum: [no_venues_matched_filter, all_books_stale, no_liquidity, insufficient_depth, null]
           description: |
             Why `route` is empty; null when routing succeeded. An empty route is a deliberate
             refusal to quote, not a failure:
@@ -356,6 +363,17 @@ components:
           description: The fill plan, largest leg first. Empty when nothing fresh enough could fill.
           items: { $ref: '#/components/schemas/RouteLeg' }
         filledAmount: { type: number, format: double }
+        unfilledAmount: { type: number, format: double }
+        fillRatio:
+          type: number
+          description: |
+            filledAmount / amount. Check this before using routeVwap: on a partial fill routeVwap
+            prices ONLY the filled size, so reading it as the price for the requested size badly
+            underprices the order (a 9% fill quoted as if it were 100%).
+        warnings:
+          type: array
+          items: { type: string }
+          description: Human-readable cautions, e.g. partial_fill. Empty on a clean full fill.
         fullyFillable:
           type: boolean
           description: False means cached depth could not cover the requested size; filledAmount shows how far it got.

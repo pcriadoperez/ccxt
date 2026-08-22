@@ -33,8 +33,15 @@ export interface RouteResult {
     staleBookMs: number;
     // Populated only when route is empty, so an empty result is self-explaining rather than
     // something the caller has to reverse-engineer from quotes[].
-    unroutableReason: 'no_venues_matched_filter' | 'all_books_stale' | 'no_liquidity' | null;
+    unroutableReason:
+        'no_venues_matched_filter' | 'all_books_stale' | 'no_liquidity' | 'insufficient_depth' | null;
     freshVenueCount: number;
+    unfilledAmount: number;
+    // filledAmount / amount. Explicit because routeVwap is the VWAP of the FILLED size only —
+    // a caller who reads it after a partial fill without noticing fullyFillable would badly
+    // misprice their order (e.g. 9% filled, quoted as if it were 100%).
+    fillRatio: number;
+    warnings: string[];
     route: RouteLeg[];
     filledAmount: number;
     fullyFillable: boolean;
@@ -51,6 +58,9 @@ export interface RouteOptions {
     maxVenues: number;
     minLegNotional: number;
     staleBookMs: number;
+    // When true, refuse to return a partial fill at all: either the whole size routes, or the
+    // route is empty with reason 'insufficient_depth'. For callers who cannot act on a partial.
+    requireFullFill: boolean;
     requestId: string;
     // Explicit venue allowlist. Undefined means "no restriction"; an EMPTY set means the caller
     // asked for nothing, which must yield an empty route rather than silently meaning "all".
@@ -140,6 +150,11 @@ function allocate (levels: ConsolidatedLevel[], amount: number) {
         remaining -= take;
     }
     return { perVenue, filledAmount: amount - remaining };
+}
+
+function routeVwapPreview (legs: RouteLeg[], filled: number): string {
+    if (filled <= 0) return 'n/a';
+    return (legs.reduce((s, l) => s + l.amount * l.effectivePrice, 0) / filled).toFixed(2);
 }
 
 function toLegs (perVenue: ReturnType<typeof allocate>['perVenue'], side: 'buy' | 'sell'): RouteLeg[] {
@@ -246,6 +261,13 @@ export function computeRoute (
         filledAmount = res.filledAmount;
     }
 
+    // Enforce all-or-nothing BEFORE computing totals, so a rejected partial reports zeroes rather
+    // than a price for a fill that will not happen.
+    if (opts.requireFullFill && filledAmount < amount) {
+        legs = [];
+        filledAmount = 0;
+    }
+
     // Diagnose an empty route in the order the filters actually applied, so the reason names the
     // FIRST thing that eliminated everything rather than the last thing checked.
     const freshVenueCount = quotes.filter((q) => q.bookAgeMs <= opts.staleBookMs).length;
@@ -253,7 +275,19 @@ export function computeRoute (
     if (legs.length === 0) {
         if (quotes.length === 0) unroutableReason = 'no_venues_matched_filter';
         else if (freshVenueCount === 0) unroutableReason = 'all_books_stale';
+        else if (opts.requireFullFill) unroutableReason = 'insufficient_depth';
         else unroutableReason = 'no_liquidity';
+    }
+
+    const unfilledAmount = Math.max(0, amount - filledAmount);
+    const fillRatio = amount > 0 ? filledAmount / amount : 0;
+    const warnings: string[] = [];
+    if (filledAmount > 0 && filledAmount < amount) {
+        warnings.push(
+            `partial_fill: only ${(fillRatio * 100).toFixed(2)}% of the requested size could be filled `
+            + `from cached depth. routeVwap (${routeVwapPreview(legs, filledAmount)}) prices the FILLED `
+            + `${filledAmount} only — the remaining ${unfilledAmount} would cost more.`,
+        );
     }
 
     const routeNotional = legs.reduce((s, l) => s + l.amount * l.effectivePrice, 0);
@@ -283,6 +317,9 @@ export function computeRoute (
         staleBookMs: opts.staleBookMs,
         unroutableReason,
         freshVenueCount,
+        unfilledAmount,
+        fillRatio,
+        warnings,
         route: legs,
         filledAmount,
         fullyFillable: filledAmount >= amount,

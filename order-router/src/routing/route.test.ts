@@ -15,7 +15,7 @@ function book (exchangeId: string, asks: [number, number][], bids: [number, numb
 }
 const OPTS = (o: Partial<RouteOptions> = {}): RouteOptions => ({
     strategy: 'split_optimal', includeFees: true, maxVenues: 3,
-    minLegNotional: 0, staleBookMs: 5000, requestId: 'test-req', certifiedOnly: false, ...o,
+    minLegNotional: 0, staleBookMs: 5000, requestId: 'test-req', certifiedOnly: false, requireFullFill: false, ...o,
 });
 
 test('split_optimal beats best_single by consuming cheap levels across venues', () => {
@@ -235,4 +235,54 @@ test('a successful route reports no unroutable reason', () => {
     const r = computeRoute(cache, fees, 'BTC/USDT', 'buy', 1, OPTS());
     assert.equal(r.unroutableReason, null);
     assert.equal(r.freshVenueCount, 1);
+});
+
+test('a partial fill warns loudly that routeVwap prices only the filled size', () => {
+    // The dangerous misread: request 10,000, fill 900, and quote routeVwap as if it were the
+    // price for 10,000. fillRatio and warnings exist to make that impossible to miss.
+    const cache = new OrderBookCache(); const fees = new FeeRegistry();
+    cache.setBook(book('a', [[100, 1]]));
+    fees.setFee('a', 'BTC/USDT', 0);
+
+    const r = computeRoute(cache, fees, 'BTC/USDT', 'buy', 10, OPTS());
+    assert.equal(r.fullyFillable, false);
+    assert.equal(r.filledAmount, 1);
+    assert.equal(r.unfilledAmount, 9);
+    assert.ok(Math.abs(r.fillRatio - 0.1) < 1e-9);
+    assert.equal(r.warnings.length, 1);
+    assert.match(r.warnings[0]!, /partial_fill/);
+    assert.match(r.warnings[0]!, /FILLED/);
+});
+
+test('requireFullFill refuses a partial rather than quoting one', () => {
+    const cache = new OrderBookCache(); const fees = new FeeRegistry();
+    cache.setBook(book('a', [[100, 1]]));
+    fees.setFee('a', 'BTC/USDT', 0);
+
+    const r = computeRoute(cache, fees, 'BTC/USDT', 'buy', 10, OPTS({ requireFullFill: true }));
+    assert.deepEqual(r.route, []);
+    assert.equal(r.filledAmount, 0);
+    assert.equal(r.routeVwap, null, 'must not price a fill that will not happen');
+    assert.equal(r.unroutableReason, 'insufficient_depth');
+});
+
+test('requireFullFill still returns a route when depth is sufficient', () => {
+    const cache = new OrderBookCache(); const fees = new FeeRegistry();
+    cache.setBook(book('a', [[100, 100]]));
+    fees.setFee('a', 'BTC/USDT', 0);
+
+    const r = computeRoute(cache, fees, 'BTC/USDT', 'buy', 10, OPTS({ requireFullFill: true }));
+    assert.equal(r.fullyFillable, true);
+    assert.equal(r.filledAmount, 10);
+    assert.deepEqual(r.warnings, []);
+    assert.equal(r.unroutableReason, null);
+});
+
+test('a full fill carries no warnings and a fill ratio of 1', () => {
+    const cache = new OrderBookCache(); const fees = new FeeRegistry();
+    cache.setBook(book('a', [[100, 100]]));
+    fees.setFee('a', 'BTC/USDT', 0);
+    const r = computeRoute(cache, fees, 'BTC/USDT', 'buy', 5, OPTS());
+    assert.equal(r.fillRatio, 1);
+    assert.deepEqual(r.warnings, []);
 });
