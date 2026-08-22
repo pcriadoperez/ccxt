@@ -68,6 +68,8 @@ pub fn take_http_timings() -> (u64, u64, u64) {
 // ── Internals (Rust-typed runtime state, not exposed to transpiled code) ─────
 
 pub struct Internals {
+    /// Stable identity used to isolate WebSocket clients owned by this exchange.
+    pub ws_owner_id:    u64,
     pub http_client:    Option<reqwest::Client>,
     pub describe_cb:    Option<DescribeCallback>,
     pub last_rest_ts:   i64,
@@ -156,7 +158,10 @@ impl Clone for Internals {
 
 impl Default for Internals {
     fn default() -> Self {
+        static NEXT_WS_OWNER_ID: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(1);
         Self {
+            ws_owner_id:       NEXT_WS_OWNER_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             http_client:      None,
             describe_cb:      None,
             last_rest_ts:     0,
@@ -1072,7 +1077,8 @@ pub trait ExchangeRuntime: crate::exchange_generated::ExchangeBase {
         subscribe_hashes: Vec<String>,
         subscription: Value,
     ) -> impl ::std::future::Future<Output = Value> + Send { async move {
-        let client = match crate::pro::ws_client::ensure_client(&url).await {
+        let owner_id = self.internals.ws_owner_id;
+        let client = match crate::pro::ws_client::ensure_client(owner_id, &url).await {
             Ok(c) => c,
             Err(e) => panic!("{}", e),
         };
@@ -1094,7 +1100,10 @@ pub trait ExchangeRuntime: crate::exchange_generated::ExchangeBase {
                 Value::Str(s) => s.clone(),
                 v => v.to_json().to_string(),
             };
-            client.send_text(payload);
+            client.remember_subscribe_message(&subscribe_hashes, payload.clone());
+            if !client.send_text(payload) {
+                panic!("[NetworkError] {} websocket outgoing queue full", url);
+            }
         }
         // If an ancestor ws_run on this task is already driving `url`, don't
         // start a nested loop — the subscribe frame was sent above; report the
@@ -1113,14 +1122,14 @@ pub trait ExchangeRuntime: crate::exchange_generated::ExchangeBase {
         // the first (top-level) drive; nested-different-url calls extend it.
         if WS_DRIVEN_URLS.try_with(|_| ()).is_ok() {
             WS_DRIVEN_URLS.with(|s| { s.lock().unwrap().insert(url.clone()); });
-            let r = self.ws_drive_loop(client, hashes, url.clone()).await;
+            let r = self.ws_drive_loop(client, hashes, owner_id, url.clone()).await;
             WS_DRIVEN_URLS.with(|s| { s.lock().unwrap().remove(&url); });
             r
         } else {
             let mut set = std::collections::HashSet::new();
             set.insert(url.clone());
             WS_DRIVEN_URLS
-                .scope(std::sync::Mutex::new(set), self.ws_drive_loop(client, hashes, url.clone()))
+                .scope(std::sync::Mutex::new(set), self.ws_drive_loop(client, hashes, owner_id, url.clone()))
                 .await
         }
     } }
@@ -1131,6 +1140,7 @@ pub trait ExchangeRuntime: crate::exchange_generated::ExchangeBase {
         &mut self,
         client: std::sync::Arc<crate::pro::ws_client::ClientState>,
         hashes: Vec<String>,
+        owner_id: u64,
         url: String,
     ) -> impl ::std::future::Future<Output = Value> + Send { async move {
         loop {
@@ -1148,7 +1158,18 @@ pub trait ExchangeRuntime: crate::exchange_generated::ExchangeBase {
             }
             let msg = match client.next_message().await {
                 Some(m) => m,
-                None => panic!("[NetworkError] {} websocket connection closed", url),
+                None => {
+                    let mut delay_ms = 100u64;
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                        match crate::pro::ws_client::ensure_client(owner_id, &url).await {
+                            Ok(_) => break,
+                            Err(_) if !client.is_closed() => delay_ms = (delay_ms * 2).min(30_000),
+                            Err(e) => panic!("{}", e),
+                        }
+                    }
+                    continue;
+                }
             };
             if std::env::var("CCXT_WS_DEBUG").is_ok() {
                 let n: usize = std::env::var("CCXT_WS_DEBUG").ok()
@@ -1156,7 +1177,7 @@ pub trait ExchangeRuntime: crate::exchange_generated::ExchangeBase {
                 let s = msg.to_json().to_string();
                 eprintln!("[wsmsg] {}", s.chars().take(n).collect::<String>());
             }
-            let client_value = crate::pro::ws_client::client_value(&url);
+            let client_value = crate::pro::ws_client::client_value(owner_id, &url);
             let _ = self
                 .dispatch_to_derived("handle_message", vec![client_value, msg])
                 .await;

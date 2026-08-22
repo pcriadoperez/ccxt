@@ -3,16 +3,16 @@
 //! This is the Rust port of the runtime side of `ts/src/base/ws/{Client,WsClient}.ts`.
 //! The transpiled `pro/<id>.rs` exchanges call — via the base `watch()` /
 //! `watch_multiple()` — into a *client* object keyed by URL that:
-//!   * owns the live `tokio-tungstenite` connection (one per URL),
+//!   * owns the live `tokio-tungstenite` connection (one per exchange + URL),
 //!   * exposes `resolve` / `reject` / `future` / `send` so the venue's
 //!     `handle_message` can push parsed data back to the awaiting `watch`,
 //!   * tracks `subscriptions` (so a subscribe frame is sent once per hash),
 //!   * runs ping/pong keep-alive.
 //!
-//! Ownership model (why this is a global registry, not a field on `Exchange`):
+//! Ownership model (why this registry is process-wide but instance-keyed):
 //! the base `watch()` borrows `&mut self` to drive `handle_message`, which
 //! itself needs the client. Keeping the connection + futures in a process-wide
-//! registry keyed by URL (behind its own locks) keeps it disjoint from the
+//! registry keyed by `(exchange owner id, URL)` (behind its own locks) keeps it disjoint from the
 //! `&mut Exchange` borrow, so the drive loop can read the next frame and call
 //! `handle_message(self, client, msg)` without aliasing.
 
@@ -31,14 +31,10 @@ use crate::Value;
 /// Per-connection state. Lives in [`REGISTRY`] behind an `Arc`, so both the
 /// background reader/writer tasks and the `watch` drive loop share it.
 pub struct ClientState {
+    pub owner_id: u64,
     pub url: String,
     /// Frames queued for the writer task → socket.
-    outgoing: mpsc::UnboundedSender<Message>,
-    /// Receiver half held until the socket connects (a slot is pre-registered
-    /// before connecting so `client.subscriptions` writes persist — upbit builds
-    /// its subscribe frame from subscriptions set before the socket is up). The
-    /// writer task takes this on connect.
-    pending_rx: Mutex<Option<mpsc::UnboundedReceiver<Message>>>,
+    outgoing: Mutex<Option<mpsc::Sender<Message>>>,
     /// Serializes the (async) connect so concurrent `ensure_client`s for a
     /// pre-registered slot don't open two sockets.
     connect_gate: tokio::sync::Mutex<()>,
@@ -53,6 +49,8 @@ pub struct ClientState {
     /// subscribeHash → subscription object (TS `client.subscriptions[hash]`).
     /// A subscribe frame is sent only the first time a hash is inserted.
     subscriptions: Mutex<HashMap<String, Value>>,
+    /// Subscribe frames retained for replay after a transport reconnect.
+    subscribe_messages: Mutex<HashMap<String, String>>,
     /// messageHashes some `watch` call is currently waiting on. Mirrors TS
     /// `client.futures` (read by a few venues' `handle_message`).
     futures: Mutex<HashSet<String>>,
@@ -68,8 +66,16 @@ pub struct ClientState {
     ws_test_completed: Mutex<bool>,
 }
 
-static REGISTRY: Lazy<Mutex<HashMap<String, Arc<ClientState>>>> =
+const OUTGOING_CAPACITY: usize = 1024;
+const INCOMING_CAPACITY: usize = 4096;
+const SETTLED_CAPACITY: usize = 4096;
+const KEEP_ALIVE_MS: u64 = 30_000;
+const MAX_PING_PONG_MISSES: i64 = 2;
+
+type ClientKey = (u64, String);
+static REGISTRY: Lazy<Mutex<HashMap<ClientKey, Arc<ClientState>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
+static MOCK_URLS: Lazy<Mutex<HashSet<String>>> = Lazy::new(|| Mutex::new(HashSet::new()));
 
 /// Monotonic-ish wall clock in ms. `SystemTime` is fine here (keep-alive only).
 fn now_ms() -> i64 {
@@ -120,7 +126,15 @@ fn parse_binary(b: &[u8]) -> Value {
 
 impl ClientState {
     fn push_incoming(&self, v: Value) {
-        self.incoming.lock().unwrap().push_back(v);
+        let mut queue = self.incoming.lock().unwrap();
+        if queue.len() >= INCOMING_CAPACITY {
+            drop(queue);
+            self.fail_transport(Value::Str(
+                "[NetworkError] websocket incoming queue capacity exceeded".to_string(),
+            ));
+            return;
+        }
+        queue.push_back(v);
         self.notify.notify_waiters();
     }
 
@@ -134,7 +148,7 @@ impl ClientState {
             if let Some(v) = self.incoming.lock().unwrap().pop_front() {
                 return Some(v);
             }
-            if *self.closed.lock().unwrap() {
+            if *self.closed.lock().unwrap() || !*self.connected.lock().unwrap() {
                 return None;
             }
             if mock {
@@ -142,7 +156,10 @@ impl ClientState {
                 // If nothing arrives within a short window the fixture is
                 // finished (or under-feeds this watch) — stop instead of
                 // blocking the drive loop forever, so the test completes.
-                if tokio::time::timeout(std::time::Duration::from_millis(1500), notified).await.is_err() {
+                if tokio::time::timeout(std::time::Duration::from_millis(1500), notified)
+                    .await
+                    .is_err()
+                {
                     return None;
                 }
             } else {
@@ -153,13 +170,24 @@ impl ClientState {
 
     /// Store a resolved value for `hash` (TS `client.resolve`).
     pub fn resolve(&self, hash: &str, value: Value) {
-        self.resolved.lock().unwrap().insert(hash.to_string(), value);
+        if self.futures.lock().unwrap().remove(hash) {
+            let mut resolved = self.resolved.lock().unwrap();
+            if resolved.len() >= SETTLED_CAPACITY {
+                resolved.clear();
+            }
+            resolved.insert(hash.to_string(), value);
+        }
         self.notify.notify_waiters();
     }
 
     /// Store an error for `hash` (TS `client.reject`).
     pub fn reject(&self, hash: &str, err: Value) {
-        self.rejections.lock().unwrap().insert(hash.to_string(), err);
+        self.futures.lock().unwrap().remove(hash);
+        let mut rejections = self.rejections.lock().unwrap();
+        if rejections.len() >= SETTLED_CAPACITY {
+            rejections.clear();
+        }
+        rejections.insert(hash.to_string(), err);
         self.notify.notify_waiters();
     }
 
@@ -209,25 +237,53 @@ impl ClientState {
         true
     }
 
+    pub fn remember_subscribe_message(&self, subscribe_hashes: &[String], payload: String) {
+        let mut messages = self.subscribe_messages.lock().unwrap();
+        if subscribe_hashes.is_empty() {
+            messages.insert(payload.clone(), payload);
+        } else {
+            for hash in subscribe_hashes {
+                messages.insert(hash.clone(), payload.clone());
+            }
+        }
+    }
+
     /// Directly set a subscription entry (TS `client.subscriptions[h] = x`
     /// written from `handle_message`).
     pub fn set_subscription(&self, subscribe_hash: &str, subscription: Value) {
-        self.subscriptions.lock().unwrap().insert(subscribe_hash.to_string(), subscription);
+        self.subscriptions
+            .lock()
+            .unwrap()
+            .insert(subscribe_hash.to_string(), subscription);
     }
 
     pub fn is_subscribed(&self, subscribe_hash: &str) -> bool {
-        self.subscriptions.lock().unwrap().contains_key(subscribe_hash)
+        self.subscriptions
+            .lock()
+            .unwrap()
+            .contains_key(subscribe_hash)
     }
 
     pub fn send_text(&self, s: String) -> bool {
-        if std::env::var("CCXT_WS_DEBUG").is_ok() { eprintln!("[wssend] {}", s.chars().take(200).collect::<String>()); }
+        if std::env::var("CCXT_WS_DEBUG").is_ok() {
+            eprintln!("[wssend] {}", s.chars().take(200).collect::<String>());
+        }
         // Static-WS-test mock transport: record the frame (JSON-parsed, like the
         // TS `client.connection.send` stub) instead of hitting a socket.
         if *self.mock.lock().unwrap() {
             self.mock_sent.lock().unwrap().push(parse_text(&s));
             return true;
         }
-        self.outgoing.send(Message::Text(s)).is_ok()
+        let sender = self.outgoing.lock().unwrap().clone();
+        let sent = sender
+            .map(|tx| tx.try_send(Message::Text(s)).is_ok())
+            .unwrap_or(false);
+        if !sent {
+            self.fail_transport(Value::Str(
+                "[NetworkError] websocket outgoing queue capacity exceeded".to_string(),
+            ));
+        }
+        sent
     }
 
     /// Enable the mock transport: mark connected (so `ensure_client` never opens
@@ -252,13 +308,19 @@ impl ClientState {
     pub fn has_queued_messages(&self) -> bool {
         !self.incoming.lock().unwrap().is_empty()
     }
-    pub fn mark_ws_test_completed(&self) { *self.ws_test_completed.lock().unwrap() = true; }
-    pub fn is_ws_test_completed(&self) -> bool { *self.ws_test_completed.lock().unwrap() }
+    pub fn mark_ws_test_completed(&self) {
+        *self.ws_test_completed.lock().unwrap() = true;
+    }
+    pub fn is_ws_test_completed(&self) -> bool {
+        *self.ws_test_completed.lock().unwrap()
+    }
     /// Reject every pending future so a fixture whose frames don't resolve the
     /// watch fails (with a message) rather than hanging the drive loop.
     pub fn reject_pending_futures(&self, err: Value) {
         let hashes: Vec<String> = self.futures.lock().unwrap().iter().cloned().collect();
-        for h in hashes { self.reject(&h, err.clone()); }
+        for h in hashes {
+            self.reject(&h, err.clone());
+        }
     }
 
     pub fn is_closed(&self) -> bool {
@@ -269,12 +331,25 @@ impl ClientState {
         *self.last_pong_ms.lock().unwrap() = now_ms();
     }
 
+    fn pong_timed_out(&self, now: i64, keep_alive_ms: u64) -> bool {
+        now.saturating_sub(*self.last_pong_ms.lock().unwrap())
+            > (keep_alive_ms as i64).saturating_mul(MAX_PING_PONG_MISSES)
+    }
+
+    fn fail_transport(&self, err: Value) {
+        *self.connected.lock().unwrap() = false;
+        *self.outgoing.lock().unwrap() = None;
+        self.reject_pending_futures(err);
+        self.notify.notify_waiters();
+    }
+
     /// Drop resolved/rejected/subscription/future state (TS `client.reset`),
     /// e.g. after a reconnect so stale hashes don't resolve new waiters.
     pub fn reset(&self) {
         self.resolved.lock().unwrap().clear();
         self.rejections.lock().unwrap().clear();
         self.subscriptions.lock().unwrap().clear();
+        self.subscribe_messages.lock().unwrap().clear();
         self.futures.lock().unwrap().clear();
     }
 
@@ -286,6 +361,10 @@ impl ClientState {
     pub fn subscriptions_value(&self) -> Value {
         let subs = self.subscriptions.lock().unwrap();
         let mut m = indexmap::IndexMap::new();
+        m.insert(
+            "__ws_owner_id".to_string(),
+            Value::Int(self.owner_id as i64),
+        );
         m.insert("__ws_subs_url".to_string(), Value::Str(self.url.clone()));
         for (h, sub) in subs.iter() {
             // Tag each subscription DICT with a back-reference so a field write
@@ -295,8 +374,12 @@ impl ClientState {
             let tagged = match sub {
                 Value::Dict(d) => {
                     let mut inner = (**d).clone();
-                    inner.insert("__ws_sub_ref".to_string(),
-                        Value::Str(format!("{}\u{1}{}", self.url, h)));
+                    inner.insert(
+                        "__ws_owner_id".to_string(),
+                        Value::Int(self.owner_id as i64),
+                    );
+                    inner.insert("__ws_sub_url".to_string(), Value::Str(self.url.clone()));
+                    inner.insert("__ws_sub_ref".to_string(), Value::Str(h.clone()));
                     Value::Dict(std::sync::Arc::new(inner))
                 }
                 other => other.clone(),
@@ -311,7 +394,9 @@ impl ClientState {
     pub fn set_subscription_field(&self, hash: &str, key: &str, val: Value) {
         let mut subs = self.subscriptions.lock().unwrap();
         match subs.get_mut(hash) {
-            Some(Value::Dict(d)) => { std::sync::Arc::make_mut(d).insert(key.to_string(), val); }
+            Some(Value::Dict(d)) => {
+                std::sync::Arc::make_mut(d).insert(key.to_string(), val);
+            }
             _ => {
                 let mut inner = indexmap::IndexMap::new();
                 inner.insert(key.to_string(), val);
@@ -330,6 +415,10 @@ impl ClientState {
             // routes back to this ClientState — see value_resolve/value_reject.
             let mut fh = indexmap::IndexMap::new();
             fh.insert("url".to_string(), Value::Str(self.url.clone()));
+            fh.insert(
+                "__ws_owner_id".to_string(),
+                Value::Int(self.owner_id as i64),
+            );
             fh.insert("__ws_future_hash".to_string(), Value::Str(h.clone()));
             m.insert(h.clone(), Value::Map(fh));
         }
@@ -338,34 +427,40 @@ impl ClientState {
 }
 
 /// Get the existing client for `url`, or `None` if not yet connected.
-pub fn get_client(url: &str) -> Option<Arc<ClientState>> {
+pub fn get_client(owner_id: u64, url: &str) -> Option<Arc<ClientState>> {
     let reg = REGISTRY.lock().unwrap();
-    reg.get(url).filter(|c| !c.is_closed()).cloned()
+    reg.get(&(owner_id, url.to_string()))
+        .filter(|c| !c.is_closed())
+        .cloned()
 }
 
 /// `client.subscriptions[key] = val` written on a tagged snapshot — persist it
 /// to the live client so subsequent `handle_message` snapshots see it.
-pub fn value_subs_insert(url: &str, key: &str, val: Value) {
-    if let Some(c) = get_client(url) { c.set_subscription(key, val); }
+pub fn value_subs_insert(owner_id: u64, url: &str, key: &str, val: Value) {
+    if let Some(c) = get_client(owner_id, url) {
+        c.set_subscription(key, val);
+    }
 }
 
 /// `delete client.subscriptions[key]` on a tagged snapshot.
-pub fn value_subs_remove(url: &str, key: &str) {
-    if let Some(c) = get_client(url) { c.subscriptions.lock().unwrap().remove(key); }
+pub fn value_subs_remove(owner_id: u64, url: &str, key: &str) {
+    if let Some(c) = get_client(owner_id, url) {
+        c.subscriptions.lock().unwrap().remove(key);
+    }
 }
 
 /// `client.subscriptions[hash][key] = val` written on a tagged subscription
 /// dict (carrying `__ws_sub_ref` = "url\u{1}hash").
-pub fn value_sub_field_write(subref: &str, key: &str, val: Value) {
-    if let Some((url, hash)) = subref.split_once('\u{1}') {
-        if let Some(c) = get_client(url) { c.set_subscription_field(hash, key, val); }
+pub fn value_sub_field_write(owner_id: u64, url: &str, hash: &str, key: &str, val: Value) {
+    if let Some(c) = get_client(owner_id, url) {
+        c.set_subscription_field(hash, key, val);
     }
 }
 
 /// Ensure a live connection to `url`, connecting (and spawning the reader /
 /// writer / keep-alive tasks) if needed. Idempotent per URL.
-pub async fn ensure_client(url: &str) -> Result<Arc<ClientState>, String> {
-    let state = ensure_slot(url);
+pub async fn ensure_client(owner_id: u64, url: &str) -> Result<Arc<ClientState>, String> {
+    let state = ensure_slot(owner_id, url);
     if *state.connected.lock().unwrap() {
         return Ok(state);
     }
@@ -380,9 +475,10 @@ pub async fn ensure_client(url: &str) -> Result<Arc<ClientState>, String> {
         .await
         .map_err(|e| format!("[NetworkError] ws connect {url}: {e}"))?;
     let (mut write, mut read) = ws.split();
-    let mut rx = state.pending_rx.lock().unwrap().take()
-        .ok_or_else(|| format!("[NetworkError] ws {url} slot has no writer channel"))?;
+    let (tx, mut rx) = mpsc::channel::<Message>(OUTGOING_CAPACITY);
+    *state.outgoing.lock().unwrap() = Some(tx.clone());
     *state.last_pong_ms.lock().unwrap() = now_ms();
+    *state.connected.lock().unwrap() = true;
 
     // Writer task: drain the outgoing queue to the socket.
     tokio::spawn(async move {
@@ -408,37 +504,58 @@ pub async fn ensure_client(url: &str) -> Result<Arc<ClientState>, String> {
                 _ => {}
             }
         }
-        *st.connected.lock().unwrap() = false;
-        *st.closed.lock().unwrap() = true;
-        st.notify.notify_waiters();
+        if !st.is_closed() {
+            *st.connected.lock().unwrap() = false;
+            *st.outgoing.lock().unwrap() = None;
+            st.notify.notify_waiters();
+        }
     });
 
     // Keep-alive: an unsolicited Ping every 30s; the peer's Pong updates
     // last_pong. (Full miss-count RequestTimeout handling is a later refinement.)
     let st2 = state.clone();
     tokio::spawn(async move {
-        let mut iv = tokio::time::interval(std::time::Duration::from_secs(30));
+        let mut iv = tokio::time::interval(std::time::Duration::from_millis(KEEP_ALIVE_MS));
         iv.tick().await; // first tick fires immediately; skip it
         loop {
             iv.tick().await;
-            if st2.is_closed() {
+            if st2.is_closed() || !*st2.connected.lock().unwrap() {
                 break;
             }
-            if st2.outgoing.send(Message::Ping(Vec::new())).is_err() {
+            if st2.pong_timed_out(now_ms(), KEEP_ALIVE_MS) {
+                st2.fail_transport(Value::Str(format!(
+                    "[RequestTimeout] Connection to {} timed out due to a ping-pong keepalive missing on time", st2.url)));
+                break;
+            }
+            if tx.try_send(Message::Ping(Vec::new())).is_err() {
+                st2.fail_transport(Value::Str(
+                    "[NetworkError] websocket outgoing queue capacity exceeded".to_string(),
+                ));
                 break;
             }
         }
     });
-
-    *state.connected.lock().unwrap() = true;
+    // Replay one copy of every retained subscription frame after reconnect.
+    let messages: HashSet<String> = state
+        .subscribe_messages
+        .lock()
+        .unwrap()
+        .values()
+        .cloned()
+        .collect();
+    for payload in messages {
+        if !state.send_text(payload) {
+            return Err(format!("[NetworkError] ws {url} outgoing queue full"));
+        }
+    }
     Ok(state)
 }
 
 /// Live read of a client handle's `subscriptions` / `futures` field, straight
 /// from the registry so a read after a write (upbit builds its subscribe frame
 /// from subscriptions it just set) is coherent, not a stale embedded snapshot.
-pub fn client_field_live(url: &str, field: &str) -> Value {
-    match get_client(url) {
+pub fn client_field_live(owner_id: u64, url: &str, field: &str) -> Value {
+    match get_client(owner_id, url) {
         Some(c) if field == "futures" => c.futures_value(),
         Some(c) => c.subscriptions_value(),
         None => Value::Map(indexmap::IndexMap::new()),
@@ -447,24 +564,25 @@ pub fn client_field_live(url: &str, field: &str) -> Value {
 
 /// Get-or-create the registry slot for `url` WITHOUT connecting the socket, so
 /// `client.subscriptions` written before `watch()` connects still persist.
-fn ensure_slot(url: &str) -> Arc<ClientState> {
+fn ensure_slot(owner_id: u64, url: &str) -> Arc<ClientState> {
     let mut reg = REGISTRY.lock().unwrap();
-    if let Some(c) = reg.get(url) {
+    let key = (owner_id, url.to_string());
+    if let Some(c) = reg.get(&key) {
         if !c.is_closed() {
             return c.clone();
         }
     }
-    let (tx, rx) = mpsc::unbounded_channel::<Message>();
     let state = Arc::new(ClientState {
+        owner_id,
         url: url.to_string(),
-        outgoing: tx,
-        pending_rx: Mutex::new(Some(rx)),
+        outgoing: Mutex::new(None),
         connect_gate: tokio::sync::Mutex::new(()),
         incoming: Mutex::new(VecDeque::new()),
         notify: Notify::new(),
         resolved: Mutex::new(HashMap::new()),
         rejections: Mutex::new(HashMap::new()),
         subscriptions: Mutex::new(HashMap::new()),
+        subscribe_messages: Mutex::new(HashMap::new()),
         futures: Mutex::new(HashSet::new()),
         connected: Mutex::new(false),
         closed: Mutex::new(false),
@@ -473,13 +591,42 @@ fn ensure_slot(url: &str) -> Arc<ClientState> {
         mock_sent: Mutex::new(Vec::new()),
         ws_test_completed: Mutex::new(false),
     });
-    reg.insert(url.to_string(), state.clone());
+    if MOCK_URLS.lock().unwrap().contains(url) {
+        state.mock_enable();
+    }
+    reg.insert(key, state.clone());
     state
 }
 
 /// Remove (and thereby drop / disconnect) the client for `url`.
-pub fn drop_client(url: &str) {
-    REGISTRY.lock().unwrap().remove(url);
+pub fn drop_client(owner_id: u64, url: &str) {
+    if let Some(state) = REGISTRY
+        .lock()
+        .unwrap()
+        .remove(&(owner_id, url.to_string()))
+    {
+        *state.closed.lock().unwrap() = true;
+        state.reject_pending_futures(Value::Str(
+            "[ExchangeClosedByUser] websocket client closed".to_string(),
+        ));
+        if let Some(tx) = state.outgoing.lock().unwrap().take() {
+            let _ = tx.try_send(Message::Close(None));
+        }
+        state.notify.notify_waiters();
+    }
+}
+
+pub fn close_owner(owner_id: u64) {
+    let urls: Vec<String> = REGISTRY
+        .lock()
+        .unwrap()
+        .keys()
+        .filter(|(owner, _)| *owner == owner_id)
+        .map(|(_, url)| url.clone())
+        .collect();
+    for url in urls {
+        drop_client(owner_id, &url);
+    }
 }
 
 // ── `Value`-handle bridge ────────────────────────────────────────────────────
@@ -494,36 +641,61 @@ pub fn drop_client(url: &str) {
 /// `setupWsMockTransport(url)` — register a connected, socket-less client whose
 /// sends are captured. Clears any prior state so each fixture starts fresh.
 pub fn mock_setup(url: &str) {
-    let c = ensure_slot(url);
-    c.reset();
-    c.mock_enable();
-    c.mock_sent.lock().unwrap().clear();
-    // Discard any messages left unconsumed by a prior test on the same URL (e.g.
-    // a heartbeat a watchTrades drive loop returned past before reading) so they
-    // don't leak an extra handler dispatch / sent frame into the next test.
-    c.incoming.lock().unwrap().clear();
-    *c.ws_test_completed.lock().unwrap() = false;
+    MOCK_URLS.lock().unwrap().insert(url.to_string());
+    let clients: Vec<Arc<ClientState>> = REGISTRY
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|((_, candidate), _)| candidate == url)
+        .map(|(_, c)| c.clone())
+        .collect();
+    for c in clients {
+        c.reset();
+        c.mock_enable();
+        c.mock_sent.lock().unwrap().clear();
+        // Discard any messages left unconsumed by a prior test on the same URL (e.g.
+        // a heartbeat a watchTrades drive loop returned past before reading) so they
+        // don't leak an extra handler dispatch / sent frame into the next test.
+        c.incoming.lock().unwrap().clear();
+        *c.ws_test_completed.lock().unwrap() = false;
+    }
+}
+fn mock_clients(url: &str) -> Vec<Arc<ClientState>> {
+    REGISTRY
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|((_, candidate), _)| candidate == url)
+        .map(|(_, c)| c.clone())
+        .collect()
 }
 pub fn mock_inject(url: &str, msg: Value) {
-    if let Some(c) = get_client(url) { c.mock_inject(msg); }
+    for c in mock_clients(url) {
+        c.mock_inject(msg.clone());
+    }
 }
 pub fn mock_sent_messages(url: &str) -> Value {
-    match get_client(url) { Some(c) => c.mock_sent_value(), None => Value::Array(vec![]) }
+    mock_clients(url)
+        .last()
+        .map(|c| c.mock_sent_value())
+        .unwrap_or(Value::Array(vec![]))
 }
 pub fn mock_has_pending_futures(url: &str) -> bool {
-    get_client(url).map(|c| c.has_pending_futures()).unwrap_or(false)
+    mock_clients(url).iter().any(|c| c.has_pending_futures())
 }
 pub fn mock_has_queued_messages(url: &str) -> bool {
-    get_client(url).map(|c| c.has_queued_messages()).unwrap_or(false)
+    mock_clients(url).iter().any(|c| c.has_queued_messages())
 }
 pub fn mock_mark_completed(url: &str) {
-    if let Some(c) = get_client(url) { c.mark_ws_test_completed(); }
+    for c in mock_clients(url) {
+        c.mark_ws_test_completed();
+    }
 }
 pub fn mock_is_completed(url: &str) -> bool {
-    get_client(url).map(|c| c.is_ws_test_completed()).unwrap_or(true)
+    mock_clients(url).iter().all(|c| c.is_ws_test_completed())
 }
 pub fn mock_reject_futures(url: &str) {
-    if let Some(c) = get_client(url) {
+    for c in mock_clients(url) {
         c.reject_pending_futures(Value::Str(
             "[ExchangeError] static ws test: the injected messages did not resolve the watch future".to_string()));
     }
@@ -532,15 +704,23 @@ pub fn mock_reject_futures(url: &str) {
 /// Build the client-handle `Value` passed to `handle_message`: the URL plus
 /// live snapshots of `subscriptions` / `futures` (the fields venues read via
 /// `get_value(&client, "subscriptions")`).
-pub fn client_value(url: &str) -> Value {
+pub fn client_value(owner_id: u64, url: &str) -> Value {
     // Pre-register the slot so subscriptions written on this handle (before the
     // socket connects) persist and read back — upbit-style subscribe building.
-    let c = ensure_slot(url);
+    let c = ensure_slot(owner_id, url);
     let mut m = indexmap::IndexMap::new();
     m.insert("url".to_string(), Value::Str(url.to_string()));
+    m.insert("__ws_owner_id".to_string(), Value::Int(owner_id as i64));
     m.insert("subscriptions".to_string(), c.subscriptions_value());
     m.insert("futures".to_string(), c.futures_value());
     Value::Map(m)
+}
+
+fn owner_of(client: &Value) -> Option<u64> {
+    match crate::get_value(client, &Value::Str("__ws_owner_id".to_string())) {
+        Value::Int(id) if id >= 0 => Some(id as u64),
+        _ => None,
+    }
 }
 
 /// Extract the `url` from a client-handle `Value` (`Map{"url": ...}`).
@@ -564,13 +744,19 @@ pub fn value_resolve(client: &Value, args: &[Value]) -> Value {
     // `client.futures[hash].resolve(value)` — the future handle carries its own
     // hash, so there is no second arg. Resolve that hash.
     if let Some(hash) = future_hash_of(client) {
-        if let Some(url) = url_of(client) {
-            if let Some(c) = get_client(&url) { c.resolve(&hash, value.clone()); }
+        if let (Some(owner), Some(url)) = (owner_of(client), url_of(client)) {
+            if let Some(c) = get_client(owner, &url) {
+                c.resolve(&hash, value.clone());
+            }
         }
         return value;
     }
-    if let (Some(url), Some(hash)) = (url_of(client), args.get(1).and_then(hash_str)) {
-        if let Some(c) = get_client(&url) {
+    if let (Some(owner), Some(url), Some(hash)) = (
+        owner_of(client),
+        url_of(client),
+        args.get(1).and_then(hash_str),
+    ) {
+        if let Some(c) = get_client(owner, &url) {
             c.resolve(&hash, value.clone());
         }
     }
@@ -590,13 +776,15 @@ pub fn value_reject(client: &Value, args: &[Value]) -> Value {
     let err = args.get(0).cloned().unwrap_or(Value::Null);
     // `client.futures[hash].reject(error)` — future handle carries its own hash.
     if let Some(hash) = future_hash_of(client) {
-        if let Some(url) = url_of(client) {
-            if let Some(c) = get_client(&url) { c.reject(&hash, err.clone()); }
+        if let (Some(owner), Some(url)) = (owner_of(client), url_of(client)) {
+            if let Some(c) = get_client(owner, &url) {
+                c.reject(&hash, err.clone());
+            }
         }
         return err;
     }
-    if let Some(url) = url_of(client) {
-        if let Some(c) = get_client(&url) {
+    if let (Some(owner), Some(url)) = (owner_of(client), url_of(client)) {
+        if let Some(c) = get_client(owner, &url) {
             match args.get(1).and_then(hash_str) {
                 Some(hash) => c.reject(&hash, err.clone()),
                 // reject with no hash → reject every pending future.
@@ -614,8 +802,8 @@ pub fn value_reject(client: &Value, args: &[Value]) -> Value {
 
 /// `client.send(message)` routed by URL. Serialises non-string payloads to JSON.
 pub fn value_send(client: &Value, args: &[Value]) -> Value {
-    if let Some(url) = url_of(client) {
-        if let Some(c) = get_client(&url) {
+    if let (Some(owner), Some(url)) = (owner_of(client), url_of(client)) {
+        if let Some(c) = get_client(owner, &url) {
             let payload = match args.get(0) {
                 Some(Value::Str(s)) => s.clone(),
                 Some(v) => v.to_json().to_string(),
@@ -629,8 +817,8 @@ pub fn value_send(client: &Value, args: &[Value]) -> Value {
 
 /// `client.reset(...)` routed by URL.
 pub fn value_reset(client: &Value) -> Value {
-    if let Some(url) = url_of(client) {
-        if let Some(c) = get_client(&url) {
+    if let (Some(owner), Some(url)) = (owner_of(client), url_of(client)) {
+        if let Some(c) = get_client(owner, &url) {
             c.reset();
         }
     }
@@ -639,8 +827,8 @@ pub fn value_reset(client: &Value) -> Value {
 
 /// `client.on_pong(...)` routed by URL.
 pub fn value_on_pong(client: &Value) -> Value {
-    if let Some(url) = url_of(client) {
-        if let Some(c) = get_client(&url) {
+    if let (Some(owner), Some(url)) = (owner_of(client), url_of(client)) {
+        if let Some(c) = get_client(owner, &url) {
             c.on_pong();
         }
     }
@@ -668,7 +856,9 @@ mod tests {
                 }
                 // Stream three ticker updates.
                 for px in ["100.5", "101.0", "101.5"] {
-                    let msg = format!("{{\"channel\":\"ticker\",\"symbol\":\"BTC/USDT\",\"last\":\"{px}\"}}");
+                    let msg = format!(
+                        "{{\"channel\":\"ticker\",\"symbol\":\"BTC/USDT\",\"last\":\"{px}\"}}"
+                    );
                     ws.send(WsMessage::Text(msg)).await.unwrap();
                 }
                 // Give the client time to drain before closing.
@@ -679,10 +869,36 @@ mod tests {
         format!("ws://{addr}")
     }
 
+    async fn spawn_reconnect_server() -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (first_stream, _) = listener.accept().await.unwrap();
+            let mut first = tokio_tungstenite::accept_async(first_stream).await.unwrap();
+            assert!(
+                matches!(first.next().await, Some(Ok(WsMessage::Text(ref s))) if s.contains("subscribe"))
+            );
+            first.close(None).await.unwrap();
+            let (second_stream, _) = listener.accept().await.unwrap();
+            let mut second = tokio_tungstenite::accept_async(second_stream)
+                .await
+                .unwrap();
+            assert!(
+                matches!(second.next().await, Some(Ok(WsMessage::Text(ref s))) if s.contains("subscribe"))
+            );
+            second
+                .send(WsMessage::Text("{\"reconnected\":true}".to_string()))
+                .await
+                .unwrap();
+        });
+        format!("ws://{addr}")
+    }
+
     #[tokio::test]
     async fn transport_roundtrip() {
         let url = spawn_mock_server().await;
-        let client = ensure_client(&url).await.expect("connect");
+        let owner = 1;
+        let client = ensure_client(owner, &url).await.expect("connect");
 
         // Send a subscribe frame once (idempotent per hash).
         assert!(client.subscribe_once("ticker:BTC/USDT", Value::Null));
@@ -696,6 +912,7 @@ mod tests {
             let msg = client.next_message().await.expect("message before close");
             let last = crate::get_value(&msg, &Value::Str("last".to_string()));
             if let Value::Str(s) = &last {
+                client.note_futures(&["ticker".to_string()]);
                 client.resolve("ticker", Value::Str(s.clone()));
             }
             if let Some(Ok(Value::Str(v))) = client.take_settled(&["ticker".to_string()]) {
@@ -711,7 +928,7 @@ mod tests {
             &Value::Str("ticker:BTC/USDT".to_string())
         )));
 
-        drop_client(&url);
+        drop_client(owner, &url);
     }
 
     // A minimal Core whose `handle_message` resolves the "ticker" hash with the
@@ -778,7 +995,107 @@ mod tests {
         .await;
         // First streamed ticker.
         assert_eq!(result, Value::Str("100.5".to_string()));
-        drop_client(&url);
+        drop_client(core.exchange.internals.ws_owner_id, &url);
+    }
+
+    #[tokio::test]
+    async fn reconnect_replays_subscription_frames() {
+        let url = spawn_reconnect_server().await;
+        let owner = 808;
+        let client = ensure_client(owner, &url).await.unwrap();
+        let hashes = vec!["ticker".to_string()];
+        let payload = "{\"op\":\"subscribe\"}".to_string();
+        client.remember_subscribe_message(&hashes, payload.clone());
+        assert!(client.send_text(payload));
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while client.next_message().await.is_some() {}
+        })
+        .await
+        .unwrap();
+        ensure_client(owner, &url).await.unwrap();
+        let message =
+            tokio::time::timeout(std::time::Duration::from_secs(2), client.next_message())
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            crate::get_value(&message, &Value::Str("reconnected".to_string())),
+            Value::Bool(true)
+        );
+        drop_client(owner, &url);
+    }
+
+    #[test]
+    fn registry_is_isolated_by_exchange_owner() {
+        let first = ensure_slot(101, "wss://same.example");
+        let second = ensure_slot(202, "wss://same.example");
+        assert!(!Arc::ptr_eq(&first, &second));
+        first.set_subscription("private", Value::Bool(true));
+        assert!(!second.is_subscribed("private"));
+        drop_client(101, "wss://same.example");
+        assert!(get_client(202, "wss://same.example").is_some());
+        drop_client(202, "wss://same.example");
+    }
+
+    #[test]
+    fn settled_future_is_removed() {
+        let client = ensure_slot(303, "wss://cleanup.example");
+        client.note_futures(&["ticker".to_string()]);
+        client.resolve("ticker", Value::Int(1));
+        assert!(!client.has_pending_futures());
+        assert_eq!(
+            client.take_settled(&["ticker".to_string()]),
+            Some(Ok(Value::Int(1)))
+        );
+        drop_client(303, "wss://cleanup.example");
+    }
+
+    #[test]
+    fn queues_are_bounded_and_overflow_rejects_waiters() {
+        let client = ensure_slot(404, "wss://bounded.example");
+        *client.connected.lock().unwrap() = true;
+        let (tx, _rx) = mpsc::channel(OUTGOING_CAPACITY);
+        *client.outgoing.lock().unwrap() = Some(tx);
+        client.note_futures(&["send".to_string()]);
+        for n in 0..OUTGOING_CAPACITY {
+            assert!(client.send_text(n.to_string()));
+        }
+        assert!(!client.send_text("overflow".to_string()));
+        assert!(matches!(client.take_settled(&["send".to_string()]),
+            Some(Err(Value::Str(ref e))) if e.contains("outgoing queue capacity exceeded")));
+        client.note_futures(&["book".to_string()]);
+        for n in 0..INCOMING_CAPACITY {
+            client.push_incoming(Value::Int(n as i64));
+        }
+        client.push_incoming(Value::Int(-1));
+        let error = client.take_settled(&["book".to_string()]);
+        assert!(matches!(error, Some(Err(Value::Str(ref e))) if e.contains("capacity exceeded")));
+        drop_client(404, "wss://bounded.example");
+    }
+
+    #[test]
+    fn missed_pong_rejects_pending_future_as_request_timeout() {
+        let client = ensure_slot(505, "wss://pong.example");
+        client.note_futures(&["ticker".to_string()]);
+        *client.last_pong_ms.lock().unwrap() = 1;
+        assert!(client.pong_timed_out(61_002, 30_000));
+        client.fail_transport(Value::Str("[RequestTimeout] missed pong".to_string()));
+        assert!(matches!(client.take_settled(&["ticker".to_string()]),
+            Some(Err(Value::Str(ref e))) if e.starts_with("[RequestTimeout]")));
+        drop_client(505, "wss://pong.example");
+    }
+
+    #[test]
+    fn explicit_close_rejects_only_owners_pending_futures() {
+        let first = ensure_slot(606, "wss://close.example");
+        let second = ensure_slot(707, "wss://close.example");
+        first.note_futures(&["orders".to_string()]);
+        second.note_futures(&["orders".to_string()]);
+        drop_client(606, "wss://close.example");
+        assert!(matches!(first.take_settled(&["orders".to_string()]),
+            Some(Err(Value::Str(ref e))) if e.starts_with("[ExchangeClosedByUser]")));
+        assert!(second.has_pending_futures());
+        drop_client(707, "wss://close.example");
     }
 
     #[tokio::test]
