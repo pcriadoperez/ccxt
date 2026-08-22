@@ -21,6 +21,7 @@ interface BestPriceQuery {
     minLegNotional?: string;
     exchanges?: string;
     certified?: string;
+    maxStalenessMs?: string;
 }
 
 export interface ServerOptions {
@@ -200,6 +201,17 @@ export async function buildServer (
             const includeFees = request.query.includeFees !== 'false';
             const certifiedOnly = request.query.certified === 'true';
 
+            // Escape hatch: a caller who would rather have an old price than no price can widen
+            // the freshness window. Deliberately opt-in — defaulting loose would hand out prices
+            // minutes out of date without the caller ever choosing that risk.
+            const maxStalenessMs = request.query.maxStalenessMs === undefined
+                ? config.staleBookMs
+                : Number(request.query.maxStalenessMs);
+            if (!Number.isFinite(maxStalenessMs) || maxStalenessMs <= 0) {
+                reply.code(400);
+                return { error: 'maxStalenessMs must be a positive number' };
+            }
+
             // An explicitly empty list (`exchanges=`) is treated as "no venues", not "all venues".
             // Silently widening an empty allowlist would be the opposite of what the caller asked.
             let exchanges: Set<string> | undefined;
@@ -220,7 +232,7 @@ export async function buildServer (
 
             const result = computeRoute(cache, feeRegistry, symbol, side, amount, {
                 strategy, includeFees, maxVenues, minLegNotional,
-                staleBookMs: config.staleBookMs, requestId, exchanges, certifiedOnly,
+                staleBookMs: maxStalenessMs, requestId, exchanges, certifiedOnly,
             });
 
             // Audit record: one line per recommendation, keyed by requestId. This is the trail
@@ -238,6 +250,9 @@ export async function buildServer (
                 totalFeeCost: result.totalFeeCost,
                 savingVsBestSingleBps: result.savingVsBestSingleBps,
                 venuesConsidered: result.quotes.length,
+                freshVenueCount: result.freshVenueCount,
+                unroutableReason: result.unroutableReason,
+                maxStalenessMs,
             }, 'route recommendation');
 
             return result;

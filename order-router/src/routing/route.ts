@@ -28,6 +28,13 @@ export interface RouteResult {
     // for consumers to handle than one that is always present.
     exchangesFilter: string[] | null;
     certifiedOnly: boolean;
+    // The freshness cutoff actually applied, echoed so a caller can interpret bookAgeMs without
+    // having to know the server's configuration.
+    staleBookMs: number;
+    // Populated only when route is empty, so an empty result is self-explaining rather than
+    // something the caller has to reverse-engineer from quotes[].
+    unroutableReason: 'no_venues_matched_filter' | 'all_books_stale' | 'no_liquidity' | null;
+    freshVenueCount: number;
     route: RouteLeg[];
     filledAmount: number;
     fullyFillable: boolean;
@@ -239,6 +246,16 @@ export function computeRoute (
         filledAmount = res.filledAmount;
     }
 
+    // Diagnose an empty route in the order the filters actually applied, so the reason names the
+    // FIRST thing that eliminated everything rather than the last thing checked.
+    const freshVenueCount = quotes.filter((q) => q.bookAgeMs <= opts.staleBookMs).length;
+    let unroutableReason: RouteResult['unroutableReason'] = null;
+    if (legs.length === 0) {
+        if (quotes.length === 0) unroutableReason = 'no_venues_matched_filter';
+        else if (freshVenueCount === 0) unroutableReason = 'all_books_stale';
+        else unroutableReason = 'no_liquidity';
+    }
+
     const routeNotional = legs.reduce((s, l) => s + l.amount * l.effectivePrice, 0);
     const totalFeeCost = legs.reduce((s, l) => s + l.feeCost, 0);
     const routeVwap = filledAmount > 0 ? routeNotional / filledAmount : null;
@@ -263,6 +280,9 @@ export function computeRoute (
         includeFees: opts.includeFees,
         exchangesFilter: opts.exchanges ? [...opts.exchanges].sort() : null,
         certifiedOnly: opts.certifiedOnly,
+        staleBookMs: opts.staleBookMs,
+        unroutableReason,
+        freshVenueCount,
         route: legs,
         filledAmount,
         fullyFillable: filledAmount >= amount,

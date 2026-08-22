@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: CCXT Order Router API
-  version: 0.3.0
+  version: 0.4.0
   description: |
     Smart order router over live L2 order books from ~60 exchanges (ccxt.pro WebSocket).
 
@@ -111,6 +111,13 @@ paths:
             maintains and tests to a higher bar (22 of 80 pro classes at time of writing).
             Composes with `exchanges` as an intersection.
           schema: { type: boolean, default: false }
+        - name: maxStalenessMs
+          in: query
+          description: |
+            Override the freshness cutoff. Books older than this are excluded from routing.
+            Opt-in by design: defaulting loose would hand out prices minutes out of date without
+            the caller ever choosing that risk. Widen it only if a stale price beats no price.
+          schema: { type: number, exclusiveMinimum: 0 }
         - name: x-request-id
           in: header
           description: Optional caller-supplied audit id. Echoed in the body and the `x-request-id` response header; one is minted if absent.
@@ -329,6 +336,21 @@ components:
         certifiedOnly:
           type: boolean
           description: Whether the certified-only filter was applied.
+        staleBookMs:
+          type: number
+          description: Freshness cutoff applied, echoed so bookAgeMs on each quote is interpretable without knowing server config.
+        freshVenueCount:
+          type: integer
+          description: How many considered venues were within the freshness cutoff.
+        unroutableReason:
+          type: [string, 'null']
+          enum: [no_venues_matched_filter, all_books_stale, no_liquidity, null]
+          description: |
+            Why `route` is empty; null when routing succeeded. An empty route is a deliberate
+            refusal to quote, not a failure:
+            `no_venues_matched_filter` — the exchanges/certified filters excluded everything.
+            `all_books_stale` — venues exist but every book exceeded the freshness cutoff.
+            `no_liquidity` — fresh books exist but none had depth to fill any of the size.
         route:
           type: array
           description: The fill plan, largest leg first. Empty when nothing fresh enough could fill.

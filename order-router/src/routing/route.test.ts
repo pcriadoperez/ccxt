@@ -196,3 +196,43 @@ test('exchanges and certified compose as an intersection', () => {
         OPTS({ exchanges: new Set(['binance', 'p2b']), certifiedOnly: true }));
     assert.deepEqual(r.route.map((l) => l.exchangeId), ['binance']);
 });
+
+test('an empty route explains itself: all books stale', () => {
+    const cache = new OrderBookCache(); const fees = new FeeRegistry();
+    const b = book('binance', [[100, 10]]); b.receivedAt = Date.now() - 60_000;
+    cache.setBook(b); fees.setFee('binance', 'BTC/USDT', 0);
+
+    const r = computeRoute(cache, fees, 'BTC/USDT', 'buy', 1, OPTS());
+    assert.deepEqual(r.route, []);
+    assert.equal(r.unroutableReason, 'all_books_stale');
+    assert.equal(r.freshVenueCount, 0);
+    assert.equal(r.staleBookMs, 5000, 'threshold must be echoed so bookAgeMs is interpretable');
+});
+
+test('an empty route explains itself: filter matched nothing', () => {
+    const cache = new OrderBookCache(); const fees = new FeeRegistry();
+    cache.setBook(book('binance', [[100, 10]]));
+    const r = computeRoute(cache, fees, 'BTC/USDT', 'buy', 1, OPTS({ exchanges: new Set(['kraken']) }));
+    assert.equal(r.unroutableReason, 'no_venues_matched_filter');
+});
+
+test('a widened staleness window recovers an otherwise-empty route', () => {
+    // The escape hatch for callers who would rather have an old price than none.
+    const cache = new OrderBookCache(); const fees = new FeeRegistry();
+    const b = book('binance', [[100, 10]]); b.receivedAt = Date.now() - 30_000;
+    cache.setBook(b); fees.setFee('binance', 'BTC/USDT', 0);
+
+    assert.equal(computeRoute(cache, fees, 'BTC/USDT', 'buy', 1, OPTS()).route.length, 0);
+    const loose = computeRoute(cache, fees, 'BTC/USDT', 'buy', 1, OPTS({ staleBookMs: 60_000 }));
+    assert.equal(loose.route.length, 1);
+    assert.equal(loose.unroutableReason, null);
+    assert.equal(loose.staleBookMs, 60_000);
+});
+
+test('a successful route reports no unroutable reason', () => {
+    const cache = new OrderBookCache(); const fees = new FeeRegistry();
+    cache.setBook(book('binance', [[100, 10]])); fees.setFee('binance', 'BTC/USDT', 0);
+    const r = computeRoute(cache, fees, 'BTC/USDT', 'buy', 1, OPTS());
+    assert.equal(r.unroutableReason, null);
+    assert.equal(r.freshVenueCount, 1);
+});
