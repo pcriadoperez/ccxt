@@ -34,7 +34,10 @@ pub struct ClientState {
     pub owner_id: u64,
     pub url: String,
     /// Frames queued for the writer task → socket.
-    outgoing: Mutex<Option<mpsc::Sender<Message>>>,
+    outgoing: Mutex<mpsc::Sender<Message>>,
+    /// Bounded receiver retained until the socket connects. This preserves the
+    /// pre-connect send contract while avoiding the old unbounded queue.
+    pending_rx: Mutex<Option<mpsc::Receiver<Message>>>,
     /// Serializes the (async) connect so concurrent `ensure_client`s for a
     /// pre-registered slot don't open two sockets.
     connect_gate: tokio::sync::Mutex<()>,
@@ -275,9 +278,7 @@ impl ClientState {
             return true;
         }
         let sender = self.outgoing.lock().unwrap().clone();
-        let sent = sender
-            .map(|tx| tx.try_send(Message::Text(s)).is_ok())
-            .unwrap_or(false);
+        let sent = sender.try_send(Message::Text(s)).is_ok();
         if !sent {
             self.fail_transport(Value::Str(
                 "[NetworkError] websocket outgoing queue capacity exceeded".to_string(),
@@ -338,9 +339,15 @@ impl ClientState {
 
     fn fail_transport(&self, err: Value) {
         *self.connected.lock().unwrap() = false;
-        *self.outgoing.lock().unwrap() = None;
+        self.prepare_reconnect_channel();
         self.reject_pending_futures(err);
         self.notify.notify_waiters();
+    }
+
+    fn prepare_reconnect_channel(&self) {
+        let (tx, rx) = mpsc::channel(OUTGOING_CAPACITY);
+        *self.outgoing.lock().unwrap() = tx;
+        *self.pending_rx.lock().unwrap() = Some(rx);
     }
 
     /// Drop resolved/rejected/subscription/future state (TS `client.reset`),
@@ -475,8 +482,13 @@ pub async fn ensure_client(owner_id: u64, url: &str) -> Result<Arc<ClientState>,
         .await
         .map_err(|e| format!("[NetworkError] ws connect {url}: {e}"))?;
     let (mut write, mut read) = ws.split();
-    let (tx, mut rx) = mpsc::channel::<Message>(OUTGOING_CAPACITY);
-    *state.outgoing.lock().unwrap() = Some(tx.clone());
+    let mut rx = state
+        .pending_rx
+        .lock()
+        .unwrap()
+        .take()
+        .ok_or_else(|| format!("[NetworkError] ws {url} slot has no writer channel"))?;
+    let tx = state.outgoing.lock().unwrap().clone();
     *state.last_pong_ms.lock().unwrap() = now_ms();
     *state.connected.lock().unwrap() = true;
 
@@ -506,7 +518,7 @@ pub async fn ensure_client(owner_id: u64, url: &str) -> Result<Arc<ClientState>,
         }
         if !st.is_closed() {
             *st.connected.lock().unwrap() = false;
-            *st.outgoing.lock().unwrap() = None;
+            st.prepare_reconnect_channel();
             st.notify.notify_waiters();
         }
     });
@@ -572,10 +584,12 @@ fn ensure_slot(owner_id: u64, url: &str) -> Arc<ClientState> {
             return c.clone();
         }
     }
+    let (tx, rx) = mpsc::channel::<Message>(OUTGOING_CAPACITY);
     let state = Arc::new(ClientState {
         owner_id,
         url: url.to_string(),
-        outgoing: Mutex::new(None),
+        outgoing: Mutex::new(tx),
+        pending_rx: Mutex::new(Some(rx)),
         connect_gate: tokio::sync::Mutex::new(()),
         incoming: Mutex::new(VecDeque::new()),
         notify: Notify::new(),
@@ -609,9 +623,11 @@ pub fn drop_client(owner_id: u64, url: &str) {
         state.reject_pending_futures(Value::Str(
             "[ExchangeClosedByUser] websocket client closed".to_string(),
         ));
-        if let Some(tx) = state.outgoing.lock().unwrap().take() {
-            let _ = tx.try_send(Message::Close(None));
-        }
+        let _ = state
+            .outgoing
+            .lock()
+            .unwrap()
+            .try_send(Message::Close(None));
         state.notify.notify_waiters();
     }
 }
@@ -931,6 +947,25 @@ mod tests {
         drop_client(owner, &url);
     }
 
+    #[tokio::test]
+    async fn preconnect_send_is_queued_until_socket_connects() {
+        let url = spawn_mock_server().await;
+        let owner = 2;
+        let client = ensure_slot(owner, &url);
+        assert!(client.send_text("{\"op\":\"subscribe\"}".to_string()));
+        ensure_client(owner, &url).await.unwrap();
+        let message =
+            tokio::time::timeout(std::time::Duration::from_secs(2), client.next_message())
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            crate::get_value(&message, &Value::Str("last".to_string())),
+            Value::Str("100.5".to_string())
+        );
+        drop_client(owner, &url);
+    }
+
     // A minimal Core whose `handle_message` resolves the "ticker" hash with the
     // inbound message's `last` field — exactly what a real venue's
     // handle_message does. Lets us drive the *actual* `watch()` runtime end to
@@ -1055,7 +1090,7 @@ mod tests {
         let client = ensure_slot(404, "wss://bounded.example");
         *client.connected.lock().unwrap() = true;
         let (tx, _rx) = mpsc::channel(OUTGOING_CAPACITY);
-        *client.outgoing.lock().unwrap() = Some(tx);
+        *client.outgoing.lock().unwrap() = tx;
         client.note_futures(&["send".to_string()]);
         for n in 0..OUTGOING_CAPACITY {
             assert!(client.send_text(n.to_string()));
