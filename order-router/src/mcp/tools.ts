@@ -43,12 +43,26 @@ export function getOrderBook (exchange: string, symbol: string, options: RouterC
     return getJson(path, options);
 }
 
-export function getBestPrice (
-    symbol: string,
-    side: 'buy' | 'sell',
-    amount: number,
-    options: RouterClientOptions,
-): Promise<unknown> {
-    const path = `/price/best/${encodeURIComponent(symbol)}?side=${side}&amount=${amount}`;
-    return getJson(path, options);
+export interface RouteParams {
+    from: string;
+    to: string;
+    amountIn?: number;
+    amountOut?: number;
+    strategy?: string;
+    maxVenues?: number;
+    includeFees?: boolean;
+    exchanges?: string[];
+    certified?: boolean;
+}
+
+export function getRoute (params: RouteParams, options: RouterClientOptions): Promise<unknown> {
+    const q = new URLSearchParams({ from: params.from, to: params.to });
+    if (params.amountIn !== undefined) q.set('amountIn', String(params.amountIn));
+    if (params.amountOut !== undefined) q.set('amountOut', String(params.amountOut));
+    if (params.strategy !== undefined) q.set('strategy', params.strategy);
+    if (params.maxVenues !== undefined) q.set('maxVenues', String(params.maxVenues));
+    if (params.includeFees !== undefined) q.set('includeFees', String(params.includeFees));
+    if (params.exchanges !== undefined) q.set('exchanges', params.exchanges.join(','));
+    if (params.certified !== undefined) q.set('certified', String(params.certified));
+    return getJson(`/route?${q.toString()}`, options);
 }

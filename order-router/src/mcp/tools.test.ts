@@ -48,18 +48,24 @@ test('getOrderBook URL-encodes exchange and symbol', async () => {
     assert.equal(capturedPath, '/orderbook/kraken/BTC%2FUSDT');
 });
 
-test('getBestPrice builds the correct query string', async () => {
+test('getRoute builds the correct query string and omits unset options', async () => {
     let capturedPath = '';
     await withFixture(
         (path) => {
             capturedPath = path;
-            return { status: 200, body: { best: null } };
+            return { status: 200, body: { hops: [] } };
         },
         async (baseUrl) => {
-            await routerClient.getBestPrice('ETH/USDT', 'sell', 2.5, { baseUrl });
+            await routerClient.getRoute(
+                { from: 'ETH', to: 'USDT', amountIn: 2.5, strategy: 'split_capped', exchanges: ['kraken', 'binance'] },
+                { baseUrl },
+            );
         },
     );
-    assert.equal(capturedPath, '/price/best/ETH%2FUSDT?side=sell&amount=2.5');
+    // Unset options must be absent rather than sent as "undefined", which the server would
+    // parse as a real value and reject.
+    assert.equal(capturedPath,
+        '/route?from=ETH&to=USDT&amountIn=2.5&strategy=split_capped&exchanges=kraken%2Cbinance');
 });
 
 test('a non-2xx response throws with the error body message', async () => {

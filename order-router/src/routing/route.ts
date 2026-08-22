@@ -1,374 +1,141 @@
 import type { OrderBookCache } from '../cache/orderBookCache.js';
 import type { FeeRegistry } from '../cache/feeRegistry.js';
-import type { RoutingQuote } from '../types.js';
-import { isCertified } from '../exchangeMeta.js';
+import { resolveDirectHop, resolveBridgedHops } from './market.js';
+import { solveHop } from './engine.js';
+import type { RouteHop, RouteOptions, RouteResult, UnroutableReason } from './types.js';
 
-export const ROUTE_STRATEGIES = ['best_single', 'split_optimal', 'split_capped'] as const;
-export type RouteStrategy = (typeof ROUTE_STRATEGIES)[number];
+export * from './types.js';
+export { stalenessPenaltyFraction, isVenueAllowed } from './engine.js';
 
-export interface RouteLeg {
-    exchangeId: string;
-    amount: number;
-    averagePrice: number;
-    takerFeeRate: number;
-    feeCost: number;
-    effectivePrice: number;
+export interface RouteRequest {
+    from: string;
+    to: string;
+    // Exactly one is set. amountIn is denominated in `from`, amountOut in `to` — never ambiguous,
+    // unlike a bare `amount` whose meaning depended on side.
+    amountIn?: number;
+    amountOut?: number;
+    bridges: string[];
 }
 
-export interface RouteResult {
-    requestId: string;
-    calculatedAt: number;
-    calculatedAtIso: string;
-    symbol: string;
-    side: 'buy' | 'sell';
-    amount: number;
-    strategy: RouteStrategy;
-    includeFees: boolean;
-    // Explicitly null (not omitted) when unrestricted: a key that sometimes disappears is harder
-    // for consumers to handle than one that is always present.
-    exchangesFilter: string[] | null;
-    certifiedOnly: boolean;
-    // The freshness cutoff actually applied, echoed so a caller can interpret bookAgeMs without
-    // having to know the server's configuration.
-    staleBookMs: number;
-    // Populated only when route is empty, so an empty result is self-explaining rather than
-    // something the caller has to reverse-engineer from quotes[].
-    unroutableReason:
-        'no_venues_matched_filter' | 'all_books_stale' | 'no_liquidity' | 'insufficient_depth' | null;
-    freshVenueCount: number;
-    unfilledAmount: number;
-    // filledAmount / amount. Explicit because routeVwap is the VWAP of the FILLED size only —
-    // a caller who reads it after a partial fill without noticing fullyFillable would badly
-    // misprice their order (e.g. 9% filled, quoted as if it were 100%).
-    fillRatio: number;
-    warnings: string[];
-    route: RouteLeg[];
-    filledAmount: number;
-    fullyFillable: boolean;
-    routeVwap: number | null;
-    routeNotional: number;
-    totalFeeCost: number;
-    savingVsBestSingleBps: number | null;
-    quotes: RoutingQuote[];
-}
-
-export interface RouteOptions {
-    strategy: RouteStrategy;
-    includeFees: boolean;
-    maxVenues: number;
-    minLegNotional: number;
-    staleBookMs: number;
-    // When true, refuse to return a partial fill at all: either the whole size routes, or the
-    // route is empty with reason 'insufficient_depth'. For callers who cannot act on a partial.
-    requireFullFill: boolean;
-    // Per-venue price penalty for quote staleness, in basis points scaled by sqrt(age seconds).
-    // A stale quote is not the same product as a live one: the price may simply no longer exist.
-    // The sqrt shape follows the standard latency-cost result (uncertainty grows with the square
-    // root of elapsed time, like a random walk's standard deviation). 0 disables.
-    //
-    // Because this is a CONSTANT shift per venue, each venue's marginal cost stays non-decreasing,
-    // so the greedy consolidated walk remains provably optimal — no algorithm change needed.
-    stalenessPenaltyBps: number;
-    requestId: string;
-    // Explicit venue allowlist. Undefined means "no restriction"; an EMPTY set means the caller
-    // asked for nothing, which must yield an empty route rather than silently meaning "all".
-    exchanges?: Set<string>;
-    certifiedOnly: boolean;
-}
-
-// Both filters compose as an intersection: `exchanges=a,b` with `certified=true` considers only
-// those of a and b that are also certified.
-export function isVenueAllowed (exchangeId: string, opts: Pick<RouteOptions, 'exchanges' | 'certifiedOnly'>): boolean {
-    if (opts.exchanges && !opts.exchanges.has(exchangeId)) return false;
-    if (opts.certifiedOnly && !isCertified(exchangeId)) return false;
-    return true;
-}
-
-interface ConsolidatedLevel {
-    exchangeId: string;
-    rawPrice: number;
-    effectivePrice: number;
-    takerFeeRate: number;
-    amount: number;
-}
-
-// Penalty as a fraction of price: bps * sqrt(age in seconds) / 10_000. The caller's bps figure
-// absorbs the asset's volatility, so one tunable number covers it rather than requiring a
-// per-symbol volatility feed the service does not have.
-export function stalenessPenaltyFraction (ageMs: number, penaltyBps: number): number {
-    if (penaltyBps <= 0 || ageMs <= 0) return 0;
-    return (penaltyBps * Math.sqrt(ageMs / 1000)) / 10_000;
-}
-
-function walkBook (levels: { price: number; amount: number }[], amount: number) {
-    let remaining = amount;
-    let notional = 0;
-    let filled = 0;
-    for (const level of levels) {
-        if (remaining <= 0) break;
-        const take = Math.min(remaining, level.amount);
-        notional += take * level.price;
-        filled += take;
-        remaining -= take;
-    }
-    return filled === 0
-        ? { averagePrice: undefined as number | undefined, filledAmount: 0 }
-        : { averagePrice: notional / filled, filledAmount: filled };
-}
-
-// Fee-adjusting each level BEFORE merging is the whole trick. Merging on raw price and applying
-// fees afterwards picks the wrong levels: 78,400 on a 0.10% venue is genuinely worse than 78,420
-// on a 0.035% one, and a raw-price sort cannot see that.
-function buildConsolidatedBook (
-    cache: OrderBookCache,
-    feeRegistry: FeeRegistry,
-    symbol: string,
-    side: 'buy' | 'sell',
-    opts: RouteOptions,
-    allowedExchanges?: Set<string>,
-): ConsolidatedLevel[] {
-    const now = Date.now();
-    const levels: ConsolidatedLevel[] = [];
-    for (const book of cache.getBooksForSymbol(symbol)) {
-        if (now - book.receivedAt > opts.staleBookMs) continue;
-        if (allowedExchanges && !allowedExchanges.has(book.exchangeId)) continue;
-        if (!isVenueAllowed(book.exchangeId, opts)) continue;
-        const fee = opts.includeFees ? feeRegistry.getFee(book.exchangeId, symbol) : 0;
-        const stalePenalty = stalenessPenaltyFraction(now - book.receivedAt, opts.stalenessPenaltyBps);
-        for (const lvl of (side === 'buy' ? book.asks : book.bids)) {
-            const feeAdjusted = side === 'buy' ? lvl.price * (1 + fee) : lvl.price * (1 - fee);
-            levels.push({
-                exchangeId: book.exchangeId,
-                rawPrice: lvl.price,
-                // Buy: fees make the level dearer. Sell: fees cut your proceeds. Staleness is
-                // penalised in the same direction — an old quote should look worse, not better.
-                effectivePrice: side === 'buy'
-                    ? feeAdjusted * (1 + stalePenalty)
-                    : feeAdjusted * (1 - stalePenalty),
-                takerFeeRate: fee,
-                amount: lvl.amount,
-            });
-        }
-    }
-    // Buy wants the cheapest effective levels first; sell wants the richest.
-    levels.sort((a, b) => (side === 'buy' ? a.effectivePrice - b.effectivePrice : b.effectivePrice - a.effectivePrice));
-    return levels;
-}
-
-function allocate (levels: ConsolidatedLevel[], amount: number) {
-    const perVenue = new Map<string, { amount: number; rawNotional: number; feeCost: number; fee: number }>();
-    let remaining = amount;
-    for (const lvl of levels) {
-        if (remaining <= 0) break;
-        const take = Math.min(remaining, lvl.amount);
-        const entry = perVenue.get(lvl.exchangeId) ?? { amount: 0, rawNotional: 0, feeCost: 0, fee: lvl.takerFeeRate };
-        entry.amount += take;
-        entry.rawNotional += take * lvl.rawPrice;
-        // Fee cost is the gap between effective and raw notional — signed the same way for both
-        // sides, so it always reads as "what the fee cost you".
-        entry.feeCost += Math.abs(take * lvl.effectivePrice - take * lvl.rawPrice);
-        perVenue.set(lvl.exchangeId, entry);
-        remaining -= take;
-    }
-    return { perVenue, filledAmount: amount - remaining };
-}
-
-function routeVwapPreview (legs: RouteLeg[], filled: number): string {
-    if (filled <= 0) return 'n/a';
-    return (legs.reduce((s, l) => s + l.amount * l.effectivePrice, 0) / filled).toFixed(2);
-}
-
-function toLegs (perVenue: ReturnType<typeof allocate>['perVenue'], side: 'buy' | 'sell'): RouteLeg[] {
-    const legs: RouteLeg[] = [];
-    for (const [exchangeId, v] of perVenue) {
-        // Floating-point accumulation can leave a venue with an effectively-zero allocation.
-        // Emitting it as a leg is noise at best and an unplaceable order at worst.
-        if (v.amount <= 1e-12) continue;
-        const averagePrice = v.rawNotional / v.amount;
-        legs.push({
-            exchangeId,
-            amount: v.amount,
-            averagePrice,
-            takerFeeRate: v.fee,
-            feeCost: v.feeCost,
-            effectivePrice: side === 'buy' ? averagePrice * (1 + v.fee) : averagePrice * (1 - v.fee),
-        });
-    }
-    return legs.sort((a, b) => b.amount - a.amount);
+function emptyResult (
+    req: RouteRequest, opts: RouteOptions, now: number,
+    reason: UnroutableReason, hopIndex: number | null, hops: RouteHop[] = [],
+): RouteResult {
+    const exactSide = req.amountIn !== undefined ? 'in' : 'out';
+    const requested = req.amountIn ?? req.amountOut ?? 0;
+    return {
+        requestId: opts.requestId, calculatedAt: now, calculatedAtIso: new Date(now).toISOString(),
+        from: req.from, to: req.to,
+        amountIn: 0, amountOut: 0, requestedAmount: requested, exactSide,
+        strategy: opts.strategy, includeFees: opts.includeFees,
+        exchangesFilter: opts.exchanges ? [...opts.exchanges].sort() : null,
+        certifiedOnly: opts.certifiedOnly, staleBookMs: opts.staleBookMs,
+        stalenessPenaltyBps: opts.stalenessPenaltyBps,
+        hops, effectiveRate: null, fullyFillable: false, fillRatio: 0,
+        unfilledAmount: requested,
+        unroutableReason: reason, unroutableHopIndex: hopIndex, warnings: [],
+        savingVsBestSingleBps: null,
+    };
 }
 
 export function computeRoute (
-    cache: OrderBookCache,
-    feeRegistry: FeeRegistry,
-    symbol: string,
-    side: 'buy' | 'sell',
-    amount: number,
-    opts: RouteOptions,
+    cache: OrderBookCache, feeRegistry: FeeRegistry, req: RouteRequest, opts: RouteOptions,
 ): RouteResult {
     const now = Date.now();
+    const exactSide: 'in' | 'out' = req.amountIn !== undefined ? 'in' : 'out';
+    const requested = req.amountIn ?? req.amountOut ?? 0;
 
-    // Per-venue quotes are kept purely as the diagnostic "what was considered, and why was it
-    // excluded" view — they are not what the route is computed from.
-    const quotes: RoutingQuote[] = [];
-    for (const book of cache.getBooksForSymbol(symbol)) {
-        // quotes[] is the "what was considered" view, so an excluded venue must not appear in it.
-        if (!isVenueAllowed(book.exchangeId, opts)) continue;
-        const bookAgeMs = now - book.receivedAt;
-        const fee = opts.includeFees ? feeRegistry.getFee(book.exchangeId, symbol) : 0;
-        const { averagePrice, filledAmount } = walkBook(side === 'buy' ? book.asks : book.bids, amount);
-        quotes.push({
-            exchangeId: book.exchangeId,
-            side,
-            requestedAmount: amount,
-            filledAmount,
-            averagePrice,
-            effectivePriceWithFee: averagePrice === undefined
-                ? undefined
-                : side === 'buy' ? averagePrice * (1 + fee) : averagePrice * (1 - fee),
-            takerFeeRate: fee,
-            fullyFillable: filledAmount >= amount,
-            bookAgeMs,
-        });
+    const direct = resolveDirectHop(cache, req.from, req.to);
+    const path = direct ? [direct] : resolveBridgedHops(cache, req.from, req.to, req.bridges);
+    if (!path) return emptyResult(req, opts, now, 'no_market', null);
+
+    // Exact-out on a multi-hop route would require solving backwards from the destination, which
+    // is a different traversal per hop; not supported yet rather than silently approximated.
+    if (exactSide === 'out' && path.length > 1) {
+        return emptyResult(req, opts, now, 'no_market', null);
     }
 
-    // Baseline: the best single venue, always computed so savingVsBestSingleBps is meaningful
-    // even when the caller asked for a split.
-    const usable = quotes.filter((q) => q.effectivePriceWithFee !== undefined && q.bookAgeMs <= opts.staleBookMs);
-    const bestSingle = usable.slice().sort((a, b) => {
-        if (a.fullyFillable !== b.fullyFillable) return a.fullyFillable ? -1 : 1;
-        const ap = a.effectivePriceWithFee as number;
-        const bp = b.effectivePriceWithFee as number;
-        return side === 'buy' ? ap - bp : bp - ap;
-    })[0];
+    const hops: RouteHop[] = [];
+    let bestSingleEff: number | null = null;
 
-    let legs: RouteLeg[] = [];
-    let filledAmount = 0;
-
-    if (opts.strategy === 'best_single') {
-        if (bestSingle) {
-            const only = new Set([bestSingle.exchangeId]);
-            const res = allocate(buildConsolidatedBook(cache, feeRegistry, symbol, side, opts, only), amount);
-            legs = toLegs(res.perVenue, side);
-            filledAmount = res.filledAmount;
+    if (exactSide === 'in') {
+        // Chain forward: each hop's realised output funds the next. Hops are solved sequentially,
+        // NOT jointly — hop 1's split is chosen without knowing what hop 2 would prefer, so the
+        // result is a good route rather than a provably optimal one. Joint optimisation is a
+        // min-cost flow over the asset graph and is deliberately out of scope here.
+        let carry = requested;
+        for (let i = 0; i < path.length; i++) {
+            const h = path[i]!;
+            // Amount is in the hop's INPUT asset: base when selling it, quote when buying with it.
+            const byBase = h.side === 'sell';
+            const sol = solveHop(cache, feeRegistry, h, carry, byBase, opts);
+            if (i === 0) bestSingleEff = sol.bestSingleEffective;
+            hops.push(sol.hop);
+            carry = sol.hop.amountOut;
+            if (carry <= 0) {
+                return emptyResult(req, opts, now, classify(sol.hop, opts), i, hops);
+            }
         }
     } else {
-        let res = allocate(buildConsolidatedBook(cache, feeRegistry, symbol, side, opts), amount);
-
-        if (opts.strategy === 'split_capped' && res.perVenue.size > opts.maxVenues) {
-            // Greedy approximation, not a proven optimum: run unconstrained, keep the venues
-            // carrying the most volume, then re-solve restricted to them. Exhaustive subset
-            // search would be C(n, k) and is not worth it at ~40 candidate venues.
-            const keep = new Set(
-                [...res.perVenue.entries()]
-                    .sort((a, b) => b[1].amount - a[1].amount)
-                    .slice(0, opts.maxVenues)
-                    .map(([ex]) => ex),
-            );
-            res = allocate(buildConsolidatedBook(cache, feeRegistry, symbol, side, opts, keep), amount);
-
-            // Feasibility repair. Top-N-by-volume selects venues by how much they carried in the
-            // UNCONSTRAINED solve, which favours venues that were cheap at the top rather than
-            // venues that are deep. That can return a set which cannot fill the size even when a
-            // fillable set of the same cardinality exists — a correctness failure, not a pricing
-            // one. If the restricted set falls short, retry with the N deepest venues, which
-            // maximises fillable quantity by construction, and keep whichever actually fills.
-            if (res.filledAmount < amount) {
-                const depthByVenue = new Map<string, number>();
-                for (const lvl of buildConsolidatedBook(cache, feeRegistry, symbol, side, opts)) {
-                    depthByVenue.set(lvl.exchangeId, (depthByVenue.get(lvl.exchangeId) ?? 0) + lvl.amount);
-                }
-                const deepest = new Set(
-                    [...depthByVenue.entries()].sort((a, b) => b[1] - a[1]).slice(0, opts.maxVenues).map(([ex]) => ex),
-                );
-                const repaired = allocate(buildConsolidatedBook(cache, feeRegistry, symbol, side, opts, deepest), amount);
-                if (repaired.filledAmount > res.filledAmount) res = repaired;
-            }
+        const h = path[0]!;
+        // Amount is in the hop's OUTPUT asset: base when buying it, quote when selling into it.
+        const byBase = h.side === 'buy';
+        const sol = solveHop(cache, feeRegistry, h, requested, byBase, opts);
+        bestSingleEff = sol.bestSingleEffective;
+        hops.push(sol.hop);
+        if (sol.hop.amountOut <= 0) {
+            return emptyResult(req, opts, now, classify(sol.hop, opts), 0, hops);
         }
-
-        // Drop dust legs that would be rejected by venue minimum-order rules, then re-solve
-        // without those venues so the freed size is actually reallocated rather than lost.
-        if (opts.minLegNotional > 0) {
-            const tooSmall = new Set(
-                [...res.perVenue.entries()]
-                    .filter(([, v]) => v.rawNotional < opts.minLegNotional)
-                    .map(([ex]) => ex),
-            );
-            if (tooSmall.size > 0 && tooSmall.size < res.perVenue.size) {
-                const keep = new Set([...res.perVenue.keys()].filter((ex) => !tooSmall.has(ex)));
-                res = allocate(buildConsolidatedBook(cache, feeRegistry, symbol, side, opts, keep), amount);
-            }
-        }
-
-        legs = toLegs(res.perVenue, side);
-        filledAmount = res.filledAmount;
     }
 
-    // Enforce all-or-nothing BEFORE computing totals, so a rejected partial reports zeroes rather
-    // than a price for a fill that will not happen.
-    if (opts.requireFullFill && filledAmount < amount) {
-        legs = [];
-        filledAmount = 0;
-    }
+    const amountIn = hops[0]!.amountIn;
+    const amountOut = hops[hops.length - 1]!.amountOut;
+    const achieved = exactSide === 'in' ? amountIn : amountOut;
+    const fillRatio = requested > 0 ? achieved / requested : 0;
+    const fullyFillable = hops.every((h) => h.fullyFillable);
+    const unfilledAmount = Math.max(0, requested - achieved);
 
-    // Diagnose an empty route in the order the filters actually applied, so the reason names the
-    // FIRST thing that eliminated everything rather than the last thing checked.
-    const freshVenueCount = quotes.filter((q) => q.bookAgeMs <= opts.staleBookMs).length;
-    let unroutableReason: RouteResult['unroutableReason'] = null;
-    if (legs.length === 0) {
-        if (quotes.length === 0) unroutableReason = 'no_venues_matched_filter';
-        else if (freshVenueCount === 0) unroutableReason = 'all_books_stale';
-        else if (opts.requireFullFill) unroutableReason = 'insufficient_depth';
-        else unroutableReason = 'no_liquidity';
-    }
-
-    const unfilledAmount = Math.max(0, amount - filledAmount);
-    const fillRatio = amount > 0 ? filledAmount / amount : 0;
     const warnings: string[] = [];
-    if (filledAmount > 0 && filledAmount < amount) {
+    if (!fullyFillable && achieved > 0) {
         warnings.push(
-            `partial_fill: only ${(fillRatio * 100).toFixed(2)}% of the requested size could be filled `
-            + `from cached depth. routeVwap (${routeVwapPreview(legs, filledAmount)}) prices the FILLED `
-            + `${filledAmount} only — the remaining ${unfilledAmount} would cost more.`,
+            `partial_fill: only ${(fillRatio * 100).toFixed(2)}% of the requested ${exactSide === 'in' ? req.from : req.to} `
+            + `could be routed. effectiveRate prices the FILLED portion only; the remainder would cost more.`,
+        );
+    }
+    if (hops.length > 1) {
+        warnings.push(
+            `multi_hop: routed via ${hops.map((h) => h.pair).join(' -> ')}. Hops are solved sequentially, not `
+            + `jointly, so this is a good route rather than a provably optimal one. Each hop carries its own `
+            + `execution risk and fees (see feeCurrency per hop).`,
         );
     }
 
-    const routeNotional = legs.reduce((s, l) => s + l.amount * l.effectivePrice, 0);
-    const totalFeeCost = legs.reduce((s, l) => s + l.feeCost, 0);
-    const routeVwap = filledAmount > 0 ? routeNotional / filledAmount : null;
-
     let savingVsBestSingleBps: number | null = null;
-    if (routeVwap !== null && bestSingle?.effectivePriceWithFee !== undefined) {
-        const single = bestSingle.effectivePriceWithFee;
-        // Buy: cheaper is better. Sell: richer is better. Positive always means "the route beat
-        // the single-venue baseline".
-        const diff = side === 'buy' ? single - routeVwap : routeVwap - single;
-        savingVsBestSingleBps = (diff / single) * 10000;
+    if (hops.length === 1 && bestSingleEff !== null && hops[0]!.legs.length > 0) {
+        const h = hops[0]!;
+        const vwap = h.side === 'buy' ? h.amountIn / h.amountOut : h.amountOut / h.amountIn;
+        const diff = h.side === 'buy' ? bestSingleEff - vwap : vwap - bestSingleEff;
+        savingVsBestSingleBps = (diff / bestSingleEff) * 10000;
     }
 
     return {
-        requestId: opts.requestId,
-        calculatedAt: now,
-        calculatedAtIso: new Date(now).toISOString(),
-        symbol,
-        side,
-        amount,
-        strategy: opts.strategy,
-        includeFees: opts.includeFees,
+        requestId: opts.requestId, calculatedAt: now, calculatedAtIso: new Date(now).toISOString(),
+        from: req.from, to: req.to, amountIn, amountOut, requestedAmount: requested, exactSide,
+        strategy: opts.strategy, includeFees: opts.includeFees,
         exchangesFilter: opts.exchanges ? [...opts.exchanges].sort() : null,
-        certifiedOnly: opts.certifiedOnly,
-        staleBookMs: opts.staleBookMs,
-        unroutableReason,
-        freshVenueCount,
-        unfilledAmount,
-        fillRatio,
-        warnings,
-        route: legs,
-        filledAmount,
-        fullyFillable: filledAmount >= amount,
-        routeVwap,
-        routeNotional,
-        totalFeeCost,
-        savingVsBestSingleBps,
-        quotes,
+        certifiedOnly: opts.certifiedOnly, staleBookMs: opts.staleBookMs,
+        stalenessPenaltyBps: opts.stalenessPenaltyBps,
+        hops,
+        effectiveRate: amountIn > 0 ? amountOut / amountIn : null,
+        fullyFillable, fillRatio, unfilledAmount,
+        unroutableReason: null, unroutableHopIndex: null,
+        warnings, savingVsBestSingleBps,
     };
+}
+
+function classify (hop: RouteHop, opts: RouteOptions): UnroutableReason {
+    if (hop.quotes.length === 0) return 'no_venues_matched_filter';
+    if (hop.freshVenueCount === 0) return 'all_books_stale';
+    if (opts.requireFullFill) return 'insufficient_depth';
+    return 'no_liquidity';
 }

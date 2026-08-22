@@ -18,6 +18,32 @@ const OPTS = (o: Partial<RouteOptions> = {}): RouteOptions => ({
     minLegNotional: 0, staleBookMs: 5000, requestId: 'test-req', certifiedOnly: false, requireFullFill: false, stalenessPenaltyBps: 0, ...o,
 });
 
+// Adapter over the v2 asset-to-asset contract, expressed in the old symbol+side terms these
+// tests were written against. Buying BASE means spending QUOTE for an exact BASE amount; selling
+// means spending an exact BASE amount. Bridging is disabled so each case exercises one hop.
+function run (
+    cache: OrderBookCache, fees: FeeRegistry, symbol: string,
+    side: 'buy' | 'sell', amount: number, opts: RouteOptions,
+) {
+    const [base, quote] = symbol.split('/') as [string, string];
+    const req = side === 'buy'
+        ? { from: quote, to: base, amountOut: amount, bridges: [] }
+        : { from: base, to: quote, amountIn: amount, bridges: [] };
+    const r = computeRoute(cache, fees, req, opts);
+    const hop = r.hops[0];
+    return {
+        ...r,
+        route: hop?.legs ?? [],
+        quotes: hop?.quotes ?? [],
+        freshVenueCount: hop?.freshVenueCount ?? 0,
+        totalFeeCost: r.hops.reduce((s, h) => s + h.feeCost, 0),
+        filledAmount: side === 'buy' ? r.amountOut : r.amountIn,
+        routeVwap: r.amountIn > 0 && r.amountOut > 0
+            ? (side === 'buy' ? r.amountIn / r.amountOut : r.amountOut / r.amountIn)
+            : null,
+    };
+}
+
 test('split_optimal beats best_single by consuming cheap levels across venues', () => {
     const cache = new OrderBookCache(); const fees = new FeeRegistry();
     // A is cheapest but shallow; B has the rest. A single venue cannot capture both.
@@ -25,8 +51,8 @@ test('split_optimal beats best_single by consuming cheap levels across venues', 
     cache.setBook(book('b', [[101, 10]]));
     fees.setFee('a', 'BTC/USDT', 0); fees.setFee('b', 'BTC/USDT', 0);
 
-    const single = computeRoute(cache, fees, 'BTC/USDT', 'buy', 3, OPTS({ strategy: 'best_single' }));
-    const split = computeRoute(cache, fees, 'BTC/USDT', 'buy', 3, OPTS());
+    const single = run(cache, fees, 'BTC/USDT', 'buy', 3, OPTS({ strategy: 'best_single' }));
+    const split = run(cache, fees, 'BTC/USDT', 'buy', 3, OPTS());
 
     assert.equal(single.route.length, 1);
     assert.equal(single.routeVwap, 101, 'best_single must use one venue only');
@@ -44,7 +70,7 @@ test('levels are fee-adjusted BEFORE merging, so a cheap-but-costly venue loses'
     fees.setFee('a', 'BTC/USDT', 0.01);
     fees.setFee('b', 'BTC/USDT', 0.0001);
 
-    const r = computeRoute(cache, fees, 'BTC/USDT', 'buy', 1, OPTS());
+    const r = run(cache, fees, 'BTC/USDT', 'buy', 1, OPTS());
     assert.equal(r.route[0]!.exchangeId, 'b', 'fee-adjusted merge must prefer b despite worse raw price');
 });
 
@@ -53,7 +79,7 @@ test('includeFees=false zeroes fee cost and leaves effective price equal to raw'
     cache.setBook(book('a', [[100, 10]]));
     fees.setFee('a', 'BTC/USDT', 0.01);
 
-    const r = computeRoute(cache, fees, 'BTC/USDT', 'buy', 1, OPTS({ includeFees: false }));
+    const r = run(cache, fees, 'BTC/USDT', 'buy', 1, OPTS({ includeFees: false }));
     assert.equal(r.totalFeeCost, 0);
     assert.equal(r.route[0]!.effectivePrice, r.route[0]!.averagePrice);
     assert.equal(r.route[0]!.takerFeeRate, 0);
@@ -65,8 +91,8 @@ test('split_capped limits the number of venues', () => {
         cache.setBook(book(ex, [[100 + i, 1]]));
         fees.setFee(ex, 'BTC/USDT', 0);
     }
-    const uncapped = computeRoute(cache, fees, 'BTC/USDT', 'buy', 5, OPTS());
-    const capped = computeRoute(cache, fees, 'BTC/USDT', 'buy', 5, OPTS({ strategy: 'split_capped', maxVenues: 2 }));
+    const uncapped = run(cache, fees, 'BTC/USDT', 'buy', 5, OPTS());
+    const capped = run(cache, fees, 'BTC/USDT', 'buy', 5, OPTS({ strategy: 'split_capped', maxVenues: 2 }));
 
     assert.ok(uncapped.route.length > 2);
     assert.ok(capped.route.length <= 2, `expected <=2 venues, got ${capped.route.length}`);
@@ -80,7 +106,7 @@ test('minLegNotional suppresses dust legs and reallocates the freed size', () =>
 
     // 50 sits between the dust leg (~0.099) and the real leg (~200). A threshold above BOTH
     // would trip the all-legs-too-small guard instead — covered separately below.
-    const r = computeRoute(cache, fees, 'BTC/USDT', 'buy', 2, OPTS({ minLegNotional: 50 }));
+    const r = run(cache, fees, 'BTC/USDT', 'buy', 2, OPTS({ minLegNotional: 50 }));
     assert.deepEqual(r.route.map((l) => l.exchangeId), ['real']);
     assert.equal(r.filledAmount, 2, 'size dropped from the dust leg must be reallocated, not lost');
 });
@@ -91,7 +117,7 @@ test('sell side ranks by highest proceeds and fees reduce them', () => {
     cache.setBook(book('b', [[1, 1]], [[101, 10]]));
     fees.setFee('a', 'BTC/USDT', 0); fees.setFee('b', 'BTC/USDT', 0);
 
-    const r = computeRoute(cache, fees, 'BTC/USDT', 'sell', 1, OPTS());
+    const r = run(cache, fees, 'BTC/USDT', 'sell', 1, OPTS());
     assert.equal(r.route[0]!.exchangeId, 'b', 'sell must prefer the higher bid');
     assert.equal(r.routeVwap, 101);
 });
@@ -103,12 +129,12 @@ test('stale books are excluded from the route entirely', () => {
     cache.setBook(book('fresh', [[100, 10]]));
     fees.setFee('stale', 'BTC/USDT', 0); fees.setFee('fresh', 'BTC/USDT', 0);
 
-    const r = computeRoute(cache, fees, 'BTC/USDT', 'buy', 1, OPTS());
+    const r = run(cache, fees, 'BTC/USDT', 'buy', 1, OPTS());
     assert.deepEqual(r.route.map((l) => l.exchangeId), ['fresh'], 'a stale venue must never win on price');
 });
 
 test('empty cache yields an empty route rather than a null special case', () => {
-    const r = computeRoute(new OrderBookCache(), new FeeRegistry(), 'NONE/USDT', 'buy', 1, OPTS());
+    const r = run(new OrderBookCache(), new FeeRegistry(), 'NONE/USDT', 'buy', 1, OPTS());
     assert.deepEqual(r.route, []);
     assert.equal(r.filledAmount, 0);
     assert.equal(r.fullyFillable, false);
@@ -119,7 +145,7 @@ test('carries the request id and a calculation timestamp for auditing', () => {
     const cache = new OrderBookCache(); const fees = new FeeRegistry();
     cache.setBook(book('a', [[100, 10]]));
     const before = Date.now();
-    const r = computeRoute(cache, fees, 'BTC/USDT', 'buy', 1, OPTS({ requestId: 'req-abc' }));
+    const r = run(cache, fees, 'BTC/USDT', 'buy', 1, OPTS({ requestId: 'req-abc' }));
     assert.equal(r.requestId, 'req-abc');
     assert.ok(r.calculatedAt >= before && r.calculatedAt <= Date.now());
     assert.equal(new Date(r.calculatedAtIso).getTime(), r.calculatedAt, 'iso and epoch must agree');
@@ -129,7 +155,7 @@ test('partial fill is reported honestly rather than inflating the price', () => 
     const cache = new OrderBookCache(); const fees = new FeeRegistry();
     cache.setBook(book('a', [[100, 0.5]]));
     fees.setFee('a', 'BTC/USDT', 0);
-    const r = computeRoute(cache, fees, 'BTC/USDT', 'buy', 5, OPTS());
+    const r = run(cache, fees, 'BTC/USDT', 'buy', 5, OPTS());
     assert.equal(r.filledAmount, 0.5);
     assert.equal(r.fullyFillable, false);
     assert.equal(r.routeVwap, 100);
@@ -141,7 +167,7 @@ test('when every leg is below minLegNotional the route is kept rather than empti
     const cache = new OrderBookCache(); const fees = new FeeRegistry();
     cache.setBook(book('a', [[100, 10]]));
     fees.setFee('a', 'BTC/USDT', 0);
-    const r = computeRoute(cache, fees, 'BTC/USDT', 'buy', 0.01, OPTS({ minLegNotional: 1_000_000 }));
+    const r = run(cache, fees, 'BTC/USDT', 'buy', 0.01, OPTS({ minLegNotional: 1_000_000 }));
     assert.equal(r.route.length, 1);
     assert.equal(r.filledAmount, 0.01);
 });
@@ -153,7 +179,7 @@ test('exchanges filter restricts routing to the named venues', () => {
     cache.setBook(book('someother', [[99, 10]]));   // cheapest, but not requested
     for (const ex of ['binance', 'kraken', 'someother']) fees.setFee(ex, 'BTC/USDT', 0);
 
-    const r = computeRoute(cache, fees, 'BTC/USDT', 'buy', 1,
+    const r = run(cache, fees, 'BTC/USDT', 'buy', 1,
         OPTS({ exchanges: new Set(['binance', 'kraken']) }));
 
     assert.deepEqual(r.route.map((l) => l.exchangeId), ['binance']);
@@ -167,7 +193,7 @@ test('an empty exchanges list means no venues, not all venues', () => {
     cache.setBook(book('binance', [[100, 10]]));
     fees.setFee('binance', 'BTC/USDT', 0);
 
-    const r = computeRoute(cache, fees, 'BTC/USDT', 'buy', 1, OPTS({ exchanges: new Set() }));
+    const r = run(cache, fees, 'BTC/USDT', 'buy', 1, OPTS({ exchanges: new Set() }));
     assert.deepEqual(r.route, []);
     assert.equal(r.filledAmount, 0);
 });
@@ -178,10 +204,10 @@ test('certified flag restricts to ccxt-certified venues', () => {
     cache.setBook(book('p2b', [[100, 10]]));        // cheaper, NOT certified
     fees.setFee('binance', 'BTC/USDT', 0); fees.setFee('p2b', 'BTC/USDT', 0);
 
-    const open = computeRoute(cache, fees, 'BTC/USDT', 'buy', 1, OPTS());
+    const open = run(cache, fees, 'BTC/USDT', 'buy', 1, OPTS());
     assert.equal(open.route[0]!.exchangeId, 'p2b', 'unfiltered should take the cheaper venue');
 
-    const cert = computeRoute(cache, fees, 'BTC/USDT', 'buy', 1, OPTS({ certifiedOnly: true }));
+    const cert = run(cache, fees, 'BTC/USDT', 'buy', 1, OPTS({ certifiedOnly: true }));
     assert.equal(cert.route[0]!.exchangeId, 'binance', 'certified-only must skip the cheaper uncertified venue');
     assert.equal(cert.certifiedOnly, true);
 });
@@ -192,7 +218,7 @@ test('exchanges and certified compose as an intersection', () => {
     cache.setBook(book('p2b', [[100, 10]]));        // in list, NOT certified
     fees.setFee('binance', 'BTC/USDT', 0); fees.setFee('p2b', 'BTC/USDT', 0);
 
-    const r = computeRoute(cache, fees, 'BTC/USDT', 'buy', 1,
+    const r = run(cache, fees, 'BTC/USDT', 'buy', 1,
         OPTS({ exchanges: new Set(['binance', 'p2b']), certifiedOnly: true }));
     assert.deepEqual(r.route.map((l) => l.exchangeId), ['binance']);
 });
@@ -202,7 +228,7 @@ test('an empty route explains itself: all books stale', () => {
     const b = book('binance', [[100, 10]]); b.receivedAt = Date.now() - 60_000;
     cache.setBook(b); fees.setFee('binance', 'BTC/USDT', 0);
 
-    const r = computeRoute(cache, fees, 'BTC/USDT', 'buy', 1, OPTS());
+    const r = run(cache, fees, 'BTC/USDT', 'buy', 1, OPTS());
     assert.deepEqual(r.route, []);
     assert.equal(r.unroutableReason, 'all_books_stale');
     assert.equal(r.freshVenueCount, 0);
@@ -212,7 +238,7 @@ test('an empty route explains itself: all books stale', () => {
 test('an empty route explains itself: filter matched nothing', () => {
     const cache = new OrderBookCache(); const fees = new FeeRegistry();
     cache.setBook(book('binance', [[100, 10]]));
-    const r = computeRoute(cache, fees, 'BTC/USDT', 'buy', 1, OPTS({ exchanges: new Set(['kraken']) }));
+    const r = run(cache, fees, 'BTC/USDT', 'buy', 1, OPTS({ exchanges: new Set(['kraken']) }));
     assert.equal(r.unroutableReason, 'no_venues_matched_filter');
 });
 
@@ -222,8 +248,8 @@ test('a widened staleness window recovers an otherwise-empty route', () => {
     const b = book('binance', [[100, 10]]); b.receivedAt = Date.now() - 30_000;
     cache.setBook(b); fees.setFee('binance', 'BTC/USDT', 0);
 
-    assert.equal(computeRoute(cache, fees, 'BTC/USDT', 'buy', 1, OPTS()).route.length, 0);
-    const loose = computeRoute(cache, fees, 'BTC/USDT', 'buy', 1, OPTS({ staleBookMs: 60_000 }));
+    assert.equal(run(cache, fees, 'BTC/USDT', 'buy', 1, OPTS()).route.length, 0);
+    const loose = run(cache, fees, 'BTC/USDT', 'buy', 1, OPTS({ staleBookMs: 60_000 }));
     assert.equal(loose.route.length, 1);
     assert.equal(loose.unroutableReason, null);
     assert.equal(loose.staleBookMs, 60_000);
@@ -232,7 +258,7 @@ test('a widened staleness window recovers an otherwise-empty route', () => {
 test('a successful route reports no unroutable reason', () => {
     const cache = new OrderBookCache(); const fees = new FeeRegistry();
     cache.setBook(book('binance', [[100, 10]])); fees.setFee('binance', 'BTC/USDT', 0);
-    const r = computeRoute(cache, fees, 'BTC/USDT', 'buy', 1, OPTS());
+    const r = run(cache, fees, 'BTC/USDT', 'buy', 1, OPTS());
     assert.equal(r.unroutableReason, null);
     assert.equal(r.freshVenueCount, 1);
 });
@@ -244,7 +270,7 @@ test('a partial fill warns loudly that routeVwap prices only the filled size', (
     cache.setBook(book('a', [[100, 1]]));
     fees.setFee('a', 'BTC/USDT', 0);
 
-    const r = computeRoute(cache, fees, 'BTC/USDT', 'buy', 10, OPTS());
+    const r = run(cache, fees, 'BTC/USDT', 'buy', 10, OPTS());
     assert.equal(r.fullyFillable, false);
     assert.equal(r.filledAmount, 1);
     assert.equal(r.unfilledAmount, 9);
@@ -259,7 +285,7 @@ test('requireFullFill refuses a partial rather than quoting one', () => {
     cache.setBook(book('a', [[100, 1]]));
     fees.setFee('a', 'BTC/USDT', 0);
 
-    const r = computeRoute(cache, fees, 'BTC/USDT', 'buy', 10, OPTS({ requireFullFill: true }));
+    const r = run(cache, fees, 'BTC/USDT', 'buy', 10, OPTS({ requireFullFill: true }));
     assert.deepEqual(r.route, []);
     assert.equal(r.filledAmount, 0);
     assert.equal(r.routeVwap, null, 'must not price a fill that will not happen');
@@ -271,7 +297,7 @@ test('requireFullFill still returns a route when depth is sufficient', () => {
     cache.setBook(book('a', [[100, 100]]));
     fees.setFee('a', 'BTC/USDT', 0);
 
-    const r = computeRoute(cache, fees, 'BTC/USDT', 'buy', 10, OPTS({ requireFullFill: true }));
+    const r = run(cache, fees, 'BTC/USDT', 'buy', 10, OPTS({ requireFullFill: true }));
     assert.equal(r.fullyFillable, true);
     assert.equal(r.filledAmount, 10);
     assert.deepEqual(r.warnings, []);
@@ -282,7 +308,7 @@ test('a full fill carries no warnings and a fill ratio of 1', () => {
     const cache = new OrderBookCache(); const fees = new FeeRegistry();
     cache.setBook(book('a', [[100, 100]]));
     fees.setFee('a', 'BTC/USDT', 0);
-    const r = computeRoute(cache, fees, 'BTC/USDT', 'buy', 5, OPTS());
+    const r = run(cache, fees, 'BTC/USDT', 'buy', 5, OPTS());
     assert.equal(r.fillRatio, 1);
     assert.deepEqual(r.warnings, []);
 });
@@ -301,7 +327,7 @@ test('split_capped must not return an unfillable set when a fillable one exists'
     cache.setBook(book('deepPricey', [[200, 1000]]));
     for (const ex of ['cheapThin1', 'cheapThin2', 'deepPricey']) fees.setFee(ex, 'BTC/USDT', 0);
 
-    const r = computeRoute(cache, fees, 'BTC/USDT', 'buy', 10, OPTS({ strategy: 'split_capped', maxVenues: 2 }));
+    const r = run(cache, fees, 'BTC/USDT', 'buy', 10, OPTS({ strategy: 'split_capped', maxVenues: 2 }));
     assert.equal(r.fullyFillable, true,
         `a 2-venue route exists (deep + either thin) but got ${r.filledAmount} of 10 from ${r.route.map((l) => l.exchangeId)}`);
 });
@@ -315,10 +341,10 @@ test('staleness penalty demotes an older book even when its raw price is better'
     cache.setBook(book('freshDearer', [[100.5, 10]]));
     fees.setFee('staleButCheap', 'BTC/USDT', 0); fees.setFee('freshDearer', 'BTC/USDT', 0);
 
-    assert.equal(computeRoute(cache, fees, 'BTC/USDT', 'buy', 1, OPTS()).route[0]!.exchangeId,
+    assert.equal(run(cache, fees, 'BTC/USDT', 'buy', 1, OPTS()).route[0]!.exchangeId,
         'staleButCheap', 'unpenalised, the cheaper stale book wins');
     assert.equal(
-        computeRoute(cache, fees, 'BTC/USDT', 'buy', 1, OPTS({ stalenessPenaltyBps: 50 })).route[0]!.exchangeId,
+        run(cache, fees, 'BTC/USDT', 'buy', 1, OPTS({ stalenessPenaltyBps: 50 })).route[0]!.exchangeId,
         'freshDearer', 'penalised, freshness outweighs a 50bp-equivalent price edge');
 });
 
@@ -337,6 +363,6 @@ test('zero-amount legs are not emitted', () => {
     cache.setBook(book('a', [[100, 1]]));
     cache.setBook(book('b', [[101, 1]]));
     fees.setFee('a', 'BTC/USDT', 0); fees.setFee('b', 'BTC/USDT', 0);
-    const r = computeRoute(cache, fees, 'BTC/USDT', 'buy', 1, OPTS());
+    const r = run(cache, fees, 'BTC/USDT', 'buy', 1, OPTS());
     assert.ok(r.route.every((l) => l.amount > 0), `got a zero leg: ${JSON.stringify(r.route)}`);
 });

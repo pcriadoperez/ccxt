@@ -7,6 +7,7 @@ import { extractApiKey, resolveApiKey, safeCompare } from '../api/auth.js';
 import { FixedWindowRateLimiter } from '../api/rateLimiter.js';
 import * as routerClient from './tools.js';
 import type { RouterClientOptions } from './tools.js';
+import { ROUTE_STRATEGIES } from '../routing/route.js';
 
 const API_BASE_URL = process.env['ORDER_ROUTER_API_URL'] ?? 'http://localhost:8080';
 const MCP_PORT = Number(process.env['ORDER_ROUTER_MCP_PORT'] ?? 8081);
@@ -88,19 +89,41 @@ export function buildMcpServer (clientOptions: RouterClientOptions): McpServer {
     );
 
     server.registerTool(
-        'get_best_price',
+        'route_order',
         {
-            title: 'Get best execution price',
-            description: 'Book-walked, fee-adjusted best execution price across exchanges for a given order size.',
+            title: 'Route an order between two assets',
+            // Asset-to-asset rather than symbol+side: a caller says what it holds and what it
+            // wants, and the router derives the pair, the direction, and any bridge hop. That
+            // removes the step most likely to be gotten backwards.
+            description:
+                'Find the cheapest way to convert one asset into another across all connected exchanges. '
+                + 'Give the asset you are spending (from) and the asset you want (to), plus exactly one of '
+                + 'amountIn (how much of `from` you will spend) or amountOut (how much of `to` you want). '
+                + 'Returns an ordered list of hops, each with the venues to trade on and the fees involved. '
+                + 'If no direct market exists the router bridges automatically (e.g. SOL -> USDT -> BTC).',
             inputSchema: {
-                symbol: z.string().describe('Unified symbol, e.g. "BTC/USDT"'),
-                side: z.enum(['buy', 'sell']).describe('Order side'),
-                amount: z.number().positive().describe('Order size in base currency units'),
+                from: z.string().describe('Asset being spent, e.g. "USDT"'),
+                to: z.string().describe('Asset being acquired, e.g. "BTC"'),
+                amountIn: z.number().positive().optional()
+                    .describe('Exact amount of `from` to spend. Supply this OR amountOut, never both.'),
+                amountOut: z.number().positive().optional()
+                    .describe('Exact amount of `to` to acquire. Supply this OR amountIn, never both.'),
+                strategy: z.enum(ROUTE_STRATEGIES).optional()
+                    .describe('best_single = one venue; split_optimal = unlimited venues; '
+                        + 'split_capped = at most maxVenues. Defaults to best_single.'),
+                maxVenues: z.number().int().positive().optional()
+                    .describe('Venue cap for split_capped. Defaults to 3.'),
+                includeFees: z.boolean().optional().describe('Fee-adjust prices before ranking. Defaults to true.'),
+                exchanges: z.array(z.string()).optional().describe('Only consider these exchange ids.'),
+                certified: z.boolean().optional().describe('Only consider ccxt-certified exchanges.'),
             },
         },
-        async ({ symbol, side, amount }) => {
+        async (params) => {
+            if ((params.amountIn === undefined) === (params.amountOut === undefined)) {
+                return errorResult(new Error('supply exactly one of amountIn or amountOut'));
+            }
             try {
-                return textResult(await routerClient.getBestPrice(symbol, side, amount, clientOptions));
+                return textResult(await routerClient.getRoute(params, clientOptions));
             } catch (err) {
                 return errorResult(err);
             }

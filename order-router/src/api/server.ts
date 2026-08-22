@@ -8,14 +8,18 @@ import type { OrderBookCache } from '../cache/orderBookCache.js';
 import type { FeeRegistry } from '../cache/feeRegistry.js';
 import { computeBestPrice } from '../routing/bestPrice.js';
 import { computeRoute, ROUTE_STRATEGIES, type RouteStrategy } from '../routing/route.js';
+import { DEFAULT_BRIDGES } from '../routing/market.js';
 import { randomUUID } from 'node:crypto';
 import { extractApiKey, isPublicPath, makeAuthHook, resolveApiKey, safeCompare } from './auth.js';
 import { buildHttpHistogram, buildMetricsRegistry } from '../metrics.js';
 import { LoopRegistry } from '../cache/loopRegistry.js';
 
-interface BestPriceQuery {
-    side?: string;
-    amount?: string;
+interface RouteQuery {
+    from?: string;
+    to?: string;
+    amountIn?: string;
+    amountOut?: string;
+    bridges?: string;
     strategy?: string;
     maxVenues?: string;
     includeFees?: string;
@@ -25,6 +29,11 @@ interface BestPriceQuery {
     maxStalenessMs?: string;
     requireFullFill?: string;
     stalenessPenaltyBps?: string;
+}
+
+interface StreamQuery {
+    side?: string;
+    amount?: string;
 }
 
 export interface ServerOptions {
@@ -177,15 +186,36 @@ export async function buildServer (
         },
     );
 
-    app.get<{ Params: { symbol: string }; Querystring: BestPriceQuery }>(
-        '/price/best/:symbol',
+    // Asset-to-asset addressing. The caller says what they hold and what they want; the router
+    // picks the pair, the side, and — when no direct market exists — the bridge. Callers never
+    // have to know that USDT->BTC is a *buy* of BTC/USDT while BTC->USDT is a *sell* of the same
+    // pair, which is the single most error-prone part of the old symbol+side contract.
+    app.get<{ Querystring: RouteQuery }>(
+        '/route',
         async (request, reply) => {
-            const symbol = decodeURIComponent(request.params.symbol);
-            const side = request.query.side === 'sell' ? 'sell' : 'buy';
-            const amount = Number(request.query.amount ?? '0');
+            const from = (request.query.from ?? '').trim().toUpperCase();
+            const to = (request.query.to ?? '').trim().toUpperCase();
+            if (from.length === 0 || to.length === 0) {
+                reply.code(400);
+                return { error: 'from and to query params are required (e.g. from=USDT&to=BTC)' };
+            }
+            if (from === to) {
+                reply.code(400);
+                return { error: 'from and to must differ' };
+            }
+
+            const hasIn = request.query.amountIn !== undefined;
+            const hasOut = request.query.amountOut !== undefined;
+            // Rejecting both is deliberate: silently preferring one would make a caller's typo
+            // return a confidently wrong route rather than an error.
+            if (hasIn === hasOut) {
+                reply.code(400);
+                return { error: 'exactly one of amountIn or amountOut must be supplied' };
+            }
+            const amount = Number(hasIn ? request.query.amountIn : request.query.amountOut);
             if (!Number.isFinite(amount) || amount <= 0) {
                 reply.code(400);
-                return { error: 'amount query param must be a positive number' };
+                return { error: `${hasIn ? 'amountIn' : 'amountOut'} must be a positive finite number` };
             }
 
             const strategy = (request.query.strategy ?? 'best_single') as RouteStrategy;
@@ -232,6 +262,11 @@ export async function buildServer (
                 );
             }
 
+            // `bridges=` (explicitly empty) disables bridging entirely — direct markets only.
+            const bridges = request.query.bridges === undefined
+                ? DEFAULT_BRIDGES
+                : request.query.bridges.split(',').map((b) => b.trim().toUpperCase()).filter((b) => b.length > 0);
+
             // Honour a caller-supplied x-request-id so their trace id and ours match in both
             // logs; otherwise mint one. Echoed as a header too, so a client can correlate even
             // on responses it fails to parse.
@@ -241,10 +276,15 @@ export async function buildServer (
                 : randomUUID();
             reply.header('x-request-id', requestId);
 
-            const result = computeRoute(cache, feeRegistry, symbol, side, amount, {
-                strategy, includeFees, maxVenues, minLegNotional,
-                staleBookMs: maxStalenessMs, requestId, exchanges, certifiedOnly, requireFullFill, stalenessPenaltyBps,
-            });
+            const result = computeRoute(
+                cache, feeRegistry,
+                { from, to, amountIn: hasIn ? amount : undefined, amountOut: hasOut ? amount : undefined, bridges },
+                {
+                    strategy, includeFees, maxVenues, minLegNotional,
+                    staleBookMs: maxStalenessMs, requestId, exchanges, certifiedOnly,
+                    requireFullFill, stalenessPenaltyBps,
+                },
+            );
 
             // Audit record: one line per recommendation, keyed by requestId. This is the trail
             // that makes a future billing dispute or "why did you route it there?" answerable
@@ -252,27 +292,35 @@ export async function buildServer (
             logger.info({
                 requestId,
                 calculatedAt: result.calculatedAt,
-                symbol, side, amount, strategy, includeFees, maxVenues, minLegNotional,
-                exchangesFilter: result.exchangesFilter, certifiedOnly,
-                route: result.route.map((l) => ({ ex: l.exchangeId, amt: l.amount, eff: l.effectivePrice })),
-                filledAmount: result.filledAmount,
+                from, to, exactSide: result.exactSide, requestedAmount: amount,
+                strategy, includeFees, maxVenues, minLegNotional,
+                exchangesFilter: result.exchangesFilter, certifiedOnly, bridges,
+                hops: result.hops.map((h) => ({
+                    pair: h.pair, side: h.side, in: h.amountIn, out: h.amountOut,
+                    legs: h.legs.map((l) => ({ ex: l.exchangeId, amt: l.amount, eff: l.effectivePrice })),
+                    fee: h.feeCost, feeCcy: h.feeCurrency, fresh: h.freshVenueCount,
+                })),
+                amountIn: result.amountIn,
+                amountOut: result.amountOut,
+                effectiveRate: result.effectiveRate,
                 fullyFillable: result.fullyFillable,
-                routeVwap: result.routeVwap,
-                totalFeeCost: result.totalFeeCost,
-                savingVsBestSingleBps: result.savingVsBestSingleBps,
-                venuesConsidered: result.quotes.length,
-                freshVenueCount: result.freshVenueCount,
-                unroutableReason: result.unroutableReason,
                 fillRatio: result.fillRatio,
-                requireFullFill, stalenessPenaltyBps,
-                maxStalenessMs,
+                savingVsBestSingleBps: result.savingVsBestSingleBps,
+                unroutableReason: result.unroutableReason,
+                unroutableHopIndex: result.unroutableHopIndex,
+                requireFullFill, stalenessPenaltyBps, maxStalenessMs,
             }, 'route recommendation');
 
+            if (result.unroutableReason === 'no_market') {
+                // No pair and no bridge path exists at all — that is a request-level problem the
+                // caller must fix (wrong ticker, unsupported asset), not an empty market result.
+                reply.code(404);
+            }
             return result;
         },
     );
 
-    app.get<{ Params: { symbol: string }; Querystring: BestPriceQuery }>(
+    app.get<{ Params: { symbol: string }; Querystring: StreamQuery }>(
         '/stream/best/:symbol',
         { websocket: true },
         (socket, request) => {

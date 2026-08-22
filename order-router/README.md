@@ -26,8 +26,12 @@ OrderBookCache + FeeRegistry (in-memory, EventEmitter-based)
   see `src/cache/orderBookCache.ts`. In sharded mode, a shard's connector writes cross a process
   boundary via IPC (same-host pipe, no external DB, no request-time cost — see "Why single-process
   Node..." below), but the API's *reads* never do, whether sharded or not.
-- **Book-walking, not best-bid/ask.** `/price/best/:symbol` requires an `amount` and walks each
-  exchange's cached book to that depth, computing the volume-weighted average price plus taker fee —
+- **Asset-to-asset addressing.** Callers say what they hold (`from`) and what they want (`to`); the
+  router derives the market, the direction, and any bridge hop. `USDT -> BTC` is a *buy* of
+  `BTC/USDT` while `BTC -> USDT` is a *sell* of the same market — deriving that server-side removes
+  the step callers most often get backwards.
+- **Book-walking, not best-bid/ask.** `/route` walks each
+  exchange's cached book to your actual size, computing the volume-weighted average price plus taker fee —
   because for any non-trivial order size, the venue with the best top-of-book price is not
   necessarily the venue with the best price for your actual size.
 - **Per-exchange isolation.** Each `ExchangeConnector` owns its own WS connection(s) and
@@ -133,8 +137,67 @@ same "write path is async, read path is always local" shape, is a natural extens
 | GET | `/exchanges/status` | per-exchange WS health: connected, last update age, update/reconnect counts |
 | GET | `/symbols` | symbols currently cached |
 | GET | `/orderbook/:exchange/:symbol` | cached L2 book snapshot (symbol URL-encoded, e.g. `BTC%2FUSDT`) |
-| GET | `/price/best/:symbol?side=buy\|sell&amount=<qty>` | book-walked, fee-adjusted best execution price across exchanges |
+| GET | `/route?from=&to=&amountIn=\|amountOut=` | book-walked, fee-adjusted route between two assets; multi-venue and multi-hop |
 | WS | `/stream/best/:symbol?side=&amount=` | pushes on book change (event-driven, not polled) |
+
+### Using `/route`
+
+```bash
+# "I want 1 BTC — spend as little USDT as possible, splitting across up to 3 venues"
+curl -H "x-api-key: $KEY" \
+  "$BASE/route?from=USDT&to=BTC&amountOut=1&strategy=split_capped&maxVenues=3"
+
+# "I have 50,000 USDT — how much BTC do I end up with?"
+curl -H "x-api-key: $KEY" "$BASE/route?from=USDT&to=BTC&amountIn=50000"
+
+# "Convert SOL to BTC" — bridged automatically when no SOL/BTC market exists
+curl -H "x-api-key: $KEY" "$BASE/route?from=SOL&to=BTC&amountIn=100"
+```
+
+There is no `side` parameter. Direction is derived: `from=USDT&to=BTC` is a buy of `BTC/USDT`,
+`from=BTC&to=USDT` is a sell of the same market.
+
+Supply **exactly one** of `amountIn` (how much of `from` you spend) or `amountOut` (how much of
+`to` you want). Both, or neither, is a `400` — silently preferring one would turn a caller's typo
+into a confidently wrong route. The two are genuinely different book traversals, not a unit
+conversion: `amountIn` on a buy walks until the *money* runs out, `amountOut` walks until the
+*size* is reached.
+
+The response is a list of hops:
+
+```jsonc
+{
+  "from": "USDT", "to": "BTC",
+  "amountIn": 104812.4,      // what the route actually spends
+  "amountOut": 1,            // what it actually produces
+  "requestedAmount": 1,      // what you asked for
+  "exactSide": "out",
+  "effectiveRate": 9.541e-6, // BTC per USDT, after all fees and hops
+  "hops": [{
+    "pair": "BTC/USDT", "side": "buy", "base": "BTC", "quote": "USDT",
+    "amountIn": 104812.4, "amountOut": 1,
+    "legs": [ { "exchangeId": "binance", "amount": 0.7, "averagePrice": 104780.1, "takerFeeRate": 0.001, ... } ],
+    "feeCost": 104.8, "feeCurrency": "USDT",
+    "fullyFillable": true, "freshVenueCount": 41,
+    "quotes": [ /* every venue considered, incl. stale ones — the "why these?" diagnostic */ ]
+  }],
+  "fullyFillable": true, "fillRatio": 1, "unroutableReason": null, "warnings": []
+}
+```
+
+Three things to check before trading on a response:
+
+- **`fillRatio` before `effectiveRate`.** On a partial fill the rate prices only the filled
+  portion; reading it as the rate for your full size badly misprices the order.
+- **`unroutableReason`.** An empty `hops` with a reason is a deliberate refusal to quote, not an
+  error. `all_books_stale` is common on the illiquid tail at full-discovery scale.
+- **`hops.length`.** More than one means the route was bridged: separate orders, separate
+  execution risk, and fees reported per hop in that hop's own currency. There is no cross-hop fee
+  total on purpose — adding USDT fees to BTC fees would be a meaningless number.
+
+Bridged routes are solved **sequentially**, not jointly: hop 1's split is chosen without knowing
+what hop 2 would prefer. That yields a good route, not a provably optimal one; joint optimisation
+is a min-cost flow over the asset graph and is deliberately out of scope.
 
 ## Security
 
@@ -213,7 +276,7 @@ in-memory cache or event loop directly.
 | `get_exchanges_status` | `GET /exchanges/status` |
 | `list_symbols` | `GET /symbols` |
 | `get_order_book` (`exchange`, `symbol`) | `GET /orderbook/:exchange/:symbol` |
-| `get_best_price` (`symbol`, `side`, `amount`) | `GET /price/best/:symbol?side=&amount=` |
+| `route_order` (`from`, `to`, `amountIn`\|`amountOut`, …) | `GET /route?from=&to=&…` |
 
 Run both together:
 
@@ -467,8 +530,8 @@ authenticated path:**
 | `/health` (baseline, no auth, no cache read) | 13,779 | 3ms | 5ms | 9ms | 244ms |
 | `/symbols` (iterates whole cache) | 8,138 | 5ms | 7ms | 11ms | 28ms |
 | `/orderbook/:ex/:sym` (map lookup + serialize full book) | 6,628 | 7ms | 9ms | 13ms | 209ms |
-| `/price/best` small order (walks every exchange book) | 6,397 | 7ms | 9ms | 12ms | 254ms |
-| `/price/best` large order (walks deeper) | 4,302 | 11ms | 13ms | 18ms | 292ms |
+| `/route` small order (walks every exchange book) | 6,397 | 7ms | 9ms | 12ms | 254ms |
+| `/route` large order (walks deeper) | 4,302 | 11ms | 13ms | 18ms | 292ms |
 | unauthenticated (expect 401) | 13,693 | 3ms | 4ms | 6ms | 179ms |
 
 Two things worth reading off this: the routing work itself is cheap (best-price with a large order

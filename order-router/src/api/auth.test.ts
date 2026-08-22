@@ -46,7 +46,7 @@ test('isPublicPath allowlists only /health', () => {
     assert.equal(isPublicPath('/health'), true);
     assert.equal(isPublicPath('/symbols'), false);
     assert.equal(isPublicPath('/exchanges/status'), false);
-    assert.equal(isPublicPath('/price/best/BTC%2FUSDT'), false);
+    assert.equal(isPublicPath('/route'), false);
 });
 
 test('isPublicPath ignores the query string rather than matching on it', () => {

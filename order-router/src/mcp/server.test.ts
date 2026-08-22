@@ -46,11 +46,11 @@ test('lists all five router tools', async () => {
         const { tools } = await client.listTools();
         const names = tools.map((t) => t.name).sort();
         assert.deepEqual(names, [
-            'get_best_price',
             'get_exchanges_status',
             'get_health',
             'get_order_book',
             'list_symbols',
+            'route_order',
         ]);
         await client.close();
     });
@@ -66,20 +66,33 @@ test('get_health tool call returns the fixture health payload', async () => {
     });
 });
 
-test('get_best_price tool call passes arguments through to the correct URL', async () => {
+test('route_order tool call passes arguments through to the correct URL', async () => {
     await withRouterFixture(
-        { '/price/best/BTC%2FUSDT?side=buy&amount=1': { symbol: 'BTC/USDT', best: { exchangeId: 'kraken' } } },
+        { '/route?from=USDT&to=BTC&amountOut=1': { hops: [{ pair: 'BTC/USDT', legs: [{ exchangeId: 'kraken' }] }] } },
         async (baseUrl) => {
             const client = await connectedClient(baseUrl);
             const result = await client.callTool({
-                name: 'get_best_price',
-                arguments: { symbol: 'BTC/USDT', side: 'buy', amount: 1 },
+                name: 'route_order',
+                arguments: { from: 'USDT', to: 'BTC', amountOut: 1 },
             });
             const text = (result.content as { type: string; text: string }[])[0]?.text ?? '';
-            assert.equal(JSON.parse(text).best.exchangeId, 'kraken');
+            assert.equal(JSON.parse(text).hops[0].legs[0].exchangeId, 'kraken');
             await client.close();
         },
     );
+});
+
+test('route_order rejects an ambiguous amount before calling upstream', async () => {
+    let called = false;
+    await withRouterFixture({}, async (baseUrl) => {
+        const client = await connectedClient(baseUrl);
+        for (const args of [{ from: 'USDT', to: 'BTC' }, { from: 'USDT', to: 'BTC', amountIn: 1, amountOut: 1 }]) {
+            const result = await client.callTool({ name: 'route_order', arguments: args });
+            assert.equal(result.isError, true, JSON.stringify(args));
+        }
+        assert.equal(called, false);
+        await client.close();
+    });
 });
 
 test('a failed upstream call surfaces as an MCP tool error, not a protocol failure', async () => {
@@ -94,12 +107,12 @@ test('a failed upstream call surfaces as an MCP tool error, not a protocol failu
     });
 });
 
-test('get_best_price returns an MCP tool error for an invalid side, via the input schema', async () => {
+test('route_order returns an MCP tool error for an unknown strategy, via the input schema', async () => {
     await withRouterFixture({}, async (baseUrl) => {
         const client = await connectedClient(baseUrl);
         const result = await client.callTool({
-            name: 'get_best_price',
-            arguments: { symbol: 'BTC/USDT', side: 'sideways', amount: 1 },
+            name: 'route_order',
+            arguments: { from: 'USDT', to: 'BTC', amountOut: 1, strategy: 'sideways' },
         });
         assert.equal(result.isError, true);
         await client.close();

@@ -1,25 +1,50 @@
 openapi: 3.1.0
 info:
   title: CCXT Order Router API
-  version: 0.6.0
+  version: 1.0.0
   description: |
     Smart order router over live L2 order books from ~60 exchanges (ccxt.pro WebSocket).
 
-    **Prices are book-walked, not top-of-book.** `/price/best` requires an `amount` and
-    walks each venue's cached book to that size, returning the volume-weighted average
-    price plus taker fee. For any non-trivial size the venue with the best top-of-book
-    price is frequently *not* the venue with the best price for your actual size.
+    ### The contract in one line
 
-    **Rank on `effectivePriceWithFee`, never `averagePrice`.** Fees differ by up to ~4x
-    between venues and routinely invert the ranking.
+        GET /route?from=USDT&to=BTC&amountOut=1&strategy=split_optimal
 
-    ### Two responses callers must handle
-    - `best` may be `null` when every venue's book is older than the staleness
-      threshold. This is a deliberate refusal to quote stale data, not an error.
-      It is common at full discovery scale — treat it as "no reliable price".
-    - `fullyFillable: false` means the requested size exceeds cached depth.
-      `averagePrice` then reflects only the portion that filled; do not treat it as
-      a fillable price for the full amount.
+    You say what you **hold** (`from`) and what you **want** (`to`). The router picks the
+    market, the direction, the venues, and — when no direct market exists — the bridge.
+    There is no `side` parameter: `USDT -> BTC` is a *buy* of `BTC/USDT` and `BTC -> USDT`
+    is a *sell* of the very same market, and deriving that server-side removes the single
+    most error-prone step in an order-routing API.
+
+    ### Amounts are never ambiguous
+
+    Supply **exactly one** of:
+    - `amountIn` — how much of `from` you will spend.
+    - `amountOut` — how much of `to` you want to end up with.
+
+    Supplying both, or neither, is a `400`. `amountIn` on a buy is a *notional* walk (spend
+    exactly this much quote currency); `amountOut` is a *quantity* walk (acquire exactly this
+    much base). They are genuinely different traversals of the book, not a unit conversion.
+
+    The response reports what the route **achieves** in `amountIn`/`amountOut`, and what you
+    asked for in `requestedAmount`. On an unroutable request both achieved amounts are `0` —
+    the request is never echoed back as if it were an outcome.
+
+    ### Prices are book-walked, not top-of-book
+
+    Each venue's cached book is walked to your actual size. For any non-trivial size the venue
+    with the best top-of-book price is frequently *not* the venue with the best price for your
+    size. Ranking is on the fee-adjusted price; fees differ by up to ~4x between venues and
+    routinely invert the ranking.
+
+    ### Responses callers must handle
+    - `hops: []` with a non-null `unroutableReason` — a deliberate refusal to quote, not an
+      error. `all_books_stale` in particular is common at full discovery scale on the illiquid
+      tail; treat it as "no reliable price", not "no market".
+    - `fullyFillable: false` — the requested size exceeds cached depth. `effectiveRate` then
+      prices ONLY the filled portion. Check `fillRatio` before using it.
+    - `hops.length > 1` — the route was bridged. Each hop is a separate order with its own
+      execution risk, and fees are reported per hop in that hop's own currency. There is no
+      cross-hop fee total, because adding USDT fees to BTC fees would be a meaningless number.
   license:
     name: MIT
 servers:
@@ -51,39 +76,62 @@ paths:
                 properties:
                   status: { type: string, example: ok }
                   uptimeSec: { type: number, example: 1183.4 }
-  /price/best/{symbol}:
+  /route:
     get:
       tags: [Routing]
-      summary: Best execution price across venues for a given size
+      summary: Route a conversion between two assets across venues
+      description: |
+        Returns an ordered list of hops. A single-market conversion is `hops.length == 1`; a
+        bridged one (e.g. `SOL -> USDT -> BTC`) is longer. There is deliberately no separate
+        "best venue" endpoint or field: a single-venue answer is just a hop with one leg, so
+        `strategy` changes the number of legs and nothing else about the shape.
       parameters:
-        - name: symbol
-          in: path
+        - name: from
+          in: query
           required: true
-          description: Unified ccxt symbol, URL-encoded (`BTC/USDT` -> `BTC%2FUSDT`).
+          description: The asset you are spending, e.g. `USDT`. Case-insensitive.
           schema: { type: string }
-          example: BTC%2FUSDT
-        - name: side
-          in: query
-          required: false
-          description: Buy walks the ask side, sell walks the bid side. Defaults to buy.
-          schema: { type: string, enum: [buy, sell], default: buy }
-        - name: amount
+          example: USDT
+        - name: to
           in: query
           required: true
-          description: Order size in BASE currency units. Must be positive and finite.
+          description: The asset you want to acquire, e.g. `BTC`. Must differ from `from`.
+          schema: { type: string }
+          example: BTC
+        - name: amountIn
+          in: query
+          description: |
+            Exact amount of `from` to spend. Supply this OR `amountOut`, never both — supplying
+            both is a 400 rather than a silent preference, so a typo cannot become a confidently
+            wrong route.
           schema: { type: number, format: double, exclusiveMinimum: 0 }
-          example: 5
+          example: 50000
+        - name: amountOut
+          in: query
+          description: Exact amount of `to` to acquire. Supply this OR `amountIn`, never both.
+          schema: { type: number, format: double, exclusiveMinimum: 0 }
+          example: 1
+        - name: bridges
+          in: query
+          description: |
+            Comma-separated intermediary assets to try, in priority order, when no direct market
+            exists. Defaults to `USDT,USDC,BTC,ETH`. An explicitly EMPTY value disables bridging
+            entirely (direct markets only). The first bridge with both legs available wins — the
+            router does not currently compare bridges for cost.
+          schema: { type: string, default: 'USDT,USDC,BTC,ETH' }
+          example: USDT,USDC
         - name: strategy
           in: query
           description: |
-            `best_single` — one venue (a route of length 1).
+            `best_single` — one venue per hop (a hop with one leg).
             `split_optimal` — minimum cost across the consolidated fee-adjusted book, unlimited venues.
-            `split_capped` — best price using at most `maxVenues`. Greedy approximation, not a proven
-            optimum: it solves unconstrained, keeps the highest-volume venues, then re-solves.
+            `split_capped` — best price using at most `maxVenues` per hop. Greedy approximation, not
+            a proven optimum: it solves unconstrained, keeps the highest-volume venues, re-solves,
+            and falls back to the deepest venues if that set cannot fill.
           schema: { type: string, enum: [best_single, split_optimal, split_capped], default: best_single }
         - name: maxVenues
           in: query
-          description: Venue cap for `split_capped`. Fewer venues means less execution risk and fewer funded accounts.
+          description: Per-hop venue cap for `split_capped`. Fewer venues means less execution risk and fewer funded accounts.
           schema: { type: integer, minimum: 1, default: 3 }
         - name: includeFees
           in: query
@@ -134,9 +182,9 @@ paths:
         - name: requireFullFill
           in: query
           description: |
-            Refuse partial fills. When the cached depth cannot cover the whole size the route is
-            empty with `unroutableReason: insufficient_depth`, rather than returning a partial
-            whose routeVwap prices only the filled portion.
+            Refuse partial fills. When cached depth cannot cover the whole size the route is empty
+            with `unroutableReason: insufficient_depth`, rather than returning a partial whose
+            `effectiveRate` prices only the filled portion.
           schema: { type: boolean, default: false }
         - name: x-request-id
           in: header
@@ -144,7 +192,10 @@ paths:
           schema: { type: string, maxLength: 200 }
       responses:
         '200':
-          description: The fill plan. `route` is empty when nothing sufficiently fresh could fill.
+          description: |
+            The fill plan. `hops` is empty (with an `unroutableReason`) when a market exists but
+            nothing sufficiently fresh could fill — that is a routing outcome, not a request error,
+            so it is a 200.
           headers:
             x-request-id:
               schema: { type: string }
@@ -154,6 +205,14 @@ paths:
               schema: { $ref: '#/components/schemas/RouteResult' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '404':
+          description: |
+            No market and no bridge path exists between `from` and `to` at all. This is a
+            request-level problem (wrong ticker, unlisted asset) rather than an empty market
+            result, so it is distinguished from a 200 with an empty `hops`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RouteResult' }
         '429': { $ref: '#/components/responses/RateLimited' }
   /orderbook/{exchange}/{symbol}:
     get:
@@ -255,11 +314,13 @@ components:
           schema: { $ref: '#/components/schemas/Error' }
           example: { error: unauthorized }
     BadRequest:
-      description: Invalid parameters (e.g. missing, non-numeric, or non-positive amount)
+      description: |
+        Invalid parameters — missing `from`/`to`, `from` equal to `to`, neither or both of
+        `amountIn`/`amountOut`, a non-positive amount, or an unknown `strategy`.
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
-          example: { error: amount query param must be a positive number }
+          example: { error: exactly one of amountIn or amountOut must be supplied }
     RateLimited:
       description: Rate limit exceeded. Bucketed per API key once the key is valid, otherwise per client IP.
       headers:
@@ -302,11 +363,16 @@ components:
       properties:
         exchangeId: { type: string, example: binance }
         side: { type: string, enum: [buy, sell] }
-        requestedAmount: { type: number, format: double }
+        requestedAmount:
+          type: number
+          format: double
+          description: |
+            The target this venue was probed against, in the units of the hop's pinned side —
+            base units for a quantity walk, quote units for a notional (`amountIn`-on-a-buy) walk.
         filledAmount:
           type: number
           format: double
-          description: How much of the requested size the cached book could actually fill.
+          description: How much this venue's cached book could fill, always in BASE units.
         averagePrice:
           type: [number, 'null']
           description: Volume-weighted price across the levels walked. Null if nothing could fill.
@@ -329,13 +395,52 @@ components:
         takerFeeRate: { type: number, format: double, example: 0.001 }
         feeCost: { type: number, format: double, description: What the fee costs on this leg, in quote currency. }
         effectivePrice: { type: number, format: double, description: Fee-adjusted price for this leg. }
+    RouteHop:
+      type: object
+      description: |
+        One market conversion. `amountIn` is denominated in this hop's input asset and `amountOut`
+        in its output asset — for a `buy` that is quote-in/base-out, for a `sell` base-in/quote-out.
+      properties:
+        pair: { type: string, example: BTC/USDT, description: The market this hop trades. }
+        side:
+          type: string
+          enum: [buy, sell]
+          description: Derived from the asset direction, not supplied by the caller.
+        base: { type: string, example: BTC }
+        quote: { type: string, example: USDT }
+        amountIn: { type: number, format: double, description: Amount of this hop's input asset consumed. }
+        amountOut: { type: number, format: double, description: Amount of this hop's output asset produced. }
+        legs:
+          type: array
+          description: The venues to trade on for this hop, largest leg first. Length 1 for best_single.
+          items: { $ref: '#/components/schemas/RouteLeg' }
+        feeCost:
+          type: number
+          format: double
+          description: Total taker fee for this hop, denominated in feeCurrency.
+        feeCurrency:
+          type: string
+          description: |
+            Currency feeCost is expressed in. Reported per hop precisely because a route's hops can
+            charge in different currencies; there is no cross-hop total, since summing USDT fees
+            and BTC fees would produce a meaningless number.
+        fullyFillable:
+          type: boolean
+          description: False means cached depth could not cover this hop's requested size.
+        freshVenueCount:
+          type: integer
+          description: How many considered venues for this hop were within the freshness cutoff.
+        quotes:
+          type: array
+          description: Every venue considered for this hop, including stale and unfillable ones — the "why these?" diagnostic.
+          items: { $ref: '#/components/schemas/RoutingQuote' }
     RouteResult:
       type: object
       description: |
-        There is deliberately no `best` field. A single-venue answer is just a route of length 1,
-        so strategy determines the length and nothing else changes. Two fields carrying the same
-        answer would be two sources of truth, and callers would eventually read the wrong one and
-        under-fill.
+        There is deliberately no `best` field and no top-level `side`. A single-venue answer is a
+        hop with one leg; a single-market answer is a route with one hop. Two fields carrying the
+        same answer would be two sources of truth, and callers would eventually read the wrong one
+        and under-fill.
       properties:
         requestId:
           type: string
@@ -344,9 +449,30 @@ components:
           type: integer
           description: Epoch ms at which the route was computed — subtract from your receive time to measure network delay.
         calculatedAtIso: { type: string, format: date-time }
-        symbol: { type: string, example: BTC/USDT }
-        side: { type: string, enum: [buy, sell] }
-        amount: { type: number, format: double }
+        from: { type: string, example: USDT }
+        to: { type: string, example: BTC }
+        amountIn:
+          type: number
+          format: double
+          description: Amount of `from` the route ACTUALLY spends. 0 when unroutable.
+        amountOut:
+          type: number
+          format: double
+          description: Amount of `to` the route ACTUALLY produces. 0 when unroutable.
+        requestedAmount:
+          type: number
+          format: double
+          description: What was asked for, in the units of `exactSide`. Compare against amountIn/amountOut.
+        exactSide:
+          type: string
+          enum: [in, out]
+          description: Which side the caller pinned — `in` if amountIn was supplied, `out` if amountOut was.
+        effectiveRate:
+          type: [number, 'null']
+          description: |
+            amountOut / amountIn end to end, after all fees and all hops — units of `to` per unit
+            of `from`. On a partial fill this prices ONLY the filled portion, so check fillRatio
+            before using it.
         strategy: { type: string, enum: [best_single, split_optimal, split_capped] }
         includeFees: { type: boolean }
         exchangesFilter:
@@ -359,49 +485,47 @@ components:
         staleBookMs:
           type: number
           description: Freshness cutoff applied, echoed so bookAgeMs on each quote is interpretable without knowing server config.
-        freshVenueCount:
-          type: integer
-          description: How many considered venues were within the freshness cutoff.
-        unroutableReason:
-          type: [string, 'null']
-          enum: [no_venues_matched_filter, all_books_stale, no_liquidity, insufficient_depth, null]
-          description: |
-            Why `route` is empty; null when routing succeeded. An empty route is a deliberate
-            refusal to quote, not a failure:
-            `no_venues_matched_filter` — the exchanges/certified filters excluded everything.
-            `all_books_stale` — venues exist but every book exceeded the freshness cutoff.
-            `no_liquidity` — fresh books exist but none had depth to fill any of the size.
-        route:
+        stalenessPenaltyBps: { type: number }
+        hops:
           type: array
-          description: The fill plan, largest leg first. Empty when nothing fresh enough could fill.
-          items: { $ref: '#/components/schemas/RouteLeg' }
-        filledAmount: { type: number, format: double }
-        unfilledAmount: { type: number, format: double }
+          description: |
+            The route, in execution order. Length 1 for a direct market, longer when bridged.
+            Empty when nothing sufficiently fresh could fill; on a mid-route failure the hops
+            solved so far are still returned, for diagnosis.
+          items: { $ref: '#/components/schemas/RouteHop' }
+        fullyFillable:
+          type: boolean
+          description: True only when EVERY hop filled completely.
         fillRatio:
           type: number
           description: |
-            filledAmount / amount. Check this before using routeVwap: on a partial fill routeVwap
-            prices ONLY the filled size, so reading it as the price for the requested size badly
-            underprices the order (a 9% fill quoted as if it were 100%).
+            achieved / requested on the pinned side. Check this before using effectiveRate: on a
+            partial fill effectiveRate prices only the filled size, so reading it as the rate for
+            the requested size badly misprices the order (a 9% fill quoted as if it were 100%).
+        unfilledAmount: { type: number, format: double }
+        unroutableReason:
+          type: [string, 'null']
+          enum: [no_market, no_venues_matched_filter, all_books_stale, no_liquidity, insufficient_depth, null]
+          description: |
+            Why `hops` is empty; null when routing succeeded. An empty route is a deliberate
+            refusal to quote, not a failure:
+            `no_market` — no direct market and no bridge path exists between the two assets (404).
+            `no_venues_matched_filter` — the exchanges/certified filters excluded everything.
+            `all_books_stale` — venues exist but every book exceeded the freshness cutoff.
+            `no_liquidity` — fresh books exist but none had depth to fill any of the size.
+            `insufficient_depth` — requireFullFill was set and depth could not cover the size.
+        unroutableHopIndex:
+          type: [integer, 'null']
+          description: Which hop failed, for a bridged route. Null when the whole request was unroutable or routing succeeded.
         warnings:
           type: array
           items: { type: string }
-          description: Human-readable cautions, e.g. partial_fill. Empty on a clean full fill.
-        fullyFillable:
-          type: boolean
-          description: False means cached depth could not cover the requested size; filledAmount shows how far it got.
-        routeVwap:
-          type: [number, 'null']
-          description: Fee-adjusted VWAP across the whole route.
-        routeNotional: { type: number, format: double }
-        totalFeeCost: { type: number, format: double }
+          description: Human-readable cautions — `partial_fill`, `multi_hop`. Empty on a clean single-hop full fill.
         savingVsBestSingleBps:
           type: [number, 'null']
-          description: How much the route beats the best single venue, in basis points. Positive means better, for both sides.
-        quotes:
-          type: array
-          description: Every venue considered, including stale and unfillable ones — the "why these?" diagnostic.
-          items: { $ref: '#/components/schemas/RoutingQuote' }
+          description: |
+            How much a split beats the best single venue, in basis points. Positive means better,
+            for both directions. Null on multi-hop routes, where there is no single-venue baseline.
     ExchangeHealth:
       type: object
       properties:

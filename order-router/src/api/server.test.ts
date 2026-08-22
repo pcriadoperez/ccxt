@@ -88,39 +88,69 @@ test('GET /orderbook/:exchange/:symbol returns the cached book', async () => {
     await app.close();
 });
 
-test('GET /price/best/:symbol requires a positive amount', async () => {
+test('GET /route requires exactly one of amountIn or amountOut', async () => {
     const { app } = await buildTestServer();
-    const response = await app.inject({ method: 'GET', url: '/price/best/BTC%2FUSDT?side=buy&amount=0', headers: AUTH });
-    assert.equal(response.statusCode, 400);
+    // Neither: the request is meaningless. Both: silently preferring one would turn a caller's
+    // typo into a confidently wrong route.
+    for (const q of ['from=USDT&to=BTC', 'from=USDT&to=BTC&amountIn=1&amountOut=1']) {
+        const r = await app.inject({ method: 'GET', url: `/route?${q}`, headers: AUTH });
+        assert.equal(r.statusCode, 400, q);
+    }
+    const zero = await app.inject({ method: 'GET', url: '/route?from=USDT&to=BTC&amountOut=0', headers: AUTH });
+    assert.equal(zero.statusCode, 400);
     await app.close();
 });
 
-test('GET /price/best/:symbol returns a ranked result for a valid request', async () => {
+test('GET /route requires from and to, and rejects from === to', async () => {
+    const { app } = await buildTestServer();
+    for (const q of ['to=BTC&amountOut=1', 'from=USDT&amountOut=1', 'from=BTC&to=BTC&amountOut=1']) {
+        const r = await app.inject({ method: 'GET', url: `/route?${q}`, headers: AUTH });
+        assert.equal(r.statusCode, 400, q);
+    }
+    await app.close();
+});
+
+test('GET /route derives pair and direction from the asset pair', async () => {
     const { app, cache, feeRegistry } = await buildTestServer();
     cache.setBook(book());
     feeRegistry.setFee('kraken', 'BTC/USDT', 0.001);
 
-    const response = await app.inject({ method: 'GET', url: '/price/best/BTC%2FUSDT?side=buy&amount=1', headers: AUTH });
-    assert.equal(response.statusCode, 200);
-    const body = response.json();
-    // The contract is route-based: best_single is simply a route of length 1.
-    assert.equal(body.route.length, 1);
-    assert.equal(body.route[0].exchangeId, 'kraken');
+    // USDT -> BTC must resolve to a BUY of BTC/USDT without the caller ever saying "buy".
+    const r = await app.inject({ method: 'GET', url: '/route?from=USDT&to=BTC&amountOut=1', headers: AUTH });
+    assert.equal(r.statusCode, 200);
+    const body = r.json();
+    assert.equal(body.hops.length, 1);
+    assert.equal(body.hops[0].pair, 'BTC/USDT');
+    assert.equal(body.hops[0].side, 'buy');
+    assert.equal(body.hops[0].legs[0].exchangeId, 'kraken');
     assert.equal(body.fullyFillable, true);
     assert.equal(body.strategy, 'best_single');
+    assert.equal(body.exactSide, 'out');
+    assert.equal(body.requestedAmount, 1);
     assert.ok(body.requestId, 'every recommendation must carry an audit id');
     assert.ok(body.calculatedAt > 0);
     await app.close();
 });
 
-test('GET /price/best/:symbol defaults to buy side when side is omitted', async () => {
+test('GET /route reverses direction when from and to are swapped', async () => {
     const { app, cache } = await buildTestServer();
-    cache.setBook(book({ asks: [{ price: 101, amount: 1 }], bids: [{ price: 1, amount: 1 }] }));
+    cache.setBook(book());
+    const r = await app.inject({ method: 'GET', url: '/route?from=BTC&to=USDT&amountIn=1', headers: AUTH });
+    const body = r.json();
+    assert.equal(body.hops[0].pair, 'BTC/USDT', 'the same market serves both directions');
+    assert.equal(body.hops[0].side, 'sell');
+    assert.equal(body.exactSide, 'in');
+    await app.close();
+});
 
-    const response = await app.inject({ method: 'GET', url: '/price/best/BTC%2FUSDT?amount=1', headers: AUTH });
-    const body = response.json();
-    assert.equal(body.side, 'buy');
-    assert.equal(body.route[0].averagePrice, 101);
+test('GET /route is 404 when no market and no bridge path exists', async () => {
+    const { app, cache } = await buildTestServer();
+    cache.setBook(book());
+    // An unreachable asset is a request-level mistake (wrong ticker, unlisted asset), not an
+    // empty market result — so it must not look like a successful zero-liquidity quote.
+    const r = await app.inject({ method: 'GET', url: '/route?from=DOGE&to=SHIB&amountIn=1', headers: AUTH });
+    assert.equal(r.statusCode, 404);
+    assert.equal(r.json().unroutableReason, 'no_market');
     await app.close();
 });
 
@@ -132,7 +162,7 @@ test('every non-health route rejects a request with no credentials', async () =>
         '/symbols',
         '/exchanges/status',
         '/orderbook/kraken/BTC%2FUSDT',
-        '/price/best/BTC%2FUSDT?side=buy&amount=1',
+        '/route?from=USDT&to=BTC&amountOut=1',
     ];
     for (const url of protectedUrls) {
         const response = await app.inject({ method: 'GET', url });
@@ -575,7 +605,7 @@ test('with trustProxy, distinct forwarded client IPs get independent buckets', a
 
 test('rejects an unknown strategy rather than silently defaulting', async () => {
     const { app } = await buildTestServer();
-    const r = await app.inject({ method: 'GET', url: '/price/best/BTC%2FUSDT?amount=1&strategy=nonsense', headers: AUTH });
+    const r = await app.inject({ method: 'GET', url: '/route?from=USDT&to=BTC&amountOut=1&strategy=nonsense', headers: AUTH });
     assert.equal(r.statusCode, 400);
     await app.close();
 });
@@ -584,7 +614,7 @@ test('echoes a caller-supplied x-request-id so traces line up on both sides', as
     const { app, cache } = await buildTestServer();
     cache.setBook(book());
     const r = await app.inject({
-        method: 'GET', url: '/price/best/BTC%2FUSDT?amount=1',
+        method: 'GET', url: '/route?from=USDT&to=BTC&amountOut=1',
         headers: { ...AUTH, 'x-request-id': 'caller-supplied-id' },
     });
     assert.equal(r.json().requestId, 'caller-supplied-id');
@@ -595,7 +625,7 @@ test('echoes a caller-supplied x-request-id so traces line up on both sides', as
 test('mints a request id when the caller does not supply one', async () => {
     const { app, cache } = await buildTestServer();
     cache.setBook(book());
-    const r = await app.inject({ method: 'GET', url: '/price/best/BTC%2FUSDT?amount=1', headers: AUTH });
+    const r = await app.inject({ method: 'GET', url: '/route?from=USDT&to=BTC&amountOut=1', headers: AUTH });
     const id = r.json().requestId;
     assert.match(id, /^[0-9a-f-]{36}$/, 'expected a uuid');
     assert.equal(r.headers['x-request-id'], id, 'header and body must agree');
