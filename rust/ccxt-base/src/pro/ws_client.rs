@@ -53,13 +53,22 @@ pub struct ClientState {
     /// A subscribe frame is sent only the first time a hash is inserted.
     subscriptions: Mutex<HashMap<String, Value>>,
     /// Subscribe frames retained for replay after a transport reconnect.
-    subscribe_messages: Mutex<HashMap<String, String>>,
+    /// Insertion-ordered so replay reproduces the original frame order — venues
+    /// that subscribe in a fixed sequence depend on it (a `HashMap` here made
+    /// the replay order vary run to run).
+    subscribe_messages: Mutex<indexmap::IndexMap<String, String>>,
     /// messageHashes some `watch` call is currently waiting on. Mirrors TS
     /// `client.futures` (read by a few venues' `handle_message`).
     futures: Mutex<HashSet<String>>,
     connected: Mutex<bool>,
     closed: Mutex<bool>,
     last_pong_ms: Mutex<i64>,
+    /// Identity of the currently-live socket, bumped on every successful
+    /// connect. The reader / writer / keep-alive tasks capture their generation
+    /// and stand down once it no longer matches, so tasks belonging to a
+    /// superseded socket can neither push stale frames into `incoming` nor
+    /// fail the connection that replaced them.
+    generation: std::sync::atomic::AtomicU64,
     /// Static-WS-test mock transport. When `mock` is set, `send_text` records the
     /// (JSON-parsed) outgoing frame into `mock_sent` instead of relying on a
     /// socket, and no real connection is ever opened. `ws_test_completed` is the
@@ -78,7 +87,17 @@ const MAX_PING_PONG_MISSES: i64 = 2;
 type ClientKey = (u64, String);
 static REGISTRY: Lazy<Mutex<HashMap<ClientKey, Arc<ClientState>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
+/// URLs armed for the mock transport by `mock_setup`. An entry is CONSUMED by
+/// the next `ensure_slot` that creates a client for it, so a fixture can never
+/// silently mock a genuine connection opened later in the same process.
 static MOCK_URLS: Lazy<Mutex<HashSet<String>>> = Lazy::new(|| Mutex::new(HashSet::new()));
+/// Frames injected for a URL whose client does not exist yet. The static-WS
+/// harness preloads the whole fixture *before* the first `watch*` call creates
+/// the slot, and the registry is keyed by `(owner_id, url)` which the URL-keyed
+/// mock façade cannot construct — so injections land here and `ensure_slot`
+/// drains them into the client the case actually uses.
+static MOCK_PENDING: Lazy<Mutex<HashMap<String, Vec<Value>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 /// Monotonic-ish wall clock in ms. `SystemTime` is fine here (keep-alive only).
 fn now_ms() -> i64 {
@@ -198,20 +217,43 @@ impl ClientState {
     /// it (`Ok` for value, `Err` for rejection). Rejections take priority.
     pub fn take_settled(&self, hashes: &[String]) -> Option<Result<Value, Value>> {
         {
-            let mut rj = self.rejections.lock().unwrap();
-            for h in hashes {
-                if let Some(e) = rj.remove(h) {
-                    return Some(Err(e));
+            let mut settled = None;
+            {
+                let mut rj = self.rejections.lock().unwrap();
+                for h in hashes {
+                    if let Some(e) = rj.remove(h) {
+                        settled = Some(e);
+                        break;
+                    }
                 }
+            }
+            if let Some(e) = settled {
+                self.retire_futures(hashes);
+                return Some(Err(e));
             }
         }
         let mut r = self.resolved.lock().unwrap();
         for h in hashes {
             if let Some(v) = r.remove(h) {
+                drop(r);
+                // The watch that registered `hashes` is a race: once one of them
+                // settles the others are dead. Retire them so they don't sit in
+                // `futures` forever, which would let a later blanket `reject`
+                // record an error under a hash nobody is waiting on and hand it
+                // to an unrelated watch on that hash.
+                self.retire_futures(hashes);
                 return Some(Ok(v));
             }
         }
         None
+    }
+
+    /// Drop `hashes` from the pending set without settling them.
+    fn retire_futures(&self, hashes: &[String]) {
+        let mut f = self.futures.lock().unwrap();
+        for h in hashes {
+            f.remove(h);
+        }
     }
 
     /// Register interest in `hashes` (TS `client.future`). Returns true if the
@@ -328,6 +370,24 @@ impl ClientState {
         *self.closed.lock().unwrap()
     }
 
+    /// Whether this client uses the socket-less static-WS mock transport.
+    pub fn is_mock(&self) -> bool {
+        *self.mock.lock().unwrap()
+    }
+
+    fn generation(&self) -> u64 {
+        self.generation.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Retire the current socket's generation, so its reader / writer /
+    /// keep-alive tasks stand down instead of acting on the connection that
+    /// replaces them.
+    fn bump_generation(&self) -> u64 {
+        self.generation
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1
+    }
+
     pub fn on_pong(&self) {
         *self.last_pong_ms.lock().unwrap() = now_ms();
     }
@@ -338,6 +398,12 @@ impl ClientState {
     }
 
     fn fail_transport(&self, err: Value) {
+        // Retire the generation FIRST: the socket behind a failed transport may
+        // still be open (an overflowed outgoing queue or a missed pong says
+        // nothing about the peer), and without this its reader would keep
+        // feeding `incoming` alongside the reader of the replacement socket —
+        // every frame dispatched to `handle_message` twice.
+        self.bump_generation();
         *self.connected.lock().unwrap() = false;
         self.prepare_reconnect_channel();
         self.reject_pending_futures(err);
@@ -346,7 +412,11 @@ impl ClientState {
 
     fn prepare_reconnect_channel(&self) {
         let (tx, rx) = mpsc::channel(OUTGOING_CAPACITY);
-        *self.outgoing.lock().unwrap() = tx;
+        // Ask the outgoing writer to close its socket before we drop our handle
+        // on it, so the superseded connection is torn down rather than left
+        // parked on `rx.recv()` holding a live socket open.
+        let previous = std::mem::replace(&mut *self.outgoing.lock().unwrap(), tx);
+        let _ = previous.try_send(Message::Close(None));
         *self.pending_rx.lock().unwrap() = Some(rx);
     }
 
@@ -490,12 +560,17 @@ pub async fn ensure_client(owner_id: u64, url: &str) -> Result<Arc<ClientState>,
         .ok_or_else(|| format!("[NetworkError] ws {url} slot has no writer channel"))?;
     let tx = state.outgoing.lock().unwrap().clone();
     *state.last_pong_ms.lock().unwrap() = now_ms();
+    // Claim a generation for this socket. Every task spawned below stands down
+    // as soon as `generation` moves past `gen`, so a task belonging to a
+    // superseded socket can neither feed `incoming` nor fail its replacement.
+    let gen = state.bump_generation();
     *state.connected.lock().unwrap() = true;
 
     // Writer task: drain the outgoing queue to the socket.
     tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
-            if write.send(msg).await.is_err() {
+            let closing = matches!(msg, Message::Close(_));
+            if write.send(msg).await.is_err() || closing {
                 break;
             }
         }
@@ -506,6 +581,9 @@ pub async fn ensure_client(owner_id: u64, url: &str) -> Result<Arc<ClientState>,
     let st = state.clone();
     tokio::spawn(async move {
         while let Some(frame) = read.next().await {
+            if st.generation() != gen {
+                break; // superseded socket — its frames are not ours to deliver
+            }
             match frame {
                 Ok(Message::Text(t)) => st.push_incoming(parse_text(&t)),
                 Ok(Message::Binary(b)) => st.push_incoming(parse_binary(&b)),
@@ -516,7 +594,8 @@ pub async fn ensure_client(owner_id: u64, url: &str) -> Result<Arc<ClientState>,
                 _ => {}
             }
         }
-        if !st.is_closed() {
+        if !st.is_closed() && st.generation() == gen {
+            st.bump_generation();
             *st.connected.lock().unwrap() = false;
             st.prepare_reconnect_channel();
             st.notify.notify_waiters();
@@ -531,7 +610,11 @@ pub async fn ensure_client(owner_id: u64, url: &str) -> Result<Arc<ClientState>,
         iv.tick().await; // first tick fires immediately; skip it
         loop {
             iv.tick().await;
-            if st2.is_closed() || !*st2.connected.lock().unwrap() {
+            // `generation` is the load-bearing check: a reconnect between two
+            // ticks leaves `connected` true again, so without it this task would
+            // outlive its socket and fail the healthy connection that replaced
+            // it once its own (now dead) channel started erroring.
+            if st2.is_closed() || st2.generation() != gen || !*st2.connected.lock().unwrap() {
                 break;
             }
             if st2.pong_timed_out(now_ms(), KEEP_ALIVE_MS) {
@@ -540,19 +623,30 @@ pub async fn ensure_client(owner_id: u64, url: &str) -> Result<Arc<ClientState>,
                 break;
             }
             if tx.try_send(Message::Ping(Vec::new())).is_err() {
-                st2.fail_transport(Value::Str(
-                    "[NetworkError] websocket outgoing queue capacity exceeded".to_string(),
-                ));
+                st2.fail_transport(Value::Str(format!(
+                    "[NetworkError] Connection to {} could not queue a keepalive ping",
+                    st2.url
+                )));
                 break;
             }
         }
     });
-    // Replay one copy of every retained subscription frame after reconnect.
-    let messages: HashSet<String> = state
+    // Replay one copy of every retained subscription frame after reconnect, in
+    // the order they were first sent.
+    //
+    // NOTE: only frames sent by `watch()` are retained. A frame a venue emits
+    // from `handle_message` via `client.send(...)` — notably a private stream's
+    // auth/login — is not replayed, so such a stream comes back unauthenticated
+    // after a reconnect. Widening replay to arbitrary sent frames would also
+    // replay one-shot frames (unsubscribes, pongs), so it needs a venue-level
+    // notion of which frames are re-sendable rather than a blanket capture.
+    let mut seen: HashSet<String> = HashSet::new();
+    let messages: Vec<String> = state
         .subscribe_messages
         .lock()
         .unwrap()
         .values()
+        .filter(|payload| seen.insert((*payload).clone()))
         .cloned()
         .collect();
     for payload in messages {
@@ -596,17 +690,26 @@ fn ensure_slot(owner_id: u64, url: &str) -> Arc<ClientState> {
         resolved: Mutex::new(HashMap::new()),
         rejections: Mutex::new(HashMap::new()),
         subscriptions: Mutex::new(HashMap::new()),
-        subscribe_messages: Mutex::new(HashMap::new()),
+        subscribe_messages: Mutex::new(indexmap::IndexMap::new()),
         futures: Mutex::new(HashSet::new()),
         connected: Mutex::new(false),
         closed: Mutex::new(false),
         last_pong_ms: Mutex::new(now_ms()),
+        generation: std::sync::atomic::AtomicU64::new(0),
         mock: Mutex::new(false),
         mock_sent: Mutex::new(Vec::new()),
         ws_test_completed: Mutex::new(false),
     });
-    if MOCK_URLS.lock().unwrap().contains(url) {
+    // Consume the arm rather than just reading it: the fixture that called
+    // `mock_setup` wants exactly this one client mocked. Leaving the URL armed
+    // would silently mock a genuine connection opened later in the process.
+    if MOCK_URLS.lock().unwrap().remove(url) {
         state.mock_enable();
+        // Frames the harness preloaded before this slot existed.
+        if let Some(pending) = MOCK_PENDING.lock().unwrap().remove(url) {
+            let mut queue = state.incoming.lock().unwrap();
+            queue.extend(pending);
+        }
     }
     reg.insert(key, state.clone());
     state
@@ -654,28 +757,46 @@ pub fn close_owner(owner_id: u64) {
 
 // ── Static-WS-test mock transport (url-keyed façade over ClientState) ────────
 
-/// `setupWsMockTransport(url)` — register a connected, socket-less client whose
-/// sends are captured. Clears any prior state so each fixture starts fresh.
+/// `setupWsMockTransport(url)` — arm the mock transport for `url` so the next
+/// client created for it is connected and socket-less with its sends captured.
+///
+/// The harness rebuilds the exchange Core per case, so each case is a NEW
+/// `ws_owner_id` and this URL-keyed façade cannot name the `(owner_id, url)`
+/// slot the case will use. It therefore arms the URL and evicts the clients
+/// left behind by earlier cases, so exactly one client per URL is live at a
+/// time and the accessors below are unambiguous.
 pub fn mock_setup(url: &str) {
     MOCK_URLS.lock().unwrap().insert(url.to_string());
-    let clients: Vec<Arc<ClientState>> = REGISTRY
+    MOCK_PENDING.lock().unwrap().remove(url);
+    let stale: Vec<u64> = REGISTRY
         .lock()
         .unwrap()
-        .iter()
-        .filter(|((_, candidate), _)| candidate == url)
-        .map(|(_, c)| c.clone())
+        .keys()
+        .filter(|(_, candidate)| candidate == url)
+        .map(|(owner, _)| *owner)
         .collect();
-    for c in clients {
-        c.reset();
-        c.mock_enable();
-        c.mock_sent.lock().unwrap().clear();
-        // Discard any messages left unconsumed by a prior test on the same URL (e.g.
-        // a heartbeat a watchTrades drive loop returned past before reading) so they
-        // don't leak an extra handler dispatch / sent frame into the next test.
-        c.incoming.lock().unwrap().clear();
-        *c.ws_test_completed.lock().unwrap() = false;
+    for owner in stale {
+        drop_client(owner, url);
     }
 }
+
+/// Tear down the mock transport for `url`, so a later genuine connection to it
+/// in the same process opens a real socket.
+pub fn mock_teardown(url: &str) {
+    MOCK_URLS.lock().unwrap().remove(url);
+    MOCK_PENDING.lock().unwrap().remove(url);
+    let owners: Vec<u64> = REGISTRY
+        .lock()
+        .unwrap()
+        .keys()
+        .filter(|(_, candidate)| candidate == url)
+        .map(|(owner, _)| *owner)
+        .collect();
+    for owner in owners {
+        drop_client(owner, url);
+    }
+}
+
 fn mock_clients(url: &str) -> Vec<Arc<ClientState>> {
     REGISTRY
         .lock()
@@ -685,8 +806,21 @@ fn mock_clients(url: &str) -> Vec<Arc<ClientState>> {
         .map(|(_, c)| c.clone())
         .collect()
 }
+/// Feed a frame to the case's client, buffering it when the client does not
+/// exist yet — the harness preloads the whole fixture before the first `watch*`
+/// call creates the slot. `ensure_slot` drains the buffer on creation.
 pub fn mock_inject(url: &str, msg: Value) {
-    for c in mock_clients(url) {
+    let clients = mock_clients(url);
+    if clients.is_empty() {
+        MOCK_PENDING
+            .lock()
+            .unwrap()
+            .entry(url.to_string())
+            .or_default()
+            .push(msg);
+        return;
+    }
+    for c in clients {
         c.mock_inject(msg.clone());
     }
 }
@@ -700,6 +834,14 @@ pub fn mock_has_pending_futures(url: &str) -> bool {
     mock_clients(url).iter().any(|c| c.has_pending_futures())
 }
 pub fn mock_has_queued_messages(url: &str) -> bool {
+    if MOCK_PENDING
+        .lock()
+        .unwrap()
+        .get(url)
+        .is_some_and(|p| !p.is_empty())
+    {
+        return true;
+    }
     mock_clients(url).iter().any(|c| c.has_queued_messages())
 }
 pub fn mock_mark_completed(url: &str) {
@@ -708,7 +850,11 @@ pub fn mock_mark_completed(url: &str) {
     }
 }
 pub fn mock_is_completed(url: &str) -> bool {
-    mock_clients(url).iter().all(|c| c.is_ws_test_completed())
+    let clients = mock_clients(url);
+    // `all()` on an empty set is vacuously true, which would report "done"
+    // between `mock_setup` evicting the previous case's client and the first
+    // `watch*` creating this one's. No client means not started, not finished.
+    !clients.is_empty() && clients.iter().all(|c| c.is_ws_test_completed())
 }
 pub fn mock_reject_futures(url: &str) {
     for c in mock_clients(url) {
@@ -913,7 +1059,10 @@ mod tests {
     #[tokio::test]
     async fn transport_roundtrip() {
         let url = spawn_mock_server().await;
-        let owner = 1;
+        // Distinct, high owner ids: `Internals` hands out ws_owner_id from 1 up, and
+        // dropping an Exchange now closes its clients — a test that squatted on a
+        // low id would have its socket closed by an unrelated exchange going away.
+        let owner = 9101;
         let client = ensure_client(owner, &url).await.expect("connect");
 
         // Send a subscribe frame once (idempotent per hash).
@@ -950,7 +1099,7 @@ mod tests {
     #[tokio::test]
     async fn preconnect_send_is_queued_until_socket_connects() {
         let url = spawn_mock_server().await;
-        let owner = 2;
+        let owner = 9102;
         let client = ensure_slot(owner, &url);
         assert!(client.send_text("{\"op\":\"subscribe\"}".to_string()));
         ensure_client(owner, &url).await.unwrap();
@@ -1036,7 +1185,7 @@ mod tests {
     #[tokio::test]
     async fn reconnect_replays_subscription_frames() {
         let url = spawn_reconnect_server().await;
-        let owner = 808;
+        let owner = 9808;
         let client = ensure_client(owner, &url).await.unwrap();
         let hashes = vec!["ticker".to_string()];
         let payload = "{\"op\":\"subscribe\"}".to_string();
@@ -1062,19 +1211,19 @@ mod tests {
 
     #[test]
     fn registry_is_isolated_by_exchange_owner() {
-        let first = ensure_slot(101, "wss://same.example");
-        let second = ensure_slot(202, "wss://same.example");
+        let first = ensure_slot(9201, "wss://same.example");
+        let second = ensure_slot(9202, "wss://same.example");
         assert!(!Arc::ptr_eq(&first, &second));
         first.set_subscription("private", Value::Bool(true));
         assert!(!second.is_subscribed("private"));
-        drop_client(101, "wss://same.example");
-        assert!(get_client(202, "wss://same.example").is_some());
-        drop_client(202, "wss://same.example");
+        drop_client(9201, "wss://same.example");
+        assert!(get_client(9202, "wss://same.example").is_some());
+        drop_client(9202, "wss://same.example");
     }
 
     #[test]
     fn settled_future_is_removed() {
-        let client = ensure_slot(303, "wss://cleanup.example");
+        let client = ensure_slot(9303, "wss://cleanup.example");
         client.note_futures(&["ticker".to_string()]);
         client.resolve("ticker", Value::Int(1));
         assert!(!client.has_pending_futures());
@@ -1082,12 +1231,12 @@ mod tests {
             client.take_settled(&["ticker".to_string()]),
             Some(Ok(Value::Int(1)))
         );
-        drop_client(303, "wss://cleanup.example");
+        drop_client(9303, "wss://cleanup.example");
     }
 
     #[test]
     fn queues_are_bounded_and_overflow_rejects_waiters() {
-        let client = ensure_slot(404, "wss://bounded.example");
+        let client = ensure_slot(9404, "wss://bounded.example");
         *client.connected.lock().unwrap() = true;
         let (tx, _rx) = mpsc::channel(OUTGOING_CAPACITY);
         *client.outgoing.lock().unwrap() = tx;
@@ -1105,32 +1254,32 @@ mod tests {
         client.push_incoming(Value::Int(-1));
         let error = client.take_settled(&["book".to_string()]);
         assert!(matches!(error, Some(Err(Value::Str(ref e))) if e.contains("capacity exceeded")));
-        drop_client(404, "wss://bounded.example");
+        drop_client(9404, "wss://bounded.example");
     }
 
     #[test]
     fn missed_pong_rejects_pending_future_as_request_timeout() {
-        let client = ensure_slot(505, "wss://pong.example");
+        let client = ensure_slot(9505, "wss://pong.example");
         client.note_futures(&["ticker".to_string()]);
         *client.last_pong_ms.lock().unwrap() = 1;
         assert!(client.pong_timed_out(61_002, 30_000));
         client.fail_transport(Value::Str("[RequestTimeout] missed pong".to_string()));
         assert!(matches!(client.take_settled(&["ticker".to_string()]),
             Some(Err(Value::Str(ref e))) if e.starts_with("[RequestTimeout]")));
-        drop_client(505, "wss://pong.example");
+        drop_client(9505, "wss://pong.example");
     }
 
     #[test]
     fn explicit_close_rejects_only_owners_pending_futures() {
-        let first = ensure_slot(606, "wss://close.example");
-        let second = ensure_slot(707, "wss://close.example");
+        let first = ensure_slot(9606, "wss://close.example");
+        let second = ensure_slot(9707, "wss://close.example");
         first.note_futures(&["orders".to_string()]);
         second.note_futures(&["orders".to_string()]);
-        drop_client(606, "wss://close.example");
+        drop_client(9606, "wss://close.example");
         assert!(matches!(first.take_settled(&["orders".to_string()]),
             Some(Err(Value::Str(ref e))) if e.starts_with("[ExchangeClosedByUser]")));
         assert!(second.has_pending_futures());
-        drop_client(707, "wss://close.example");
+        drop_client(9707, "wss://close.example");
     }
 
     #[tokio::test]
@@ -1144,5 +1293,189 @@ mod tests {
         e.write_all(b"{\"x\":true}").unwrap();
         let gz = e.finish().unwrap();
         assert!(matches!(parse_binary(&gz), Value::Dict(_)));
+    }
+
+    // ── regressions ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn mock_setup_delivers_frames_preloaded_before_the_client_exists() {
+        // The static-WS harness preloads the whole fixture BEFORE the first
+        // watch* call creates the (owner_id, url) slot, and being URL-keyed it
+        // cannot name that slot. Frames must be buffered, not dropped.
+        let url = "wss://preload.example";
+        mock_setup(url);
+        mock_inject(url, Value::Int(1));
+        mock_inject(url, Value::Int(2));
+        let client = ensure_slot(9910, url);
+        assert!(client.is_mock(), "the armed URL must produce a mock client");
+        assert!(
+            client.has_queued_messages(),
+            "frames injected before the slot existed were dropped"
+        );
+        assert_eq!(client.incoming.lock().unwrap().len(), 2);
+        mock_teardown(url);
+    }
+
+    #[test]
+    fn mock_setup_evicts_the_previous_cases_client() {
+        // One client per URL at a time, so the URL-keyed accessors are not at
+        // the mercy of REGISTRY iteration order.
+        let url = "wss://percase.example";
+        mock_setup(url);
+        let first = ensure_slot(9911, url);
+        first.send_text("first-case".to_string());
+        mock_setup(url);
+        assert!(first.is_closed(), "the previous case's client must be evicted");
+        assert_eq!(mock_clients(url).len(), 0);
+        let second = ensure_slot(9912, url);
+        second.send_text("second-case".to_string());
+        assert_eq!(mock_clients(url).len(), 1);
+        assert_eq!(
+            mock_sent_messages(url),
+            Value::Array(vec![Value::Str("second-case".to_string())])
+        );
+        mock_teardown(url);
+    }
+
+    #[test]
+    fn mock_arm_is_consumed_and_does_not_mock_a_later_real_client() {
+        let url = "wss://armonce.example";
+        mock_setup(url);
+        let mocked = ensure_slot(9913, url);
+        assert!(mocked.is_mock());
+        drop_client(9913, url);
+        // A genuine connection to the same URL later in the process must not
+        // silently inherit the fixture's mock transport.
+        let real = ensure_slot(9914, url);
+        assert!(!real.is_mock(), "the mock arm leaked to a real client");
+        drop_client(9914, url);
+    }
+
+    #[test]
+    fn superseded_keep_alive_cannot_fail_the_next_connection() {
+        // A keep-alive task from a dead socket used to see `connected == true`
+        // again after a reconnect and fail the healthy connection that
+        // replaced it. It must stand down on generation instead.
+        let client = ensure_slot(9915, "wss://generation.example");
+        let stale_gen = client.bump_generation(); // "connection 1"
+        *client.connected.lock().unwrap() = true;
+        client.bump_generation(); // reconnect installs "connection 2"
+        assert_ne!(
+            client.generation(),
+            stale_gen,
+            "the stale task must observe a moved generation while connected"
+        );
+        client.note_futures(&["ticker".to_string()]);
+        assert!(
+            client.take_settled(&["ticker".to_string()]).is_none(),
+            "no stale task ran, so nothing may be settled"
+        );
+        drop_client(9915, "wss://generation.example");
+    }
+
+    #[test]
+    fn fail_transport_retires_the_generation_so_the_old_reader_stops() {
+        // The socket behind a failed transport may still be open; its reader
+        // must not keep feeding `incoming` alongside the replacement's.
+        let client = ensure_slot(9916, "wss://dupreader.example");
+        *client.connected.lock().unwrap() = true;
+        let live = client.bump_generation();
+        client.fail_transport(Value::Str("[NetworkError] boom".to_string()));
+        assert_ne!(client.generation(), live);
+        drop_client(9916, "wss://dupreader.example");
+    }
+
+    #[test]
+    fn settling_one_hash_retires_its_siblings() {
+        // watch_multiple registers a race; the losers must not linger in
+        // `futures`, or a later blanket reject records an error under a hash
+        // nobody awaits and hands it to an unrelated watch.
+        let client = ensure_slot(9917, "wss://siblings.example");
+        let hashes = vec!["a".to_string(), "b".to_string()];
+        client.note_futures(&hashes);
+        client.resolve("a", Value::Int(1));
+        assert_eq!(client.take_settled(&hashes), Some(Ok(Value::Int(1))));
+        assert!(
+            !client.has_pending_futures(),
+            "the losing hash was left pending"
+        );
+        // A blanket reject now has nothing to record, so a later watch on "b"
+        // starts clean instead of inheriting a stale error.
+        client.reject_pending_futures(Value::Str("[NetworkError] later".to_string()));
+        client.note_futures(&["b".to_string()]);
+        assert_eq!(client.take_settled(&["b".to_string()]), None);
+        drop_client(9917, "wss://siblings.example");
+    }
+
+    #[test]
+    fn subscription_replay_preserves_send_order() {
+        let client = ensure_slot(9918, "wss://replayorder.example");
+        for (hash, payload) in [("auth", "1-auth"), ("book", "2-book"), ("trades", "3-trades")] {
+            client.remember_subscribe_message(&[hash.to_string()], payload.to_string());
+        }
+        let replayed: Vec<String> = client
+            .subscribe_messages
+            .lock()
+            .unwrap()
+            .values()
+            .cloned()
+            .collect();
+        assert_eq!(replayed, vec!["1-auth", "2-book", "3-trades"]);
+        drop_client(9918, "wss://replayorder.example");
+    }
+
+    #[tokio::test]
+    async fn exhausted_mock_fixture_fails_instead_of_spinning() {
+        // A mock client is permanently "connected", so `ensure_client` always
+        // succeeds for it. The drive loop must not treat an exhausted fixture as
+        // a transport drop and reconnect-spin on it — the harness needs a
+        // failure it can report.
+        use crate::exchange::ExchangeRuntime;
+        let url = "wss://exhausted.example";
+        mock_setup(url);
+        let mut core = TestWsCore {
+            exchange: crate::exchange::Exchange::new(None),
+        };
+        let args = [
+            Value::Str("{\"op\":\"subscribe\"}".to_string()),
+            Value::Str("ticker".to_string()),
+            Value::Null,
+        ];
+        let watch = ExchangeRuntime::watch(
+            &mut core,
+            Value::Str(url.to_string()),
+            Value::Str("ticker".to_string()),
+            &args,
+        );
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(watch)),
+        )
+        .await;
+        match outcome {
+            Err(_) => panic!("the drive loop spun on an exhausted fixture instead of failing"),
+            Ok(Ok(v)) => panic!("expected a failure, resolved with {v:?}"),
+            Ok(Err(_)) => {}
+        }
+        mock_teardown(url);
+    }
+
+    #[tokio::test]
+    async fn dropping_an_exchange_releases_its_websocket_clients() {
+        // The registry is process-global and keyed per instance, so without a
+        // Drop the sockets and tasks of every dropped exchange would be
+        // stranded there for the life of the process.
+        let url = "wss://lifecycle.example";
+        let owner = {
+            let exchange = crate::exchange::Exchange::new(None);
+            let owner = exchange.internals.ws_owner_id;
+            ensure_slot(owner, url);
+            assert!(get_client(owner, url).is_some());
+            owner
+        };
+        assert!(
+            get_client(owner, url).is_none(),
+            "the dropped exchange left its client in the registry"
+        );
     }
 }
