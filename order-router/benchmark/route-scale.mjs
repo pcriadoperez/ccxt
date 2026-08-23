@@ -13,7 +13,12 @@ const LEVELS = Number(process.env.BENCH_LEVELS ?? 50);
 
 const cache = new OrderBookCache();
 const fees = new FeeRegistry();
-const symbols = ['BTC/USDT', 'SOL/USDT', ...Array.from({ length: SYMBOLS }, (_, i) => `T${i}/USDT`)];
+// USDC duplicates of the majors so bridge COMPARISON is exercised, not just bridge traversal:
+// SOL -> BTC then has two viable two-hop paths that both have to be solved and scored.
+const symbols = [
+    'BTC/USDT', 'SOL/USDT', 'BTC/USDC', 'SOL/USDC', 'USDC/USDT',
+    ...Array.from({ length: SYMBOLS }, (_, i) => `T${i}/USDT`),
+];
 for (let e = 0; e < EXCHANGES; e++) {
     const exchangeId = `ex${e}`;
     for (const symbol of symbols) {
@@ -50,4 +55,6 @@ console.log(`cache: ${cache.getBookCount()} books (${EXCHANGES} exchanges x ${sy
 measure('single hop, small (exact-out)', { from: 'USDT', to: 'BTC', amountOut: 1, bridges: [] });
 measure('single hop, deep (exact-out)', { from: 'USDT', to: 'BTC', amountOut: 500, bridges: [] });
 measure('single hop, notional (exact-in)', { from: 'USDT', to: 'BTC', amountIn: 500_000, bridges: [] });
-measure('bridged SOL->USDT->BTC (exact-in)', { from: 'SOL', to: 'BTC', amountIn: 100, bridges: ['USDT'] });
+measure('bridged, single candidate', { from: 'SOL', to: 'BTC', amountIn: 100, bridges: ['USDT'] });
+measure('bridged, 2 candidates compared', { from: 'SOL', to: 'BTC', amountIn: 100, bridges: ['USDT', 'USDC'] });
+measure('direct + 1 bridge compared', { from: 'USDT', to: 'BTC', amountIn: 100_000, bridges: ['USDC'] });

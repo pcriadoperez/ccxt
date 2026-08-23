@@ -15,7 +15,7 @@ function book (exchangeId: string, asks: [number, number][], bids: [number, numb
 }
 const OPTS = (o: Partial<RouteOptions> = {}): RouteOptions => ({
     strategy: 'split_optimal', includeFees: true, maxVenues: 3,
-    minLegNotional: 0, staleBookMs: 5000, requestId: 'test-req', certifiedOnly: false, requireFullFill: false, stalenessPenaltyBps: 0, ...o,
+    minLegNotional: 0, staleBookMs: 5000, requestId: 'test-req', certifiedOnly: false, requireFullFill: false, stalenessPenaltyBps: 0, hopPenaltyBps: 0, ...o,
 });
 
 // Adapter over the v2 asset-to-asset contract, expressed in the old symbol+side terms these

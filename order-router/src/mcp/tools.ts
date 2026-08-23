@@ -53,6 +53,8 @@ export interface RouteParams {
     includeFees?: boolean;
     exchanges?: string[];
     certified?: boolean;
+    bridges?: string[];
+    hopPenaltyBps?: number;
 }
 
 export function getRoute (params: RouteParams, options: RouterClientOptions): Promise<unknown> {
@@ -64,5 +66,8 @@ export function getRoute (params: RouteParams, options: RouterClientOptions): Pr
     if (params.includeFees !== undefined) q.set('includeFees', String(params.includeFees));
     if (params.exchanges !== undefined) q.set('exchanges', params.exchanges.join(','));
     if (params.certified !== undefined) q.set('certified', String(params.certified));
+    // An empty array is meaningful — it disables bridging — so it must still be sent.
+    if (params.bridges !== undefined) q.set('bridges', params.bridges.join(','));
+    if (params.hopPenaltyBps !== undefined) q.set('hopPenaltyBps', String(params.hopPenaltyBps));
     return getJson(`/route?${q.toString()}`, options);
 }

@@ -7,6 +7,12 @@ export interface ResolvedHop {
     side: 'buy' | 'sell';
 }
 
+export interface CandidatePath {
+    hops: ResolvedHop[];
+    // The intermediary asset, or null for a direct market.
+    bridge: string | null;
+}
+
 // A pair is BASE/QUOTE. Buying the base means spending quote, and vice versa — so from/to fully
 // determines the side, which is why the caller never supplies it. This is what makes symbol+side
 // a special case of asset-to-asset addressing rather than a separate mode.
@@ -25,25 +31,41 @@ export function resolveDirectHop (cache: OrderBookCache, from: string, to: strin
     return null;
 }
 
-// Two-hop fallback through a bridge asset, for pairs no venue lists directly (SOL -> BTC is
-// usually SOL -> USDT -> BTC). Candidates are ordered by how commonly they are quoted, and the
-// first bridge with BOTH legs available wins — a cheapest-bridge search would require solving
-// every candidate route, which is not worth it when the list is this short and USDT dominates.
-export function resolveBridgedHops (
-    cache: OrderBookCache,
-    from: string,
-    to: string,
-    bridges: string[],
-): ResolvedHop[] | null {
+// Every way this conversion could be executed, direct first, then one two-hop route per bridge
+// asset that has both legs listed. Enumerating rather than short-circuiting on the first match is
+// what lets the router pick the cheapest path instead of the first one it happened to find:
+// USDT is usually deepest, but not always, and a thin direct market can be worse than either.
+export function candidatePaths (
+    cache: OrderBookCache, from: string, to: string, bridges: string[],
+): CandidatePath[] {
+    const paths: CandidatePath[] = [];
+    const direct = resolveDirectHop(cache, from, to);
+    if (direct) paths.push({ hops: [direct], bridge: null });
+    const seen = new Set<string>();
     for (const bridge of bridges) {
-        if (bridge === from || bridge === to) continue;
+        if (bridge === from || bridge === to || seen.has(bridge)) continue;
+        seen.add(bridge);
         const first = resolveDirectHop(cache, from, bridge);
+        if (!first) continue;
         const second = resolveDirectHop(cache, bridge, to);
-        if (first && second) return [first, second];
+        if (!second) continue;
+        paths.push({ hops: [first, second], bridge });
     }
-    return null;
+    return paths;
 }
 
-// Ordered by liquidity: a bridge earlier in the list is tried first, so an exotic pair routes
-// through the deepest available intermediary rather than whichever one happens to exist.
+// Every market any candidate path would touch — what a streaming subscription has to watch to
+// know the answer may have changed.
+export function candidatePairs (
+    cache: OrderBookCache, from: string, to: string, bridges: string[],
+): string[] {
+    const pairs = new Set<string>();
+    for (const path of candidatePaths(cache, from, to, bridges)) {
+        for (const hop of path.hops) pairs.add(hop.pair);
+    }
+    return Array.from(pairs);
+}
+
+// Ordered by how commonly each asset is quoted, so ties and equal-quality paths resolve toward
+// the deeper, more liquid intermediary.
 export const DEFAULT_BRIDGES = ['USDT', 'USDC', 'BTC', 'ETH'];

@@ -101,6 +101,36 @@ test('GET /route requires exactly one of amountIn or amountOut', async () => {
     await app.close();
 });
 
+test('a repeated query parameter is rejected, not crashed on', async () => {
+    // Fastify turns ?from=A&from=B into an array, which reached .trim()/.split() and threw: a 500
+    // leaking the internal message on REST, and an abnormal 1006 close with no error frame on WS.
+    // Silently taking one of the values would be worse than either — a duplicated requireFullFill
+    // or certified would drop a safety flag with nothing to detect it by.
+    const { app, cache } = await buildTestServer();
+    cache.setBook(book());
+    for (const q of [
+        'from=USDT&from=BTC&to=BTC&amountOut=1',
+        'from=USDT&to=BTC&amountOut=1&amountOut=2',
+        'from=USDT&to=BTC&amountOut=1&requireFullFill=true&requireFullFill=false',
+        'from=USDT&to=BTC&amountOut=1&exchanges=kraken&exchanges=binance',
+    ]) {
+        const r = await app.inject({ method: 'GET', url: `/route?${q}`, headers: AUTH });
+        assert.equal(r.statusCode, 400, `${q} -> ${r.statusCode} ${r.body.slice(0, 120)}`);
+        assert.match(r.json().error, /must not be repeated/);
+    }
+    await app.close();
+});
+
+test('GET /route echoes requireFullFill so the caller can confirm it was applied', async () => {
+    const { app, cache } = await buildTestServer();
+    cache.setBook(book());
+    const on = await app.inject({ method: 'GET', url: '/route?from=USDT&to=BTC&amountOut=1&requireFullFill=true', headers: AUTH });
+    const off = await app.inject({ method: 'GET', url: '/route?from=USDT&to=BTC&amountOut=1', headers: AUTH });
+    assert.equal(on.json().requireFullFill, true);
+    assert.equal(off.json().requireFullFill, false);
+    await app.close();
+});
+
 test('GET /route requires from and to, and rejects from === to', async () => {
     const { app } = await buildTestServer();
     for (const q of ['to=BTC&amountOut=1', 'from=USDT&amountOut=1', 'from=BTC&to=BTC&amountOut=1']) {
@@ -335,35 +365,238 @@ test('unauthenticated requests with no key at all are rate limited', async () =>
 
 // --- WebSocket stream endpoint input validation ---
 
-test('WS /stream/best rejects a non-numeric, negative, or zero amount', async () => {
-    // The WS path originally took Number(amount) unchecked while the REST path validated it.
-    // NaN defeats walkBook's `remaining <= 0` termination check, so it traversed every level of
-    // every book and then streamed nulls — repeatedly, on every book update. Needs a real
-    // listening server (not inject()) because the bug lives in the upgrade handler.
+test('WS /stream/route applies exactly the same validation as GET /route', async () => {
+    // The streaming path originally did its own ad-hoc parsing and skipped amount validation
+    // entirely, so `amount=abc` became NaN, defeated the walk's termination check, traversed
+    // every level of every book and then streamed nulls — repeatedly, on every book update. Both
+    // endpoints now share one parser, and this asserts the two agree case for case. Needs a real
+    // listening server (not inject()) because the behaviour lives in the upgrade handler.
+    // The cache is seeded so a rejection can only come from validation, never from no_market.
     const { WebSocket } = await import('ws');
     const previous = process.env['ORDER_ROUTER_API_KEY'];
     process.env['ORDER_ROUTER_API_KEY'] = TEST_API_KEY;
-    const app = await buildServer(new OrderBookCache(), new FeeRegistry(), silentLogger, { rateLimitMax: 100000 });
+    const cache = new OrderBookCache();
+    cache.setBook(book());
+    const app = await buildServer(cache, new FeeRegistry(), silentLogger, { rateLimitMax: 100000 });
     try {
         await app.listen({ port: 0, host: '127.0.0.1' });
         const address = app.server.address();
         const port = typeof address === 'object' && address ? address.port : 0;
 
-        for (const bad of ['amount=abc', 'amount=-5', 'amount=0']) {
+        const bad = [
+            'from=USDT&to=BTC&amountOut=abc',
+            'from=USDT&to=BTC&amountOut=-5',
+            'from=USDT&to=BTC&amountOut=0',
+            'from=USDT&to=BTC',                             // neither amount
+            'from=USDT&to=BTC&amountIn=1&amountOut=1',      // both amounts
+            'to=BTC&amountOut=1',                           // missing from
+            'from=BTC&to=BTC&amountOut=1',                  // from === to
+            'from=USDT&to=BTC&amountOut=1&strategy=nonsense',
+            'from=USDT&to=BTC&amountOut=1&maxVenues=0',
+            'from=USDT&to=BTC&amountOut=1&maxStalenessMs=0',
+            'from=USDT&to=BTC&amountOut=1&hopPenaltyBps=-1',
+        ];
+        for (const q of bad) {
+            // REST and WS must reach the same verdict, or the two surfaces have drifted again.
+            const rest = await app.inject({ method: 'GET', url: `/route?${q}`, headers: AUTH });
+            assert.equal(rest.statusCode, 400, `REST should reject ${q}`);
+
             const closeCode = await new Promise<number>((resolve) => {
-                const ws = new WebSocket(`ws://127.0.0.1:${port}/stream/best/BTC%2FUSDT?${bad}`, {
+                const ws = new WebSocket(`ws://127.0.0.1:${port}/stream/route?${q}`, {
                     headers: { 'x-api-key': TEST_API_KEY },
                 });
                 ws.on('close', (code: number) => resolve(code));
                 ws.on('error', () => resolve(-1));
                 setTimeout(() => { ws.close(); resolve(0); }, 2000);
             });
-            assert.equal(closeCode, 1008, `${bad} should be rejected with a policy-violation close`);
+            assert.equal(closeCode, 1008, `WS should reject ${q} with a policy-violation close`);
         }
     } finally {
         await app.close();
         if (previous === undefined) delete process.env['ORDER_ROUTER_API_KEY'];
         else process.env['ORDER_ROUTER_API_KEY'] = previous;
+    }
+});
+
+test('WS /stream/route pushes a full route and refuses an unreachable pair', async () => {
+    const { WebSocket } = await import('ws');
+    const { app, port, cache } = await buildWsLimitedServer({ wsMaxConnectionsPerKey: 5 });
+    try {
+        const first = await new Promise<Record<string, unknown>>((resolve, reject) => {
+            const ws = new WebSocket(`ws://127.0.0.1:${port}/stream/route?from=USDT&to=BTC&amountOut=1`, {
+                headers: { 'x-api-key': TEST_API_KEY },
+            });
+            ws.on('message', (d: Buffer) => { resolve(JSON.parse(d.toString())); ws.close(); });
+            ws.on('error', reject);
+            setTimeout(() => reject(new Error('timeout')), 3000);
+        });
+        // The streamed body is the REST body — a caller switching to streaming changes the URL
+        // and nothing else. Comparing key NAMES alone was not enough: the handler could ignore
+        // half the parsed options and still produce an identically-shaped object, so the option
+        // echoes and the computed values are compared too.
+        const rest = await app.inject({ method: 'GET', url: '/route?from=USDT&to=BTC&amountOut=1', headers: AUTH });
+        const restBody = rest.json();
+        assert.deepEqual(Object.keys(first).sort(), Object.keys(restBody).sort());
+        for (const field of ['from', 'to', 'exactSide', 'requestedAmount', 'strategy', 'includeFees',
+            'certifiedOnly', 'staleBookMs', 'stalenessPenaltyBps', 'hopPenaltyBps', 'requireFullFill',
+            'amountIn', 'amountOut', 'effectiveRate', 'fullyFillable', 'fillRatio']) {
+            assert.deepEqual(first[field], restBody[field], `${field} differs between /route and /stream/route`);
+        }
+        assert.equal((first['hops'] as unknown[]).length, 1);
+
+        // An unreachable pair can never produce an update, so holding the socket open would be a
+        // silent hang rather than an answer.
+        const closeCode = await new Promise<number>((resolve) => {
+            const ws = new WebSocket(`ws://127.0.0.1:${port}/stream/route?from=DOGE&to=SHIB&amountIn=1`, {
+                headers: { 'x-api-key': TEST_API_KEY },
+            });
+            ws.on('close', (code: number) => resolve(code));
+            ws.on('error', () => resolve(-1));
+            setTimeout(() => resolve(0), 3000);
+        });
+        assert.equal(closeCode, 1008);
+        assert.ok(cache);
+    } finally {
+        await app.close();
+    }
+});
+
+test('WS /stream/route follows a market that appears after the socket opened', async () => {
+    // The watch set used to be frozen at connect while computeRoute re-enumerated candidate paths
+    // on every push. Once a newly-listed market became the winning route, the stream quoted a
+    // market it was not subscribed to: silent through every move of the market it was actually
+    // recommending, then a jump when some unrelated leg happened to tick. The same freeze bit every
+    // client that connected during startup, while 60 connectors were still populating the cache.
+    const { WebSocket } = await import('ws');
+    process.env['ORDER_ROUTER_API_KEY'] = TEST_API_KEY;
+    const cache = new OrderBookCache();
+    cache.setBook(book({ symbol: 'SOL/USDT', bids: [{ price: 10, amount: 1000 }], asks: [{ price: 10, amount: 1000 }] }));
+    cache.setBook(book({ symbol: 'BTC/USDT', bids: [{ price: 100, amount: 1000 }], asks: [{ price: 100, amount: 1000 }] }));
+    // A short idle timeout doubles as the resubscribe tick, which is what notices a brand-new market.
+    const app = await buildServer(cache, new FeeRegistry(), silentLogger,
+        { rateLimitMax: 100000, wsIdleTimeoutMs: 150 });
+    try {
+        await app.listen({ port: 0, host: '127.0.0.1' });
+        const address = app.server.address();
+        const port = typeof address === 'object' && address ? address.port : 0;
+
+        const frames: Record<string, unknown>[] = [];
+        const ws = new WebSocket(`ws://127.0.0.1:${port}/stream/route?from=SOL&to=BTC&amountIn=10`, {
+            headers: { 'x-api-key': TEST_API_KEY },
+        });
+        ws.on('message', (d: Buffer) => frames.push(JSON.parse(d.toString())));
+        await new Promise<void>((resolve, reject) => {
+            ws.on('open', () => resolve());
+            ws.on('error', reject);
+            setTimeout(() => reject(new Error('never opened')), 3000);
+        });
+        await new Promise((r) => setTimeout(r, 200));
+        assert.ok(frames.length >= 1, 'a first frame must arrive on connect');
+        assert.deepEqual((frames[0]!['hops'] as { pair: string }[]).map((h) => h.pair), ['SOL/USDT', 'BTC/USDT']);
+
+        // A direct market is listed AFTER the socket opened, and it is much better than the bridge.
+        cache.setBook(book({ symbol: 'SOL/BTC', bids: [{ price: 5, amount: 1000 }], asks: [{ price: 5, amount: 1000 }] }));
+        const seenDirect = new Promise<void>((resolve, reject) => {
+            const started = frames.length;
+            const poll = setInterval(() => {
+                for (let i = started; i < frames.length; i++) {
+                    const pairs = (frames[i]!['hops'] as { pair: string }[]).map((h) => h.pair);
+                    if (pairs.length === 1 && pairs[0] === 'SOL/BTC') { clearInterval(poll); resolve(); return; }
+                }
+            }, 25);
+            setTimeout(() => { clearInterval(poll); reject(new Error('never picked up the new market')); }, 4000);
+        });
+        await seenDirect;
+
+        // And it must now be SUBSCRIBED to that market, not merely willing to quote it: moving the
+        // new market alone has to produce a frame.
+        const before = frames.length;
+        const moved = new Promise<void>((resolve, reject) => {
+            const poll = setInterval(() => {
+                if (frames.length > before) { clearInterval(poll); resolve(); }
+            }, 25);
+            setTimeout(() => { clearInterval(poll); reject(new Error('a move on the newly-quoted market produced no frame')); }, 3000);
+        });
+        cache.setBook(book({ symbol: 'SOL/BTC', bids: [{ price: 7, amount: 1000 }], asks: [{ price: 7, amount: 1000 }] }));
+        await moved;
+        const latest = frames[frames.length - 1]!;
+        assert.ok((latest['amountOut'] as number) > 60, `expected the improved rate to be quoted, got ${latest['amountOut']}`);
+        ws.terminate();
+    } finally {
+        await app.close();
+    }
+});
+
+test('WS /stream/route refuses a bridged exact-out, exactly as REST does', async () => {
+    // REST answers 501 for this shape. A streaming endpoint that ACCEPTS a request its REST twin
+    // rejects is precisely the drift the shared parser exists to prevent.
+    const { WebSocket } = await import('ws');
+    process.env['ORDER_ROUTER_API_KEY'] = TEST_API_KEY;
+    const cache = new OrderBookCache();
+    cache.setBook(book({ symbol: 'SOL/USDT', bids: [{ price: 10, amount: 1000 }], asks: [{ price: 10, amount: 1000 }] }));
+    cache.setBook(book({ symbol: 'BTC/USDT', bids: [{ price: 100, amount: 1000 }], asks: [{ price: 100, amount: 1000 }] }));
+    const app = await buildServer(cache, new FeeRegistry(), silentLogger, { rateLimitMax: 100000 });
+    try {
+        await app.listen({ port: 0, host: '127.0.0.1' });
+        const address = app.server.address();
+        const port = typeof address === 'object' && address ? address.port : 0;
+
+        const rest = await app.inject({ method: 'GET', url: '/route?from=SOL&to=BTC&amountOut=1', headers: AUTH });
+        assert.equal(rest.statusCode, 501);
+
+        const code = await new Promise<number>((resolve) => {
+            const ws = new WebSocket(`ws://127.0.0.1:${port}/stream/route?from=SOL&to=BTC&amountOut=1`, {
+                headers: { 'x-api-key': TEST_API_KEY },
+            });
+            ws.on('close', (c: number) => resolve(c));
+            ws.on('error', () => resolve(-1));
+            setTimeout(() => resolve(0), 3000);
+        });
+        assert.equal(code, 1008, 'the stream must refuse what REST refuses');
+    } finally {
+        await app.close();
+    }
+});
+
+test('WS /stream/route re-pushes when any leg of a bridged route moves', async () => {
+    // A bridged route depends on more than one market, so subscribing only to the first leg would
+    // silently miss half the price changes that alter the answer.
+    const { WebSocket } = await import('ws');
+    process.env['ORDER_ROUTER_API_KEY'] = TEST_API_KEY;
+    const cache = new OrderBookCache();
+    cache.setBook(book({ symbol: 'SOL/USDT', bids: [{ price: 10, amount: 1000 }], asks: [{ price: 10, amount: 1000 }] }));
+    cache.setBook(book({ symbol: 'BTC/USDT', bids: [{ price: 50, amount: 1000 }], asks: [{ price: 50, amount: 1000 }] }));
+    const app = await buildServer(cache, new FeeRegistry(), silentLogger, { rateLimitMax: 100000 });
+    try {
+        await app.listen({ port: 0, host: '127.0.0.1' });
+        const address = app.server.address();
+        const port = typeof address === 'object' && address ? address.port : 0;
+
+        const frames: number[] = [];
+        const ws = new WebSocket(`ws://127.0.0.1:${port}/stream/route?from=SOL&to=BTC&amountIn=10`, {
+            headers: { 'x-api-key': TEST_API_KEY },
+        });
+        await new Promise<void>((resolve, reject) => {
+            ws.on('message', (d: Buffer) => { frames.push(JSON.parse(d.toString()).amountOut); resolve(); });
+            ws.on('error', reject);
+            setTimeout(() => reject(new Error('timeout')), 3000);
+        });
+        assert.equal(frames.length, 1, 'the first frame arrives on connect, before any update');
+
+        // Move the SECOND leg only. BTC gets cheaper, so the same 10 SOL must buy more BTC.
+        // The timeout matters: without it a regression in the subscription set makes this test hang
+        // the whole run instead of failing, which reads as a stuck CI rather than a broken feature.
+        const bumped = new Promise<void>((resolve, reject) => {
+            ws.once('message', () => resolve());
+            setTimeout(() => reject(new Error('no frame after the far leg moved — subscription regressed')), 3000);
+        });
+        cache.setBook(book({ symbol: 'BTC/USDT', bids: [{ price: 25, amount: 1000 }], asks: [{ price: 25, amount: 1000 }] }));
+        await bumped;
+        assert.equal(frames.length, 2, 'a move on the far leg must reach the subscriber');
+        assert.ok(frames[1]! > frames[0]!, `cheaper BTC must yield more BTC: ${frames[0]} -> ${frames[1]}`);
+        ws.terminate();
+    } finally {
+        await app.close();
     }
 });
 
@@ -400,7 +633,7 @@ test('rejected WebSocket upgrades do not leak server-side sockets', async () => 
 
         // Path-independent on the original bug: matched WS route, matched non-WS route, and an
         // unmatched path all leaked, so all three are covered here.
-        for (const path of ['/stream/best/BTC%2FUSDT', '/symbols', '/nonexistent']) {
+        for (const path of ['/stream/route?from=USDT&to=BTC&amountOut=1', '/symbols', '/nonexistent']) {
             for (let i = 0; i < 10; i++) await upgrade(path);
         }
         await new Promise((r) => setTimeout(r, 1500));
@@ -440,7 +673,7 @@ test('concurrent WS stream connections are capped per API key', async () => {
     const open: InstanceType<typeof WebSocket>[] = [];
     try {
         const connect = (key: string) => new Promise<{ ok: boolean; code: number }>((resolve) => {
-            const ws = new WebSocket(`ws://127.0.0.1:${port}/stream/best/BTC%2FUSDT?amount=1`, {
+            const ws = new WebSocket(`ws://127.0.0.1:${port}/stream/route?from=USDT&to=BTC&amountOut=1`, {
                 headers: { 'x-api-key': key },
             });
             open.push(ws);
@@ -473,7 +706,7 @@ test('closing a stream frees its slot against the cap', async () => {
     const { app, port } = await buildWsLimitedServer({ wsMaxConnectionsPerKey: 1 });
     try {
         const openOne = () => new Promise<InstanceType<typeof WebSocket>>((resolve, reject) => {
-            const ws = new WebSocket(`ws://127.0.0.1:${port}/stream/best/BTC%2FUSDT?amount=1`, {
+            const ws = new WebSocket(`ws://127.0.0.1:${port}/stream/route?from=USDT&to=BTC&amountOut=1`, {
                 headers: { 'x-api-key': TEST_API_KEY },
             });
             ws.on('message', () => resolve(ws));
@@ -501,7 +734,7 @@ test('per-key WS caps are independent across keys', async () => {
     try {
         // Both use the valid key header value here; a different *valid* identity isn't available
         // under single-key auth, so this asserts the bookkeeping is keyed at all rather than global.
-        const ws = new WebSocket(`ws://127.0.0.1:${port}/stream/best/BTC%2FUSDT?amount=1`, {
+        const ws = new WebSocket(`ws://127.0.0.1:${port}/stream/route?from=USDT&to=BTC&amountOut=1`, {
             headers: { 'x-api-key': TEST_API_KEY },
         });
         open.push(ws);
@@ -512,7 +745,7 @@ test('per-key WS caps are independent across keys', async () => {
         });
         // A second connection on the SAME key must be refused at cap 1.
         const refusedCode = await new Promise<number>((resolve) => {
-            const ws2 = new WebSocket(`ws://127.0.0.1:${port}/stream/best/BTC%2FUSDT?amount=1`, {
+            const ws2 = new WebSocket(`ws://127.0.0.1:${port}/stream/route?from=USDT&to=BTC&amountOut=1`, {
                 headers: { 'x-api-key': TEST_API_KEY },
             });
             open.push(ws2);
@@ -533,7 +766,7 @@ test('unresponsive WS clients are reaped by the heartbeat', async () => {
     const { WebSocket } = await import('ws');
     const { app, port } = await buildWsLimitedServer({ wsMaxConnectionsPerKey: 5, wsIdleTimeoutMs: 250 });
     try {
-        const ws = new WebSocket(`ws://127.0.0.1:${port}/stream/best/BTC%2FUSDT?amount=1`, {
+        const ws = new WebSocket(`ws://127.0.0.1:${port}/stream/route?from=USDT&to=BTC&amountOut=1`, {
             headers: { 'x-api-key': TEST_API_KEY },
         });
         await new Promise((resolve, reject) => {

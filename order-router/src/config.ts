@@ -96,6 +96,11 @@ export const config = {
     symbols: listFromEnv('ORDER_ROUTER_SYMBOLS', ['BTC/USDT', 'ETH/USDT']),
 
     staleBookMs: Number(process.env['ORDER_ROUTER_STALE_BOOK_MS'] ?? 5000),
+    // How much better a bridged route must be, per extra hop, before it beats a direct market.
+    // Non-zero by default: an extra hop is a second order, and a second chance for the price to
+    // move between fills. That risk is not in the order book, so a bridge that wins by a hair is
+    // not actually the better trade. Callers can set 0 to compare purely on rate.
+    hopPenaltyBps: Number(process.env['ORDER_ROUTER_HOP_PENALTY_BPS'] ?? 5),
     logLevel: process.env['LOG_LEVEL'] ?? 'info',
 
     // Rate limiting. Applied per API key (falling back to client IP when the key is absent, which

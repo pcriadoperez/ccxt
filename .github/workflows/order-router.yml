@@ -82,6 +82,36 @@ jobs:
           code=$(curl -s -o /dev/null -w '%{http_code}' -H 'x-api-key: wrong-key' http://localhost:8080/symbols)
           if [ "$code" != "401" ]; then echo "::error::expected 401, got $code"; exit 1; fi
 
+          # The endpoint the whole service exists for. Booting cleanly and answering /symbols says
+          # nothing about whether routing still works, so exercise it against a real cached book.
+          echo "--- /route must answer with a route once a book has arrived ---"
+          for i in $(seq 1 30); do
+            body=$(curl -s -H 'x-api-key: ci-smoke-key' \
+              'http://localhost:8080/route?from=USDT&to=BTC&amountOut=0.001&strategy=split_optimal')
+            if echo "$body" | grep -q '"legs":\[{'; then break; fi
+            sleep 2
+          done
+          echo "$body" | grep -q '"pair":"BTC/USDT"' \
+            || { echo "::error::/route did not return a BTC/USDT hop"; echo "$body"; cat /tmp/router.log; exit 1; }
+          echo "$body" | grep -q '"legs":\[{' \
+            || { echo "::error::/route returned no legs"; echo "$body"; exit 1; }
+          echo "$body" | grep -q '"impactBps"' \
+            || { echo "::error::/route response is missing impactBps"; echo "$body"; exit 1; }
+          echo "$body" | grep -q '"requestId"' \
+            || { echo "::error::/route response is missing requestId"; echo "$body"; exit 1; }
+
+          # These need no market data, so they assert the contract deterministically.
+          echo "--- /route request-shape errors must be distinguishable ---"
+          code=$(curl -s -o /dev/null -w '%{http_code}' -H 'x-api-key: ci-smoke-key' \
+            'http://localhost:8080/route?from=USDT&to=BTC')
+          if [ "$code" != "400" ]; then echo "::error::missing amount should be 400, got $code"; exit 1; fi
+          code=$(curl -s -o /dev/null -w '%{http_code}' -H 'x-api-key: ci-smoke-key' \
+            'http://localhost:8080/route?from=USDT&to=BTC&amountIn=1&amountOut=1')
+          if [ "$code" != "400" ]; then echo "::error::both amounts should be 400, got $code"; exit 1; fi
+          code=$(curl -s -o /dev/null -w '%{http_code}' -H 'x-api-key: ci-smoke-key' \
+            'http://localhost:8080/route?from=NOTACOIN&to=ALSONOTACOIN&amountIn=1')
+          if [ "$code" != "404" ]; then echo "::error::unreachable pair should be 404, got $code"; exit 1; fi
+
           echo "smoke test passed"
 
       - name: Verify the MCP server boots and enforces auth

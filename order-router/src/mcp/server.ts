@@ -116,6 +116,13 @@ export function buildMcpServer (clientOptions: RouterClientOptions): McpServer {
                 includeFees: z.boolean().optional().describe('Fee-adjust prices before ranking. Defaults to true.'),
                 exchanges: z.array(z.string()).optional().describe('Only consider these exchange ids.'),
                 certified: z.boolean().optional().describe('Only consider ccxt-certified exchanges.'),
+                bridges: z.array(z.string()).optional()
+                    .describe('Intermediary assets to consider when routing indirectly. Defaults to '
+                        + 'USDT, USDC, BTC, ETH. Pass an empty array to forbid bridging entirely.'),
+                hopPenaltyBps: z.number().min(0).max(10_000).optional()
+                    .describe('How much better a bridged route must be, per extra hop, to beat a direct '
+                        + 'market. Defaults to 5. An extra hop is a second order and a second chance for '
+                        + 'the price to move, which no order book prices in. 0 compares purely on rate.'),
             },
         },
         async (params) => {

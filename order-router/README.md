@@ -38,7 +38,8 @@ OrderBookCache + FeeRegistry (in-memory, EventEmitter-based)
   reconnects with exponential backoff (plus jitter — see below) independently; one exchange
   misbehaving never affects others or the API.
 - **Push-on-change, not polling.** `OrderBookCache` extends `EventEmitter` and emits
-  `update:<symbol>` whenever a book changes; `/stream/best/:symbol` subscribes to that instead of
+  `update:<symbol>` whenever a book changes; `/stream/route` subscribes to every market its route
+  depends on instead of
   polling on a fixed interval, coalescing bursts into at most one computed result per event-loop
   tick via `setImmediate`.
 
@@ -138,7 +139,7 @@ same "write path is async, read path is always local" shape, is a natural extens
 | GET | `/symbols` | symbols currently cached |
 | GET | `/orderbook/:exchange/:symbol` | cached L2 book snapshot (symbol URL-encoded, e.g. `BTC%2FUSDT`) |
 | GET | `/route?from=&to=&amountIn=\|amountOut=` | book-walked, fee-adjusted route between two assets; multi-venue and multi-hop |
-| WS | `/stream/best/:symbol?side=&amount=` | pushes on book change (event-driven, not polled) |
+| WS | `/stream/route?from=&to=&amountIn=\|amountOut=` | the same route, pushed on book change (event-driven, not polled) |
 
 ### Using `/route`
 
@@ -199,6 +200,78 @@ Bridged routes are solved **sequentially**, not jointly: hop 1's split is chosen
 what hop 2 would prefer. That yields a good route, not a provably optimal one; joint optimisation
 is a min-cost flow over the asset graph and is deliberately out of scope.
 
+### Bridges are compared, not guessed
+
+When more than one market path exists, the router solves **all** of them — the direct market plus
+one two-hop route per asset in `bridges` — and takes the best. USDT is usually the deepest
+intermediary, but "usually" is not "always", and a thin direct pair can easily be worse than going
+around it. `pathsConsidered` reports every candidate with its output and its score, so the choice
+is auditable the same way `quotes[]` makes the venue choice auditable.
+
+A longer path must beat a shorter one by more than `hopPenaltyBps` per extra hop (default 5, capped
+at 10000). A second order is a second chance for the price to move between fills, and that risk is
+not in any order book — so a bridge that wins by a hair is not actually the better trade. Set
+`hopPenaltyBps=0` to compare purely on rate.
+
+Ranking never falls back to listing order. Because the penalty is a multiplicative discount clamped
+at zero, a large enough penalty collapses every multi-hop score to exactly 0 — at which point score
+alone cannot order anything. `comparePaths` therefore ranks on fillability, then on whether a path
+produced anything at all, then score, then hop count, then raw output. The middle criterion is not
+theoretical: without it a *dead* direct market tied a live bridged one at a high penalty, won on
+listing order, and the whole request came back unroutable while `pathsConsidered` sat there listing
+the working alternative.
+
+### A bridged route never strands capital
+
+If an early hop can consume everything you offered but a later hop cannot absorb what it produces,
+the router cuts the earlier hop back to what the next one actually takes. Otherwise it would
+recommend selling 10 SOL to buy 0.01 BTC and leaving 99 USDT parked in the bridge asset — a trade
+nobody wants — and then report `fillRatio: 1` and `unfilledAmount: 0`, because only the pinned side
+was ever measured. With the trim, the same request returns `amountIn: 0.1`, `fillRatio: 0.01`, and a
+`partial_fill` warning whose percentage matches the numbers beside it.
+
+The comparison costs real time: at full-discovery scale a single-candidate bridged route is 0.54ms
+of compute, and two compared candidates 1.10ms. Both are far below the HTTP round trip, but the
+work is not free, and `bridges=` (explicitly empty) turns it off entirely.
+
+### Price impact
+
+Every hop reports `referencePrice` — the best fee-adjusted price available on **any** fresh
+permitted venue for an infinitesimally small order — and `impactBps`, how much worse your actual
+size executes. The route reports the end-to-end `referenceRate` and `impactBps` across all hops.
+
+```jsonc
+"hops": [{
+  "pair": "BTC/USDT", "side": "buy",
+  "referencePrice": 104780.1,   // best price anywhere, for a dust-sized order
+  "impactBps": 3.1              // what your size actually cost you, in bps
+}]
+```
+
+Positive always means worse, on both sides — no branching on `side` to interpret it. Fees and the
+staleness penalty appear in *both* halves of the comparison and cancel, so what is left is purely
+the cost of consuming depth. That is the number that answers "should I split this order, or shrink
+it?" without walking the book yourself.
+
+The benchmark is deliberately the best price *anywhere*, not the chosen venue's own top of book.
+Using the latter would report zero impact for an order that demonstrably paid more than the best
+available price, simply because the cheapest venue was too thin to use.
+
+### Streaming
+
+`GET /stream/route` takes exactly the same query parameters as `GET /route` and pushes exactly the
+same body, recomputed whenever any market the route depends on moves — every leg of every candidate
+path, so a bridged route does not miss half the price changes that alter its answer.
+
+```bash
+websocat "$BASE/stream/route?from=USDT&to=BTC&amountOut=1" -H "x-api-key: $KEY"
+```
+
+Both endpoints share one query parser, so they cannot disagree about what is valid. That is not a
+tidiness choice: when they had separate parsing the streaming path skipped amount validation
+entirely, and `amount=abc` became a `NaN` that defeated the book walk's termination check and
+traversed every level of every book — repeatedly, on every update.
+
 ## Security
 
 > **Status: stopgap, not an auth system.** A single shared API key with a hardcoded development
@@ -224,7 +297,7 @@ either `X-API-Key: <key>` or `Authorization: Bearer <key>`.
   logs a loud warning at startup. That default grants no security; it exists so local dev works
   and so an unconfigured deployment is obviously wrong rather than subtly wrong.
 
-**WebSocket stream limits.** Each `/stream/best` connection holds a cache listener removed only on
+**WebSocket stream limits.** Each `/stream/route` connection holds a cache listener per watched market, removed only on
 socket close — which the client controls — and costs a recomputation on every book update for its
 symbol. Rate limiting bounds how fast connections open, not how many stay open, so it does not
 help here. Two mechanisms bound it: a per-key concurrency cap (`ORDER_ROUTER_WS_MAX_CONNECTIONS_PER_KEY`,
@@ -311,7 +384,7 @@ against a running router with live exchange data) during development — not jus
 | `ORDER_ROUTER_API_KEY` | `dev-local-key-change-me` | **Set this in any real deployment.** The default grants no security and logs a warning. |
 | `ORDER_ROUTER_RATE_LIMIT_MAX` | `600` | Requests per window, per API key. |
 | `ORDER_ROUTER_RATE_LIMIT_WINDOW_MS` | `60000` | Rate limit window. |
-| `ORDER_ROUTER_WS_MAX_CONNECTIONS_PER_KEY` | `50` | Max concurrent `/stream/best` sockets per API key. |
+| `ORDER_ROUTER_WS_MAX_CONNECTIONS_PER_KEY` | `50` | Max concurrent `/stream/route` sockets per API key. |
 | `ORDER_ROUTER_WS_IDLE_TIMEOUT_MS` | `30000` | Heartbeat interval; a socket that misses two beats is terminated. Must stay below the reverse proxy's `proxy_read_timeout`. |
 | `ORDER_ROUTER_TRUST_PROXY` | `false` | Derive client IP from `X-Forwarded-For`. Enable **only** behind a trusted proxy — see "Deploying behind nginx". |
 | `LOG_LEVEL` | `info` | |
@@ -402,7 +475,7 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
-    # /stream/best needs the upgrade headers; without them the handshake 400s.
+    # /stream/route needs the upgrade headers; without them the handshake 400s.
     location /stream/ {
         proxy_pass http://order_router;
         proxy_http_version 1.1;
@@ -461,7 +534,7 @@ Counters — `rate()`/`increase()` still work, and a restart resets to 0 exactly
 | `order_router_exchange_reconnects_total` | Reconnect storms were a real failure in live testing (1,000–2,500 in 15s); this is the signal that they have returned. |
 | `order_router_exchange_connected` / `_updates_total` | Per-exchange liveness and throughput; a flat update count on a connected exchange is a dead subscription. |
 | `order_router_cached_books` / `_cached_symbols` | Coverage — a drop means discovery or subscriptions regressed. |
-| `order_router_ws_stream_connections` | Open `/stream/best` sockets, to watch pressure against the per-key cap. |
+| `order_router_ws_stream_connections` | Open `/stream/route` sockets, to watch pressure against the per-key cap. |
 | `order_router_http_request_duration_seconds` | Latency histogram; its `_count` doubles as the request counter. Buckets are tuned sub-10ms because reads are in-memory map lookups. |
 | `order_router_shard_event_loop_utilization` | **The saturation signal.** Fraction of wall-clock each shard's loop spent active, 0..1. Sustained >0.9 means no headroom and books will silently rot. Starvation is otherwise invisible: a saturated shard keeps its sockets open, logs nothing, and simply stops delivering updates — CPU%, load average and `stale_books` all fail to show it cleanly (`stale_books` is dominated by the illiquid tail and reads ~75% on a healthy system). |
 | `order_router_shard_loop_report_age_seconds` | Distinguishes "shard is busy" from "shard is gone" — a dead shard reports nothing at all. |
@@ -532,6 +605,9 @@ authenticated path:**
 | `/orderbook/:ex/:sym` (map lookup + serialize full book) | 6,628 | 7ms | 9ms | 13ms | 209ms |
 | `/route` small order (walks every exchange book) | 6,397 | 7ms | 9ms | 12ms | 254ms |
 | `/route` large order (walks deeper) | 4,302 | 11ms | 13ms | 18ms | 292ms |
+
+These predate the cache symbol index and the engine restructure below; the routing compute inside
+them is now several times cheaper, so the HTTP overhead dominates even more than it did.
 | unauthenticated (expect 401) | 13,693 | 3ms | 4ms | 6ms | 179ms |
 
 ### Routing cost at full-discovery scale
@@ -541,10 +617,12 @@ size of full discovery (60 exchanges x 702 symbols x 50 levels = 42,120 books):
 
 | Route | p50 | p95 | p99 |
 |---|---|---|---|
-| single hop, small order | 0.31ms | 0.84ms | 0.96ms |
-| single hop, deep order | 0.35ms | 0.92ms | 1.02ms |
-| single hop, notional (`amountIn`) | 0.41ms | 0.92ms | 1.06ms |
-| bridged (two hops) | 0.78ms | 1.40ms | 1.47ms |
+| single hop, small order | 0.22ms | 0.76ms | 1.01ms |
+| single hop, deep order | 0.27ms | 0.90ms | 1.09ms |
+| single hop, notional (`amountIn`) | 0.33ms | 1.11ms | 1.42ms |
+| bridged, one candidate | 0.54ms | 1.33ms | 1.50ms |
+| bridged, two candidates compared | 1.10ms | 2.32ms | 2.74ms |
+| direct + one bridge compared | 0.80ms | 1.71ms | 2.00ms |
 
 This was **10.8ms** before the cache gained a symbol index. `getBooksForSymbol` scanned every
 cached book on every call, and routing calls it once per venue considered — so cost scaled with

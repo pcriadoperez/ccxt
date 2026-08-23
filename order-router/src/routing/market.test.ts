@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { OrderBookCache } from '../cache/orderBookCache.js';
 import { FeeRegistry } from '../cache/feeRegistry.js';
-import { resolveDirectHop, resolveBridgedHops, DEFAULT_BRIDGES } from './market.js';
+import { resolveDirectHop, candidatePaths, candidatePairs, DEFAULT_BRIDGES } from './market.js';
 import { computeRoute, type RouteOptions } from './route.js';
 import type { CachedOrderBook } from '../types.js';
 
@@ -20,7 +20,7 @@ function book (
 const OPTS = (o: Partial<RouteOptions> = {}): RouteOptions => ({
     strategy: 'split_optimal', includeFees: false, maxVenues: 3, minLegNotional: 0,
     staleBookMs: 5000, requestId: 'test', certifiedOnly: false, requireFullFill: false,
-    stalenessPenaltyBps: 0, ...o,
+    stalenessPenaltyBps: 0, hopPenaltyBps: 0, ...o,
 });
 
 test('direction is derived from the asset pair, not supplied by the caller', () => {
@@ -41,10 +41,12 @@ test('bridging finds a two-hop path when no direct market exists', () => {
     cache.setBook(book('a', 'SOL/USDT', [[10, 100]], [[10, 100]]));
     cache.setBook(book('a', 'BTC/USDT', [[100, 100]], [[100, 100]]));
 
-    const hops = resolveBridgedHops(cache, 'SOL', 'BTC', DEFAULT_BRIDGES);
-    assert.ok(hops, 'SOL -> USDT -> BTC should be reachable');
-    assert.deepEqual(hops!.map((h) => `${h.pair}:${h.side}`), ['SOL/USDT:sell', 'BTC/USDT:buy']);
-    assert.equal(resolveBridgedHops(cache, 'SOL', 'BTC', []), null, 'no bridges means no bridging');
+    const paths = candidatePaths(cache, 'SOL', 'BTC', DEFAULT_BRIDGES);
+    assert.equal(paths.length, 1, 'SOL -> USDT -> BTC should be the only reachable path');
+    assert.equal(paths[0]!.bridge, 'USDT');
+    assert.deepEqual(paths[0]!.hops.map((h) => `${h.pair}:${h.side}`), ['SOL/USDT:sell', 'BTC/USDT:buy']);
+    assert.deepEqual(candidatePaths(cache, 'SOL', 'BTC', []), [], 'no bridges means no bridging');
+    assert.deepEqual(candidatePairs(cache, 'SOL', 'BTC', DEFAULT_BRIDGES).sort(), ['BTC/USDT', 'SOL/USDT']);
 });
 
 test('exact-in is a notional walk: spending a fixed quote budget, not buying a fixed size', () => {

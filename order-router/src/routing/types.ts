@@ -27,20 +27,52 @@ export interface RouteHop {
     side: 'buy' | 'sell';
     base: string;
     quote: string;
-    // Denominated in the hop's own input/output assets, so a multi-hop route chains without the
-    // caller having to work out which currency each number is in.
     amountIn: number;
     amountOut: number;
     legs: RouteLeg[];
     feeCost: number;
-    // Fees are charged in different currencies on different hops (USDT on SOL->USDT, BTC on
-    // USDT->BTC). Summing them into one number would be adding different units, so the currency
-    // is explicit per hop and there is deliberately no cross-hop fee total.
     feeCurrency: string;
     fullyFillable: boolean;
-    // Per hop, because "which hop was considered against what" is unanswerable from a flat list.
+    // The best fee-adjusted price available anywhere for an infinitesimally small order — the
+    // frictionless benchmark. Null when no fresh venue could be priced.
+    referencePrice: number | null;
+    // How much worse this hop's size actually executes than referencePrice, in basis points.
+    // Positive is always worse, on both sides. Isolates the cost of consuming depth: fees and the
+    // staleness penalty are already in both halves of the comparison.
+    impactBps: number | null;
     quotes: RoutingQuote[];
     freshVenueCount: number;
+}
+
+// One candidate route the router evaluated, whether or not it won. Reported so the choice is
+// auditable — "why this venue?" was already answerable from quotes[]; this answers "why this
+// market?" for conversions that could go more than one way.
+export interface ConsideredPath {
+    pairs: string[];
+    // The intermediary asset, or null for a direct market.
+    bridge: string | null;
+    amountOut: number;
+    fullyFillable: boolean;
+    // amountOut after the per-extra-hop penalty. This, not amountOut, decides the winner.
+    score: number;
+    chosen: boolean;
+}
+
+export interface RouteOptions {
+    strategy: RouteStrategy;
+    includeFees: boolean;
+    maxVenues: number;
+    minLegNotional: number;
+    staleBookMs: number;
+    requestId: string;
+    exchanges?: Set<string>;
+    certifiedOnly: boolean;
+    requireFullFill: boolean;
+    stalenessPenaltyBps: number;
+    // How much better a multi-hop route must be, per extra hop, before it beats a direct market.
+    // A second order is a second chance for the price to move between fills, and that risk is not
+    // in the book — so a bridge that wins by a hair is not actually the better trade.
+    hopPenaltyBps: number;
 }
 
 export interface RouteResult {
@@ -64,28 +96,25 @@ export interface RouteResult {
     certifiedOnly: boolean;
     staleBookMs: number;
     stalenessPenaltyBps: number;
+    hopPenaltyBps: number;
+    // Echoed so a caller can confirm the safety flag they sent was actually applied. Without it a
+    // request that lost the flag in transit is indistinguishable from one that never set it.
+    requireFullFill: boolean;
     hops: RouteHop[];
-    // Units of `to` per unit of `from`, all-in. The single number most callers actually want.
     effectiveRate: number | null;
+    // End-to-end frictionless rate: the hops' reference prices chained together. What you would
+    // get if size were free.
+    referenceRate: number | null;
+    // How far effectiveRate falls short of referenceRate, in basis points. The end-to-end cost of
+    // size, across every hop.
+    impactBps: number | null;
     fullyFillable: boolean;
     fillRatio: number;
     unfilledAmount: number;
     unroutableReason: UnroutableReason | null;
-    // Which hop failed, so a multi-hop failure is diagnosable. Null when routing succeeded.
     unroutableHopIndex: number | null;
     warnings: string[];
     savingVsBestSingleBps: number | null;
-}
-
-export interface RouteOptions {
-    strategy: RouteStrategy;
-    includeFees: boolean;
-    maxVenues: number;
-    minLegNotional: number;
-    staleBookMs: number;
-    requestId: string;
-    exchanges?: Set<string>;
-    certifiedOnly: boolean;
-    requireFullFill: boolean;
-    stalenessPenaltyBps: number;
+    // Every candidate market path considered, winner flagged. Empty when only one path existed.
+    pathsConsidered: ConsideredPath[];
 }

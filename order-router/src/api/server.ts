@@ -6,35 +6,18 @@ import type { Logger } from 'pino';
 import { config } from '../config.js';
 import type { OrderBookCache } from '../cache/orderBookCache.js';
 import type { FeeRegistry } from '../cache/feeRegistry.js';
-import { computeBestPrice } from '../routing/bestPrice.js';
-import { computeRoute, ROUTE_STRATEGIES, type RouteStrategy } from '../routing/route.js';
-import { DEFAULT_BRIDGES } from '../routing/market.js';
+import { computeRoute } from '../routing/route.js';
+import { candidatePairs } from '../routing/market.js';
+import { parseRouteQuery, type RouteQuery } from './routeQuery.js';
 import { randomUUID } from 'node:crypto';
 import { extractApiKey, isPublicPath, makeAuthHook, resolveApiKey, safeCompare } from './auth.js';
 import { buildHttpHistogram, buildMetricsRegistry } from '../metrics.js';
 import { LoopRegistry } from '../cache/loopRegistry.js';
 
-interface RouteQuery {
-    from?: string;
-    to?: string;
-    amountIn?: string;
-    amountOut?: string;
-    bridges?: string;
-    strategy?: string;
-    maxVenues?: string;
-    includeFees?: string;
-    minLegNotional?: string;
-    exchanges?: string;
-    certified?: string;
-    maxStalenessMs?: string;
-    requireFullFill?: string;
-    stalenessPenaltyBps?: string;
-}
-
-interface StreamQuery {
-    side?: string;
-    amount?: string;
-}
+// Above this many bytes still queued for the peer, a stream frame is dropped rather than added to
+// the backlog. A router quote is only useful while it is current, so the newest frame the client
+// can actually receive beats a faithful replay of every stale one.
+const WS_MAX_BUFFERED_BYTES = 1_000_000;
 
 export interface ServerOptions {
     // Overrides for the module-level config defaults. Injected rather than read from the global
@@ -187,86 +170,12 @@ export async function buildServer (
     );
 
     // Asset-to-asset addressing. The caller says what they hold and what they want; the router
-    // picks the pair, the side, and — when no direct market exists — the bridge. Callers never
+    // picks the market, the side, and — when no direct market exists — the bridge. Callers never
     // have to know that USDT->BTC is a *buy* of BTC/USDT while BTC->USDT is a *sell* of the same
     // pair, which is the single most error-prone part of the old symbol+side contract.
     app.get<{ Querystring: RouteQuery }>(
         '/route',
         async (request, reply) => {
-            const from = (request.query.from ?? '').trim().toUpperCase();
-            const to = (request.query.to ?? '').trim().toUpperCase();
-            if (from.length === 0 || to.length === 0) {
-                reply.code(400);
-                return { error: 'from and to query params are required (e.g. from=USDT&to=BTC)' };
-            }
-            if (from === to) {
-                reply.code(400);
-                return { error: 'from and to must differ' };
-            }
-
-            const hasIn = request.query.amountIn !== undefined;
-            const hasOut = request.query.amountOut !== undefined;
-            // Rejecting both is deliberate: silently preferring one would make a caller's typo
-            // return a confidently wrong route rather than an error.
-            if (hasIn === hasOut) {
-                reply.code(400);
-                return { error: 'exactly one of amountIn or amountOut must be supplied' };
-            }
-            const amount = Number(hasIn ? request.query.amountIn : request.query.amountOut);
-            if (!Number.isFinite(amount) || amount <= 0) {
-                reply.code(400);
-                return { error: `${hasIn ? 'amountIn' : 'amountOut'} must be a positive finite number` };
-            }
-
-            const strategy = (request.query.strategy ?? 'best_single') as RouteStrategy;
-            if (!ROUTE_STRATEGIES.includes(strategy)) {
-                reply.code(400);
-                return { error: `strategy must be one of: ${ROUTE_STRATEGIES.join(', ')}` };
-            }
-            const maxVenues = Number(request.query.maxVenues ?? '3');
-            if (!Number.isFinite(maxVenues) || maxVenues < 1) {
-                reply.code(400);
-                return { error: 'maxVenues must be a positive integer' };
-            }
-            const minLegNotional = Number(request.query.minLegNotional ?? '0');
-            if (!Number.isFinite(minLegNotional) || minLegNotional < 0) {
-                reply.code(400);
-                return { error: 'minLegNotional must be zero or a positive number' };
-            }
-            const includeFees = request.query.includeFees !== 'false';
-            const certifiedOnly = request.query.certified === 'true';
-            const requireFullFill = request.query.requireFullFill === 'true';
-            const stalenessPenaltyBps = Number(request.query.stalenessPenaltyBps ?? '0');
-            if (!Number.isFinite(stalenessPenaltyBps) || stalenessPenaltyBps < 0) {
-                reply.code(400);
-                return { error: 'stalenessPenaltyBps must be zero or a positive number' };
-            }
-
-            // Escape hatch: a caller who would rather have an old price than no price can widen
-            // the freshness window. Deliberately opt-in — defaulting loose would hand out prices
-            // minutes out of date without the caller ever choosing that risk.
-            const maxStalenessMs = request.query.maxStalenessMs === undefined
-                ? config.staleBookMs
-                : Number(request.query.maxStalenessMs);
-            if (!Number.isFinite(maxStalenessMs) || maxStalenessMs <= 0) {
-                reply.code(400);
-                return { error: 'maxStalenessMs must be a positive number' };
-            }
-
-            // An explicitly empty list (`exchanges=`) is treated as "no venues", not "all venues".
-            // Silently widening an empty allowlist would be the opposite of what the caller asked.
-            let exchanges: Set<string> | undefined;
-            if (request.query.exchanges !== undefined) {
-                exchanges = new Set(
-                    request.query.exchanges.split(',').map((e) => e.trim()).filter((e) => e.length > 0),
-                );
-            }
-
-            // `bridges=` (explicitly empty) disables bridging entirely — direct markets only.
-            const bridges = request.query.bridges === undefined
-                ? DEFAULT_BRIDGES
-                : request.query.bridges.split(',').map((b) => b.trim().toUpperCase()).filter((b) => b.length > 0);
-
             // Honour a caller-supplied x-request-id so their trace id and ours match in both
             // logs; otherwise mint one. Echoed as a header too, so a client can correlate even
             // on responses it fails to parse.
@@ -276,15 +185,13 @@ export async function buildServer (
                 : randomUUID();
             reply.header('x-request-id', requestId);
 
-            const result = computeRoute(
-                cache, feeRegistry,
-                { from, to, amountIn: hasIn ? amount : undefined, amountOut: hasOut ? amount : undefined, bridges },
-                {
-                    strategy, includeFees, maxVenues, minLegNotional,
-                    staleBookMs: maxStalenessMs, requestId, exchanges, certifiedOnly,
-                    requireFullFill, stalenessPenaltyBps,
-                },
-            );
+            const parsed = parseRouteQuery(request.query, requestId);
+            if (!parsed.ok) {
+                reply.code(400);
+                return { error: parsed.error };
+            }
+
+            const result = computeRoute(cache, feeRegistry, parsed.req, parsed.opts);
 
             // Audit record: one line per recommendation, keyed by requestId. This is the trail
             // that makes a future billing dispute or "why did you route it there?" answerable
@@ -292,23 +199,33 @@ export async function buildServer (
             logger.info({
                 requestId,
                 calculatedAt: result.calculatedAt,
-                from, to, exactSide: result.exactSide, requestedAmount: amount,
-                strategy, includeFees, maxVenues, minLegNotional,
-                exchangesFilter: result.exchangesFilter, certifiedOnly, bridges,
+                from: result.from, to: result.to, exactSide: result.exactSide,
+                requestedAmount: result.requestedAmount,
+                strategy: result.strategy, includeFees: result.includeFees,
+                maxVenues: parsed.opts.maxVenues, minLegNotional: parsed.opts.minLegNotional,
+                exchangesFilter: result.exchangesFilter, certifiedOnly: result.certifiedOnly,
+                bridges: parsed.req.bridges,
                 hops: result.hops.map((h) => ({
                     pair: h.pair, side: h.side, in: h.amountIn, out: h.amountOut,
                     legs: h.legs.map((l) => ({ ex: l.exchangeId, amt: l.amount, eff: l.effectivePrice })),
-                    fee: h.feeCost, feeCcy: h.feeCurrency, fresh: h.freshVenueCount,
+                    fee: h.feeCost, feeCcy: h.feeCurrency, fresh: h.freshVenueCount, impactBps: h.impactBps,
                 })),
-                amountIn: result.amountIn,
-                amountOut: result.amountOut,
-                effectiveRate: result.effectiveRate,
-                fullyFillable: result.fullyFillable,
-                fillRatio: result.fillRatio,
+                // The losing candidates, so "why this market?" is answerable after the fact — the
+                // same reason quotes[] makes "why this venue?" answerable.
+                pathsConsidered: result.pathsConsidered.map((p) => ({
+                    pairs: p.pairs, out: p.amountOut, score: p.score, chosen: p.chosen,
+                })),
+                amountIn: result.amountIn, amountOut: result.amountOut,
+                effectiveRate: result.effectiveRate, referenceRate: result.referenceRate,
+                impactBps: result.impactBps,
+                fullyFillable: result.fullyFillable, fillRatio: result.fillRatio,
                 savingVsBestSingleBps: result.savingVsBestSingleBps,
                 unroutableReason: result.unroutableReason,
                 unroutableHopIndex: result.unroutableHopIndex,
-                requireFullFill, stalenessPenaltyBps, maxStalenessMs,
+                requireFullFill: parsed.opts.requireFullFill,
+                stalenessPenaltyBps: result.stalenessPenaltyBps,
+                hopPenaltyBps: result.hopPenaltyBps,
+                maxStalenessMs: result.staleBookMs,
             }, 'route recommendation');
 
             if (result.unroutableReason === 'no_market') {
@@ -326,30 +243,51 @@ export async function buildServer (
         },
     );
 
-    app.get<{ Params: { symbol: string }; Querystring: StreamQuery }>(
-        '/stream/best/:symbol',
+    // The same route, recomputed and pushed whenever any market it depends on moves. Takes the
+    // identical query parameters as GET /route and answers with the identical body — a caller
+    // switching from polling to streaming changes the URL and nothing else.
+    app.get<{ Querystring: RouteQuery }>(
+        '/stream/route',
         { websocket: true },
         (socket, request) => {
-            const symbol = decodeURIComponent(request.params.symbol);
-            const side = request.query.side === 'sell' ? 'sell' : 'buy';
+            const parsed = parseRouteQuery(request.query, randomUUID());
+            if (!parsed.ok) {
+                socket.send(JSON.stringify({ error: parsed.error }));
+                socket.close(1008, 'invalid request');
+                return;
+            }
+            const { req, opts } = parsed;
 
-            // Validate amount exactly as the REST handler does. Previously this path took
-            // Number(...) unchecked, so `amount=abc` produced NaN — which defeats the
-            // `remaining <= 0` termination check in walkBook, making it traverse every level of
-            // every book and then stream {amount: null, filledAmount: null, averagePrice: null}
-            // forever. `amount=-5` and absurd magnitudes were likewise accepted. A streaming
-            // endpoint repeating that work on every book update is strictly worse than the
-            // one-shot REST equivalent, so it needs at least the same validation.
-            const amount = Number(request.query.amount ?? '0.01');
-            if (!Number.isFinite(amount) || amount <= 0) {
-                socket.send(JSON.stringify({ error: 'amount query param must be a positive finite number' }));
-                socket.close(1008, 'invalid amount');
+            const pairsNow = () => candidatePairs(cache, req.from, req.to, req.bridges);
+            if (pairsNow().length === 0) {
+                // Nothing to subscribe to means no update could ever arrive; holding the socket
+                // open would be a silent hang rather than an answer.
+                socket.send(JSON.stringify({
+                    error: `no market or bridge path exists between ${req.from} and ${req.to}`,
+                    unroutableReason: 'no_market',
+                }));
+                socket.close(1008, 'no_market');
+                return;
+            }
+
+            // Refused for the same reason GET /route answers 501: exact-out across hops needs a
+            // backwards solve that does not exist yet. Accepting here would mean the streaming
+            // endpoint takes a request its REST twin rejects, which is exactly the drift the
+            // shared parser exists to prevent.
+            const first = computeRoute(cache, feeRegistry, req, opts);
+            if (first.unroutableReason === 'exact_out_multi_hop_unsupported') {
+                socket.send(JSON.stringify({
+                    error: 'exact-out is not supported over a bridged route; re-ask with amountIn',
+                    unroutableReason: first.unroutableReason,
+                }));
+                socket.close(1008, 'exact_out_multi_hop_unsupported');
                 return;
             }
 
             // Cap concurrent streams per key. Rate limiting bounds how fast connections open, not
-            // how many stay open, and each one costs a cache listener plus recomputation on every
-            // book update for its symbol. Counted per key so one client cannot starve another.
+            // how many stay open, and each one costs a cache listener per watched market plus
+            // recomputation on every update to any of them. Counted per key so one client cannot
+            // starve another.
             const connectionKey = extractApiKey(request.headers as Record<string, unknown>) ?? 'unknown';
             const openForKey = wsConnectionsByKey.get(connectionKey) ?? 0;
             if (openForKey >= wsMaxConnectionsPerKey) {
@@ -361,29 +299,60 @@ export async function buildServer (
             }
             wsConnectionsByKey.set(connectionKey, openForKey + 1);
 
-            // Push-on-change rather than polling: with N clients x a fixed
-            // poll interval, CPU cost scales with N regardless of whether
-            // anything changed, which doesn't hold up at scale. A single
-            // pending-flush flag coalesces bursts (a fast-moving symbol can
-            // emit hundreds of book updates/sec) into at most one computed
-            // result per event-loop tick, still bounded by the connected
-            // socket's own backpressure.
             let flushPending = false;
-            const flush = () => {
-                flushPending = false;
-                if (socket.readyState !== socket.OPEN) return;
-                const result = computeBestPrice(cache, feeRegistry, symbol, side, amount, config.staleBookMs);
-                socket.send(JSON.stringify(result));
-            };
+            const watched = new Set<string>();
             const onUpdate = () => {
                 if (flushPending) return;
                 flushPending = true;
                 setImmediate(flush);
             };
 
+            // The set of markets that could change this answer is NOT fixed for the life of the
+            // socket. computeRoute re-enumerates candidate paths against the live cache on every
+            // push, so a market listed after connect can become the winning route — and a watch set
+            // frozen at connect would then be quoting a market it is not subscribed to, going silent
+            // until some unrelated leg happened to tick and then jumping. Same hazard during normal
+            // startup, when connectors populate the cache over several seconds. So the subscription
+            // is re-derived rather than captured.
+            const syncWatched = () => {
+                const want = new Set(pairsNow());
+                for (const pair of want) {
+                    if (watched.has(pair)) continue;
+                    cache.on(`update:${pair}`, onUpdate);
+                    watched.add(pair);
+                }
+                for (const pair of [...watched]) {
+                    if (want.has(pair)) continue;
+                    cache.off(`update:${pair}`, onUpdate);
+                    watched.delete(pair);
+                }
+            };
+
+            // Push-on-change rather than polling: with N clients x a fixed poll interval, CPU cost
+            // scales with N regardless of whether anything changed, which doesn't hold up at
+            // scale. A single pending-flush flag coalesces bursts (a fast-moving symbol can emit
+            // hundreds of book updates/sec, and a bridged route watches several such symbols) into
+            // at most one computed result per event-loop tick.
+            function flush () {
+                flushPending = false;
+                if (socket.readyState !== socket.OPEN) return;
+                // Drop this frame if the peer is not keeping up. Coalescing bounds how often we
+                // COMPUTE, not how fast the client drains, so without this a slow consumer grows
+                // the send buffer without limit — the socket-level backpressure this used to claim
+                // to rely on does not exist for ws, which buffers instead of blocking.
+                if (socket.bufferedAmount > WS_MAX_BUFFERED_BYTES) return;
+                // A fresh id per push: each frame is its own recommendation, and an audit trail
+                // that reused one id across a long-lived stream could not distinguish them.
+                socket.send(JSON.stringify(
+                    computeRoute(cache, feeRegistry, req, { ...opts, requestId: randomUUID() })));
+                syncWatched();
+            }
+
             // Heartbeat reaper. A socket that dies without a close frame (half-open TCP, suspended
-            // client) would otherwise hold its listener and its slot against the cap forever, so
+            // client) would otherwise hold its listeners and its slot against the cap forever, so
             // liveness is asserted actively rather than waiting for a close that may never arrive.
+            // It doubles as the resubscribe tick: a market appearing in a pair nobody is watching
+            // yet cannot wake us on its own, so the watch set is re-derived here too.
             let alive = true;
             socket.on('pong', () => { alive = true; });
             const heartbeat = setInterval(() => {
@@ -395,9 +364,12 @@ export async function buildServer (
                 }
                 alive = false;
                 socket.ping();
+                const before = watched.size;
+                syncWatched();
+                if (watched.size !== before) onUpdate();
             }, wsIdleTimeoutMs);
 
-            cache.on(`update:${symbol}`, onUpdate);
+            syncWatched();
             flush();
 
             // Idempotent: 'close' can fire after terminate(), and releasing twice would corrupt
@@ -407,7 +379,8 @@ export async function buildServer (
                 if (released) return;
                 released = true;
                 clearInterval(heartbeat);
-                cache.off(`update:${symbol}`, onUpdate);
+                for (const pair of watched) cache.off(`update:${pair}`, onUpdate);
+                watched.clear();
                 const remaining = (wsConnectionsByKey.get(connectionKey) ?? 1) - 1;
                 if (remaining > 0) {
                     wsConnectionsByKey.set(connectionKey, remaining);

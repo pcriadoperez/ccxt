@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: CCXT Order Router API
-  version: 1.0.0
+  version: 1.2.0
   description: |
     Smart order router over live L2 order books from ~60 exchanges (ccxt.pro WebSocket).
 
@@ -35,6 +35,30 @@ info:
     with the best top-of-book price is frequently *not* the venue with the best price for your
     size. Ranking is on the fee-adjusted price; fees differ by up to ~4x between venues and
     routinely invert the ranking.
+
+    ### Price impact is reported, not left for you to derive
+
+    Every hop carries a `referencePrice` (the best fee-adjusted price available anywhere for an
+    infinitesimally small order) and an `impactBps` measuring how much worse your actual size
+    executes. The route carries the end-to-end pair, `referenceRate` and `impactBps`. Positive
+    always means worse, on both sides. Fees and the staleness penalty are in *both* halves of the
+    comparison, so what is left is purely the cost of consuming depth — which is the number that
+    tells you whether to split an order or shrink it.
+
+    ### Bridges are compared, not guessed
+
+    When more than one market path exists the router solves all of them and takes the best:
+    the direct market, plus one two-hop route per asset in `bridges`. `pathsConsidered` reports
+    every candidate with its output and its score, so the choice is auditable. A longer path must
+    beat a shorter one by more than `hopPenaltyBps` per extra hop — a second order is a second
+    chance for the price to move between fills, and that risk is not in the order book.
+
+    ### Streaming
+
+    `GET /stream/route` is the same request over a WebSocket: identical query parameters, identical
+    response body, pushed whenever any market the route depends on moves. Bridged routes watch
+    every leg. Invalid parameters close the socket with code 1008 and the same message the REST
+    endpoint would have returned as a 400.
 
     ### Responses callers must handle
     - `hops: []` with a non-null `unroutableReason` — a deliberate refusal to quote, not an
@@ -114,12 +138,23 @@ paths:
         - name: bridges
           in: query
           description: |
-            Comma-separated intermediary assets to try, in priority order, when no direct market
-            exists. Defaults to `USDT,USDC,BTC,ETH`. An explicitly EMPTY value disables bridging
-            entirely (direct markets only). The first bridge with both legs available wins — the
-            router does not currently compare bridges for cost.
+            Comma-separated intermediary assets to consider. Defaults to `USDT,USDC,BTC,ETH`. An
+            explicitly EMPTY value disables bridging entirely (direct markets only).
+
+            Every listed bridge that has both legs available is solved and scored against the direct
+            market, and the best wins — the router does not stop at the first bridge that happens to
+            work. Each extra candidate costs real compute (roughly +0.5ms per two-hop candidate at
+            full-discovery scale), so trim the list when you know which intermediary you want.
           schema: { type: string, default: 'USDT,USDC,BTC,ETH' }
           example: USDT,USDC
+        - name: hopPenaltyBps
+          in: query
+          description: |
+            How much better a bridged route must be, per EXTRA hop, before it beats a direct market.
+            Defaults to 5. A second order is a second chance for the price to move between fills,
+            and that risk is not priced into any order book — so a bridge winning by a hair is not
+            actually the better trade. Set 0 to compare purely on rate.
+          schema: { type: number, minimum: 0, maximum: 10000, default: 5 }
         - name: strategy
           in: query
           description: |
@@ -441,6 +476,19 @@ components:
         fullyFillable:
           type: boolean
           description: False means cached depth could not cover this hop's requested size.
+        referencePrice:
+          type: [number, 'null']
+          description: |
+            The best fee- and staleness-adjusted price available on ANY fresh permitted venue for an
+            infinitesimally small order — the frictionless benchmark. Deliberately not the chosen
+            venue's own top of book, which would report zero impact for an order that demonstrably
+            paid more than the market's best available price. Null when nothing fresh could be priced.
+        impactBps:
+          type: [number, 'null']
+          description: |
+            How much worse this hop's size executes than referencePrice, in basis points. POSITIVE IS
+            ALWAYS WORSE, on both sides. Fees and the staleness penalty appear in both halves of the
+            comparison and cancel, so this isolates the cost of consuming depth.
         freshVenueCount:
           type: integer
           description: How many considered venues for this hop were within the freshness cutoff.
@@ -448,6 +496,25 @@ components:
           type: array
           description: Every venue considered for this hop, including stale and unfillable ones — the "why these?" diagnostic.
           items: { $ref: '#/components/schemas/RoutingQuote' }
+    ConsideredPath:
+      type: object
+      description: One candidate market path the router evaluated, whether or not it won.
+      properties:
+        pairs:
+          type: array
+          items: { type: string }
+          description: The markets this path would trade, in order.
+        bridge:
+          type: [string, 'null']
+          description: The intermediary asset, or null for a direct market.
+        amountOut: { type: number, format: double, description: Raw output this path would produce. }
+        fullyFillable: { type: boolean }
+        score:
+          type: number
+          description: |
+            amountOut after the per-extra-hop penalty. This, not amountOut, decides the winner — so a
+            path can show the highest amountOut and still lose, which is the intended behaviour.
+        chosen: { type: boolean }
     RouteResult:
       type: object
       description: |
@@ -500,6 +567,37 @@ components:
           type: number
           description: Freshness cutoff applied, echoed so bookAgeMs on each quote is interpretable without knowing server config.
         stalenessPenaltyBps: { type: number }
+        requireFullFill:
+          type: boolean
+          description: |
+            Echoed so a caller can confirm the safety flag they sent was applied. Without the echo a
+            request that lost the flag in transit is indistinguishable from one that never set it.
+        hopPenaltyBps:
+          type: number
+          description: The per-extra-hop penalty applied when comparing candidate paths, echoed back.
+        referenceRate:
+          type: [number, 'null']
+          description: |
+            The end-to-end frictionless rate — each hop's referencePrice chained together. What you
+            would receive if size were free. Null when any hop could not be benchmarked.
+        impactBps:
+          type: [number, 'null']
+          description: |
+            How far effectiveRate falls short of referenceRate, in basis points — the end-to-end cost
+            of size across every hop. Positive is worse.
+
+            Note the denominator differs from the per-hop `impactBps`: a hop measures against its
+            benchmark PRICE (the trading convention, `(executed - benchmark) / benchmark`), while
+            this measures against the benchmark RATE. For a buy the two are reciprocals, so the
+            numbers agree to first order and diverge only as impact grows large. Use the hop figure
+            to reason about a single fill and this one to compare whole routes.
+        pathsConsidered:
+          type: array
+          description: |
+            Every candidate market path evaluated, winner flagged. Empty when only one path existed —
+            there was nothing to choose between. This is to "why this market?" what quotes[] is to
+            "why this venue?".
+          items: { $ref: '#/components/schemas/ConsideredPath' }
         hops:
           type: array
           description: |
