@@ -279,8 +279,11 @@ traversed every level of every book — repeatedly, on every update.
 Multiple named keys, stored hashed, created and revoked from a CLI, with every request in the log
 attributable to the key that made it.
 
+One key per real consumer, named after it — the name is what shows up in every log line, so it
+should identify who is calling, not what you hoped would call.
+
 ```bash
-npm run keys:create -- --name acme-desk --note "docs demo"
+npm run keys:create -- --name acme-desk --note "issued 2026-08-23"
   id         k_7f3a91c2
   name       acme-desk
   key        or_live_kQ8vN2pR7wZ3xL9mT4bY6cF1hJ5sD0aG8nV2eU7iO3x7Qa

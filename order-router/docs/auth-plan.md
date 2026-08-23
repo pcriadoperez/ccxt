@@ -742,7 +742,7 @@ if (envKey && envKey.length > 0) {
 |---|---|---|---|
 | **0. Ship** | Merge the code. `ORDER_ROUTER_API_KEY` still in env; no `keys.json` on the box yet (missing file = empty store + warn, not fatal). | – | – |
 | **1. Deploy router** | One planned restart, off-peak. Verify: `/health` 200; the *old* key still 200s on `/symbols`; log lines now carry `keyId:"k_legacy"`. | **1×, planned** | previous build; env key untouched |
-| **2. Issue keys** | `keys:create --name mcp-prod`, `--name docs-site`, `--name pablo-cli`. Distribute out of band. | none (10 s reload) | `keys:delete` |
+| **2. Issue keys** | One key per REAL consumer, named after it. Enumerate them first — check what actually calls the service (running processes, nginx upstreams, anything holding the current shared key) rather than assuming. Distribute out of band. | none (10 s reload) | `keys:delete` |
 | **3. Cut over MCP** | Deploy the MCP build that reads the store and forwards the caller's key. Restart the MCP process — it is a stateless proxy with no book state, so this restart is genuinely free. Point its own callers at their new keys. Both schemes still work, so ordering doesn't matter. | MCP only | previous MCP build |
 | **4. Watch** | `jq 'select(.keyId=="k_legacy")'` daily. Chase stragglers by IP from the access log. | – | – |
 | **5. Retire legacy** | When `k_legacy` shows zero requests for 7 consecutive days: add `{"id":"k_legacy","name":"legacy-shared-key","revokedAt":"…"}` to `keys.json`. Takes effect on the next 10 s poll. | **none** | delete the tombstone row |
