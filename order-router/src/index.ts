@@ -6,6 +6,7 @@ import { OrderBookCache } from './cache/orderBookCache.js';
 import { FeeRegistry } from './cache/feeRegistry.js';
 import { ExchangeConnector } from './connectors/exchangeConnector.js';
 import { buildServer } from './api/server.js';
+import { ApiKeyStore } from './api/keyStore.js';
 import { listWatchOrderBookExchanges } from './discovery/exchangeDiscovery.js';
 import { buildSymbolUniverse } from './discovery/symbolUniverse.js';
 import { rankSymbolsByLiquidity } from './discovery/liquidity.js';
@@ -170,12 +171,28 @@ async function main () {
         setInterval(() => loopRegistry.set('main', selfMonitor.sample()), 2000).unref();
     }
 
-    const app = await buildServer(cache, feeRegistry, logger, {}, loopRegistry);
+    // Built once here and shared with the HTTP server. Shards deliberately do NOT get it: a shard
+    // never serves HTTP and never sees a request header, and having the rebalance path restart
+    // processes that re-read and re-poll a secrets file is pure downside — more file handles, more
+    // surface, and a second place a stale snapshot could hide.
+    const keyStore = new ApiKeyStore(config.keysFile, logger, process.env['NODE_ENV'] !== 'production');
+    // Deliberately NOT caught: a malformed key file at boot must refuse to start, because running
+    // with an unknown key set is worse than not running. A MISSING file is fine and non-fatal —
+    // see ApiKeyStore.load() — or deploying the code before creating the file would brick startup.
+    keyStore.load();
+    keyStore.startPolling(config.keysReloadPollMs);
+    // For "right now", when 10 seconds is 10 seconds too long: systemctl reload order-router.
+    process.on('SIGHUP', () => {
+        if (keyStore.reload()) logger.info({ activeKeys: keyStore.activeCount() }, 'API key file reloaded on SIGHUP');
+    });
+
+    const app = await buildServer(cache, feeRegistry, logger, { keyStore }, loopRegistry);
     await app.listen({ port: config.port, host: config.host });
     logger.info({ port: config.port }, 'order-router listening');
 
     const shutdown = async (signal: string) => {
         logger.info({ signal }, 'shutting down');
+        keyStore.stop();
         await app.close();
         await Promise.all(connectors.map((c) => c.stop()));
         shardHandle?.stop();

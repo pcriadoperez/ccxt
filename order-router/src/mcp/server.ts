@@ -3,7 +3,9 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
 import { logger } from '../logger.js';
-import { extractApiKey, resolveApiKey, safeCompare } from '../api/auth.js';
+import { extractApiKey } from '../api/auth.js';
+import { ApiKeyStore } from '../api/keyStore.js';
+import { config } from '../config.js';
 import { FixedWindowRateLimiter } from '../api/rateLimiter.js';
 import * as routerClient from './tools.js';
 import type { RouterClientOptions } from './tools.js';
@@ -152,13 +154,17 @@ async function handleMcpRequest (req: IncomingMessage, res: ServerResponse, apiK
 }
 
 async function main (): Promise<void> {
-    const { apiKey, isDefault } = resolveApiKey();
-    if (isDefault) {
-        logger.warn(
-            'ORDER_ROUTER_API_KEY is not set — MCP server is using the well-known development key '
-            + 'for both inbound auth and upstream calls. Set ORDER_ROUTER_API_KEY before exposing it.',
-        );
-    }
+    // The same keys.json the router reads: same path, same reload rules, same fail-closed-on-
+    // malformed behaviour. Both processes run on the same box and read the same file, so there is
+    // no IPC and no synchronisation problem.
+    const store = new ApiKeyStore(config.keysFile, logger);
+    // Fails closed. If the store cannot be read, every request 401s — it must never fall back to a
+    // static key, because that would make this port a permanent bypass around the router's auth.
+    store.load();
+    store.startPolling(config.keysReloadPollMs);
+    process.on('SIGHUP', () => {
+        if (store.reload()) logger.info('API key file reloaded on SIGHUP');
+    });
 
     const limiter = new FixedWindowRateLimiter(MCP_RATE_LIMIT_MAX, MCP_RATE_LIMIT_WINDOW_MS);
 
@@ -168,13 +174,17 @@ async function main (): Promise<void> {
             // with the same key it uses upstream — otherwise it would be an open bypass around the
             // router's auth.
             const provided = extractApiKey(req.headers as Record<string, unknown>);
-            const keyIsValid = provided !== undefined && safeCompare(provided, apiKey);
+            const record = provided === undefined ? undefined : store.lookup(provided);
+            const keyIsValid = record !== undefined;
 
             // Rate limit BEFORE returning the auth verdict, and bucket by key only when the key is
             // valid. Without this the MCP port is a second, equivalent brute-force door: the
             // router's limiter lives in a different process on a different port and does not cover
             // it, so unlimited key guessing here would defeat the fix applied there.
-            const bucketKey = keyIsValid ? (provided as string) : (req.socket.remoteAddress ?? 'unknown');
+            // Bucket by the stable id, never the secret — same reasoning as the router's limiter.
+            const bucketKey = record !== undefined
+                ? `key:${record.id}`
+                : `ip:${req.socket.remoteAddress ?? 'unknown'}`;
             const decision = limiter.consume(bucketKey);
             if (!decision.allowed) {
                 res.writeHead(429, {
@@ -194,7 +204,13 @@ async function main (): Promise<void> {
                 );
                 return;
             }
-            void handleMcpRequest(req, res, apiKey).catch((err) => {
+            // Forwards the CALLER'S own key upstream rather than a service key. That is what makes
+            // the router's audit log attribute the request to the real end client instead of to
+            // "the MCP server", and what makes per-key rate limits and per-key stream caps apply
+            // end to end. The alternative — a service key plus a caller-supplied identity header —
+            // would bucket every MCP user together (one user could starve the rest) and would
+            // require the router to trust an identity the caller chose.
+            void handleMcpRequest(req, res, provided as string).catch((err) => {
                 logger.error({ err }, 'MCP request handling failed');
                 if (!res.headersSent) {
                     res.writeHead(500, { 'content-type': 'application/json' }).end(

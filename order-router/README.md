@@ -274,63 +274,86 @@ traversed every level of every book — repeatedly, on every update.
 
 ## Security
 
-> **Status: stopgap, not an auth system.** A single shared API key with a hardcoded development
-> fallback. No rotation, no per-client keys, no revocation, no scopes, no TLS termination of its
-> own. It closes the "anyone on the network can read everything" hole; it is not what this should
-> ship with to a real public audience. See Known gaps.
+### API keys
 
-**Authentication** (`src/api/auth.ts`). All routes except `/health` require a key, supplied as
-either `X-API-Key: <key>` or `Authorization: Bearer <key>`.
+Multiple named keys, stored hashed, created and revoked from a CLI, with every request in the log
+attributable to the key that made it.
 
-- `/health` is deliberately unauthenticated so orchestrator liveness probes work before any
-  credential is injectable; it exposes only `status` and process uptime. Everything else —
-  including `/exchanges/status`, which leaks the venue list — is protected.
-- Keys are compared through SHA-256 digests + `timingSafeEqual`, not `===`. Digesting first makes
-  both sides a fixed 32 bytes, so the comparison leaks neither key length nor common prefix
-  through timing, and can't throw on a length mismatch.
-- The auth hook runs at **`preValidation`**, not `onRequest` — deliberately, and this ordering is
-  load-bearing (see Rate limiting below). Unknown paths still return `401` rather than `404` for
-  unauthenticated callers, via a custom not-found handler that re-checks the key, so there's no
-  oracle for enumerating which routes exist; authenticated callers still get a truthful `404`.
-  Missing and wrong keys produce byte-identical responses for the same reason.
-- Unset `ORDER_ROUTER_API_KEY` falls back to the well-known literal `dev-local-key-change-me` and
-  logs a loud warning at startup. That default grants no security; it exists so local dev works
-  and so an unconfigured deployment is obviously wrong rather than subtly wrong.
+```bash
+npm run keys:create -- --name acme-desk --note "docs demo"
+  id         k_7f3a91c2
+  name       acme-desk
+  key        or_live_kQ8vN2pR7wZ3xL9mT4bY6cF1hJ5sD0aG8nV2eU7iO3x7Qa
+  ! This is the only time the key is shown. It is stored hashed and cannot be recovered.
 
-**WebSocket stream limits.** Each `/stream/route` connection holds a cache listener per watched market, removed only on
-socket close — which the client controls — and costs a recomputation on every book update for its
-symbol. Rate limiting bounds how fast connections open, not how many stay open, so it does not
-help here. Two mechanisms bound it: a per-key concurrency cap (`ORDER_ROUTER_WS_MAX_CONNECTIONS_PER_KEY`,
-default 50, refused with a `1013` close), and a ping/pong heartbeat that terminates sockets which
-stop responding without ever sending a close frame (half-open TCP, suspended clients) and would
-otherwise hold their listener and cap slot forever. Slot release is idempotent — releasing twice
-would corrupt the count and eventually lock a legitimate client out of its own budget.
+npm run keys:list                      # never prints a key, only its identity and last4
+npm run keys:revoke -- acme-desk        # by id or name; takes effect within 10s
+npm run keys:delete -- k_7f3a91c2 --yes # removes the row entirely; prefer revoke
+```
 
-**Rate limiting** (`@fastify/rate-limit`). Default 600 requests / 60s.
+Keys live in `keys.json` (`ORDER_ROUTER_KEYS_FILE`, mode 0600, atomic `rename` writes). Only the
+SHA-256 digest is stored, so a leaked file yields no usable credential. A change is picked up
+within 10 seconds by an mtime poll, or instantly with `systemctl reload order-router` — creating or
+killing a key never costs a restart, which at discovery scale would rebuild the whole book cache
+and degrade `/route` for minutes.
 
-- Runs **before** auth, so a flood of invalid keys burns rate-limit budget instead of probing the
-  key comparison unbounded. This ordering is *not* automatic and was originally wrong: because
-  `@fastify/rate-limit` attaches its check as a per-route hook, and route-level `onRequest` hooks
-  run after all instance-level ones, an instance-level auth hook at `onRequest` always preceded
-  the limiter regardless of registration order — so every `401` short-circuited before being
-  counted, and key brute-force was completely unthrottled while authenticated traffic looked
-  correctly limited. Auth therefore runs at `preValidation`, which is after the whole `onRequest`
-  chain. Regression-tested, since testing only the authenticated path cannot catch this.
-- Bucketed **per API key only once the key is valid**; wrong or absent keys bucket by IP. Bucketing
-  unconditionally on the caller-supplied header is a trap — an attacker rotates the header per
-  request, mints a fresh bucket each time, and brute-forces without ever being throttled (it is
-  also an unbounded-memory vector). Valid clients still get per-key fairness, so one can't exhaust
-  another's budget and NAT'd clients aren't collectively throttled.
-- `/health` is exempt — a throttled liveness probe reads as an outage to an orchestrator and would
-  trigger restarts under exactly the load where that's worst.
-- Responses carry `x-ratelimit-*` and `retry-after`.
+**Why unsalted SHA-256 and no KDF.** This looks wrong to password-storage instincts and isn't. The
+secret is 256 CSPRNG bits, not a human-chosen password, so the offline-guessing attack a KDF
+defends against does not exist; bcrypt would cost milliseconds against a ~300µs route computation.
+More importantly a per-key salt would be actively harmful: salted hashes can't be looked up, forcing
+an O(N) loop that reintroduces a "which key matched" timing signal and hands an attacker a
+CPU-amplification lever. Unsalted digests are what make the lookup one hash and one `Map.get` —
+constant-time by construction, flat in key count, and ~3x cheaper than the single-key `safeCompare`
+it replaced (0.334µs vs 1.006µs).
 
-The MCP server authenticates its own callers with the same key and forwards it upstream; without
-that it would be an unauthenticated bypass around the router's auth. It runs in a separate process
-on a separate port, so the Fastify limiter does not cover it — it therefore has its own limiter
-(`src/api/rateLimiter.ts`, a small fixed-window implementation mirroring the same
-bucket-by-key-only-when-valid semantics). Omitting it left a second, equivalent brute-force door
-open on :8081 after the first was closed on :8080.
+**Why a CLI and not an admin endpoint.** An admin endpoint has no non-circular answer to its own
+credential: guard it with an admin-flagged key and that key still has to be bootstrapped out of
+band; guard it with a separate static secret and you've rebuilt the shared-secret design this
+replaces, now protecting key *creation*. Either way it's permanent privilege-escalation surface on
+:443. The operator already has SSH.
+
+Per-key overrides: `--rate-limit N` (own rate-limit bucket size) and `--ws-max N` (own concurrent
+stream cap). Rate-limit buckets are keyed by the stable key id, never by the secret, so the secret
+never lands in the limiter's LRU and a bucket survives key rotation.
+
+**Revocation reaches live sockets.** A stream authenticates once, at upgrade, so revoking a key
+closes its open `/stream/route` connections with 1008 rather than letting the feed run until the
+client hangs up.
+
+### Attribution
+
+Every log line for a request carries `keyId` and `keyName`, bound in `childLoggerFactory` so they
+appear on Fastify's own lines too. `keyId: null` on an unauthenticated request is deliberate — it
+makes failed auth greppable as a first-class thing rather than as an absent field.
+
+| Event | Emitted on |
+|---|---|
+| `request` | every request, including `/health`, 401s and 404s |
+| `route_recommendation` | every `/route` answer, self-contained for a billing or "why there?" dispute |
+| `stream_open` / `stream_close` | WS lifecycle, with `durationMs` |
+
+```bash
+# every request a key made, last 7 days
+zcat -f /var/log/order-router/router.log* \
+  | jq -c 'select(.keyId=="k_7f3a91c2" and .event=="request")'
+
+# who is hammering us
+zcat -f /var/log/order-router/router.log* \
+  | jq -r 'select(.event=="request") | .keyName // "unauthenticated"' | sort | uniq -c | sort -rn
+```
+
+The raw key never reaches the logs. That's enforced four ways: nothing retains the plaintext past
+the digest, pino redacts `x-api-key` and `authorization`, 401 bodies never echo what was presented,
+and a test drives every endpoint with a known key and asserts the captured output contains neither
+it nor its hash. No `keyId` label goes on any Prometheus series — that's the same unbounded
+cardinality trap the codebase already avoids for `/orderbook/:exchange/:symbol`.
+
+### Still not an identity system
+
+No scopes, no expiry, no quotas, no self-serve signup. Every endpoint is read-only, so there is
+nothing to separate yet; a stored-but-unenforced `scopes` field would be worse than none, and the
+loader rejects one outright rather than ignoring it. See `docs/auth-plan.md` for the full design
+and the ordered v2 list.
 
 ## MCP server (`src/mcp/`)
 
@@ -384,7 +407,11 @@ against a running router with live exchange data) during development — not jus
 | `ORDER_ROUTER_API_KEY` | `dev-local-key-change-me` | **Set this in any real deployment.** The default grants no security and logs a warning. |
 | `ORDER_ROUTER_RATE_LIMIT_MAX` | `600` | Requests per window, per API key. |
 | `ORDER_ROUTER_RATE_LIMIT_WINDOW_MS` | `60000` | Rate limit window. |
-| `ORDER_ROUTER_WS_MAX_CONNECTIONS_PER_KEY` | `50` | Max concurrent `/stream/route` sockets per API key. |
+| `ORDER_ROUTER_WS_MAX_CONNECTIONS_PER_KEY` | `50` | Max concurrent `/stream/route` sockets per API key. Overridable per key with `--ws-max`. |
+| `ORDER_ROUTER_WS_MIN_PUSH_INTERVAL_MS` | `100` | Floor between two pushes on one stream socket. |
+| `ORDER_ROUTER_KEYS_FILE` | `./data/keys.json` | API key store. Digests only; mode 0600. |
+| `ORDER_ROUTER_KEYS_RELOAD_POLL_MS` | `10000` | How often to stat the key file for changes. |
+| `ORDER_ROUTER_API_KEY` | – | Legacy single shared key. Still honoured, as `k_legacy`, for migration. |
 | `ORDER_ROUTER_WS_IDLE_TIMEOUT_MS` | `30000` | Heartbeat interval; a socket that misses two beats is terminated. Must stay below the reverse proxy's `proxy_read_timeout`. |
 | `ORDER_ROUTER_TRUST_PROXY` | `false` | Derive client IP from `X-Forwarded-For`. Enable **only** behind a trusted proxy — see "Deploying behind nginx". |
 | `LOG_LEVEL` | `info` | |

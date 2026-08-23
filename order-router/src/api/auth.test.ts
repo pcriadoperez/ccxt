@@ -1,24 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { DEV_API_KEY, extractApiKey, isPublicPath, resolveApiKey, safeCompare } from './auth.js';
 
-test('safeCompare matches identical strings and rejects different ones', () => {
-    assert.equal(safeCompare('secret', 'secret'), true);
-    assert.equal(safeCompare('secret', 'secrez'), false);
-});
-
-test('safeCompare handles differing lengths without throwing', () => {
-    // Naive timingSafeEqual on raw buffers throws on length mismatch; the digest-first approach
-    // must not, or an attacker could DoS/probe with a short key.
-    assert.doesNotThrow(() => safeCompare('a', 'a-much-longer-key'));
-    assert.equal(safeCompare('a', 'a-much-longer-key'), false);
-    assert.equal(safeCompare('', 'nonempty'), false);
-});
-
-test('safeCompare does not treat a prefix as a match', () => {
-    assert.equal(safeCompare('secret', 'secret-extra'), false);
-    assert.equal(safeCompare('secret-extra', 'secret'), false);
-});
+// safeCompare() and resolveApiKey() used to be tested here. Both are gone: constant-time
+// comparison is now a structural property of the store's hash-then-Map.get lookup (asserted by
+// operation count in keyStore.test.ts, which a timing test could never prove), and the dev/env key
+// fallbacks moved into the store's synthetic-record bridges and are covered there.
+import { extractApiKey, isPublicPath } from './auth.js';
 
 test('extractApiKey reads X-API-Key', () => {
     assert.equal(extractApiKey({ 'x-api-key': 'abc' }), 'abc');
@@ -53,29 +40,4 @@ test('isPublicPath ignores the query string rather than matching on it', () => {
     assert.equal(isPublicPath('/health?probe=1'), true);
     // A protected path must not become public by appending a query that mentions /health.
     assert.equal(isPublicPath('/symbols?redirect=/health'), false);
-});
-
-test('resolveApiKey falls back to the dev key and flags it as default', () => {
-    const previous = process.env['ORDER_ROUTER_API_KEY'];
-    delete process.env['ORDER_ROUTER_API_KEY'];
-    try {
-        const resolved = resolveApiKey();
-        assert.equal(resolved.apiKey, DEV_API_KEY);
-        assert.equal(resolved.isDefault, true);
-    } finally {
-        if (previous !== undefined) process.env['ORDER_ROUTER_API_KEY'] = previous;
-    }
-});
-
-test('resolveApiKey prefers a configured key and flags it as non-default', () => {
-    const previous = process.env['ORDER_ROUTER_API_KEY'];
-    process.env['ORDER_ROUTER_API_KEY'] = 'configured-production-key';
-    try {
-        const resolved = resolveApiKey();
-        assert.equal(resolved.apiKey, 'configured-production-key');
-        assert.equal(resolved.isDefault, false);
-    } finally {
-        if (previous === undefined) delete process.env['ORDER_ROUTER_API_KEY'];
-        else process.env['ORDER_ROUTER_API_KEY'] = previous;
-    }
 });

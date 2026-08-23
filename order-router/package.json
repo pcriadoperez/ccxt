@@ -13,7 +13,11 @@
     "bench:ws": "node benchmark/ws-latency.mjs",
     "bench:load": "node benchmark/load-test.mjs",
     "bench:multi-connect": "node benchmark/multi-exchange-connect.mjs",
-    "test": "tsx --test \"src/**/*.test.ts\""
+    "test": "tsx --test \"src/**/*.test.ts\"",
+    "keys:create": "node dist/cli/keys.js create",
+    "keys:list": "node dist/cli/keys.js list",
+    "keys:revoke": "node dist/cli/keys.js revoke",
+    "keys:delete": "node dist/cli/keys.js delete"
   },
   "dependencies": {
     "@fastify/rate-limit": "^11.2.0",

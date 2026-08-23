@@ -1,11 +1,10 @@
-import { createHash, timingSafeEqual } from 'node:crypto';
 import type { FastifyRequest, FastifyReply } from 'fastify';
+import type { ApiKeyRecord, ApiKeyStore } from './keyStore.js';
 
-// Hardcoded development default. This is deliberately a well-known, obviously-fake value so that
-// running unconfigured is safe-by-obviousness rather than safe-by-accident: it grants no security
-// at all, and the server logs a loud warning when it's in use. Production MUST set
-// ORDER_ROUTER_API_KEY. See README "Security" — this is a stopgap for a not-yet-public service,
-// not an auth system (no rotation, no per-client keys, no revocation, no scopes).
+// Hardcoded development default. Deliberately a well-known, obviously-fake value so that running
+// unconfigured is safe-by-obviousness rather than safe-by-accident: it grants no security at all,
+// and the server logs a loud warning when it is in use. It is loaded as a synthetic k_dev record
+// and suppressed the moment a real key file row or ORDER_ROUTER_API_KEY exists.
 export const DEV_API_KEY = 'dev-local-key-change-me';
 
 // Paths served without authentication. Only liveness: orchestrators (k8s, ECS, compose
@@ -21,15 +20,10 @@ export function isPublicPath (url: string): boolean {
     return PUBLIC_PATHS.has(path);
 }
 
-// Compares via fixed-length SHA-256 digests. timingSafeEqual throws on length mismatch, and
-// comparing raw strings would leak key length (and, with ===, the common prefix) through timing.
-// Digesting first makes both sides always 32 bytes, so the comparison is constant-time with
-// respect to both the length and content of the supplied value.
-export function safeCompare (a: string, b: string): boolean {
-    const digestA = createHash('sha256').update(a, 'utf8').digest();
-    const digestB = createHash('sha256').update(b, 'utf8').digest();
-    return timingSafeEqual(digestA, digestB);
-}
+// safeCompare() used to live here. It is deliberately GONE rather than left unused: its
+// constant-time property is now provided structurally by the store's hash-then-Map.get lookup, and
+// leaving an unreferenced crypto helper in the tree invites a future caller to reach for the
+// per-record-compare pattern it enables — which is O(N) and leaks the matching key's position.
 
 // Accepts either `X-API-Key: <key>` or `Authorization: Bearer <key>`. Two forms because MCP and
 // HTTP clients differ in which they can set conveniently; both are equivalent.
@@ -48,24 +42,51 @@ export function extractApiKey (headers: Record<string, unknown>): string | undef
     return undefined;
 }
 
-export function resolveApiKey (): { apiKey: string; isDefault: boolean } {
-    const configured = process.env['ORDER_ROUTER_API_KEY'];
-    if (configured && configured.length > 0) {
-        return { apiKey: configured, isDefault: false };
+// Resolves the presented key to a record ONCE per request. Five consumers need it — the rate
+// limiter's keyGenerator, its per-key max(), this hook, the not-found handler, and the WS handler —
+// and each would otherwise pay its own digest.
+export function resolveKey (store: ApiKeyStore, request: FastifyRequest): ApiKeyRecord | undefined {
+    // childLoggerFactory runs first for every request and has already resolved the key onto the raw
+    // request; reuse that rather than paying a second digest per consumer.
+    const raw = request.raw as { apiKeyRecord?: ApiKeyRecord | null };
+    if (raw.apiKeyRecord !== undefined) {
+        return raw.apiKeyRecord ?? undefined;
     }
-    return { apiKey: DEV_API_KEY, isDefault: true };
+    const req = request as FastifyRequest & { apiKeyResolved?: boolean; apiKeyRecord?: ApiKeyRecord | null };
+    if (req.apiKeyResolved !== true) {
+        const presented = extractApiKey(request.headers as Record<string, unknown>);
+        req.apiKeyRecord = presented === undefined ? null : (store.lookup(presented) ?? null);
+        req.apiKeyResolved = true;
+    }
+    return req.apiKeyRecord ?? undefined;
 }
 
-// Fastify onRequest hook. Runs before routing/body parsing so an unauthenticated caller can't
-// reach any handler or spend parse cycles.
-export function makeAuthHook (expectedApiKey: string) {
+// Fastify preValidation hook — NOT onRequest, and the position is load-bearing twice over.
+// @fastify/rate-limit attaches its check as a ROUTE-level onRequest hook, and route-level onRequest
+// hooks run after every instance-level one; auth at onRequest therefore short-circuited every 401
+// before the limiter could count it, making brute force unlimited (measured: 30 wrong-key requests
+// against a limit of 10 returned 401x30, never 429). Separately, a rejection at onRequest sets
+// reply.sent and halts the chain before @fastify/websocket's own onRequest hook runs, so
+// request.ws is never set and its cleanup no-ops on a socket Node has already handed off — which
+// leaked ~1,700 FDs/sec. preValidation runs after the whole onRequest chain and avoids both.
+export function makeAuthHook (store: ApiKeyStore) {
     return async function authHook (request: FastifyRequest, reply: FastifyReply): Promise<void> {
         if (isPublicPath(request.url)) {
             return;
         }
-        const provided = extractApiKey(request.headers as Record<string, unknown>);
-        if (provided === undefined || !safeCompare(provided, expectedApiKey)) {
-            // Deliberately does not distinguish "missing" from "wrong" — no oracle for probing.
+        // An UNMATCHED path is deliberately left to setNotFoundHandler. This hook is instance-level
+        // preValidation, which runs before any route-level hook — so rejecting here short-circuited
+        // the not-found route's own preHandler chain, and with it the rate limiter attached to it.
+        // Measured: 500 wrong-key requests to invented paths returned 500x401 with zero 429s, i.e.
+        // an unmetered "is this key valid?" oracle at ~2,600 guesses/sec, and the probes left the
+        // real routes' budget untouched. The not-found handler performs the identical check behind
+        // the limiter instead.
+        if (request.routeOptions?.url === undefined) {
+            return;
+        }
+        if (resolveKey(store, request) === undefined) {
+            // Missing, unknown and REVOKED are all one response — no oracle for whether a key was
+            // ever real, which matters more now that keys have a lifecycle.
             await reply.code(401).send({ error: 'unauthorized' });
         }
     };

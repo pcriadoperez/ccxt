@@ -107,6 +107,12 @@ export const config = {
     // at 9.3KB — 6.3 MB/s, and the per-key connection cap is 50. Ten frames a second is faster
     // than any consumer of a routing quote can act, and 65x cheaper.
     wsMinPushIntervalMs: Number(process.env['ORDER_ROUTER_WS_MIN_PUSH_INTERVAL_MS'] ?? 100),
+    // Where API keys live. Relative default for local development; the systemd unit sets an
+    // absolute path under /opt. Contains only digests, never a usable credential.
+    keysFile: process.env['ORDER_ROUTER_KEYS_FILE'] ?? './data/keys.json',
+    // How often to stat the key file for changes. Cheap enough to be uninteresting (~10 syscalls a
+    // minute) and it removes the dangerous failure: a revocation that silently never takes effect.
+    keysReloadPollMs: Number(process.env['ORDER_ROUTER_KEYS_RELOAD_POLL_MS'] ?? 10_000),
     logLevel: process.env['LOG_LEVEL'] ?? 'info',
 
     // Rate limiting. Applied per API key (falling back to client IP when the key is absent, which

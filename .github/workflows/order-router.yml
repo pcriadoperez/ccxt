@@ -53,6 +53,10 @@ jobs:
           ORDER_ROUTER_API_KEY: ci-smoke-key
           ORDER_ROUTER_EXCHANGES: kraken
           ORDER_ROUTER_SYMBOLS: BTC/USDT
+          # Must be set for the ROUTER process, not just the CLI: a path exported later in the
+          # script would leave the two reading different files and the key-lifecycle block below
+          # would assert against a store the server never loaded.
+          ORDER_ROUTER_KEYS_FILE: /tmp/ci-keys.json
           LOG_LEVEL: warn
         run: |
           node dist/index.js > /tmp/router.log 2>&1 &
@@ -111,6 +115,34 @@ jobs:
           code=$(curl -s -o /dev/null -w '%{http_code}' -H 'x-api-key: ci-smoke-key' \
             'http://localhost:8080/route?from=NOTACOIN&to=ALSONOTACOIN&amountIn=1')
           if [ "$code" != "404" ]; then echo "::error::unreachable pair should be 404, got $code"; exit 1; fi
+
+          # The multi-key path, end to end: mint a key with the CLI, use it, revoke it, reload,
+          # and confirm it stops working. The three assertions above still pass through the legacy
+          # env bridge, so both schemes are covered simultaneously — which is exactly the property
+          # the migration depends on.
+          echo "--- a CLI-minted key works, and revoking it takes effect on reload ---"
+          node dist/cli/keys.js create --name ci-key > /tmp/ci-key-create.txt
+          NEWKEY=$(grep -o 'or_live_[A-Za-z0-9_-]*' /tmp/ci-key-create.txt)
+          if [ -z "$NEWKEY" ]; then echo "::error::keys create printed no key"; cat /tmp/ci-key-create.txt; exit 1; fi
+
+          # The router was started before the file existed, so this also exercises reload-from-absent.
+          kill -HUP $ROUTER_PID; sleep 2
+          code=$(curl -s -o /dev/null -w '%{http_code}' -H "x-api-key: $NEWKEY" http://localhost:8080/symbols)
+          if [ "$code" != "200" ]; then echo "::error::a new key should be 200, got $code"; cat /tmp/router.log; exit 1; fi
+
+          node dist/cli/keys.js revoke ci-key
+          kill -HUP $ROUTER_PID; sleep 2
+          code=$(curl -s -o /dev/null -w '%{http_code}' -H "x-api-key: $NEWKEY" http://localhost:8080/symbols)
+          if [ "$code" != "401" ]; then echo "::error::a revoked key should be 401, got $code"; exit 1; fi
+
+          # The legacy env key must still work throughout, or the migration would need a flag day.
+          code=$(curl -s -o /dev/null -w '%{http_code}' -H 'x-api-key: ci-smoke-key' http://localhost:8080/symbols)
+          if [ "$code" != "200" ]; then echo "::error::the legacy env key stopped working, got $code"; exit 1; fi
+
+          echo "--- the key file must never contain a usable credential ---"
+          if grep -q 'or_live_' /tmp/ci-keys.json; then
+            echo "::error::plaintext key found in the key file"; exit 1
+          fi
 
           echo "smoke test passed"
 
