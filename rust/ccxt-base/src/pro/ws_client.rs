@@ -213,9 +213,27 @@ impl ClientState {
         self.notify.notify_waiters();
     }
 
-    /// If any of `hashes` has a resolved value or rejection, remove and return
-    /// it (`Ok` for value, `Err` for rejection). Rejections take priority.
+    /// Settle the watch that registered `hashes`: if any has a resolved value or
+    /// rejection, remove and return it (`Ok` for value, `Err` for rejection,
+    /// rejections first) and retire the losing hashes.
     pub fn take_settled(&self, hashes: &[String]) -> Option<Result<Value, Value>> {
+        self.take_settled_inner(hashes, true)
+    }
+
+    /// Same, but leaves the pending set untouched. For a caller polling hashes
+    /// it does not own — a nested `watch` on a url an ancestor loop is already
+    /// driving registers the hashes but never awaits them, so retiring here
+    /// would drop the ancestor's registration and silently discard every later
+    /// resolve for it.
+    pub fn take_settled_no_retire(&self, hashes: &[String]) -> Option<Result<Value, Value>> {
+        self.take_settled_inner(hashes, false)
+    }
+
+    fn take_settled_inner(
+        &self,
+        hashes: &[String],
+        retire: bool,
+    ) -> Option<Result<Value, Value>> {
         {
             let mut settled = None;
             {
@@ -228,7 +246,9 @@ impl ClientState {
                 }
             }
             if let Some(e) = settled {
-                self.retire_futures(hashes);
+                if retire {
+                    self.retire_futures(hashes);
+                }
                 return Some(Err(e));
             }
         }
@@ -241,7 +261,9 @@ impl ClientState {
                 // `futures` forever, which would let a later blanket `reject`
                 // record an error under a hash nobody is waiting on and hand it
                 // to an unrelated watch on that hash.
-                self.retire_futures(hashes);
+                if retire {
+                    self.retire_futures(hashes);
+                }
                 return Some(Ok(v));
             }
         }
@@ -412,9 +434,12 @@ impl ClientState {
 
     fn prepare_reconnect_channel(&self) {
         let (tx, rx) = mpsc::channel(OUTGOING_CAPACITY);
-        // Ask the outgoing writer to close its socket before we drop our handle
-        // on it, so the superseded connection is torn down rather than left
-        // parked on `rx.recv()` holding a live socket open.
+        // Best-effort: ask the outgoing writer to close its socket so the
+        // superseded connection is torn down rather than left parked on
+        // `rx.recv()`. Best-effort because the two `fail_transport` paths that
+        // fire *on a full outgoing queue* cannot queue anything more — there the
+        // socket is reclaimed when the writer's next send fails, or when the
+        // retired generation stops its keep-alive from holding the sender alive.
         let previous = std::mem::replace(&mut *self.outgoing.lock().unwrap(), tx);
         let _ = previous.try_send(Message::Close(None));
         *self.pending_rx.lock().unwrap() = Some(rx);
@@ -1422,6 +1447,84 @@ mod tests {
             .collect();
         assert_eq!(replayed, vec!["1-auth", "2-book", "3-trades"]);
         drop_client(9918, "wss://replayorder.example");
+    }
+
+    #[test]
+    fn non_owning_poll_leaves_the_ancestors_registration_intact() {
+        // A nested watch on a url an ancestor loop is already driving polls the
+        // client and returns immediately. It must not retire hashes the ancestor
+        // registered, or the ancestor's later resolve is silently dropped.
+        let client = ensure_slot(9919, "wss://nested.example");
+        let outer = vec!["a".to_string(), "b".to_string()];
+        let nested = vec!["b".to_string(), "c".to_string()];
+        client.note_futures(&outer);
+        client.note_futures(&nested);
+        client.resolve("c", Value::Int(7));
+        // The nested poll takes its own value...
+        assert_eq!(
+            client.take_settled_no_retire(&nested),
+            Some(Ok(Value::Int(7)))
+        );
+        // ...without unregistering the ancestor's hashes.
+        client.resolve("b", Value::Int(42));
+        assert_eq!(client.take_settled(&outer), Some(Ok(Value::Int(42))));
+        drop_client(9919, "wss://nested.example");
+    }
+
+    #[test]
+    fn owning_settle_still_retires_losers() {
+        // take_settled keeps retiring; only the no_retire variant opts out.
+        let client = ensure_slot(9920, "wss://owning.example");
+        let hashes = vec!["a".to_string(), "b".to_string()];
+        client.note_futures(&hashes);
+        client.resolve("a", Value::Int(1));
+        assert_eq!(client.take_settled(&hashes), Some(Ok(Value::Int(1))));
+        assert!(!client.has_pending_futures());
+        drop_client(9920, "wss://owning.example");
+    }
+
+    #[tokio::test]
+    async fn value_delivered_before_close_is_returned_not_reported_as_a_close() {
+        // `take_settled` consumes the entry, so the drive loop's is_closed guard
+        // must RETURN a value it finds rather than drop it and panic with
+        // ExchangeClosedByUser. Race a resolve + close against a live loop.
+        use crate::exchange::ExchangeRuntime;
+        let url = "wss://closerace.example";
+        mock_setup(url);
+        let mut core = TestWsCore {
+            exchange: crate::exchange::Exchange::new(None),
+        };
+        let owner = core.exchange.internals.ws_owner_id;
+        // Pre-create the slot so we hold the very Arc the drive loop will drive.
+        let client = ensure_slot(owner, url);
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            // A value lands, then the client is closed before the loop reads it.
+            client.resolve("ticker", Value::Str("99.5".to_string()));
+            drop_client(owner, url);
+        });
+        let args = [
+            Value::Str("{\"op\":\"subscribe\"}".to_string()),
+            Value::Str("ticker".to_string()),
+            Value::Null,
+        ];
+        let watch = ExchangeRuntime::watch(
+            &mut core,
+            Value::Str(url.to_string()),
+            Value::Str("ticker".to_string()),
+            &args,
+        );
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(watch)),
+        )
+        .await;
+        match outcome {
+            Err(_) => panic!("watch hung"),
+            Ok(Err(_)) => panic!("the value delivered before the close was discarded"),
+            Ok(Ok(v)) => assert_eq!(v, Value::Str("99.5".to_string())),
+        }
+        mock_teardown(url);
     }
 
     #[tokio::test]

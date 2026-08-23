@@ -1128,7 +1128,11 @@ pub trait ExchangeRuntime: crate::exchange_generated::ExchangeBase {
             .try_with(|s| s.lock().unwrap().contains(&url))
             .unwrap_or(false);
         if nested_same {
-            return match client.take_settled(&hashes) {
+            // A non-owning poll: the ancestor loop is the one registered on these
+            // hashes, so take the value if it is there but leave the pending set
+            // alone — retiring here would drop the ancestor's registration and
+            // silently discard every later resolve for it.
+            return match client.take_settled_no_retire(&hashes) {
                 Some(Ok(v)) => v,
                 _ => Value::Null,
             };
@@ -1187,16 +1191,24 @@ pub trait ExchangeRuntime: crate::exchange_generated::ExchangeBase {
                     // rejection and dropped the registry entry, so reconnecting
                     // would dial a fresh socket nobody is driving.
                     if client.is_closed() {
-                        if let Some(Err(e)) = client.take_settled(&hashes) {
-                            panic!(
+                        // `take_settled` CONSUMES the entry, so every arm must be
+                        // handled here: a value delivered before the close is the
+                        // watch's result, not something to discard on the way to
+                        // reporting the close.
+                        match client.take_settled(&hashes) {
+                            Some(Ok(v)) => return v,
+                            Some(Err(e)) => panic!(
                                 "{}",
                                 match &e {
                                     Value::Str(s) => s.clone(),
                                     v => crate::runtime::stringify_param(v),
                                 }
-                            );
+                            ),
+                            None => panic!(
+                                "[ExchangeClosedByUser] {} websocket client closed",
+                                url
+                            ),
                         }
-                        panic!("[ExchangeClosedByUser] {} websocket client closed", url);
                     }
                     // The static-WS mock never reconnects: it is permanently
                     // "connected", so `ensure_client` always succeeds and an
