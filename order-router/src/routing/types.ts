@@ -41,6 +41,10 @@ export interface RouteHop {
     // staleness penalty are already in both halves of the comparison.
     impactBps: number | null;
     quotes: RoutingQuote[];
+    // Venues considered for this hop after the exchange/certified filters, whether or not they
+    // were fresh and whether or not quotes[] was returned. Distinguishes "the filters excluded
+    // everything" from "every book was stale" without depending on the diagnostic being requested.
+    venueCount: number;
     freshVenueCount: number;
 }
 
@@ -69,6 +73,10 @@ export interface RouteOptions {
     certifiedOnly: boolean;
     requireFullFill: boolean;
     stalenessPenaltyBps: number;
+    // Whether to compute and return the per-venue quotes[] diagnostic. It is ~90% of a response's
+    // bytes and is a "why these venues?" explanation, not an input to any decision — so a stream
+    // pushing many times a second does not want it by default.
+    includeQuotes: boolean;
     // How much better a multi-hop route must be, per extra hop, before it beats a direct market.
     // A second order is a second chance for the price to move between fills, and that risk is not
     // in the book — so a bridge that wins by a hair is not actually the better trade.

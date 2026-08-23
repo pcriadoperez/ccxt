@@ -18,7 +18,7 @@ function book (
 const OPTS = (o: Partial<RouteOptions> = {}): RouteOptions => ({
     strategy: 'split_optimal', includeFees: false, maxVenues: 5, minLegNotional: 0,
     staleBookMs: 5000, requestId: 'test', certifiedOnly: false, requireFullFill: false,
-    stalenessPenaltyBps: 0, hopPenaltyBps: 0, ...o,
+    stalenessPenaltyBps: 0, hopPenaltyBps: 0, includeQuotes: true, ...o,
 });
 const close = (a: number, b: number, tol = 1e-6) => Math.abs(a - b) < tol;
 

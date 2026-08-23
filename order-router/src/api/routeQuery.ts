@@ -23,6 +23,7 @@ export interface RouteQuery {
     requireFullFill?: string;
     stalenessPenaltyBps?: string;
     hopPenaltyBps?: string;
+    includeQuotes?: string;
 }
 
 export type ParsedRoute = { ok: true; req: RouteRequest; opts: RouteOptions }
@@ -46,7 +47,14 @@ function num (raw: string | undefined, fallback: number): number | null {
     return Number.isFinite(n) ? n : null;
 }
 
-export function parseRouteQuery (query: RouteQuery, requestId: string): ParsedRoute {
+export function parseRouteQuery (
+    query: RouteQuery, requestId: string,
+    // The streaming endpoint defaults quotes OFF. Measured on the live service, a single
+    // /stream/route socket pushed 658 frames/sec at 9.3KB each — 6.3 MB/s, of which the per-venue
+    // quotes array is the overwhelming majority. A once-per-request explanation is cheap; the same
+    // explanation ten times a second is not. An explicit includeQuotes= always wins.
+    defaults: { includeQuotes?: boolean } = {},
+): ParsedRoute {
     const fail = (error: string): ParsedRoute => ({ ok: false, error });
 
     const repeated = rejectRepeated(query as Record<string, unknown>);
@@ -123,6 +131,9 @@ export function parseRouteQuery (query: RouteQuery, requestId: string): ParsedRo
             staleBookMs: maxStalenessMs, requestId, exchanges,
             certifiedOnly: query.certified === 'true',
             requireFullFill: query.requireFullFill === 'true',
+            includeQuotes: query.includeQuotes === undefined
+                ? (defaults.includeQuotes ?? true)
+                : query.includeQuotes !== 'false',
             stalenessPenaltyBps, hopPenaltyBps,
         },
     };

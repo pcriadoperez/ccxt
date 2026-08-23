@@ -879,3 +879,105 @@ test('mints a request id when the caller does not supply one', async () => {
     assert.equal(r.headers['x-request-id'], id, 'header and body must agree');
     await app.close();
 });
+
+test('WS /stream/route is rate-bounded and omits the quotes diagnostic by default', async () => {
+    // Coalescing per event-loop tick is not a rate bound: BTC/USDT alone updates from dozens of
+    // venues, so nearly every tick carries one. Measured against the live service before the floor
+    // existed, ONE socket pushed 658 frames/sec at 9.3KB each — 6.3 MB/s, against a per-key cap of
+    // 50 sockets. Both halves of the fix are asserted: how often it pushes, and how big each push is.
+    const { WebSocket } = await import('ws');
+    process.env['ORDER_ROUTER_API_KEY'] = TEST_API_KEY;
+    const cache = new OrderBookCache();
+    const feeRegistry = new FeeRegistry();
+    for (const exchangeId of ['a', 'b', 'c', 'd', 'e']) {
+        cache.setBook(book({ exchangeId, bids: [{ price: 99, amount: 50 }], asks: [{ price: 101, amount: 50 }] }));
+        feeRegistry.setFee(exchangeId, 'BTC/USDT', 0.001);
+    }
+    const app = await buildServer(cache, feeRegistry, silentLogger,
+        { rateLimitMax: 100000, wsMinPushIntervalMs: 100 });
+    try {
+        await app.listen({ port: 0, host: '127.0.0.1' });
+        const address = app.server.address();
+        const port = typeof address === 'object' && address ? address.port : 0;
+
+        const frames: Record<string, unknown>[] = [];
+        const ws = new WebSocket(`ws://127.0.0.1:${port}/stream/route?from=USDT&to=BTC&amountOut=1`, {
+            headers: { 'x-api-key': TEST_API_KEY },
+        });
+        ws.on('message', (d: Buffer) => frames.push(JSON.parse(d.toString())));
+        await new Promise<void>((resolve, reject) => {
+            ws.on('open', () => resolve());
+            ws.on('error', reject);
+            setTimeout(() => reject(new Error('never opened')), 3000);
+        });
+
+        // Hammer the cache the way five live exchanges would.
+        const stop = Date.now() + 600;
+        let updates = 0;
+        while (Date.now() < stop) {
+            for (const exchangeId of ['a', 'b', 'c', 'd', 'e']) {
+                cache.setBook(book({ exchangeId, bids: [{ price: 99, amount: 50 }],
+                    asks: [{ price: 101 + (updates % 7) * 0.01, amount: 50 }] }));
+                updates++;
+            }
+            await new Promise((r) => setImmediate(r));
+        }
+        await new Promise((r) => setTimeout(r, 300));
+
+        assert.ok(updates > 500, `precondition: the cache must actually be busy, got ${updates} updates`);
+        // ~900ms at a 100ms floor allows roughly 10 pushes; anything near `updates` means unbounded.
+        assert.ok(frames.length <= 15,
+            `${updates} cache updates produced ${frames.length} frames — the push floor is not holding`);
+        assert.ok(frames.length >= 2, 'the floor must not stop delivery altogether');
+
+        // The last frame must reflect the final state, not be dropped for arriving too soon —
+        // that is the trailing edge, and without it a stream goes stale exactly when it matters.
+        const last = frames[frames.length - 1]!;
+        assert.ok((last['amountIn'] as number) > 0);
+
+        // quotes[] is ~90% of the payload and is a "why these venues?" explanation, not an input to
+        // any decision. It must be off unless asked for — but freshVenueCount, which callers DO act
+        // on, must survive.
+        const hop = (last['hops'] as Record<string, unknown>[])[0]!;
+        assert.deepEqual(hop['quotes'], [], 'the stream must not ship per-venue quotes by default');
+        assert.equal(hop['freshVenueCount'], 5, 'venue counts must survive the omission');
+        assert.equal(hop['venueCount'], 5);
+        ws.terminate();
+    } finally {
+        await app.close();
+    }
+});
+
+test('includeQuotes is opt-out on REST and opt-in on the stream', async () => {
+    const { app, cache, feeRegistry } = await buildTestServer();
+    cache.setBook(book());
+    feeRegistry.setFee('kraken', 'BTC/USDT', 0.001);
+    const on = await app.inject({ method: 'GET', url: '/route?from=USDT&to=BTC&amountOut=1', headers: AUTH });
+    assert.equal(on.json().hops[0].quotes.length, 1, 'REST returns the diagnostic by default');
+    const off = await app.inject({
+        method: 'GET', url: '/route?from=USDT&to=BTC&amountOut=1&includeQuotes=false', headers: AUTH });
+    assert.deepEqual(off.json().hops[0].quotes, []);
+    // Suppressing the diagnostic must not change the routing decision itself.
+    assert.deepEqual(off.json().hops[0].legs, on.json().hops[0].legs);
+    assert.equal(off.json().hops[0].freshVenueCount, on.json().hops[0].freshVenueCount);
+    await app.close();
+});
+
+test('an unroutable reason does not depend on whether quotes were requested', async () => {
+    // classify() used to read quotes.length to tell "the filters excluded everything" from "every
+    // book was stale" — which made the diagnosis of a failure depend on whether the caller happened
+    // to ask for diagnostics.
+    const { app, cache } = await buildTestServer();
+    const stale = book();
+    stale.receivedAt = Date.now() - 600_000;
+    cache.setBook(stale);
+    for (const suffix of ['', '&includeQuotes=false']) {
+        const r = await app.inject({
+            method: 'GET', url: `/route?from=USDT&to=BTC&amountOut=1${suffix}`, headers: AUTH });
+        assert.equal(r.json().unroutableReason, 'all_books_stale', `differed with includeQuotes${suffix}`);
+    }
+    const filtered = await app.inject({
+        method: 'GET', url: '/route?from=USDT&to=BTC&amountOut=1&exchanges=&includeQuotes=false', headers: AUTH });
+    assert.equal(filtered.json().unroutableReason, 'no_venues_matched_filter');
+    await app.close();
+});

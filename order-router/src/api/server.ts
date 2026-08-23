@@ -27,6 +27,7 @@ export interface ServerOptions {
     rateLimitWindowMs?: number;
     wsMaxConnectionsPerKey?: number;
     wsIdleTimeoutMs?: number;
+    wsMinPushIntervalMs?: number;
     trustProxy?: boolean;
 }
 
@@ -46,6 +47,7 @@ export async function buildServer (
     const rateLimitWindowMs = options.rateLimitWindowMs ?? config.rateLimitWindowMs;
     const wsMaxConnectionsPerKey = options.wsMaxConnectionsPerKey ?? config.wsMaxConnectionsPerKey;
     const wsIdleTimeoutMs = options.wsIdleTimeoutMs ?? config.wsIdleTimeoutMs;
+    const wsMinPushIntervalMs = options.wsMinPushIntervalMs ?? config.wsMinPushIntervalMs;
     // Live count of open /stream/best sockets per API key, enforcing wsMaxConnectionsPerKey.
     const wsConnectionsByKey = new Map<string, number>();
     const { apiKey, isDefault } = resolveApiKey();
@@ -250,7 +252,7 @@ export async function buildServer (
         '/stream/route',
         { websocket: true },
         (socket, request) => {
-            const parsed = parseRouteQuery(request.query, randomUUID());
+            const parsed = parseRouteQuery(request.query, randomUUID(), { includeQuotes: false });
             if (!parsed.ok) {
                 socket.send(JSON.stringify({ error: parsed.error }));
                 socket.close(1008, 'invalid request');
@@ -299,12 +301,24 @@ export async function buildServer (
             }
             wsConnectionsByKey.set(connectionKey, openForKey + 1);
 
-            let flushPending = false;
             const watched = new Set<string>();
+            let flushPending = false;
+            let lastPushAt = 0;
+            let pushTimer: NodeJS.Timeout | undefined;
+            // Coalescing per event-loop tick is NOT a rate bound — BTC/USDT alone updates from
+            // dozens of venues, so nearly every tick carries one, and this endpoint measured 658
+            // frames/sec on a single socket before the floor existed. Leading-edge so the first
+            // move after a quiet period is immediate, trailing-edge so the newest state always
+            // lands rather than being dropped for being too soon.
             const onUpdate = () => {
-                if (flushPending) return;
-                flushPending = true;
-                setImmediate(flush);
+                if (flushPending || pushTimer !== undefined) return;
+                const wait = lastPushAt + wsMinPushIntervalMs - Date.now();
+                if (wait <= 0) {
+                    flushPending = true;
+                    setImmediate(flush);
+                    return;
+                }
+                pushTimer = setTimeout(() => { pushTimer = undefined; flush(); }, wait);
             };
 
             // The set of markets that could change this answer is NOT fixed for the life of the
@@ -336,6 +350,7 @@ export async function buildServer (
             function flush () {
                 flushPending = false;
                 if (socket.readyState !== socket.OPEN) return;
+                lastPushAt = Date.now();
                 // Drop this frame if the peer is not keeping up. Coalescing bounds how often we
                 // COMPUTE, not how fast the client drains, so without this a slow consumer grows
                 // the send buffer without limit — the socket-level backpressure this used to claim
@@ -379,6 +394,7 @@ export async function buildServer (
                 if (released) return;
                 released = true;
                 clearInterval(heartbeat);
+                if (pushTimer !== undefined) clearTimeout(pushTimer);
                 for (const pair of watched) cache.off(`update:${pair}`, onUpdate);
                 watched.clear();
                 const remaining = (wsConnectionsByKey.get(connectionKey) ?? 1) - 1;

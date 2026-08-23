@@ -184,7 +184,8 @@ export function computeRoute (
         if (!direct) return emptyResult(req, opts, now, 'exact_out_multi_hop_unsupported', null);
         const h = direct.hops[0]!;
         // Amount is in the hop's OUTPUT asset: base when buying it, quote when selling into it.
-        const sol = solveHop(cache, feeRegistry, h, requested, h.side === 'buy', opts, { collectQuotes: true }, memo);
+        const sol = solveHop(cache, feeRegistry, h, requested, h.side === 'buy', opts,
+            { collectQuotes: opts.includeQuotes }, memo);
         hops = [sol.hop];
         bestSingleEff = sol.bestSingleEffective;
         deadHopIndex = sol.hop.amountOut <= 0 ? 0 : null;
@@ -193,7 +194,8 @@ export function computeRoute (
         // whichever one was found first. Losing paths are solved WITHOUT their per-venue quote
         // arrays, which are a reporting detail nobody sees for a path that was not chosen.
         const solved = candidates.map((c) =>
-            solvePathExactIn(cache, feeRegistry, c, requested, opts, candidates.length === 1, memo));
+            solvePathExactIn(cache, feeRegistry, c, requested, opts,
+                candidates.length === 1 && opts.includeQuotes, memo));
         const ranked = solved.slice().sort((a, b) => comparePaths(
             { fullyFillable: a.fullyFillable, amountOut: a.amountOut, score: a.score, hopCount: a.candidate.hops.length },
             { fullyFillable: b.fullyFillable, amountOut: b.amountOut, score: b.score, hopCount: b.candidate.hops.length },
@@ -201,7 +203,8 @@ export function computeRoute (
         let winner = ranked[0]!;
         if (candidates.length > 1) {
             // Re-solve the winner with quotes now that the comparison is over.
-            winner = solvePathExactIn(cache, feeRegistry, winner.candidate, requested, opts, true, memo);
+            winner = solvePathExactIn(cache, feeRegistry, winner.candidate, requested, opts,
+                opts.includeQuotes, memo);
             pathsConsidered = solved.map((s) => toConsidered(s, s.candidate === winner.candidate));
         }
         hops = winner.hops;
@@ -287,7 +290,9 @@ export function computeRoute (
 }
 
 function classify (hop: RouteHop, opts: RouteOptions): UnroutableReason {
-    if (hop.quotes.length === 0 && hop.freshVenueCount === 0) return 'no_venues_matched_filter';
+    // venueCount, not quotes.length: quotes can be suppressed by includeQuotes=false, and the
+    // reason a route failed must not depend on whether the caller asked for diagnostics.
+    if (hop.venueCount === 0) return 'no_venues_matched_filter';
     if (hop.freshVenueCount === 0) return 'all_books_stale';
     if (opts.requireFullFill) return 'insufficient_depth';
     return 'no_liquidity';

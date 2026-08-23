@@ -101,6 +101,12 @@ export const config = {
     // move between fills. That risk is not in the order book, so a bridge that wins by a hair is
     // not actually the better trade. Callers can set 0 to compare purely on rate.
     hopPenaltyBps: Number(process.env['ORDER_ROUTER_HOP_PENALTY_BPS'] ?? 5),
+    // Floor on the gap between two pushes on one stream socket. Coalescing per event-loop tick is
+    // not a rate bound: BTC/USDT alone updates from dozens of venues, so nearly every tick carries
+    // one. Measured on the live service before this existed, a single socket pushed 658 frames/sec
+    // at 9.3KB — 6.3 MB/s, and the per-key connection cap is 50. Ten frames a second is faster
+    // than any consumer of a routing quote can act, and 65x cheaper.
+    wsMinPushIntervalMs: Number(process.env['ORDER_ROUTER_WS_MIN_PUSH_INTERVAL_MS'] ?? 100),
     logLevel: process.env['LOG_LEVEL'] ?? 'info',
 
     // Rate limiting. Applied per API key (falling back to client IP when the key is absent, which

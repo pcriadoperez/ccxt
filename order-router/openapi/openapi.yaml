@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: CCXT Order Router API
-  version: 1.2.0
+  version: 1.3.0
   description: |
     Smart order router over live L2 order books from ~60 exchanges (ccxt.pro WebSocket).
 
@@ -57,8 +57,15 @@ info:
 
     `GET /stream/route` is the same request over a WebSocket: identical query parameters, identical
     response body, pushed whenever any market the route depends on moves. Bridged routes watch
-    every leg. Invalid parameters close the socket with code 1008 and the same message the REST
-    endpoint would have returned as a 400.
+    every leg, and the watch set is re-derived as markets appear, so a route that switches to a
+    newly-listed market stays subscribed to it. Invalid parameters close the socket with code 1008
+    and the same message the REST endpoint would have returned as a 400; so does a request the REST
+    endpoint would refuse outright (an unreachable pair, or exact-out over a bridge).
+
+    Two defaults differ from the REST endpoint, both for volume: pushes are floored at one per
+    100ms, and `includeQuotes` defaults to false. Unbounded, a single socket measured 658 frames/sec
+    at 9.3KB — 6.3 MB/s, against a per-key limit of 50 sockets. Pass `includeQuotes=true` to get the
+    diagnostic anyway.
 
     ### Responses callers must handle
     - `hops: []` with a non-null `unroutableReason` — a deliberate refusal to quote, not an
@@ -147,6 +154,15 @@ paths:
             full-discovery scale), so trim the list when you know which intermediary you want.
           schema: { type: string, default: 'USDT,USDC,BTC,ETH' }
           example: USDT,USDC
+        - name: includeQuotes
+          in: query
+          description: |
+            Return the per-venue `quotes[]` diagnostic. Defaults to true on this endpoint and
+            **false on `/stream/route`**, where it is roughly 90% of the payload and would be
+            re-sent many times a second for an explanation nobody reads that often. Suppressing it
+            never changes the routing decision — only `savingVsBestSingleBps` may become null, since
+            the single-venue baseline comes from the same pass.
+          schema: { type: boolean, default: true }
         - name: hopPenaltyBps
           in: query
           description: |
@@ -489,6 +505,12 @@ components:
             How much worse this hop's size executes than referencePrice, in basis points. POSITIVE IS
             ALWAYS WORSE, on both sides. Fees and the staleness penalty appear in both halves of the
             comparison and cancel, so this isolates the cost of consuming depth.
+        venueCount:
+          type: integer
+          description: |
+            Venues considered for this hop after the exchanges/certified filters, fresh or not, and
+            regardless of whether `quotes[]` was returned. Distinguishes "the filters excluded
+            everything" from "every book was stale" without needing the diagnostic.
         freshVenueCount:
           type: integer
           description: How many considered venues for this hop were within the freshness cutoff.

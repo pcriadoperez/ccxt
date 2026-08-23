@@ -338,6 +338,7 @@ export function solveHop (
             fullyFillable: achieved >= target - 1e-9,
             referencePrice, impactBps,
             quotes,
+            venueCount: venues.length,
             freshVenueCount,
         },
         bestSingleEffective: bestSingle?.effective ?? null,
