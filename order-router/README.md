@@ -291,6 +291,11 @@ npm run keys:revoke -- acme-desk        # by id or name; takes effect within 10s
 npm run keys:delete -- k_7f3a91c2 --yes # removes the row entirely; prefer revoke
 ```
 
+The CLI prints which file it is acting on, because the service takes its path from an env file an
+interactive shell does not source — without that line an operator can administer a store the running
+service never reads, and every key they mint looks fine while the API keeps returning 401. Set
+`ORDER_ROUTER_KEYS_FILE` in your shell to match the unit, or pass it inline.
+
 Keys live in `keys.json` (`ORDER_ROUTER_KEYS_FILE`, mode 0600, atomic `rename` writes). Only the
 SHA-256 digest is stored, so a leaked file yields no usable credential. A change is picked up
 within 10 seconds by an mtime poll, or instantly with `systemctl reload order-router` — creating or
@@ -323,7 +328,13 @@ client hangs up.
 ### Attribution
 
 Every log line for a request carries `keyId` and `keyName`, bound in `childLoggerFactory` so they
-appear on Fastify's own lines too. `keyId: null` on an unauthenticated request is deliberate — it
+appear on Fastify's own lines too. These records are emitted at their own level
+(`ORDER_ROUTER_AUDIT_LOG_LEVEL`, default `info`) independently of `LOG_LEVEL` — the production box
+runs at `warn` because a misbehaving exchange once wrote 930MB of retry chatter, and quieting
+connector noise must not also silence the record of who called what.
+
+Logs must be JSON for any of the queries below to work, which means `NODE_ENV=production` (otherwise
+`pino-pretty` engages). Worth asserting in a deploy check. `keyId: null` on an unauthenticated request is deliberate — it
 makes failed auth greppable as a first-class thing rather than as an absent field.
 
 | Event | Emitted on |
@@ -411,6 +422,7 @@ against a running router with live exchange data) during development — not jus
 | `ORDER_ROUTER_WS_MIN_PUSH_INTERVAL_MS` | `100` | Floor between two pushes on one stream socket. |
 | `ORDER_ROUTER_KEYS_FILE` | `./data/keys.json` | API key store. Digests only; mode 0600. |
 | `ORDER_ROUTER_KEYS_RELOAD_POLL_MS` | `10000` | How often to stat the key file for changes. |
+| `ORDER_ROUTER_AUDIT_LOG_LEVEL` | `info` | Level for the per-request audit records, set independently of `LOG_LEVEL`. |
 | `ORDER_ROUTER_API_KEY` | – | Legacy single shared key. Still honoured, as `k_legacy`, for migration. |
 | `ORDER_ROUTER_WS_IDLE_TIMEOUT_MS` | `30000` | Heartbeat interval; a socket that misses two beats is terminated. Must stay below the reverse proxy's `proxy_read_timeout`. |
 | `ORDER_ROUTER_TRUST_PROXY` | `false` | Derive client IP from `X-Forwarded-For`. Enable **only** behind a trusted proxy — see "Deploying behind nginx". |

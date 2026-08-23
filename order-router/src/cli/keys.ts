@@ -6,6 +6,7 @@
 // key CREATION rather than key use — strictly worse blast radius. Either way it is a permanent
 // privilege-escalation surface reachable from :443. The operator already has SSH.
 import { parseArgs } from 'node:util';
+import { resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { config } from '../config.js';
 import {
@@ -56,6 +57,14 @@ export function runKeysCli (argv: string[], path: string): number {
 
 function dispatch (argv: string[], path: string): number {
     const [command, ...rest] = argv;
+    if (command !== undefined) {
+        process.stderr.write(`  using key file: ${resolve(path)}\n`);
+        if (process.env['ORDER_ROUTER_KEYS_FILE'] === undefined) {
+            process.stderr.write(
+                '  (ORDER_ROUTER_KEYS_FILE is unset, so this is the default path. If the service sets\n'
+                + '   it in an env file your shell does not source, you are editing a store it never reads.)\n');
+        }
+    }
 
     if (command === 'create') {
         const { values } = parseArgs({

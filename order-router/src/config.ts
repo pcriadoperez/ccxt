@@ -113,6 +113,11 @@ export const config = {
     // How often to stat the key file for changes. Cheap enough to be uninteresting (~10 syscalls a
     // minute) and it removes the dangerous failure: a revocation that silently never takes effect.
     keysReloadPollMs: Number(process.env['ORDER_ROUTER_KEYS_RELOAD_POLL_MS'] ?? 10_000),
+    // The level for per-request audit records, set INDEPENDENTLY of LOG_LEVEL. LOG_LEVEL exists to
+    // quiet connector diagnostics — the box runs at warn because a misbehaving exchange once wrote
+    // 930MB of retry chatter — and silencing operational noise must not also silence the record of
+    // who called what. These lines are evidence, not diagnostics.
+    auditLogLevel: process.env['ORDER_ROUTER_AUDIT_LOG_LEVEL'] ?? 'info',
     logLevel: process.env['LOG_LEVEL'] ?? 'info',
 
     // Rate limiting. Applied per API key (falling back to client IP when the key is absent, which

@@ -483,3 +483,35 @@ test('a reload leaves still-active keys streaming and closes only the revoked on
         await built.app.close();
     }
 });
+
+test('the audit trail survives a quiet LOG_LEVEL', async () => {
+    // LOG_LEVEL exists to quiet connector diagnostics — the production box runs at warn because a
+    // misbehaving exchange once wrote 930MB of retry chatter. Silencing that noise must not also
+    // silence the record of who called what, or attribution is only available on a box nobody
+    // would actually configure that way.
+    const key = generateKey();
+    const path = tmpFile();
+    writeFileSync(path, JSON.stringify({ version: 1, keys: [row({ id: 'k_q', name: 'quiet', hash: hashKey(key) })] }));
+    const previous = process.env['ORDER_ROUTER_API_KEY'];
+    delete process.env['ORDER_ROUTER_API_KEY'];
+    let buffer = '';
+    const sink = new Writable({ write (chunk, _enc, cb) { buffer += String(chunk); cb(); } });
+    const quiet = pino({ level: 'warn' }, sink);
+    const store = new ApiKeyStore(path, quiet);
+    store.load();
+    if (previous !== undefined) process.env['ORDER_ROUTER_API_KEY'] = previous;
+    const cache = new OrderBookCache();
+    cache.setBook(book());
+    const app = await buildServer(cache, new FeeRegistry(), quiet, { rateLimitMax: 100000, keyStore: store });
+
+    await app.inject({ method: 'GET', url: '/route?from=USDT&to=BTC&amountOut=1', headers: { 'x-api-key': key } });
+    await app.close();
+
+    const lines = buffer.split('\n').filter((l) => l.length > 0).map((l) => JSON.parse(l) as Record<string, unknown>);
+    const access = lines.find((l) => l['event'] === 'request');
+    const audit = lines.find((l) => l['event'] === 'route_recommendation');
+    assert.ok(access, 'the access line must survive LOG_LEVEL=warn');
+    assert.ok(audit, 'the routing audit record must survive LOG_LEVEL=warn');
+    assert.equal(access!['keyName'], 'quiet');
+    assert.equal(audit!['keyId'], 'k_q');
+});

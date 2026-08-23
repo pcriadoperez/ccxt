@@ -35,6 +35,16 @@ function capture (fn: () => number): { code: number; out: string; err: string } 
     }
 }
 
+test('every command states which key file it is acting on', () => {
+    // The service takes its path from an env file an interactive shell does not source, so an
+    // operator can silently administer a store the running service never reads — every key they
+    // mint looks fine and the API keeps returning 401. One line makes that self-diagnosing.
+    const path = tmpFile();
+    const created = capture(() => runKeysCli(['create', '--name', 'pathful'], path));
+    assert.match(created.err, /using key file: .*keys\.json/);
+    assert.match(capture(() => runKeysCli(['list'], path)).err, /using key file:/);
+});
+
 test('create prints the key exactly once and list never prints it again', () => {
     const path = tmpFile();
     const created = capture(() => runKeysCli(['create', '--name', 'acme-desk', '--note', 'docs demo'], path));
@@ -60,7 +70,10 @@ test('create records the operator and the note, and emits an audit line', () => 
     assert.equal(row.note, 'why');
     assert.ok(row.createdBy.length > 0);
     assert.equal(row.revokedAt, null);
-    const audit = JSON.parse(result.err.trim()) as Record<string, unknown>;
+    // stderr also carries the human-facing "using key file" preamble, so pick out the JSON line.
+    const auditLine = result.err.split('\n').find((l) => l.startsWith('{'));
+    assert.ok(auditLine, 'a key mutation must emit a machine-readable audit line');
+    const audit = JSON.parse(auditLine) as Record<string, unknown>;
     assert.equal(audit['event'], 'key_admin');
     assert.equal(audit['action'], 'create');
     assert.equal(audit['id'], row.id);

@@ -84,7 +84,10 @@ export async function buildServer (
                 ...bindings,
                 keyId: record?.id ?? null,
                 keyName: record?.name ?? null,
-            }, opts);
+                // Explicitly levelled so the audit trail survives LOG_LEVEL. A child may be more
+                // verbose than its parent in pino, which is exactly what is wanted here: turning
+                // down connector noise must not turn off the record of who called what.
+            }, { ...opts, level: config.auditLogLevel });
         },
     });
 
