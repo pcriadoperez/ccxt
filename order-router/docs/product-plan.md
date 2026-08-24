@@ -1,321 +1,341 @@
-# From service to product — implementation plan
+# Router beta — product plan
 
-Status: **plan, not shipped.** Supersedes the storage and exposure sections of
-[`dashboard-plan.md`](./dashboard-plan.md); its verified security findings still apply.
-Builds on [`auth-plan.md`](./auth-plan.md), which shipped.
+Status: **plan, not shipped.** Supersedes [`dashboard-plan.md`](./dashboard-plan.md) and the earlier
+draft of this file. [`auth-plan.md`](./auth-plan.md) shipped, but §3 below replaces most of its
+storage decisions — **nothing in this codebase is in use yet, so no design here is preserved out of
+deference to what already exists.**
 
-## What changed
+## The goal, concretely
 
-The owner has decided:
+One URL you can send to your boss. He opens the homepage, understands what the router is, signs up,
+gets an API key, and makes a working call — without talking to you. You get an admin login, watch
+usage and keys, and run a soft launch **independent of CCXT infrastructure and CCXT's roadmap**, so
+CCXT can decide afterwards whether to adopt it.
 
-1. The admin dashboard **is exposed to the internet** with username + password, for ergonomics.
-   Admin routes stay **out of the public OpenAPI spec**.
-2. Usage moves to **a database**, self-hosted in Docker rather than a managed service — CCXT values
-   privacy, security and open source.
-3. **Keys move into it too**, with `created_at`, and **every response is recorded against the key
-   that made it**.
-4. There will be a **public site**: homepage, docs for developers *and* traders, and **self-serve
-   signup → API key → first call**.
-
-(1) and (3)+(4) together fire two of the Postgres triggers written down in `dashboard-plan.md` §5.3
-— *usage settles invoices* and *per-request retention is required*. So: Postgres, now. The rest of
-this document is how, without breaking the thing that already works.
+Everything below is subordinate to that. Volume expectation for the beta: **~100 requests/day.**
 
 ---
 
-## 0. Blocker: the router is leaking ~20 GB, on CCXT's docs box
+## 1. Blocker first: 27 GB on the docs box
 
-**This has to be fixed before any database lands anywhere near that machine**, and it is worth
-fixing regardless. Measured on the live box:
+Measured on the live VM. I initially called this a leak; a 200-second sample says otherwise:
 
 | | |
 |---|---|
-| Router cgroup | **27.13 GB** |
-| One shard worker (pid 41586) | **20.51 GB** |
-| Its three sibling shards | 0.44 / 0.57 / 1.07 GB |
-| Order books actually cached | **543** |
-| Swap in use | **29.6 GB of 32 GB** |
-| Major page faults, router | **8.9 million** |
-| Cumulative full memory stall since boot | ~10 minutes |
+| Router cgroup | 27.12 GB, **flat** |
+| Shard pid 41586 | 20.54 GB, **flat to 2 decimal places over 200 s** |
+| Sibling shards | 0.44 / 0.57 / 1.07 GB |
+| Order books cached | 543 |
+| Swap in use | 29.6 of 32 GB |
+| Major page faults | 8.9 M |
 
-543 books cannot justify 20 GB — that is ~50 MB per book. It is not book data, and the 20–40×
-spread across otherwise-identical shard workers says it is one shard, not a design cost. The likely
-culprit is reconnect churn accumulating client state: **11,436 error lines for bitfinex** alone
-(the orderbook-checksum loop), 4,492 deepcoin, 3,707 lbank, 2,669 onetrading — 25,428 error lines in
-~5 hours.
+**It is not growing — it is a sticky high-water mark.** V8 grew the heap to a startup peak and never
+returned it to the OS. That peak is explainable: ~60 exchanges call `loadMarkets()` at once, and the
+initial order-book snapshots land at the same time. Measured directly against coinbase:
 
-The box is not dedicated to the router. It also runs `ccxt-docs-3005`, `ccxt-playground` and
-`egress-proxy` — this is **CCXT's docs and playground infrastructure**, and the router is currently
-swapping it. That is an operational risk to CCXT's own services, not just to routing latency.
+```
+coinbase   10 symbols  10,128 updates/75s   44,137 levels per update   129,016 levels retained
+lbank      10 symbols     123 updates/75s      200 levels per update
+bitstamp   10 symbols      90 updates/75s      888 levels per update
+```
 
-**Consequence for this plan:** "host Postgres in Docker on the local machine" is not blocked by
-Postgres being heavy. It is blocked by a leak. Fix the leak, then the same box plausibly has room —
-or put the database on a second VM at the same provider, which satisfies the self-hosting
-requirement just as well and keeps customer data off the docs box.
+Coinbase alone is ~125 updates/sec at up to 44,000 levels each — roughly **6 million level objects
+allocated per second**, for ten symbols. Production runs fifty.
+
+**Passing `limit` does not fix it** (measured): `watchOrderBookForSymbols(symbols, 200)` still
+returned 44,091 levels per update and retained 128,907. The depth lives inside ccxt.pro's own
+`OrderBook`, and for coinbase the limit argument does not shrink it.
+
+What I have *not* done is prove which allocation produced the peak — a 60-second probe at 10 symbols
+is stable (ΔRSS ~10 MB), so the condition is scale- and startup-dependent and I could not reproduce
+20 GB. The next step that would settle it is a heap snapshot from the live shard
+(`--heapsnapshot-signal=SIGUSR2`, which costs a restart).
+
+**Fixes, cheapest first:**
+
+1. **`--max-old-space-size` per shard worker** (e.g. 1024). V8 grows the heap because nothing tells
+   it not to; a cap forces collection instead of growth. The live working set is 543 books, so the
+   cap is far above what is actually needed. One line in the fork options.
+2. **Stagger startup harder.** The peak is concurrent `loadMarkets()` + first snapshots. Serialise
+   exchange startup within a shard rather than starting all of them together.
+3. **Drop coinbase's full-depth feed, or drop coinbase from the beta set.** 6 M allocations/sec buys
+   depth the router demonstrably does not use — a 5 M USDT order filled in under 50 levels per venue.
+
+This is worth doing regardless of the product work, because the box is **CCXT's docs and playground
+infrastructure** (`ccxt-docs-3005`, `ccxt-playground`, `egress-proxy`) and the router is currently
+swapping it. It also has to be done before Postgres goes on the same machine.
 
 ---
 
-## 1. Database
+## 2. Deployment shape for the beta
 
-### 1.1 Postgres. Not Redis, and not ClickHouse yet.
+Everything on this VM, everything behind the existing nginx, everything **logically separate from
+CCXT's own site and docs** — separate app, separate database, separate code, no shared components
+with `ccxt-fumadocs`.
 
-**Redis is the wrong choice**, on four independent grounds, any one sufficient:
-
-- **Durability is a configuration, not a guarantee.** AOF `everysec` loses up to a second; default
-  RDB loses up to a snapshot interval. "We may have lost the last second of your billing rows" is
-  not a sentence you get to say about money. `auth-plan.md` §1.1 already rejected Redis for merely
-  holding auth data; invoicing sharpens that from a preference into a disqualifier.
-- **No uniqueness constraints, no foreign keys, no multi-key transactions.** `UNIQUE(lower(email))`,
-  "this key belongs to this user", and "issue the invoice and mark the usage billed, atomically" all
-  become hand-rolled `WATCH`/`MULTI` plus secondary indexes you maintain yourself. Every one is a
-  future billing dispute.
-- **RAM-resident.** Per-request rows at 10 req/s are 26 M rows/month — the most expensive possible
-  gigabyte to hold, on a box that is already swapping.
-- **Aggregation.** "My usage last month by day and endpoint" is one `GROUP BY` in SQL. In Redis it
-  is either a pre-materialised counter per (user, day, route) — making you the aggregation engine,
-  with no ability to re-aggregate when you get it wrong — or a `SCAN`.
-
-Redis has exactly one good future role here: a shared rate-limit counter, if a second router host
-ever appears. Not the system of record.
-
-**ClickHouse is the right tool for the events table and the wrong tool for the accounts.** It has no
-real transactions or constraints, which is what user accounts and invoices need. Running both from
-day one is two databases for one developer to operate. So: **Postgres only for v1**, with the events
-table shaped so it can move later without touching anything else — append-only, no foreign keys
-*into* it, time-partitioned. Trigger for adding ClickHouse: the events table exceeds what a
-partition-drop retention policy can comfortably hold, i.e. sustained >100 req/s with >90-day
-retention. Note ClickHouse is also memory-hungry; it is not a way to avoid §0.
-
-### 1.2 Where it runs
-
-Self-hosted, in Docker, at the same provider — **but not on the docs box until §0 is fixed.**
-
-| Option | Verdict |
+| Path | Serves |
 |---|---|
-| Second small VM at WorldStream, Postgres in Docker | **Recommended.** Self-hosted, same jurisdiction, no third-party data processor, and customer data is not on the docs/playground box. ~10 ms away. |
-| Same box, after fixing the leak | Viable once the router is back to a sane footprint. Cheapest. Accepts that a router memory bug can take out customer accounts. |
-| Managed (Neon/Supabase/RDS) | Rejected per the owner's stated preference, despite lower operational cost. |
+| `docs.ccxt.com/router/` | homepage, docs, signup, dashboard |
+| `docs.ccxt.com/router/api/` | the public API (today's `/route`, `/stream/route`, …) |
+| `docs.ccxt.com/router/admin/` | admin dashboard — authn/authz, absent from the public spec |
 
-Backups are now a real requirement, because this holds customer accounts: `pg_dump` nightly plus WAL
-archiving to off-box storage, and **a restore actually tested once**. An untested backup is a belief.
+This is explicitly a beta address. Because the API base URL moves when the product gets its own
+domain, **the docs must never hard-code it** — one config value, substituted into every snippet, so
+the move is a one-line change rather than a docs rewrite.
 
-### 1.3 The hot path does not move
+Postgres runs on this VM in Docker (§1 first). No managed service, no second host, no third-party
+data processor — consistent with CCXT's stance on privacy and self-hosting.
 
-This is the invariant that outranks everything: **if the database is down, `/route` keeps
-answering.** The design achieves that structurally rather than by promise.
+---
+
+## 3. One database. Postgres. Nothing else.
+
+You are right that two databases made no sense. The SQLite spool existed to survive a *remote*
+Postgres being unreachable; with Postgres on the same VM, a Postgres outage is a box event and the
+router is affected anyway. It bought nothing and cost a whole second system. **Deleted.**
+
+The durable buffer is the thing that is already durable: **the audit log file on disk.** The
+ingester tails it and keeps its cursor *in Postgres*, committed in the same transaction as the rows
+— so a Postgres restart replays from the last committed offset, idempotently, with no second store.
 
 ```
-Postgres (api_keys)  ──5s──▶  sync process  ──writeKeyFile()──▶  keys.json  ──10s poll──▶  router
+router ──pino audit stream──▶ audit log file ──ingester (cursor in PG)──▶ Postgres
 ```
 
-`keys.json` stays exactly as it is today, and **`keyStore.ts` and `auth.ts` are not modified at
-all** — same single SHA-256, same single `Map.get`, same mtime poll, same atomic rename. What
-changes is only *who writes the file*: it stops being hand-authored and becomes a **materialised
-projection** of the `api_keys` table.
+### 3.1 What gets deleted from the current implementation
 
-- Postgres unreachable → the sync writes nothing → the file is unchanged → every existing key keeps
-  authenticating, indefinitely. New signups do not go live; routing does not notice.
-- Revocation latency becomes 5 s + 10 s = **15 s** worst case, against 10 s today. Acceptable, and
-  worth stating because revocation latency is a security property.
-- Enforced by **withholding the credential**: the router's systemd unit must not contain a Postgres
-  connection string. Same spirit as "shards do not get the key store" in `auth-plan.md` §1.7.
+Nothing here is load-bearing yet, so:
 
-The CLI keeps working against `keys.json` for break-glass, and gains a `--from-db` mode.
+- **`keys.json` as the source of truth** — gone. Postgres holds keys.
+- **The `keys create|revoke|delete` CLI write path** — gone. Key management is the dashboard.
+- **The legacy `ORDER_ROUTER_API_KEY` bridge** — gone. It existed to migrate a live shared key;
+  there is nothing live to migrate.
+- **The `DEV_API_KEY` fallback** — gone. Replaced by a seeded admin account.
 
-### 1.4 Schema
+What survives untouched is the part that earned it: `lookup()` is still **one SHA-256 and one
+`Map.get`** against an in-memory snapshot. The narrow `lookup/reload/listAll` interface was chosen
+so the backing store could be swapped, and this is that swap.
+
+**The router still does not query Postgres per request.** It loads keys into the Map at boot,
+refreshes every 10 s, and writes a local snapshot file *purely as a boot cache* — so a Postgres
+restart cannot leave the router unable to authenticate anyone. Revocation latency stays 10 s.
+
+### 3.2 Schema
+
+Designed so that **growing does not mean migrating**: append-only event tables, time-ordered UUIDs,
+partitioning present from day one (even though one partition is plenty at 100 req/day), and no
+column that only makes sense at small scale.
 
 ```sql
--- Identity ------------------------------------------------------------------
 CREATE TABLE users (
-  id              uuid PRIMARY KEY,
-  email           citext NOT NULL,
-  password_hash   text NOT NULL,           -- scrypt N=16384 (see §2.1)
-  email_verified_at timestamptz,
-  plan            text NOT NULL DEFAULT 'free',
-  is_admin        boolean NOT NULL DEFAULT false,   -- never settable from signup input
-  created_at      timestamptz NOT NULL DEFAULT now(),
-  UNIQUE (email)
-);
+  id            uuid PRIMARY KEY,
+  email         citext UNIQUE NOT NULL,
+  password_hash text NOT NULL,          -- scrypt N=16384 (N=2**15 throws on Node 22, verified)
+  is_admin      boolean NOT NULL DEFAULT false,   -- never settable from signup input
+  plan          text NOT NULL DEFAULT 'beta',
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  email_verified_at timestamptz         -- unused in beta; the column exists so adding email later
+);                                      -- is not a migration
 
--- Keys: the projection source ------------------------------------------------
 CREATE TABLE api_keys (
-  id                 uuid PRIMARY KEY,     -- v7, time-ordered
-  display_id         text UNIQUE NOT NULL, -- 'k_xxxxxxxx' — what appears in logs and invoices
-  user_id            uuid NOT NULL REFERENCES users(id),
-  name               text NOT NULL,
-  hash               char(64) NOT NULL UNIQUE,   -- sha256 hex, unchanged from today
-  last4              char(4) NOT NULL,
-  note               text NOT NULL DEFAULT '',
-  rate_limit_max     integer,              -- NULL = plan default; CHECK'd ceiling
-  ws_max_connections integer,
-  created_at         timestamptz NOT NULL DEFAULT now(),
-  created_by         text NOT NULL,
-  revoked_at         timestamptz,
+  id            uuid PRIMARY KEY,       -- v7, time-ordered
+  display_id    text UNIQUE NOT NULL,   -- 'k_…' — what appears in logs, tickets, invoices
+  user_id       uuid NOT NULL REFERENCES users(id),
+  name          text NOT NULL,
+  hash          char(64) UNIQUE NOT NULL,
+  last4         char(4) NOT NULL,
+  rate_limit_max integer CHECK (rate_limit_max IS NULL OR rate_limit_max <= 10000),
+  ws_max_connections integer CHECK (ws_max_connections IS NULL OR ws_max_connections <= 100),
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  revoked_at    timestamptz,
   UNIQUE (user_id, name)
 );
 ```
 
-**`k_<8 hex>` must stop being the identity.** It is 32 bits, generated with **no collision check at
-all** (`cli/keys.ts` checks `name` uniqueness, never `id`), and `delete` frees it for reuse. Birthday
-collision is ~1.2% at 10,000 keys. The failure mode is *two customers' usage merging into one
-invoice line* — the worst bug class this system can have — and reuse silently re-attributes a
-deleted key's history to a new customer. So: `uuid` primary key, `display_id` for humans, **ids
-never reused**. Enforce it in the schema: revoke `DELETE` on `api_keys` for the app role, and let the
-`requests` foreign key make deletion impossible while history exists. Revocation is the only kill.
+`k_<8 hex>` stops being the identity: 32 bits, **no collision check anywhere in the current code**,
+and reusable after delete. The failure mode is two customers' usage merging into one invoice line.
+UUID primary key, `display_id` for humans, ids never reused.
+
+**Requests, and the array question.** You are right that a route is not flat. Two child tables
+rather than `jsonb`:
 
 ```sql
--- Per-request records --------------------------------------------------------
 CREATE TABLE requests (
-  ts            timestamptz  NOT NULL,
-  key_id        uuid         NOT NULL REFERENCES api_keys(id),
-  user_id       uuid         NOT NULL,     -- denormalised: "delete my data" is one DELETE
-  route         text         NOT NULL,     -- TEMPLATE, never the raw URL
-  status        smallint     NOT NULL,
-  duration_ms   real         NOT NULL,
-  from_asset    text, to_asset text,
-  amount_in     numeric, amount_out numeric,
-  effective_rate numeric, impact_bps real,
-  unroutable_reason text,
-  fully_fillable boolean,
-  request_id    text,                      -- join key to the log. UNTRUSTED — see below
-  ip_hash       bytea,                     -- hashed, never the IP
-  spool_epoch   bigint NOT NULL,
-  spool_seq     bigint NOT NULL,
-  PRIMARY KEY (ts, spool_epoch, spool_seq)
+  id            uuid NOT NULL,
+  ts            timestamptz NOT NULL,
+  key_id        uuid REFERENCES api_keys(id),   -- NULL for unauthenticated (401) requests
+  user_id       uuid,
+  route         text NOT NULL,                  -- route TEMPLATE, never the raw URL
+  status        smallint NOT NULL,
+  duration_ms   real NOT NULL,
+  -- request
+  from_asset text, to_asset text, amount_in numeric, amount_out_req numeric,
+  strategy text, exact_side text,
+  -- outcome
+  amount_in_actual numeric, amount_out numeric, effective_rate numeric,
+  impact_bps real, fill_ratio real, fully_fillable boolean, unroutable_reason text,
+  -- caller metadata (see 3.3)
+  ip inet, user_agent text, origin text,
+  request_id text,                              -- caller-supplied. UNTRUSTED — never a key
+  PRIMARY KEY (ts, id)
+) PARTITION BY RANGE (ts);
+
+CREATE TABLE request_hops (
+  request_id uuid NOT NULL, ts timestamptz NOT NULL,
+  hop_index smallint NOT NULL, pair text NOT NULL, side text NOT NULL,
+  amount_in numeric, amount_out numeric, fee_cost numeric, fee_currency text,
+  reference_price numeric, impact_bps real, fully_fillable boolean,
+  PRIMARY KEY (ts, request_id, hop_index)
+) PARTITION BY RANGE (ts);
+
+CREATE TABLE request_legs (
+  request_id uuid NOT NULL, ts timestamptz NOT NULL,
+  hop_index smallint NOT NULL, exchange_id text NOT NULL,
+  amount numeric, average_price numeric, taker_fee_rate numeric, fee_cost numeric,
+  PRIMARY KEY (ts, request_id, hop_index, exchange_id)
 ) PARTITION BY RANGE (ts);
 ```
 
-**Two things about "store every response":**
+**Why normalised and not `jsonb`:** the questions worth asking are relational — *which venues do we
+route to most, and for how much volume?*, *how often does a bridge beat the direct market?*, *what
+is our average impact by pair?* Those are `GROUP BY exchange_id` and `GROUP BY pair`, which are
+trivial on columns and awkward on `jsonb` even with a GIN index. Row multiplication is irrelevant at
+this volume (one request ≈ 1–2 hops ≈ 2–6 legs, so ~600 rows/day), and columnar child tables are
+exactly the shape ClickHouse wants if you ever move.
 
-**Do not store the response body.** A route body is ~1.1 KB measured, landing ~1.4 KB as inline
-`jsonb` — *below* Postgres's ~2 KB TOAST threshold, so it is **not compressed**. At 100 req/s over a
-35-day window that is **~423 GB**. The same bodies gzipped into object storage, keyed by
-`request_id`, are roughly 1–2% of that. Same data, ~70× the cost. Bodies stay in the log for its
-rotation window; typed metadata (above, ~200 B/row) answers support, disputes and billing.
+`jsonb` would be the right call if the shape were unstable or rarely queried. It is neither.
 
-**This data is trading intention.** `from=USDT&to=BTC&amountIn=5000000` says a customer is about to
-move $5 M. Its value decays to zero in ~5 seconds (`staleBookMs`); its liability is permanent. Hash
-IPs, denormalise `user_id` so deletion is one partitioned `DELETE`, and write the retention window
-into the ToS *before* collecting.
+**Deliberately not stored:** the full response body. `quotes[]` alone carries ~40 venues per hop and
+is a diagnostic that is stale in seconds. If you later want bodies for support, gzip them into object
+storage keyed by `requests.id` — do not put them in a table.
 
-> **Defect found while designing this.** `server.ts` honours a caller-supplied `x-request-id` as
-> `request.id`. It is therefore **attacker-controlled**, and using it as the ingest idempotency key —
-> the obvious choice — would let a customer send a constant value, collapse every request into one
-> `ON CONFLICT DO NOTHING` row, and get **unlimited free API calls**. Two customers sending the same
-> value would silently drop each other's usage. The dedup key must be server-minted:
-> `(ts, spool_epoch, spool_seq)` assigned by the spool. `request_id` is still stored as the join to
-> the log, and documented as untrusted.
+### 3.3 Caller metadata — yes, but not "headers"
 
-Retention by partition drop, which is O(1) rather than a multi-million-row `DELETE`:
+Store `ip`, `user_agent` and `origin`. They answer real questions: which SDK, which region, is this
+one person or twenty, is a spike abuse or a customer.
 
-| Table | Retention | ~Rows/month @10 req/s |
-|---|---|---|
-| `requests` (detail) | 90 days, monthly partitions | 26 M |
-| `usage_hour` (rollup) | forever | ~7 k / key |
+**Do not store headers wholesale.** `x-api-key` and `authorization` are headers; a blanket capture
+puts live credentials in the database and in every backup. Explicit allowlist of three fields, never
+a loop over `request.headers`.
 
-### 1.5 Ingestion — the router never waits on the database
+`ip` is personal data under GDPR and you are operating from the Netherlands. For a beta with a
+handful of known users that is fine, but it needs a line in the privacy policy before the first
+external signup, and `user_id` is denormalised onto every row so "delete my data" is one statement.
 
-```
-router ──pino audit stream──▶ audit log ──tailer──▶ SQLite spool ──batched COPY──▶ Postgres
-```
+### 3.4 Retention: forever, for now
 
-SQLite does not disappear from `dashboard-plan.md`; it is **demoted** to exactly the role that plan
-predicted — a local durable spool. That demotion is what makes a database outage invisible to the
-router: the spool backs up on disk, bounded, and drains when Postgres returns. The cursor commits in
-the same transaction as the rows, so replay is idempotent.
+Agreed. At ~100 req/day that is **36,500 request rows/year** — a few MB. Keeping everything through
+beta is strictly more useful than any retention policy.
 
-Rotate the audit stream with `create`, **not `copytruncate`** — under `copytruncate` a tailer
-silently loses everything between its committed offset and the truncation, which is a recurring
-undercount presented as success.
+The tables are partitioned monthly anyway, so introducing retention later is `DROP TABLE` on a
+partition rather than a migration. Nothing about the schema changes when volume does.
+
+### 3.5 Rollups
+
+`usage_hour (hour_start, key_id, route, status_class) → requests, duration_sum`, maintained by the
+ingester in the same transaction as the detail rows. At beta volume you could compute the dashboard
+straight from `requests` — the rollup exists so that the query the dashboard runs is the same query
+at 100 req/day and at 1,000 req/s. Changing that query later is the migration this avoids.
 
 ---
 
-## 2. The exposed dashboard and customer login
+## 4. Scaling later without redoing this
 
-The owner has overruled loopback-only. These are the controls that make the exposed version safe;
-the reasoning from `dashboard-plan.md` §3 still applies except where noted.
+Your constraint — *move machines without changing schema or infra* — is the design goal, not an
+afterthought. What makes it hold:
 
-### 2.1 Login
-
-- **scrypt, N=16384.** Verified on this exact Node (v22.22.1): `N=2**15` throws
-  `ERR_CRYPTO_INVALID_SCRYPT_PARAMS` — `128·N·r` is one byte over the 32 MiB `maxmem` default.
-  N=16384 costs 22 ms. Cap in-flight verifications and throttle per-IP *before* the KDF runs.
-- **TOTP is now mandatory for the admin account.** On loopback it was optional because SSH was the
-  real boundary. There is no SSH boundary any more; the password is the only thing between the
-  internet and key minting.
-- Cookies are now genuinely `https` on a real domain, so `Secure; HttpOnly; SameSite=Lax` and a
-  `__Host-` prefix all apply — the localhost caveat from the previous plan is gone. **CSRF tokens on
-  every mutation stay**, because `SameSite` is a defence-in-depth layer, not the control.
-- Rotate the session id on login (session fixation).
-
-### 2.2 Two principals, one boundary
-
-Operator (full admin) and customer (own keys and usage only). The ways this boundary leaks, each
-needing an explicit control:
-
-| Leak | Control |
+| Change | What moves |
 |---|---|
-| IDOR on key ids | Every query filtered by `user_id` from the session, never from the request |
-| Mass assignment at signup | `is_admin` is not in any input struct; set only by SQL |
-| Shared session table | One table, but the admin flag is read from `users` per request, not cached in the cookie |
-| Admin routes discoverable | Separate route prefix and separate app; authz, not obscurity, is the control |
+| Bigger VM | Nothing. Config. |
+| Postgres to its own host | One connection string. The ingester and dashboard already speak to it over a socket; only the router must never hold that string. |
+| Router horizontally scaled | Each instance keeps its own in-memory key snapshot and its own audit log; each runs an ingester writing to the same Postgres. The `requests` PK is `(ts, uuid)` so there is no shared sequence to contend on. |
+| Postgres → ClickHouse for events | `requests` / `request_hops` / `request_legs` are append-only, have no foreign keys *pointing into* them, and are time-partitioned. They move as a unit; `users`, `api_keys` and `usage_hour` stay in Postgres. |
 
-### 2.3 Signup abuse
-
-Self-serve signup mints credentials against a service whose per-key defaults include a WebSocket
-allowance. Required: email verification before a key works, signup rate limits per IP and per email
-domain, disposable-domain blocklist, a hard cap of keys per account, and **server-side ceilings on
-`rate_limit_max` / `ws_max_connections`** — a key minted with `rate_limit_max: 1e9` is a targeted
-outage lever aimed at the process whose death costs minutes of degraded routing.
-
-### 2.4 Keeping admin out of the public spec
-
-`openapi/openapi.yaml` documents customer routes only, and is served as a static file. Admin routes
-live in a separate app with no spec. This is *documentation hygiene*, not a security control — the
-security is §2.2.
+The one thing that would force a rewrite is putting the router's auth on a database round-trip. It
+is not, and the router deliberately does not get the connection string.
 
 ---
 
-## 3. The public site
+## 5. Signup without email
 
-Three surfaces, one deployment:
+Email is deferred until sign-off, so beta signup is: **email + password → account → API key shown
+once → a working curl on the same page.** No verification mail, no password reset link.
 
-| Surface | Content |
+Consequences, stated rather than discovered later:
+
+- Email is an unverified label. Fine while you know every user; it is the first thing to fix before
+  a public launch.
+- **Password reset is manual** — you reset it from the admin dashboard. Build that button now; it is
+  five minutes and its absence is the first support request you will get.
+- Abuse control is the admin's revoke button plus a per-IP signup rate limit, not verification.
+- `email_verified_at` exists in the schema from day one, so switching it on later is a behaviour
+  change, not a migration.
+
+When you do add it: an `@ccxt.com` sender or any provider works, and the only code change is gating
+key issuance on `email_verified_at IS NOT NULL`.
+
+---
+
+## 6. The site
+
+Separate from CCXT's docs in every sense — own app, own styling, own content, no shared build.
+
+| Page | Content |
 |---|---|
-| **Homepage** | What the router does, in one screen. The differentiators are real and measurable — say them: asset-to-asset addressing (no `side` to get backwards), book-walked not top-of-book, bridge comparison (live: `USDC→TRY` routes via ETH, beating the obvious USDT path by ~9 bps), reported price impact, split routing with measured bps savings. |
-| **Docs — developers** | Endpoints, auth, errors, rate limits, SDK snippets, the OpenAPI spec. Generated from `openapi/openapi.yaml` so it cannot drift. |
-| **Docs — traders** | What price impact means and when to act on it, when splitting helps, why a route bridged, what `fillRatio` is telling you. Prose, not reference. |
-| **Signup** | email → verify → key shown once → a working `curl` on the same page. |
+| **Home** | What it does in one screen. The differentiators are real and measured — say them plainly: asset-to-asset (`from`/`to`, no side to get backwards), book-walked rather than top-of-book, every bridge compared (live: `USDC→TRY` routes via **ETH**, ~9 bps better than the obvious USDT path), price impact reported, splits that save a measured 0.19–2.2 bps. |
+| **Docs — developers** | Auth, endpoints, errors, rate limits, copy-paste snippets. Generated from `openapi/openapi.yaml` so it cannot drift from the API. |
+| **Docs — traders** | What impact means and when to act on it; when splitting helps; why a route bridged; what `fillRatio` is telling you. Prose, not reference. |
+| **Sign up** | Email + password → key shown once → a filled-in curl **on the same page**. |
+| **Dashboard** | Your keys, your usage. Admin sees everyone's. |
 
-The shortest path from landing page to a working call is the product's real conversion funnel: it
-should be **one page, one form, one copy-paste command**, with the key pre-filled into the snippet.
+The homepage-to-working-call path is the only funnel that matters for the demo: one page, one form,
+one copy-paste command with the key already substituted.
 
-**Tech:** CCXT already runs `ccxt-fumadocs` on this box. Reusing that stack keeps one docs toolchain
-for the org rather than introducing a second, and it already handles two-audience navigation. The
-signup/dashboard app is a separate small server-rendered app — no SPA, no build step to maintain.
+Admin routes are simply absent from `openapi/openapi.yaml`. That is documentation hygiene; the
+security is authz (§7).
 
 ---
 
-## 4. Blockers only the owner can clear
+## 7. Exposed dashboard — the controls that make it safe
 
-1. **The domain.** You cannot sell a product from `docs.ccxt.com/router/`. This needs either DNS
-   delegation for a subdomain of `ccxt.com` from whoever controls it, or a separate domain. Nothing
-   in §3 ships without this decision.
-2. **Where the database lives** — second VM, or this box after §0 is fixed.
-3. **Email provider** for verification and password reset. Self-hosting SMTP is a deliverability
-   project; a provider is the pragmatic answer even for a privacy-conscious org, since the content is
-   "click to verify", not customer data.
-4. **Is this CCXT's product or yours?** It changes the domain, the ToS, the data controller, and
-   where the code lives. Worth settling before the schema holds real customer accounts.
+- **scrypt N=16384.** `N=2**15` throws `ERR_CRYPTO_INVALID_SCRYPT_PARAMS` on Node 22 — verified;
+  `128·N·r` is one byte over the 32 MiB `maxmem` default. Throttle per-IP before the KDF runs.
+- **TOTP on the admin account.** On loopback it was optional because SSH was the boundary. There is
+  no SSH boundary now; the password is the only thing between the internet and key minting.
+- `Secure; HttpOnly; SameSite=Lax`, `__Host-` prefix, CSRF token on every mutation, session id
+  rotated on login.
+- **Two principals, one boundary.** Every customer query filtered by `user_id` from the *session*,
+  never from the request. `is_admin` is not in any input struct. Server-side ceilings on
+  `rate_limit_max` and `ws_max_connections` (in the schema above) — a key minted with `1e9` is an
+  outage lever aimed at the router.
 
-## 5. Suggested order
+> **Defect this design must avoid:** `x-request-id` is caller-supplied, so using it as the ingest
+> idempotency key would let a customer pin it to a constant, collapse every request into one row and
+> get unlimited free calls. It is stored as a join key to the log and documented as untrusted;
+> dedup is on the server-minted `requests.id`.
 
-1. **Fix the leak (§0).** Independent of everything else, and currently degrading CCXT's docs box.
-2. Postgres + schema + the `api_keys → keys.json` projection. Router untouched; `keys.json` keeps
-   working exactly as now, so this is reversible.
-3. Ingestion pipeline (audit stream → spool → Postgres) and `usage_hour`.
-4. Dashboard: admin first (you are the only user), then customer views.
-5. Signup + email verification.
-6. Marketing site + docs.
+---
 
-Steps 2–3 are safe to ship before the domain question is answered; steps 4–6 are not.
+## 8. Order of work
+
+1. **Fix §1.** Cap shard heap, stagger startup, reconsider coinbase. Independent of everything else
+   and currently degrading CCXT's docs box.
+2. Postgres in Docker + schema + seed an admin user.
+3. Rip out `keys.json`, the CLI write path, and the legacy/dev key bridges; point `ApiKeyStore` at
+   Postgres with the boot-cache snapshot.
+4. Ingester: audit stream → Postgres, cursor committed with the rows.
+5. Admin dashboard — you are the only user, so this is the shortest path to something usable.
+6. Signup + customer dashboard.
+7. Homepage + docs.
+
+Steps 1–4 are invisible to anyone but you and can ship immediately. 5–7 are the demo.
+
+## 9. Still open
+
+1. **Who owns it.** CCXT's product, developed independently — but that needs to be true in the
+   repository too. Does this stay in `pcriadoperez/ccxt` on a branch, or move to its own repo before
+   it holds real accounts? It affects the ToS, the data controller, and who can deploy.
+2. **The privacy line** for storing `ip` before the first external signup.
+3. **Whether the beta URL is acceptable to show a boss.** `docs.ccxt.com/router/` works technically;
+   it also tells him this is a side project on someone else's box. That may be exactly right for a
+   validation exercise — worth being deliberate about rather than defaulting into.
