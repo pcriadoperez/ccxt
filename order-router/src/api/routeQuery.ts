@@ -19,9 +19,7 @@ export interface RouteQuery {
     minLegNotional?: string;
     exchanges?: string;
     certified?: string;
-    maxStalenessMs?: string;
     requireFullFill?: string;
-    stalenessPenaltyBps?: string;
     hopPenaltyBps?: string;
     includeQuotes?: string;
 }
@@ -87,10 +85,6 @@ export function parseRouteQuery (
     if (minLegNotional === null || minLegNotional < 0) {
         return fail('minLegNotional must be zero or a positive number');
     }
-    const stalenessPenaltyBps = num(query.stalenessPenaltyBps, 0);
-    if (stalenessPenaltyBps === null || stalenessPenaltyBps < 0) {
-        return fail('stalenessPenaltyBps must be zero or a positive number');
-    }
     // Capped at 10000 because that is a 100% discount — the point at which every extra hop is
     // already disqualified. Anything beyond is not "even more strongly prefer direct", it is the
     // same thing with a number that no longer orders anything.
@@ -99,13 +93,10 @@ export function parseRouteQuery (
         return fail('hopPenaltyBps must be between 0 and 10000');
     }
 
-    // Escape hatch: a caller who would rather have an old price than no price can widen the
-    // freshness window. Deliberately opt-in — defaulting loose would hand out prices minutes out
-    // of date without the caller ever choosing that risk.
-    const maxStalenessMs = num(query.maxStalenessMs, config.staleBookMs);
-    if (maxStalenessMs === null || maxStalenessMs <= 0) {
-        return fail('maxStalenessMs must be a positive number');
-    }
+    // Freshness is NOT a caller parameter. Deciding whether a book is too old to price is the
+    // router's judgment, not something to outsource to someone who cannot see the update rates it
+    // is judging against — and a millisecond number is the wrong shape for that question anyway.
+    // Both values are still echoed in the response, so a caller can always see what was applied.
 
     // An explicitly empty list (`exchanges=`) is treated as "no venues", not "all venues".
     // Silently widening an empty allowlist would be the opposite of what the caller asked.
@@ -128,13 +119,13 @@ export function parseRouteQuery (
         },
         opts: {
             strategy, includeFees: query.includeFees !== 'false', maxVenues, minLegNotional,
-            staleBookMs: maxStalenessMs, requestId, exchanges,
+            staleBookMs: config.staleBookMs, requestId, exchanges,
             certifiedOnly: query.certified === 'true',
             requireFullFill: query.requireFullFill === 'true',
             includeQuotes: query.includeQuotes === undefined
                 ? (defaults.includeQuotes ?? true)
                 : query.includeQuotes !== 'false',
-            stalenessPenaltyBps, hopPenaltyBps,
+            stalenessPenaltyBps: config.stalenessPenaltyBps, hopPenaltyBps,
         },
     };
 }

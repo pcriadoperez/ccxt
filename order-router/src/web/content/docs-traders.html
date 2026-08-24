@@ -191,7 +191,8 @@ unfilledAmount   1.9 BTC   -> and this part would cost MORE than the rate above
         </tbody>
     </table>
 
-    <p>If you would genuinely rather have an old price than none, <code>maxStalenessMs</code> widens the window. It is opt-in on purpose: defaulting it loose would hand out minutes-old prices to people who never chose that risk. There is also a middle setting, off by default &mdash; <code>stalenessPenaltyBps</code> keeps older books in the comparison but marks them down as they age, so a four-second-old book has to be genuinely better to win rather than merely look better. The markdown grows with the square root of the book's age.</p>
+    <p>You do not configure any of this, and that is deliberate. Two things happen automatically. Books past the freshness cutoff are excluded outright. Books inside it are marked down as they age &mdash; the markdown grows with the square root of the book's age, which is how far a price is expected to have drifted since it was captured, so a four-second-old quote has to be genuinely better to win rather than merely look better.</p>
+    <p>Deciding whether a price is still real is the router's job. You cannot see the update rates that judgment is made against, and a millisecond threshold would be the wrong shape for the question anyway. What you do get is transparency: every response echoes the cutoff and the markdown that were applied, and every venue carries the age of the book it was priced from.</p>
 
     <div class="callout">
         <p>A refusal comes back as a normal, successful response with an empty route and a reason &mdash; not as an error. Anything you build on top of this should read the reason, not the status code.</p>

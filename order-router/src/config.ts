@@ -96,6 +96,20 @@ export const config = {
     symbols: listFromEnv('ORDER_ROUTER_SYMBOLS', ['BTC/USDT', 'ETH/USDT']),
 
     staleBookMs: Number(process.env['ORDER_ROUTER_STALE_BOOK_MS'] ?? 5000),
+    // Marks a venue's price down by `bps * sqrt(book age in seconds)`, so an older quote has to be
+    // genuinely better to win rather than merely look better. ON by default: judging whether a book
+    // is too old to trust is the router's job, and shipping the capability switched off meant every
+    // caller got the naive behaviour unless they knew to ask for something they could not calibrate.
+    //
+    // The coefficient is DERIVED, not picked. The penalty should approximate how far the price has
+    // moved since the book was captured, which for an asset of annualised volatility s over t
+    // seconds is s*sqrt(t/year). At 50% annualised vol that is 0.89 bps per sqrt(second), so 1 is
+    // very close to one standard deviation of movement. It yields ~1.0 bps at one second and
+    // ~2.2 bps at the 5s cutoff — enough to break a tie toward fresher data, not enough to override
+    // a real price difference, given the measured split gain is 0.19-2.2 bps.
+    // Higher-volatility assets are under-penalised by this constant; a per-asset figure would be
+    // better and is not something the caller should have to supply either.
+    stalenessPenaltyBps: Number(process.env['ORDER_ROUTER_STALENESS_PENALTY_BPS'] ?? 1),
     // How much better a bridged route must be, per extra hop, before it beats a direct market.
     // Non-zero by default: an extra hop is a second order, and a second chance for the price to
     // move between fills. That risk is not in the order book, so a bridge that wins by a hair is

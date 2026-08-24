@@ -348,7 +348,7 @@ export async function buildServer (
                 requireFullFill: parsed.opts.requireFullFill,
                 stalenessPenaltyBps: result.stalenessPenaltyBps,
                 hopPenaltyBps: result.hopPenaltyBps,
-                maxStalenessMs: result.staleBookMs,
+                staleBookMs: result.staleBookMs,
             }, 'route recommendation');
 
             if (result.unroutableReason === 'no_market') {

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: CCXT Order Router API
-  version: 1.4.0
+  version: 2.0.0
   description: |
     Smart order router over live L2 order books from ~60 exchanges (ccxt.pro WebSocket).
 
@@ -213,26 +213,6 @@ paths:
             maintains and tests to a higher bar (22 of 80 pro classes at time of writing).
             Composes with `exchanges` as an intersection.
           schema: { type: boolean, default: false }
-        - name: maxStalenessMs
-          in: query
-          description: |
-            Override the freshness cutoff. Books older than this are excluded from routing.
-            Opt-in by design: defaulting loose would hand out prices minutes out of date without
-            the caller ever choosing that risk. Widen it only if a stale price beats no price.
-          schema: { type: number, exclusiveMinimum: 0 }
-        - name: stalenessPenaltyBps
-          in: query
-          description: |
-            Penalise each venue's price by `bps * sqrt(book age in seconds)`, making older quotes
-            rank worse. A stale quote is not the same product as a live one — the price may simply
-            no longer exist — so a 20bp edge on a 4-second-old book is often worse than a fresh
-            top-of-book. The sqrt shape follows the standard latency-cost result (uncertainty
-            grows like a random walk's standard deviation). Your bps figure absorbs the asset's
-            volatility, so one number covers it. 0 disables.
-
-            Because this is a constant shift per venue, the greedy consolidated walk remains
-            provably optimal — no change in algorithm or latency.
-          schema: { type: number, minimum: 0, default: 0 }
         - name: requireFullFill
           in: query
           description: |
@@ -590,8 +570,19 @@ components:
           description: Whether the certified-only filter was applied.
         staleBookMs:
           type: number
-          description: Freshness cutoff applied, echoed so bookAgeMs on each quote is interpretable without knowing server config.
-        stalenessPenaltyBps: { type: number }
+          description: |
+            The freshness cutoff the router applied. Books older than this were excluded. Echoed so
+            `bookAgeMs` on each quote is interpretable, and so you can always see what judgment was
+            made — but it is NOT a request parameter. Deciding whether a price is still real is the
+            router's job; a caller cannot see the update rates that decision is made against.
+        stalenessPenaltyBps:
+          type: number
+          description: |
+            The staleness penalty applied, in basis points per square-root-second of book age. Also
+            not a request parameter. It is ON by default, and the coefficient approximates one
+            standard deviation of price movement over the book's age (about 0.89 bps/√s at 50%
+            annualised volatility), so an older quote must be genuinely better to win rather than
+            merely look better.
         requireFullFill:
           type: boolean
           description: |

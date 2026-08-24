@@ -393,7 +393,7 @@ test('WS /stream/route applies exactly the same validation as GET /route', async
             'from=BTC&to=BTC&amountOut=1',                  // from === to
             'from=USDT&to=BTC&amountOut=1&strategy=nonsense',
             'from=USDT&to=BTC&amountOut=1&maxVenues=0',
-            'from=USDT&to=BTC&amountOut=1&maxStalenessMs=0',
+            'from=USDT&to=BTC&amountOut=1&minLegNotional=-1',
             'from=USDT&to=BTC&amountOut=1&hopPenaltyBps=-1',
         ];
         for (const q of bad) {
@@ -437,10 +437,21 @@ test('WS /stream/route pushes a full route and refuses an unreachable pair', asy
         const rest = await app.inject({ method: 'GET', url: '/route?from=USDT&to=BTC&amountOut=1', headers: AUTH });
         const restBody = rest.json();
         assert.deepEqual(Object.keys(first).sort(), Object.keys(restBody).sort());
+        // The CONTRACT — what was asked and what settings were applied — must match exactly.
         for (const field of ['from', 'to', 'exactSide', 'requestedAmount', 'strategy', 'includeFees',
             'certifiedOnly', 'staleBookMs', 'stalenessPenaltyBps', 'hopPenaltyBps', 'requireFullFill',
-            'amountIn', 'amountOut', 'effectiveRate', 'fullyFillable', 'fillRatio']) {
+            'fullyFillable', 'fillRatio']) {
             assert.deepEqual(first[field], restBody[field], `${field} differs between /route and /stream/route`);
+        }
+        // PRICED values are compared with a tolerance, because they are not deterministic across two
+        // calls: the staleness penalty is a function of each book's age, so two requests microseconds
+        // apart price the same book fractionally differently. Asserting exact equality here would be
+        // asserting that the router ignores time, which is the opposite of what it does.
+        for (const field of ['amountIn', 'amountOut', 'effectiveRate']) {
+            const a = first[field] as number;
+            const b = restBody[field] as number;
+            assert.ok(Math.abs(a - b) <= Math.abs(b) * 1e-4,
+                `${field} differs by more than staleness drift: ${a} vs ${b}`);
         }
         assert.equal((first['hops'] as unknown[]).length, 1);
 
@@ -957,8 +968,18 @@ test('includeQuotes is opt-out on REST and opt-in on the stream', async () => {
     const off = await app.inject({
         method: 'GET', url: '/route?from=USDT&to=BTC&amountOut=1&includeQuotes=false', headers: AUTH });
     assert.deepEqual(off.json().hops[0].quotes, []);
-    // Suppressing the diagnostic must not change the routing decision itself.
-    assert.deepEqual(off.json().hops[0].legs, on.json().hops[0].legs);
+    // Suppressing the diagnostic must not change the routing DECISION — same venues, same order.
+    // The amounts are compared with a tolerance rather than exactly, because the staleness penalty
+    // is a function of book age, so two calls a millisecond apart price the same book fractionally
+    // differently. Asserting exact equality would assert that the router ignores time.
+    const offLegs = off.json().hops[0].legs as { exchangeId: string; amount: number }[];
+    const onLegs = on.json().hops[0].legs as { exchangeId: string; amount: number }[];
+    assert.deepEqual(offLegs.map((l) => l.exchangeId), onLegs.map((l) => l.exchangeId),
+        'the same venues must be chosen, in the same order');
+    for (const [i, leg] of offLegs.entries()) {
+        assert.ok(Math.abs(leg.amount - onLegs[i]!.amount) <= Math.abs(onLegs[i]!.amount) * 1e-4,
+            `leg ${leg.exchangeId} amount differs by more than staleness drift`);
+    }
     assert.equal(off.json().hops[0].freshVenueCount, on.json().hops[0].freshVenueCount);
     await app.close();
 });
@@ -979,5 +1000,39 @@ test('an unroutable reason does not depend on whether quotes were requested', as
     const filtered = await app.inject({
         method: 'GET', url: '/route?from=USDT&to=BTC&amountOut=1&exchanges=&includeQuotes=false', headers: AUTH });
     assert.equal(filtered.json().unroutableReason, 'no_venues_matched_filter');
+    await app.close();
+});
+
+test('freshness is the router\'s judgment, not a caller parameter', async () => {
+    // These were query parameters. They are not any more: a caller cannot see the update rates they
+    // would be calibrating against, and a millisecond number is the wrong shape for "is this price
+    // still real?" anyway. Supplying them is now inert rather than an error — they are simply
+    // unknown query keys — but they must NOT change the answer.
+    const { app, cache } = await buildTestServer();
+    cache.setBook(book());
+    const plain = await app.inject({ method: 'GET', url: '/route?from=USDT&to=BTC&amountOut=1', headers: AUTH });
+    const meddled = await app.inject({
+        method: 'GET',
+        url: '/route?from=USDT&to=BTC&amountOut=1&maxStalenessMs=999999&stalenessPenaltyBps=500',
+        headers: AUTH,
+    });
+    assert.equal(meddled.statusCode, 200);
+    assert.equal(meddled.json().staleBookMs, plain.json().staleBookMs,
+        'a caller must not be able to widen the freshness window');
+    assert.equal(meddled.json().stalenessPenaltyBps, plain.json().stalenessPenaltyBps,
+        'a caller must not be able to disable the staleness penalty');
+    await app.close();
+});
+
+test('the staleness penalty is applied by default, not merely available', async () => {
+    // It shipped defaulting to 0, which meant every caller got the naive behaviour unless they knew
+    // to ask for something they had no way to calibrate. The echoed value proves it is actually on.
+    const { app, cache } = await buildTestServer();
+    cache.setBook(book());
+    const r = await app.inject({ method: 'GET', url: '/route?from=USDT&to=BTC&amountOut=1', headers: AUTH });
+    assert.ok(r.json().stalenessPenaltyBps > 0,
+        'the router must price staleness by default rather than ignoring it');
+    // And still be echoed, so a caller can always see what judgment was applied to their quote.
+    assert.ok(r.json().staleBookMs > 0);
     await app.close();
 });
