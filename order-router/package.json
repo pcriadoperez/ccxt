@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Smart order router: aggregates live order books across exchanges via ccxt and serves best-execution price lookups.",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && npm run copy-assets",
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
     "mcp": "node dist/mcp/server.js",
@@ -17,14 +17,18 @@
     "keys:create": "node dist/cli/keys.js create",
     "keys:list": "node dist/cli/keys.js list",
     "keys:revoke": "node dist/cli/keys.js revoke",
-    "keys:delete": "node dist/cli/keys.js delete"
+    "keys:delete": "node dist/cli/keys.js delete",
+    "copy-assets": "node -e \"const{cpSync,mkdirSync}=require('node:fs');mkdirSync('dist/db',{recursive:true});cpSync('src/db/schema.sql','dist/db/schema.sql')\"",
+    "db:migrate": "node dist/db/migrate.js"
   },
   "dependencies": {
     "@fastify/rate-limit": "^11.2.0",
     "@fastify/websocket": "^11.0.1",
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "@types/pg": "^8.23.1",
     "ccxt": "4.5.64",
     "fastify": "^5.1.0",
+    "pg": "^8.23.0",
     "pino": "^9.5.0",
     "pino-pretty": "^11.3.0",
     "prom-client": "^15.1.3",

@@ -128,6 +128,11 @@ export const config = {
     // plus a first order-book snapshot; doing all of them at once is what builds the peak the
     // ceiling above then has to hold.
     shardStartConcurrency: Number(process.env['ORDER_ROUTER_SHARD_START_CONCURRENCY'] ?? 2),
+    // Postgres. Deliberately absent from the router process's environment — see
+    // docs/product-plan.md §3: the router must never be able to make authentication wait on a
+    // database, and withholding the credential is what makes that structural rather than a promise.
+    databaseUrl: process.env['DATABASE_URL'],
+    databasePoolMax: Number(process.env['ORDER_ROUTER_DB_POOL_MAX'] ?? 10),
     logLevel: process.env['LOG_LEVEL'] ?? 'info',
 
     // Rate limiting. Applied per API key (falling back to client IP when the key is absent, which
