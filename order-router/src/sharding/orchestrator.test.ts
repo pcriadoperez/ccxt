@@ -41,3 +41,15 @@ test('single shard puts everything in one group', () => {
     assert.equal(groups.length, 1);
     assert.equal(groups[0]?.length, 2);
 });
+
+test('shard workers are forked with a heap ceiling', async () => {
+    // Without one, V8 grows to the startup peak and never returns it: a shard measured 20.54GB RSS
+    // — flat, so a high-water mark rather than a leak — against siblings at 0.44-1.07GB, while the
+    // whole service cached 543 order books. The ceiling is what makes V8 collect instead of grow.
+    const { config } = await import('../config.js');
+    assert.ok(config.shardMaxOldSpaceMb > 0, 'a heap ceiling must be configured');
+    assert.ok(config.shardStartConcurrency >= 1, 'startup concurrency must admit at least one');
+    // The peak scales with startup concurrency, so the default must actually bound it.
+    assert.ok(config.shardStartConcurrency < 8,
+        'starting many exchanges at once rebuilds the peak the ceiling has to hold');
+});

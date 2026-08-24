@@ -4,6 +4,7 @@ import type { Logger } from 'pino';
 import type { OrderBookCache } from '../cache/orderBookCache.js';
 import type { LoopRegistry } from '../cache/loopRegistry.js';
 import type { FeeRegistry } from '../cache/feeRegistry.js';
+import { config } from '../config.js';
 import type { ShardAssignment, ShardToParentMessage } from './messages.js';
 
 const SHARD_WORKER_PATH = fileURLToPath(new URL('./shardWorker.js', import.meta.url));
@@ -87,6 +88,8 @@ export function startShards (
                         lagP50Ms: message.lagP50Ms,
                         lagP99Ms: message.lagP99Ms,
                         lagMaxMs: message.lagMaxMs,
+                        rssBytes: message.rssBytes,
+                        heapUsedBytes: message.heapUsedBytes,
                     });
                     break;
             }
@@ -99,7 +102,12 @@ export function startShards (
         let restarts = 0;
 
         const spawn = (): ChildProcess => {
-            const proc = fork(SHARD_WORKER_PATH);
+            // A heap ceiling, because V8 without one grows to the startup peak and keeps it. The
+            // ceiling is well above the live working set; a shard that genuinely needs more will
+            // OOM loudly, which is a far better failure than silently swapping the whole box.
+            const proc = fork(SHARD_WORKER_PATH, [], {
+                execArgv: [`--max-old-space-size=${config.shardMaxOldSpaceMb}`],
+            });
             proc.on('message', onMessage);
             proc.on('error', (err) => shardLogger.error({ err, pid: proc.pid }, 'shard process error'));
             proc.on('exit', (code) => {

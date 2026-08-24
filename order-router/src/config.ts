@@ -118,6 +118,16 @@ export const config = {
     // 930MB of retry chatter — and silencing operational noise must not also silence the record of
     // who called what. These lines are evidence, not diagnostics.
     auditLogLevel: process.env['ORDER_ROUTER_AUDIT_LOG_LEVEL'] ?? 'info',
+    // Heap ceiling for each shard worker, in MB. Without one, V8 grows to whatever the startup peak
+    // demands and never gives it back: a shard measured 20.54GB RSS — flat, so not a leak, just a
+    // high-water mark — while its siblings sat at 0.44-1.07GB and the whole service cached 543 order
+    // books. A ceiling makes V8 collect instead of grow. It is far above the live working set; if a
+    // shard genuinely needs more it will OOM loudly rather than silently swap the box.
+    shardMaxOldSpaceMb: Number(process.env['ORDER_ROUTER_SHARD_MAX_OLD_SPACE_MB'] ?? 1024),
+    // How many exchanges within one shard may start concurrently. Every start does loadMarkets()
+    // plus a first order-book snapshot; doing all of them at once is what builds the peak the
+    // ceiling above then has to hold.
+    shardStartConcurrency: Number(process.env['ORDER_ROUTER_SHARD_START_CONCURRENCY'] ?? 2),
     logLevel: process.env['LOG_LEVEL'] ?? 'info',
 
     // Rate limiting. Applied per API key (falling back to client IP when the key is absent, which

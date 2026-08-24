@@ -38,6 +38,10 @@ export interface ShardLoopMessage {
     lagP50Ms: number;
     lagP99Ms: number;
     lagMaxMs: number;
+    // Resident set size of the shard process. Reported because shard memory was invisible: the
+    // only symptom of a 20GB shard was the box swapping.
+    rssBytes: number;
+    heapUsedBytes: number;
 }
 
 export type ShardToParentMessage =

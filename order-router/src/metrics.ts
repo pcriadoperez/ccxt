@@ -138,6 +138,33 @@ export function buildMetricsRegistry (deps: MetricsDeps): Registry {
         },
     });
 
+    // Shard memory was completely invisible: the only symptom of a shard holding 20.54GB was the
+    // whole box swapping, which reads as an infrastructure problem rather than as this service. A
+    // per-shard gauge makes the imbalance (20.54GB against siblings at 0.44-1.07GB) obvious.
+    new Gauge({
+        name: 'order_router_shard_rss_bytes',
+        help: 'Resident set size per shard process. A large spread across shards means one is holding memory the others are not.',
+        labelNames: ['shard'],
+        registers: [registry],
+        collect () {
+            for (const [shard, h] of deps.loopRegistry.entries()) {
+                if (h.rssBytes !== undefined) this.set({ shard }, h.rssBytes);
+            }
+        },
+    });
+
+    new Gauge({
+        name: 'order_router_shard_heap_used_bytes',
+        help: 'V8 heap in use per shard process. Compare against rss to tell live data from a high-water mark V8 has not returned.',
+        labelNames: ['shard'],
+        registers: [registry],
+        collect () {
+            for (const [shard, h] of deps.loopRegistry.entries()) {
+                if (h.heapUsedBytes !== undefined) this.set({ shard }, h.heapUsedBytes);
+            }
+        },
+    });
+
     new Gauge({
         name: 'order_router_shard_event_loop_lag_p99_ms',
         help: 'p99 event loop delay per shard, milliseconds.',

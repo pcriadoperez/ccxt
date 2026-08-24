@@ -39,7 +39,11 @@ async function runShard (assignments: ShardInitMessage['assignments']): Promise<
     const loopMonitor = createLoopMonitor();
     setInterval(() => {
         const h = loopMonitor.sample();
-        send({ type: 'loop', shardPid: process.pid, ...h });
+        const mem = process.memoryUsage();
+        send({
+            type: 'loop', shardPid: process.pid, ...h,
+            rssBytes: mem.rss, heapUsedBytes: mem.heapUsed,
+        });
     }, HEALTH_FLUSH_MS);
 
     const connectors = assignments.map(
@@ -54,16 +58,28 @@ async function runShard (assignments: ShardInitMessage['assignments']): Promise<
         ),
     );
 
-    await Promise.all(
-        assignments.map(async ({ exchangeId, symbols }, i) => {
+    // Bounded concurrency, NOT Promise.all. Starting every exchange at once means N simultaneous
+    // loadMarkets() calls plus N first order-book snapshots, and that peak is what V8 grows the heap
+    // to hold and then never gives back — one shard measured 20.54GB RSS, flat, against siblings at
+    // 0.44-1.07GB. Serialising entirely would make startup unnecessarily slow, so this admits a few
+    // at a time: the peak scales with the limit rather than with the shard's exchange count.
+    const queue = assignments.map((a, i) => ({ ...a, connector: connectors[i]! }));
+    const limit = Math.max(1, config.shardStartConcurrency);
+    await Promise.all(Array.from({ length: Math.min(limit, queue.length) }, async () => {
+        for (;;) {
+            const next = queue.shift();
+            if (next === undefined) return;
             try {
-                await connectors[i]!.start(symbols);
-                shardLogger.info({ exchange: exchangeId, symbolCount: symbols.length }, 'shard connector started');
+                await next.connector.start(next.symbols);
+                shardLogger.info(
+                    { exchange: next.exchangeId, symbolCount: next.symbols.length, remaining: queue.length },
+                    'shard connector started',
+                );
             } catch (err) {
-                shardLogger.error({ exchange: exchangeId, err }, 'shard connector failed to start');
+                shardLogger.error({ exchange: next.exchangeId, err }, 'shard connector failed to start');
             }
-        }),
-    );
+        }
+    }));
 
     process.on('disconnect', () => process.exit(0));
 }
