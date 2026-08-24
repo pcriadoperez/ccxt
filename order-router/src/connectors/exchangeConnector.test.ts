@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import pino from 'pino';
-import { chunkSymbols, normalizeLevels, isPermanentError, reapOrphanedSockets } from './exchangeConnector.js';
+import { chunkSymbols, normalizeLevels, isPermanentError, reapOrphanedSockets, isCrossedBook } from './exchangeConnector.js';
 
 const silentLogger = pino({ level: 'silent' });
 
@@ -129,4 +129,41 @@ test('reaping tolerates a client shape it does not recognise', () => {
     // inside an error handler that is already handling a failure.
     const seen = new Set<unknown>([{}, null, { connection: {} }, { connection: { readyState: 1 } }]);
     assert.doesNotThrow(() => reapOrphanedSockets({ clients: {} }, seen, silentLogger));
+});
+
+// Regression tests for the crossed-book guard. The failure these protect against was live: a
+// corrupt deepcoin book quoted BTC 52 bps below the true market and won the whole order precisely
+// because it was wrong.
+test('isCrossedBook accepts a normal book', () => {
+    const bids = [{ price: 79426.00, amount: 1 }, { price: 79425.90, amount: 2 }];
+    const asks = [{ price: 79426.01, amount: 1 }, { price: 79426.10, amount: 2 }];
+    assert.equal(isCrossedBook(bids, asks), false);
+});
+
+test('isCrossedBook flags the live deepcoin corruption', () => {
+    const bids = [{ price: 79802.10, amount: 0.0020134 }];
+    const asks = [{ price: 79009.70, amount: 1.777042 }];
+    assert.equal(isCrossedBook(bids, asks), true);
+});
+
+test('isCrossedBook flags the live whitebit corruption', () => {
+    assert.equal(
+        isCrossedBook([{ price: 79771.53, amount: 1 }], [{ price: 79111.05, amount: 1 }]),
+        true,
+    );
+});
+
+// A locked book is not corrupt: it happens briefly on real venues and walks correctly. Treating it
+// as corruption would resync healthy exchanges for no reason.
+test('isCrossedBook treats a locked book as valid', () => {
+    assert.equal(
+        isCrossedBook([{ price: 79426, amount: 1 }], [{ price: 79426, amount: 1 }]),
+        false,
+    );
+});
+
+test('isCrossedBook tolerates an empty side rather than reporting corruption', () => {
+    assert.equal(isCrossedBook([], [{ price: 79426, amount: 1 }]), false);
+    assert.equal(isCrossedBook([{ price: 79426, amount: 1 }], []), false);
+    assert.equal(isCrossedBook([], []), false);
 });

@@ -107,6 +107,8 @@ test('setHealth overwrites wholesale (mirrors a shard worker\'s already-computed
         updateCount: 99,
         reconnectCount: 3,
         lastError: undefined,
+        crossedCount: 0,
+        lastResyncAt: undefined,
     });
     const health = cache.getHealth().find((h) => h.exchangeId === 'kraken');
     assert.equal(health?.updateCount, 99);

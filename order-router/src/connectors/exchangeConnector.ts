@@ -31,6 +31,34 @@ export function normalizeLevels (
     return out;
 }
 
+// A single venue's own book cannot legitimately cross: if the best bid were above the best ask,
+// the exchange's own matching engine would have filled them against each other. So a crossed book
+// is proof of corrupt local state, never a market condition, and rejecting one has no false
+// positives. Locked books (bid exactly equal to ask) DO occur briefly on some venues and are
+// harmless to walk, so the test is strict.
+//
+// Observed live: deepcoin held bid 79,802.10 against ask 79,009.70, and whitebit bid 79,771.53
+// against ask 79,111.05, while the true market on both was ~79,426. The crossing width tracked
+// BTC's recent trading range, which is the signature of lost deletes — bids keep the highest price
+// they ever saw and asks the lowest, so a book that never prunes slowly accumulates the envelope
+// of every price it has quoted. Left alone it is worse than useless: the phantom ask is the
+// cheapest in the market, so the router routes the whole order to precisely the corrupt venue.
+export function isCrossedBook (bids: BookLevel[], asks: BookLevel[]): boolean {
+    const bestBid = bids[0];
+    const bestAsk = asks[0];
+    if (bestBid === undefined || bestAsk === undefined) return false;
+    return bestBid.price > bestAsk.price;
+}
+
+// A resync closes the exchange's sockets, so it must not run back-to-back on a venue that is
+// emitting corrupt updates continuously — one reconnect per minute is enough to repair while
+// staying far below any venue's connection rate limit.
+const RESYNC_MIN_INTERVAL_MS = 60_000;
+// Belt-and-braces sweep for corruption that has accumulated but not yet crossed. Every venue
+// rebuilds from a fresh snapshot at least this often, which bounds how long undetected drift can
+// survive. Staggered per connector so ~60 exchanges never reconnect together.
+const PERIODIC_RESYNC_MS = 60 * 60_000;
+
 const BACKOFF_START_MS = 500;
 const BACKOFF_MAX_MS = 30_000;
 // Spacing between starting individual watch loops (per-symbol loops on exchanges that don't
@@ -125,6 +153,8 @@ export class ExchangeConnector {
     private maxSymbolsForExchange: number | undefined;
     // Levels kept per side before a book crosses the IPC boundary. See applyOrderBook.
     private maxDepth: number;
+    private lastResyncAt = 0;
+    private resyncTimer: NodeJS.Timeout | undefined;
 
     // `existingExchange` lets a caller that already ran loadMarkets() (e.g. discovery, which
     // needs markets to compute the routable symbol universe before connectors exist) hand off
@@ -186,6 +216,22 @@ export class ExchangeConnector {
 
         if (this.symbols.length === 0) return;
 
+        // Stagger the periodic resync by a stable per-exchange offset rather than a random one, so
+        // the reconnect schedule is reproducible across restarts and two exchanges that happen to
+        // collide keep colliding visibly instead of intermittently.
+        let offset = 0;
+        for (let i = 0; i < this.exchangeId.length; i++) {
+            offset = (offset * 31 + this.exchangeId.charCodeAt(i)) % PERIODIC_RESYNC_MS;
+        }
+        this.resyncTimer = setTimeout(() => {
+            this.resyncTimer = setInterval(() => {
+                void this.resync('periodic snapshot refresh');
+            }, PERIODIC_RESYNC_MS);
+            this.resyncTimer.unref?.();
+            void this.resync('periodic snapshot refresh');
+        }, offset);
+        this.resyncTimer.unref?.();
+
         // Prefer batched subscriptions over independent per-symbol ones whenever the exchange
         // supports it — that's what watchOrderBookForSymbols exists for. But even where
         // supported, exchanges cap how many symbols one subscription/session can cover (observed
@@ -228,16 +274,57 @@ export class ExchangeConnector {
     // declined earlier to protect large-order routing; the number below protects it, and the cost
     // of not truncating turned out to be a swapping box.
     private applyOrderBook (symbol: string, ob: OrderBook, sequence: number): void {
+        const bids = normalizeLevels(ob.bids, this.maxDepth);
+        const asks = normalizeLevels(ob.asks, this.maxDepth);
+        // Reject rather than store. The previously cached book stays, which is stale but real, and
+        // the existing staleness cutoff retires it within seconds if the resync does not land
+        // first — whereas storing this one would put a phantom price into routing immediately.
+        if (isCrossedBook(bids, asks)) {
+            this.cache.recordCrossed(this.exchangeId);
+            this.logger.warn(
+                { symbol, bestBid: bids[0]?.price, bestAsk: asks[0]?.price },
+                'crossed order book, rejecting update and scheduling resync',
+            );
+            void this.resync(`crossed book on ${symbol}`);
+            return;
+        }
         this.cache.setBook({
             exchangeId: this.exchangeId,
             symbol,
-            bids: normalizeLevels(ob.bids, this.maxDepth),
-            asks: normalizeLevels(ob.asks, this.maxDepth),
+            bids,
+            asks,
             exchangeTimestamp: ob.timestamp ?? undefined,
             receivedAt: Date.now(),
             sequence,
         });
         this.cache.recordUpdate(this.exchangeId);
+    }
+
+    // Rebuilds this exchange's books from scratch. Two steps, and both are needed: dropping
+    // ccxt.pro's accumulated OrderBook objects discards the corrupt levels, and closing the
+    // sockets makes the watch loops reconnect and resubscribe — which is what actually produces a
+    // fresh snapshot. Closing alone would reconnect onto the same poisoned OrderBook, since
+    // ccxt.pro keeps it across a reconnect.
+    //
+    // Deliberately exchange-agnostic. The underlying defect is in individual ccxt.pro
+    // implementations dropping deletes (deepcoin, for one, discards a whole message when its `mt`
+    // timestamp fails to advance, deletes included), and auditing ~60 of those is not a thing this
+    // service can depend on. Resubscribing is the one repair that works the same everywhere.
+    private async resync (reason: string): Promise<void> {
+        const now = Date.now();
+        if (now - this.lastResyncAt < RESYNC_MIN_INTERVAL_MS) return;
+        this.lastResyncAt = now;
+        this.cache.recordResync(this.exchangeId);
+        this.logger.warn({ reason }, 'forcing order book resync');
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const books = (this.exchange as any).orderbooks;
+        if (books !== undefined && books !== null) {
+            for (const key of Object.keys(books)) delete books[key];
+        }
+        for (const client of Object.values(this.exchange.clients ?? {})) {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            try { await (client as any)?.close?.(); } catch { /* already closing */ }
+        }
     }
 
     private async batchWatchLoop (symbols: string[]): Promise<void> {
@@ -302,6 +389,11 @@ export class ExchangeConnector {
 
     async stop (): Promise<void> {
         this.stopped = true;
+        if (this.resyncTimer !== undefined) {
+            clearTimeout(this.resyncTimer);
+            clearInterval(this.resyncTimer);
+            this.resyncTimer = undefined;
+        }
         await this.exchange.close();
     }
 }

@@ -126,3 +126,24 @@ test('a shard that stops reporting shows a rising report age', async () => {
     }).metrics();
     assert.match(text, /order_router_shard_loop_report_age_seconds\{shard="shard-0"\}/);
 });
+
+test('crossed books are exposed per exchange and start at zero', async () => {
+    const cache = new OrderBookCache();
+    cache.initHealth('deepcoin');
+    cache.initHealth('kraken');
+    cache.recordCrossed('deepcoin');
+    cache.recordCrossed('deepcoin');
+    const text = await makeRegistry(cache).metrics();
+
+    assert.match(text, /order_router_exchange_crossed_books_total\{exchange="deepcoin"\} 2/);
+    // A healthy venue must report an explicit 0 rather than being absent, or the alert
+    // "crossed_books_total > 0" would silently have nothing to fire against.
+    assert.match(text, /order_router_exchange_crossed_books_total\{exchange="kraken"\} 0/);
+});
+
+test('an exchange that has never resynced reports -1 rather than 0', async () => {
+    const cache = new OrderBookCache();
+    cache.initHealth('kraken');
+    const text = await makeRegistry(cache).metrics();
+    assert.match(text, /order_router_exchange_last_resync_seconds\{exchange="kraken"\} -1/);
+});

@@ -52,6 +52,36 @@ export function buildMetricsRegistry (deps: MetricsDeps): Registry {
         },
     });
 
+    // Non-zero means a venue served a book whose best bid was above its best ask, which a real
+    // matching engine cannot produce — so this is an alarm on corrupt local state, not a market
+    // statistic. It should sit at zero; a venue climbing here is one whose ccxt.pro handler is
+    // losing deletes.
+    new Gauge({
+        name: 'order_router_exchange_crossed_books_total',
+        help: 'Cumulative crossed (corrupt) order books rejected per exchange since process start.',
+        labelNames: ['exchange'],
+        registers: [registry],
+        collect () {
+            for (const h of deps.cache.getHealth()) {
+                this.set({ exchange: h.exchangeId }, h.crossedCount);
+            }
+        },
+    });
+
+    new Gauge({
+        name: 'order_router_exchange_last_resync_seconds',
+        help: 'Seconds since this exchange last rebuilt its books from a fresh snapshot (-1 if never).',
+        labelNames: ['exchange'],
+        registers: [registry],
+        collect () {
+            const now = Date.now();
+            for (const h of deps.cache.getHealth()) {
+                const age = h.lastResyncAt === undefined ? -1 : (now - h.lastResyncAt) / 1000;
+                this.set({ exchange: h.exchangeId }, age);
+            }
+        },
+    });
+
     new Gauge({
         name: 'order_router_exchange_reconnects_total',
         help: 'Cumulative reconnects per exchange since process start.',

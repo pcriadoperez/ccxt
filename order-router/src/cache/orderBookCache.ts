@@ -95,6 +95,8 @@ export class OrderBookCache extends EventEmitter {
             updateCount: 0,
             reconnectCount: 0,
             lastError: undefined,
+            crossedCount: 0,
+            lastResyncAt: undefined,
         };
         this.health.set(exchangeId, h);
         this.emit('health', h);
@@ -128,6 +130,22 @@ export class OrderBookCache extends EventEmitter {
         if (!h) return;
         h.connected = false;
         h.lastError = message;
+        this.emit('health', h);
+    }
+
+    // A crossed book is corrupt rather than merely stale, so it is counted separately: staleness
+    // is expected and self-correcting, corruption is neither and needs a resync to clear.
+    recordCrossed (exchangeId: string): void {
+        const h = this.health.get(exchangeId);
+        if (!h) return;
+        h.crossedCount += 1;
+        this.emit('health', h);
+    }
+
+    recordResync (exchangeId: string): void {
+        const h = this.health.get(exchangeId);
+        if (!h) return;
+        h.lastResyncAt = Date.now();
         this.emit('health', h);
     }
 
