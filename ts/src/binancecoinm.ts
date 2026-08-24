@@ -26,6 +26,7 @@ export default class binancecoinm extends binance {
                 'future': true,
                 'option': undefined,
                 'createStopMarketOrder': true,
+                'createTwapOrder': false,
             },
             'options': {
                 'fetchMarkets': {

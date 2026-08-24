@@ -64,6 +64,7 @@ export default class binanceus extends binance {
                 'createReduceOnlyOrder': false,
                 'createStopLossOrder': false,
                 'createTakeProfitOrder': false,
+                'createTwapOrder': false,
                 'fetchAllGreeks': false,
                 'fetchBorrowInterest': false,
                 'fetchBorrowRate': false,

@@ -860,6 +860,38 @@
                 "output": "timestamp=1718723859404&symbol=LTCUSDT&side=SELL&newClientOrderId=x-R4BD3S8211e624263fc64745ba2215&newOrderRespType=FULL&type=MARKET&quoteOrderQty=5.32&recvWindow=10000&signature=370d368512813304333bd7510e6ae62d89ba877ed6a829ac5595a9c26b0ba265"
             }
         ],
+        "createTwapOrder": [
+            {
+                "description": "spot twap buy with a limit price cap",
+                "method": "createTwapOrder",
+                "url": "https://api.binance.com/sapi/v1/algo/spot/newOrderTwap",
+                "input": [
+                    "BTC/USDT",
+                    "buy",
+                    0.5,
+                    3600000,
+                    {
+                        "price": 60000
+                    }
+                ],
+                "output": "timestamp=1787591425837&symbol=BTCUSDT&side=BUY&quantity=0.5&duration=3600&limitPrice=60000&recvWindow=10000&signature=41fbd9259888406c0c9eebf7d2e6ee3bf5026cc2792118ffa96c6acc8bbc0d94"
+            },
+            {
+                "description": "linear swap twap sell, reduce only",
+                "method": "createTwapOrder",
+                "url": "https://api.binance.com/sapi/v1/algo/futures/newOrderTwap",
+                "input": [
+                    "BTC/USDT:USDT",
+                    "sell",
+                    0.25,
+                    300000,
+                    {
+                        "reduceOnly": true
+                    }
+                ],
+                "output": "timestamp=1787591425849&symbol=BTCUSDT&side=SELL&quantity=0.25&duration=300&reduceOnly=true&recvWindow=10000&signature=0c75ebeb43f0aa3fb0517852197ea6b66d2e754dd2d641a62b00209a1873a2c2"
+            }
+        ],
         "editOrder": [
             {
                 "description": "edit spot order",
@@ -919,6 +951,19 @@
             }
         ],
         "cancelOrder": [
+            {
+                "description": "cancel a spot twap order",
+                "method": "cancelOrder",
+                "url": "https://api.binance.com/sapi/v1/algo/spot/order?timestamp=1787591425865&algoId=14511&recvWindow=10000&signature=f89660ed15fd28dbaaa5c70a873a1ebb780456c5991adb7e86abbaf008bf0aa2",
+                "input": [
+                    "14511",
+                    "BTC/USDT",
+                    {
+                        "twap": true
+                    }
+                ],
+                "output": null
+            },
             {
                 "description": "cancel inverse swap conditional order by id",
                 "method": "cancelOrder",
@@ -1439,6 +1484,21 @@
         ],
         "fetchOrders": [
             {
+                "description": "fetch twap order history",
+                "method": "fetchOrders",
+                "url": "https://api.binance.com/sapi/v1/algo/spot/historicalOrders?timestamp=1787591425887&symbol=ETHUSDT&startTime=1649000000000&endTime=1649999999000&pageSize=50&recvWindow=10000&signature=ae8bc45fc07b665a814bce8ca7329a6fedfdc9891f792540b5bd1af47c1af55c",
+                "input": [
+                    "ETH/USDT",
+                    1649000000000,
+                    50,
+                    {
+                        "twap": true,
+                        "until": 1649999999000
+                    }
+                ],
+                "output": null
+            },
+            {
                 "description": "Spot fetchOrders",
                 "method": "fetchOrders",
                 "url": "https://api.binance.com/api/v3/allOrders?timestamp=1699381044319&symbol=LTCUSDT&recvWindow=10000&signature=858226f6bc5879207bf14a06a71c380e6392601e703b3b0ac229fe1f1f3d092a",
@@ -1711,6 +1771,20 @@
             }
         ],
         "fetchOpenOrders": [
+            {
+                "description": "fetch running twap orders",
+                "method": "fetchOpenOrders",
+                "url": "https://api.binance.com/sapi/v1/algo/spot/openOrders?timestamp=1787591425878&recvWindow=10000&signature=dcbe09d59786346d14d6a64505619b57427dab33b74e36eefa43f759beb0199d",
+                "input": [
+                    "BTC/USDT",
+                    null,
+                    null,
+                    {
+                        "twap": true
+                    }
+                ],
+                "output": null
+            },
             {
                 "description": "Inverse swap conditional open orders",
                 "method": "fetchOpenOrders",
