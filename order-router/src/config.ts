@@ -143,6 +143,16 @@ export const config = {
     // because revocation latency is a security property: it is the window in which a
     // known-compromised key still routes.
     keyProjectionIntervalMs: Number(process.env['ORDER_ROUTER_KEY_PROJECTION_INTERVAL_MS'] ?? 5000),
+    // The web app. Mounted under a path prefix because the beta lives at docs.ccxt.com/router/;
+    // every generated link goes through it, so moving to a dedicated domain is one value.
+    webPort: Number(process.env['ORDER_ROUTER_WEB_PORT'] ?? 8090),
+    webHost: process.env['ORDER_ROUTER_WEB_HOST'] ?? '127.0.0.1',
+    webBasePath: process.env['ORDER_ROUTER_WEB_BASE'] ?? '/router',
+    // Off only for local http development: a Secure cookie is never set over plain http, so
+    // forcing it on would silently break login rather than fail loudly.
+    webSecureCookies: process.env['ORDER_ROUTER_WEB_SECURE_COOKIES'] !== 'false',
+    webAllowedOrigins: (process.env['ORDER_ROUTER_WEB_ORIGINS'] ?? 'https://docs.ccxt.com')
+        .split(',').map((o) => o.trim()).filter((o) => o.length > 0),
     logLevel: process.env['LOG_LEVEL'] ?? 'info',
 
     // Rate limiting. Applied per API key (falling back to client IP when the key is absent, which
