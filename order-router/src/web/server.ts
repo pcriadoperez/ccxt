@@ -1,4 +1,4 @@
-import Fastify from 'fastify';
+import Fastify, { type FastifyRequest, type FastifyReply } from 'fastify';
 import fastifyStatic from '@fastify/static';
 import formbody from '@fastify/formbody';
 import rateLimit from '@fastify/rate-limit';
@@ -281,19 +281,42 @@ export async function buildWebServer (opts: WebOptions) {
 
     // ---- admin ----------------------------------------------------------------
 
-    const requireAdmin = async (request: never, reply: never): Promise<SessionUser | undefined> => {
-        const { user } = await sessionOf(request);
-        if (user?.isAdmin !== true) {
-            // 404, not 403: a non-admin learns nothing about whether the route exists.
-            void (reply as { code: (n: number) => { send: (b: unknown) => void } }).code(404)
-                .send({ error: 'not found' });
+    // Anonymous callers get a bare 404 — they learn nothing about whether the route exists.
+    // A SIGNED-IN non-admin gets a page that says so. The route's existence is not the secret (the
+    // data behind it is), and answering "not found" to someone holding a valid session tells them
+    // the feature is broken rather than that they are on the wrong account — which is exactly how
+    // this was first reported.
+    const requireAdmin = async (
+        request: FastifyRequest, reply: FastifyReply,
+    ): Promise<SessionUser | undefined> => {
+        const { user } = await sessionOf(request as never);
+        if (user === undefined) {
+            void reply.code(404).type('application/json').send({ error: 'not found' });
+            return undefined;
+        }
+        if (!user.isAdmin) {
+            void reply.code(403).type('text/html').send(page(
+                { title: 'Not an admin — CCXT Router', base, user, active: 'admin' },
+                `<div class="wrap"><div class="auth">
+  <h1>This account is not an admin</h1>
+  <p class="sub">You are signed in as <strong>${esc(user.email)}</strong>.</p>
+  <p style="font-size:14px;color:var(--muted)">
+    The admin dashboard is limited to operator accounts. If you have one, sign out and sign in with it.
+  </p>
+  <div style="display:flex;gap:10px;margin-top:20px">
+    <form method="post" action="${esc(base)}/logout" style="margin:0">
+      <button class="btn" type="submit">Sign out</button>
+    </form>
+    <a class="btn ghost" href="${esc(base)}/dashboard">Back to your dashboard</a>
+  </div>
+</div></div>`));
             return undefined;
         }
         return user;
     };
 
     app.get(`${base}/admin`, async (request, reply) => {
-        const user = await requireAdmin(request as never, reply as never);
+        const user = await requireAdmin(request, reply);
         if (user === undefined) return reply;
         const { token } = await sessionOf(request as never);
         void reply.type('text/html');
@@ -343,7 +366,7 @@ export async function buildWebServer (opts: WebOptions) {
     });
 
     app.post<{ Body: { displayId?: string; csrf?: string } }>(`${base}/admin/revoke`, async (request, reply) => {
-        const user = await requireAdmin(request as never, reply as never);
+        const user = await requireAdmin(request, reply);
         if (user === undefined) return reply;
         const { token } = await sessionOf(request as never);
         const bad = guard(request.body.csrf, token, request as never);

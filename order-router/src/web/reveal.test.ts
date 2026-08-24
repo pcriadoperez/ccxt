@@ -66,3 +66,35 @@ test('the audit access line records the route template, never the raw URL', () =
         'the access line must not log the raw URL, which carries the query string');
     assert.ok(/\n\s*route,/.test(accessLine[0]), 'it logs the route template instead');
 });
+
+test('the admin boundary distinguishes "not signed in" from "not an admin"', () => {
+    // Both must be refused, but not identically. An anonymous caller learns nothing (404); a caller
+    // holding a valid session is told which account they are on. Answering 404 to someone signed in
+    // reads as "the feature is broken" rather than "you are on the wrong account" — which is
+    // exactly how this was first reported.
+    const guard = /const requireAdmin[\s\S]*?\n    \};/.exec(SERVER);
+    assert.ok(guard, 'the admin guard must exist');
+    assert.ok(/user === undefined[\s\S]*?code\(404\)/.test(guard[0]),
+        'an anonymous caller must get 404, disclosing nothing');
+    assert.ok(/!user\.isAdmin[\s\S]*?code\(403\)/.test(guard[0]),
+        'a signed-in non-admin must get an explanatory 403, not a 404');
+    // The check reads is_admin from the session record, which loadSession takes from the users
+    // table on every request — never from anything the caller supplies.
+    assert.ok(/const \{ user \} = await sessionOf\(request as never\)/.test(guard[0]),
+        'admin status must come from the session, never from the request');
+});
+
+test('every admin route goes through the guard', () => {
+    // A new admin route that forgets the guard is the way this boundary actually breaks.
+    // A greedy window on purpose: a non-greedy one stops at the first newline, which is the line
+    // the handler opens on, so it would never see the guard and would pass or fail for the wrong
+    // reason.
+    const routes = [...SERVER.matchAll(/`\$\{base\}(\/admin[^`]*)`/g)].map((m) => m[1]!);
+    assert.ok(routes.length >= 2, `expected admin routes to exist, found ${routes.length}`);
+    for (const route of routes) {
+        const at = SERVER.indexOf(`\`\${base}${route}\``);
+        const window = SERVER.slice(at, at + 400);
+        assert.ok(/requireAdmin\(request, reply\)/.test(window),
+            `admin route ${route} does not call requireAdmin`);
+    }
+});
