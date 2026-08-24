@@ -17,3 +17,19 @@ export const logger = pino({
     },
     transport: process.env['NODE_ENV'] === 'production' ? undefined : { target: 'pino-pretty' },
 });
+
+// A SEPARATE destination for the records that are evidence rather than diagnostics: one line per
+// request, and one per routing recommendation. They are split out because the shared log is
+// overwhelmingly connector noise — measured on the live box, 12 event lines out of 1,952,180 — so
+// an ingester tailing it would read gigabytes to find kilobytes, and the records would age out on
+// logrotate's schedule rather than their own.
+//
+// Rotate this file with `create`, NOT `copytruncate`: under copytruncate a tailer silently loses
+// everything between its committed offset and the truncation point, which is a recurring undercount
+// presented as success.
+export const auditLogger = config.auditLogFile === undefined
+    ? logger
+    : pino(
+        { level: config.auditLogLevel, base: undefined },
+        pino.destination({ dest: config.auditLogFile, sync: false, mkdir: true }),
+    );

@@ -4,6 +4,7 @@ import rateLimit from '@fastify/rate-limit';
 import fastifyPlugin from 'fastify-plugin';
 import type { Logger } from 'pino';
 import { config } from '../config.js';
+import { auditLogger } from '../logger.js';
 import type { OrderBookCache } from '../cache/orderBookCache.js';
 import type { FeeRegistry } from '../cache/feeRegistry.js';
 import { computeRoute } from '../routing/route.js';
@@ -218,12 +219,24 @@ export async function buildServer (
         // the /route audit record only covers routing recommendations, while this covers
         // /orderbook, /symbols, /metrics, 401s and 404s too. keyId/keyName arrive via the child
         // logger, so they are on this line without being restated.
-        request.log.info({
+        const record = resolveKey(store, request);
+        // Written to the audit stream with every field restated rather than inherited from the
+        // child logger. This is the row an invoice or a "why was I charged for that?" is settled
+        // from; it has to be readable on its own, by an ingester that has no idea what a Fastify
+        // child logger is.
+        auditLogger.info({
             event: 'request',
+            reqId: String(request.id),
+            keyId: record?.id ?? null,
+            keyUuid: record?.keyUuid ?? null,
+            userId: record?.userId ?? null,
             method: request.method,
             route,
             statusCode: reply.statusCode,
             durationMs: reply.elapsedTime,
+            ip: request.ip,
+            userAgent: request.headers['user-agent'] ?? null,
+            origin: request.headers['origin'] ?? null,
         }, 'request completed');
     });
 
@@ -281,9 +294,15 @@ export async function buildServer (
             // Audit record: one line per recommendation, keyed by requestId. This is the trail
             // that makes a future billing dispute or "why did you route it there?" answerable
             // after the fact, so it logs the decision and its inputs, not just the outcome.
-            request.log.info({
+            auditLogger.info({
                 // A stable event name so queries grep on a field rather than a message string.
                 event: 'route_recommendation',
+                // reqId, under exactly the name the access line uses. The two events describe one
+                // request and the ingester pairs them on this field; naming it differently here
+                // silently produced request rows with no routing detail at all.
+                reqId: requestId,
+                keyUuid: resolveKey(store, request)?.keyUuid ?? null,
+                userId: resolveKey(store, request)?.userId ?? null,
                 // Restated explicitly rather than relying on the child bindings: this is the record
                 // a billing or "why did you route it there?" dispute is settled from, and it should
                 // be self-contained.

@@ -16,7 +16,8 @@
     "test": "tsx --test \"src/**/*.test.ts\"",
     "copy-assets": "node -e \"const{cpSync,mkdirSync}=require('node:fs');mkdirSync('dist/db',{recursive:true});cpSync('src/db/schema.sql','dist/db/schema.sql')\"",
     "db:migrate": "node dist/db/migrate.js",
-    "admin": "node dist/cli/admin.js"
+    "admin": "node dist/cli/admin.js",
+    "ingest": "node dist/db/ingestRunner.js"
   },
   "dependencies": {
     "@fastify/rate-limit": "^11.2.0",

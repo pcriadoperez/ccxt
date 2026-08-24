@@ -118,6 +118,9 @@ export const config = {
     // 930MB of retry chatter — and silencing operational noise must not also silence the record of
     // who called what. These lines are evidence, not diagnostics.
     auditLogLevel: process.env['ORDER_ROUTER_AUDIT_LOG_LEVEL'] ?? 'info',
+    // Where the per-request audit records go. Unset means "the ordinary log", which keeps local
+    // development and the existing tests working unchanged.
+    auditLogFile: process.env['ORDER_ROUTER_AUDIT_LOG_FILE'],
     // Heap ceiling for each shard worker, in MB. Without one, V8 grows to whatever the startup peak
     // demands and never gives it back: a shard measured 20.54GB RSS — flat, so not a leak, just a
     // high-water mark — while its siblings sat at 0.44-1.07GB and the whole service cached 543 order
@@ -133,6 +136,13 @@ export const config = {
     // database, and withholding the credential is what makes that structural rather than a promise.
     databaseUrl: process.env['DATABASE_URL'],
     databasePoolMax: Number(process.env['ORDER_ROUTER_DB_POOL_MAX'] ?? 10),
+    // How often the audit stream is drained into Postgres. Short enough that the dashboard feels
+    // live; the cursor makes any interval safe.
+    ingestIntervalMs: Number(process.env['ORDER_ROUTER_INGEST_INTERVAL_MS'] ?? 5000),
+    // First half of revocation latency (the router's own file poll is the second). Both are short
+    // because revocation latency is a security property: it is the window in which a
+    // known-compromised key still routes.
+    keyProjectionIntervalMs: Number(process.env['ORDER_ROUTER_KEY_PROJECTION_INTERVAL_MS'] ?? 5000),
     logLevel: process.env['LOG_LEVEL'] ?? 'info',
 
     // Rate limiting. Applied per API key (falling back to client IP when the key is absent, which
