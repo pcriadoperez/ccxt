@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import pino from 'pino';
-import { chunkSymbols, normalizeLevels, isPermanentError, reapOrphanedSockets, isCrossedBook } from './exchangeConnector.js';
+import { chunkSymbols, normalizeLevels, isPermanentError, reapOrphanedSockets, isCrossedBook, nextResyncBackoffMs } from './exchangeConnector.js';
 
 const silentLogger = pino({ level: 'silent' });
 
@@ -166,4 +166,25 @@ test('isCrossedBook tolerates an empty side rather than reporting corruption', (
     assert.equal(isCrossedBook([], [{ price: 79426, amount: 1 }]), false);
     assert.equal(isCrossedBook([{ price: 79426, amount: 1 }], []), false);
     assert.equal(isCrossedBook([], []), false);
+});
+
+// Resync escalation. Live evidence for why this exists: deepcoin was repaired by its first resync
+// (71 crossings total) while bitget re-crossed within seconds of every fresh snapshot and held
+// ~30 crossed books/sec through repeated resyncs.
+test('a resync that fails to repair the venue doubles the interval', () => {
+    assert.equal(nextResyncBackoffMs(60_000, 60_000, true), 120_000);
+    assert.equal(nextResyncBackoffMs(120_000, 120_000, true), 240_000);
+});
+
+test('escalation is capped so an unrepairable venue is still retried occasionally', () => {
+    assert.equal(nextResyncBackoffMs(30 * 60_000, 30 * 60_000, true), 30 * 60_000);
+    assert.equal(nextResyncBackoffMs(20 * 60_000, 20 * 60_000, true), 30 * 60_000);
+});
+
+test('a venue that stayed clean for a long stretch resets to the base interval', () => {
+    assert.equal(nextResyncBackoffMs(240_000, 600_000, true), 60_000);
+});
+
+test('the first resync for a venue never starts escalated', () => {
+    assert.equal(nextResyncBackoffMs(60_000, 0, false), 60_000);
 });

@@ -54,6 +54,26 @@ export function isCrossedBook (bids: BookLevel[], asks: BookLevel[]): boolean {
 // emitting corrupt updates continuously — one reconnect per minute is enough to repair while
 // staying far below any venue's connection rate limit.
 const RESYNC_MIN_INTERVAL_MS = 60_000;
+// ...but some venues are not repairable by reconnecting at all. Measured live: bitget re-crossed
+// within seconds of every fresh snapshot and sustained ~30 crossed books/sec through repeated
+// resyncs, while deepcoin was fixed by its first one. Hammering an unfixable venue with a
+// reconnect every minute forever buys nothing and is a good way to earn a connection ban.
+const RESYNC_MAX_INTERVAL_MS = 30 * 60_000;
+
+// Escalation rule for corruption-triggered resyncs, kept pure so it is testable without a socket.
+// `quietForMs` is the gap since the last resync; because this decision is only reached when the
+// venue is corrupt RIGHT NOW, a short gap is evidence the last resync did not work, and a long one
+// is evidence the venue recovered by itself and the escalation should be dropped.
+export function nextResyncBackoffMs (
+    currentBackoffMs: number,
+    quietForMs: number,
+    everResynced: boolean,
+): number {
+    if (everResynced && quietForMs <= currentBackoffMs * 2) {
+        return Math.min(currentBackoffMs * 2, RESYNC_MAX_INTERVAL_MS);
+    }
+    return RESYNC_MIN_INTERVAL_MS;
+}
 // Belt-and-braces sweep for corruption that has accumulated but not yet crossed. Every venue
 // rebuilds from a fresh snapshot at least this often, which bounds how long undetected drift can
 // survive. Staggered per connector so ~60 exchanges never reconnect together.
@@ -154,6 +174,7 @@ export class ExchangeConnector {
     // Levels kept per side before a book crosses the IPC boundary. See applyOrderBook.
     private maxDepth: number;
     private lastResyncAt = 0;
+    private resyncBackoffMs = RESYNC_MIN_INTERVAL_MS;
     private resyncTimer: NodeJS.Timeout | undefined;
 
     // `existingExchange` lets a caller that already ran loadMarkets() (e.g. discovery, which
@@ -225,10 +246,10 @@ export class ExchangeConnector {
         }
         this.resyncTimer = setTimeout(() => {
             this.resyncTimer = setInterval(() => {
-                void this.resync('periodic snapshot refresh');
+                void this.resync('periodic snapshot refresh', true);
             }, PERIODIC_RESYNC_MS);
             this.resyncTimer.unref?.();
-            void this.resync('periodic snapshot refresh');
+            void this.resync('periodic snapshot refresh', true);
         }, offset);
         this.resyncTimer.unref?.();
 
@@ -310,12 +331,22 @@ export class ExchangeConnector {
     // implementations dropping deletes (deepcoin, for one, discards a whole message when its `mt`
     // timestamp fails to advance, deletes included), and auditing ~60 of those is not a thing this
     // service can depend on. Resubscribing is the one repair that works the same everywhere.
-    private async resync (reason: string): Promise<void> {
+    private async resync (reason: string, force = false): Promise<void> {
         const now = Date.now();
-        if (now - this.lastResyncAt < RESYNC_MIN_INTERVAL_MS) return;
+        if (!force && now - this.lastResyncAt < this.resyncBackoffMs) return;
+        // The periodic sweep is exempt from escalation: it is a scheduled refresh rather than a
+        // fault report, and letting it drive the backoff would inflate the interval on venues that
+        // are perfectly healthy.
+        if (!force) {
+            this.resyncBackoffMs = nextResyncBackoffMs(
+                this.resyncBackoffMs,
+                now - this.lastResyncAt,
+                this.lastResyncAt !== 0,
+            );
+        }
         this.lastResyncAt = now;
         this.cache.recordResync(this.exchangeId);
-        this.logger.warn({ reason }, 'forcing order book resync');
+        this.logger.warn({ reason, nextAttemptAfterMs: this.resyncBackoffMs }, 'forcing order book resync');
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const books = (this.exchange as any).orderbooks;
         if (books !== undefined && books !== null) {
