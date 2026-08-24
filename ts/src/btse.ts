@@ -66,6 +66,7 @@ export default class btse extends Exchange {
                 'createTrailingAmountOrder': true,
                 'createTrailingPercentOrder': false,
                 'createTriggerOrder': true,
+                'createTwapOrder': true,
                 'deposit': false,
                 'editOrder': true,
                 'editOrders': false,
@@ -377,6 +378,7 @@ export default class btse extends Exchange {
                         'selfTradePrevention': false,
                         'trailing': true,
                         'iceberg': false,
+                        'twap': true,
                         'leverage': false,
                         'marketBuyRequiresPrice': false,
                         'marketBuyByCost': false,
@@ -433,6 +435,7 @@ export default class btse extends Exchange {
                         'selfTradePrevention': false,
                         'trailing': true,
                         'iceberg': false,
+                        'twap': true,
                         'leverage': false,
                         'marketBuyRequiresPrice': false,
                         'marketBuyByCost': false,
@@ -1919,6 +1922,37 @@ export default class btse extends Exchange {
         } else {
             return await this.createContractOrder (symbol, type, side, amount, price, params);
         }
+    }
+
+    /**
+     * @method
+     * @name btse#createTwapOrder
+     * @description create a TWAP order, btse dispatches the child orders from its own algo engine
+     * @see https://docs.btse.com/spot/rest/place-algo-order
+     * @see https://docs.btse.com/futures/rest/place-algo-order
+     * @param {string} symbol unified symbol of the market to create an order in
+     * @param {string} side 'buy' or 'sell'
+     * @param {float} amount how much of currency you want to trade in units of base currency
+     * @param {int} duration the execution window in milliseconds, sent to btse as whole seconds
+     * @param {object} [params] extra parameters specific to the exchange API endpoint
+     * @param {bool} [params.randomize] randomize the size of each child order
+     * @param {float} [params.subTwapMaxOrderSize] the size cap of a single child order
+     * @param {float} [params.pausePrice] pause the strategy when the market trades through this price
+     * @param {bool} [params.reduceOnly] true if the order should only reduce an existing position
+     * @param {string} [params.clientOrderId] a client supplied identifier for the parent order
+     * @returns {object} an [order structure]{@link https://docs.ccxt.com/#/?id=order-structure}
+     */
+    override async createTwapOrder (symbol: string, side: OrderSide, amount: number, duration: number, params = {}): Promise<Order> {
+        await this.loadMarkets ();
+        const request: Dict = {
+            'timePeriod': this.parseToInt (duration / 1000), // btse takes the execution window in whole seconds
+        };
+        const randomize = this.safeBool (params, 'randomize');
+        if (randomize !== undefined) {
+            request['randomizeSize'] = randomize;
+            params = this.omit (params, 'randomize');
+        }
+        return await this.createOrder (symbol, 'TWAP', side, amount, undefined, this.extend (request, params));
     }
 
     /**

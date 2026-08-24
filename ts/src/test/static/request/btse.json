@@ -3,6 +3,36 @@
     "skipKeys": [],
     "options": {},
     "methods": {
+        "createTwapOrder": [
+            {
+                "description": "spot twap sell over 45 minutes, randomized slices",
+                "method": "createTwapOrder",
+                "url": "https://api.btse.com/spot/api/v4/trade/orders/algo",
+                "input": [
+                    "ETH/USDT",
+                    "sell",
+                    0.5,
+                    2700000,
+                    {
+                        "randomize": true
+                    }
+                ],
+                "output": "{\"symbol\":\"ETH-USDT\",\"orderSide\":\"SELL\",\"orderSize\":\"0.5\",\"orderType\":\"TWAP\",\"timePeriod\":2700,\"randomizeSize\":true}"
+            },
+            {
+                "description": "linear swap twap buy over 1 hour",
+                "method": "createTwapOrder",
+                "url": "https://api.btse.com/futures/api/v3/trade/orders/algo",
+                "input": [
+                    "BTC/USDT:USDT",
+                    "buy",
+                    5,
+                    3600000,
+                    {}
+                ],
+                "output": "{\"symbol\":\"BTC-PERP\",\"orderSide\":\"BUY\",\"orderSize\":\"5\",\"orderType\":\"TWAP\",\"timePeriod\":3600}"
+            }
+        ],
         "closePosition": [
             {
                 "description": "close one-way position with market order",

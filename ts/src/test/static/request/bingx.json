@@ -8,6 +8,39 @@
     ],
     "outputType": "urlencoded",
     "methods": {
+        "createTwapOrder": [
+            {
+                "description": "twap buy, interval and slice size derived from the duration",
+                "method": "createTwapOrder",
+                "url": "https://open-api.bingx.com/openApi/swap/v1/twap/order?amountPerOrder=0.5&interval=360&positionSide=LONG&side=BUY&symbol=LTC-USDT&timestamp=1787605546373&totalAmount=10&triggerPrice=120&signature=654f341d2b183c39c13e658234292b4111c028d3dc10b2cb6fb98fa81a6d9e1a",
+                "input": [
+                    "LTC/USDT:USDT",
+                    "buy",
+                    10,
+                    7200000,
+                    {
+                        "price": 120
+                    }
+                ],
+                "output": null
+            },
+            {
+                "description": "twap sell with an explicit interval",
+                "method": "createTwapOrder",
+                "url": "https://open-api.bingx.com/openApi/swap/v1/twap/order?amountPerOrder=0.2&interval=30&positionSide=SHORT&side=SELL&symbol=LTC-USDT&timestamp=1787605546391&totalAmount=4&triggerPrice=90&signature=547d3505497903734d46bd21e97b616695f4b1e7b7c71937e17683603e2d4192",
+                "input": [
+                    "LTC/USDT:USDT",
+                    "sell",
+                    4,
+                    600000,
+                    {
+                        "price": 90,
+                        "interval": 30
+                    }
+                ],
+                "output": null
+            }
+        ],
         "fetchFundingHistory": [
             {
                 "description": "fetchFundingHistory",
@@ -114,6 +147,26 @@
             }
         ],
         "createOrder": [
+            {
+                "description": "twap order goes to the twap endpoint, not the plain order endpoint",
+                "method": "createOrder",
+                "url": "https://open-api.bingx.com/openApi/swap/v1/twap/order?amountPerOrder=0.5&interval=8&positionSide=LONG&priceType=constant&priceVariance=10&side=BUY&symbol=LTC-USDT&timestamp=1787605546362&totalAmount=1&triggerPrice=120&signature=1005d0efcbb6b9fe433cdcf954f8b781ed3d1defcf4524b215165355c02b79f8",
+                "input": [
+                    "LTC/USDT:USDT",
+                    "TWAP",
+                    "buy",
+                    1,
+                    null,
+                    {
+                        "triggerPrice": 120,
+                        "interval": 8,
+                        "amountPerOrder": 0.5,
+                        "priceType": "constant",
+                        "priceVariance": 10
+                    }
+                ],
+                "output": null
+            },
             {
                 "description": "with stopLoss (exchange-specific)",
                 "disabledGO": true,

@@ -6428,11 +6428,18 @@ $exchange->cancel_order($running[0]['id'], $symbol, array('twap' => true));
 | -------- | ------- | --------------- | ----- |
 | `binance` | spot, linear swap | 5 minutes to 24 hours | the create response only carries `clientAlgoId`, so the returned order has no `id` — read the `algoId` back from `fetchOpenOrders(..., { 'twap': true })` before canceling. Minimum notional is 1000 USDT on futures. `params.price` maps to `limitPrice` |
 | `hyperliquid` | swap | rounded down to whole minutes | `params.randomize` varies the interval between slices so the schedule is harder to detect. Minimum order value is $1200 ($10 per minute) |
+| `bingx` | linear swap | capped at 24 hours | `params.price` is **required** — bingx needs a price limit the strategy must not trade through. `duration` is split into `slices` (default 20) to derive the seconds between slices and the size cap per slice; pass `params.interval` or `params.amountPerOrder` to set either directly. See the caveat below |
+| `btse` | spot, contract | — | `duration` maps straight onto btse's `timePeriod` execution window. `params.randomize` maps to `randomizeSize` |
+
+**BingX caveat.** BingX sizes each child order at a random 0.5×–1× of the per-slice cap and runs
+the strategy until the total amount is filled or 24 hours elapse. `duration` therefore sets the
+*pace* of the schedule rather than a deadline — expect a parent order to take longer than
+`duration` to fill completely.
 
 Exchanges that expose TWAP only through non-unified parameters, and are not yet wired into
-`createTwapOrder`: `okx` (`ordType: 'twap'` with `szLimit` and `timeInterval`), `bingx`
-(`createOrder(symbol, 'TWAP', ...)` with `interval` and `amountPerOrder`), `btse`
-(`type: 'TWAP'` with `timePeriod`).
+`createTwapOrder`: `okx` (`privatePostTradeOrderAlgo` with `ordType: 'twap'`, `szLimit` and
+`timeInterval`) — the unit of `timeInterval` is not stated in OKX's published documentation, so
+deriving it from `duration` is not currently safe.
 
 ##### TWAP Is Single-Venue
 
