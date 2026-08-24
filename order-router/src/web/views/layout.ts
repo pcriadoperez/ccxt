@@ -53,6 +53,7 @@ export function page (o: PageOptions, body: string): string {
 ${o.description ? `<meta name="description" content="${esc(o.description)}">` : ''}
 <link rel="icon" href="${esc(o.base)}/static/logo.svg">
 <link rel="stylesheet" href="${esc(o.base)}/static/styles.css">
+<script src="${esc(o.base)}/static/app.js" defer></script>
 </head>
 <body>
 <header class="site"><div class="wrap inner">

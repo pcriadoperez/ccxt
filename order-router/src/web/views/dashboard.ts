@@ -1,5 +1,88 @@
 import { page, esc, highlight, type NavUser } from './layout.js';
 
+const CLIP_ICON = '<svg class="clip" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">'
+    + '<rect x="5.5" y="5.5" width="8" height="9" rx="1.5"/>'
+    + '<path d="M10.5 5.5V3a1.5 1.5 0 0 0-1.5-1.5H3.5A1.5 1.5 0 0 0 2 3v6a1.5 1.5 0 0 0 1.5 1.5H5.5"/></svg>';
+const TICK_ICON = '<svg class="tick" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">'
+    + '<path d="M3 8.5L6.5 12L13 4.5"/></svg>';
+const LINK_ICON = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">'
+    + '<path d="M6 10L14 2M14 2h-4.5M14 2v4.5"/><path d="M12 9.5V13a1.5 1.5 0 0 1-1.5 1.5h-7A1.5 1.5 0 0 1 2 13V6a1.5 1.5 0 0 1 1.5-1.5H7"/></svg>';
+const DOWN_ICON = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">'
+    + '<path d="M8 2v9M4.5 7.5L8 11l3.5-3.5M2.5 13.5h11"/></svg>';
+
+// A value with a copy button beside it. The button carries the raw value in a data attribute; the
+// handler lives in a static file rather than inline so the page needs no script-src 'unsafe-inline'.
+function copyable (value: string, label: string, wrap = false): string {
+    return `<div class="copyrow">
+  <div class="val${wrap ? ' wrap' : ''}">${esc(value)}</div>
+  <button class="copy" type="button" data-copy="${esc(value)}" aria-label="Copy ${esc(label)}"
+          title="Copy ${esc(label)}">${CLIP_ICON}${TICK_ICON}</button>
+</div>`;
+}
+
+// Built by joining rather than as a multi-line template literal: a trailing backslash inside a
+// template literal is a line continuation and eats the newline, so the shell continuation vanishes
+// and the command renders as one unreadable line.
+const ROUTE_URL = 'https://docs.ccxt.com/router/api/route?from=USDT&to=BTC&amountOut=0.1';
+function curlFor (key: string): string {
+    return [`curl -H "x-api-key: ${key}" \\`, `  "${ROUTE_URL}"`].join('\n');
+}
+
+// Shown once, immediately after a key is minted. This is the only moment the plaintext exists
+// outside the user's clipboard, so the page has to get them to a working call before they leave it.
+function onboarding (base: string, key: string): string {
+    return `<div class="reveal">
+  <strong>Your API key is ready. This is the only time it is shown.</strong>
+  <p style="margin:6px 0 18px;font-size:13px;color:var(--muted)">
+    It is stored only as a hash and cannot be recovered. If you lose it, revoke it and create another.
+  </p>
+  <ol class="steps">
+    <li>
+      <h4>Copy your API key</h4>
+      <p>Keep it secret — it is the only credential the API needs.</p>
+      ${copyable(key, 'API key', true)}
+    </li>
+    <li>
+      <h4>Make your first call</h4>
+      <p>Paste this into a terminal. It asks for the cheapest way to buy 0.1&nbsp;BTC with USDT.</p>
+      ${copyable(curlFor(key), 'curl command', true)}
+    </li>
+    <li>
+      <h4>Read what came back</h4>
+      <p><code>amountIn</code> is what it costs, <code>impactBps</code> is what your size cost you,
+      and <code>hops[].legs[]</code> is where to place the orders. Check <code>fillRatio</code>
+      before trusting <code>effectiveRate</code>.</p>
+      <div class="linkrow">
+        <a href="${esc(base)}/docs/api#reading-the-response">${LINK_ICON}Reading the response</a>
+        <a href="${esc(base)}/docs">${LINK_ICON}Guide for traders</a>
+      </div>
+    </li>
+    <li>
+      <h4>Build against it</h4>
+      <p>The full contract, as an OpenAPI 3.1 document you can import into Postman, Insomnia or a code generator.</p>
+      <div class="linkrow">
+        <a href="${esc(base)}/openapi.yaml" download>${DOWN_ICON}Download openapi.yaml</a>
+        <a href="${esc(base)}/docs/api">${LINK_ICON}API reference</a>
+      </div>
+    </li>
+  </ol>
+</div>`;
+}
+
+// Always present, so the page is still useful once the one-time reveal is gone.
+function quickstart (base: string): string {
+    return `<div class="card" style="margin-bottom:24px">
+  <h3 style="margin-bottom:10px">Using the API</h3>
+  <p style="margin-bottom:10px">Replace <code>$ROUTER_KEY</code> with one of your keys.</p>
+  ${copyable(curlFor('$ROUTER_KEY'), 'curl command', true)}
+  <div class="linkrow" style="margin-top:12px">
+    <a href="${esc(base)}/docs/api">${LINK_ICON}API reference</a>
+    <a href="${esc(base)}/docs">${LINK_ICON}Guide for traders</a>
+    <a href="${esc(base)}/openapi.yaml" download>${DOWN_ICON}openapi.yaml</a>
+  </div>
+</div>`;
+}
+
 export interface KeyRow {
     displayId: string;
     name: string;
@@ -74,16 +157,7 @@ export function dashboardPage (opts: {
 
   ${error ? `<div class="err">${esc(error)}</div>` : ''}
 
-  ${newKey ? `<div class="reveal">
-    <strong>Here is your API key. This is the only time it is shown.</strong>
-    <code class="k">${esc(newKey)}</code>
-    <p style="margin:0;font-size:13px;color:var(--muted)">
-      It is stored only as a hash and cannot be recovered. If you lose it, revoke it and create another.
-    </p>
-    <pre class="code" style="margin-top:12px"><code>${highlight(
-        `curl -H "x-api-key: ${newKey}" \\\n  "https://docs.ccxt.com/router/api/route?from=USDT&to=BTC&amountOut=0.1"`,
-    )}</code></pre>
-  </div>` : ''}
+  ${newKey ? onboarding(base, newKey) : quickstart(base)}
 
   <div class="row">
     <div>

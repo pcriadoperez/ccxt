@@ -21,6 +21,7 @@ import { dashboardPage, adminPage, type KeyRow, type UsageBucket } from './views
 
 const STATIC_DIR = fileURLToPath(new URL('./public', import.meta.url));
 const CONTENT_DIR = fileURLToPath(new URL('./content', import.meta.url));
+const SPEC_PATH = fileURLToPath(new URL('./public/openapi.yaml', import.meta.url));
 
 export interface WebOptions {
     pool: Pool;
@@ -356,6 +357,15 @@ export async function buildWebServer (opts: WebOptions) {
         }
         void reply.redirect(`${base}/admin`);
         return reply;
+    });
+
+    // The spec, served for download and for import into Postman/Insomnia/codegen. Read from disk
+    // per request rather than cached, so a redeploy publishes the new contract without a restart.
+    app.get(`${base}/openapi.yaml`, async (_request, reply) => {
+        void reply
+            .type('application/yaml; charset=utf-8')
+            .header('content-disposition', 'attachment; filename="ccxt-router-openapi.yaml"');
+        return readFileSync(SPEC_PATH, 'utf8');
     });
 
     app.get(`${base}/health`, async () => ({ status: 'ok' }));
