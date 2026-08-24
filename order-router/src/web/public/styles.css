@@ -275,3 +275,150 @@ ol.steps > li:last-child { margin-bottom: 0; }
 .linkrow { display: flex; gap: 16px; flex-wrap: wrap; font-size: 14px; margin-top: 4px; }
 .linkrow a { display: inline-flex; align-items: center; gap: 6px; }
 .linkrow svg { width: 14px; height: 14px; opacity: 0.6; }
+
+/* =========================================================================
+   Hero animation — the fee-adjusted split.
+   Animates the one thing that is genuinely counter-intuitive about the router:
+   fee-adjusting each venue BEFORE comparing them reorders which venue is best.
+   The cheapest raw price here is the most expensive real one. Everything is CSS
+   keyframes on a fixed loop; no JS, no build step, and the whole thing collapses
+   to its final frame under prefers-reduced-motion.
+   ========================================================================= */
+
+.rt { --row-h: 34px; --dur: 13s; }
+.rt-card {
+    border: 1px solid var(--border); border-radius: 10px; background: var(--card);
+    overflow: hidden; box-shadow: 0 1px 2px rgba(0,0,0,.04);
+}
+.rt-head {
+    display: flex; align-items: center; gap: 10px; padding: 9px 14px;
+    border-bottom: 1px solid var(--border); background: var(--bg-2);
+}
+.rt-dots { display: flex; gap: 5px; }
+.rt-dots i { width: 8px; height: 8px; border-radius: 999px; background: var(--border-strong); display: block; }
+.rt-req { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.rt-req b { color: var(--fg); font-weight: 500; }
+.rt-body { padding: 12px 14px 14px; }
+
+.rt-cols {
+    display: grid; grid-template-columns: 96px 1fr 84px 64px 92px;
+    gap: 10px; align-items: center;
+    font-size: 11px; color: var(--muted); text-transform: uppercase;
+    letter-spacing: .05em; padding: 0 2px 8px;
+}
+.rt-cols .c-fee, .rt-cols .c-eff { opacity: 0; animation: rt-fade-in var(--dur) linear infinite; }
+.rt-cols .c-eff { animation-name: rt-fade-in-late; }
+
+.rt-rows { position: relative; height: calc(var(--row-h) * 4); }
+.rt-row {
+    position: absolute; left: 0; right: 0; height: var(--row-h);
+    display: grid; grid-template-columns: 96px 1fr 84px 64px 92px;
+    gap: 10px; align-items: center; padding: 0 2px;
+    font-family: var(--mono); font-size: 13px;
+    border-radius: 6px;
+}
+.rt-venue { color: var(--fg); }
+.rt-bar { height: 6px; border-radius: 999px; background: var(--border); position: relative; overflow: hidden; }
+.rt-bar i {
+    position: absolute; inset: 0 100% 0 0; background: var(--muted); border-radius: 999px;
+    animation: var(--dur) linear infinite;
+}
+.rt-raw { text-align: right; font-variant-numeric: tabular-nums; }
+.rt-fee { text-align: right; color: var(--warn); opacity: 0; animation: rt-fade-in var(--dur) linear infinite; }
+.rt-eff { text-align: right; font-variant-numeric: tabular-nums; opacity: 0; animation: rt-fade-in-late var(--dur) linear infinite; }
+
+/* Each row travels from its raw-price rank to its fee-adjusted rank. okx has the
+   cheapest raw price and the dearest real one, which is the entire point. */
+.rt-row.r-okx     { animation: rt-move-okx     var(--dur) cubic-bezier(.65,0,.35,1) infinite; }
+.rt-row.r-binance { animation: rt-move-binance var(--dur) cubic-bezier(.65,0,.35,1) infinite; }
+.rt-row.r-kucoin  { animation: rt-move-kucoin  var(--dur) cubic-bezier(.65,0,.35,1) infinite; }
+.rt-row.r-bybit   { animation: rt-move-bybit   var(--dur) cubic-bezier(.65,0,.35,1) infinite; }
+
+@keyframes rt-move-okx {
+    0%,32% { transform: translateY(0); }
+    44%,100% { transform: translateY(calc(var(--row-h) * 3)); }
+}
+@keyframes rt-move-binance {
+    0%,32% { transform: translateY(var(--row-h)); }
+    44%,100% { transform: translateY(var(--row-h)); }
+}
+@keyframes rt-move-kucoin {
+    0%,32% { transform: translateY(calc(var(--row-h) * 2)); }
+    44%,100% { transform: translateY(0); }
+}
+@keyframes rt-move-bybit {
+    0%,32% { transform: translateY(calc(var(--row-h) * 3)); }
+    44%,100% { transform: translateY(calc(var(--row-h) * 2)); }
+}
+
+/* The two venues that actually get filled, once the ordering has settled. */
+.rt-bar i.fill-62 { animation-name: rt-fill-62; }
+.rt-bar i.fill-38 { animation-name: rt-fill-38; }
+.rt-bar i.fill-0  { animation-name: rt-fill-0; }
+@keyframes rt-fill-62 {
+    0%,52% { inset: 0 100% 0 0; background: var(--muted); }
+    66%,100% { inset: 0 38% 0 0; background: var(--ok); }
+}
+@keyframes rt-fill-38 {
+    0%,52% { inset: 0 100% 0 0; background: var(--muted); }
+    66%,100% { inset: 0 62% 0 0; background: var(--ok); }
+}
+@keyframes rt-fill-0 { 0%,100% { inset: 0 100% 0 0; } }
+
+@keyframes rt-fade-in      { 0%,14% { opacity: 0 } 24%,100% { opacity: 1 } }
+@keyframes rt-fade-in-late { 0%,26% { opacity: 0 } 36%,100% { opacity: 1 } }
+
+.rt-out {
+    margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--border);
+    display: flex; flex-wrap: wrap; gap: 6px 18px; align-items: baseline;
+    font-family: var(--mono); font-size: 13px;
+    opacity: 0; animation: rt-fade-in-out var(--dur) linear infinite;
+}
+@keyframes rt-fade-in-out { 0%,64% { opacity: 0 } 74%,100% { opacity: 1 } }
+.rt-out .lbl { color: var(--muted); font-size: 12px; }
+.rt-out .win { color: var(--ok); }
+
+.rt-steps { display: flex; gap: 6px; margin-top: 12px; flex-wrap: wrap; }
+.rt-step {
+    font-size: 11px; color: var(--muted); border: 1px solid var(--border);
+    border-radius: 999px; padding: 2px 9px; background: var(--card);
+    animation: var(--dur) linear infinite;
+}
+.rt-step.s1 { animation-name: rt-lit-1 }
+.rt-step.s2 { animation-name: rt-lit-2 }
+.rt-step.s3 { animation-name: rt-lit-3 }
+.rt-step.s4 { animation-name: rt-lit-4 }
+@keyframes rt-lit-1 { 0%,12% { color: var(--fg); border-color: var(--fg) } 16%,100% { } }
+@keyframes rt-lit-2 { 0%,22% { } 26%,42% { color: var(--fg); border-color: var(--fg) } 46%,100% { } }
+@keyframes rt-lit-3 { 0%,50% { } 54%,68% { color: var(--fg); border-color: var(--fg) } 72%,100% { } }
+@keyframes rt-lit-4 { 0%,70% { } 74%,96% { color: var(--fg); border-color: var(--fg) } 100% { } }
+
+/* Motion is decoration here — the numbers carry the argument on their own. */
+@media (prefers-reduced-motion: reduce) {
+    .rt *, .rt *::before, .rt *::after { animation: none !important; transition: none !important; }
+    .rt .rt-fee, .rt .rt-eff, .rt .rt-out, .rt .c-fee, .rt .c-eff { opacity: 1 !important; }
+    .rt-row.r-kucoin  { transform: translateY(0) }
+    .rt-row.r-binance { transform: translateY(var(--row-h)) }
+    .rt-row.r-bybit   { transform: translateY(calc(var(--row-h) * 2)) }
+    .rt-row.r-okx     { transform: translateY(calc(var(--row-h) * 3)) }
+    .rt-bar i.fill-62 { inset: 0 38% 0 0; background: var(--ok) }
+    .rt-bar i.fill-38 { inset: 0 62% 0 0; background: var(--ok) }
+}
+
+@media (max-width: 720px) {
+    .rt-cols, .rt-row { grid-template-columns: 74px 1fr 60px 84px; }
+    .rt-cols .c-fee, .rt-row .rt-fee { display: none; }
+}
+
+/* ---- strategy + benefit diagrams --------------------------------------- */
+
+.strat { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }
+.strat .card { display: flex; flex-direction: column; gap: 10px; }
+.strat svg { width: 100%; height: 76px; display: block; }
+.strat .nm { font-family: var(--mono); font-size: 13px; color: var(--fg); }
+.dg-node { fill: var(--card); stroke: var(--border-strong); }
+.dg-node.on { stroke: var(--fg); }
+.dg-edge { stroke: var(--border-strong); fill: none; }
+.dg-edge.on { stroke: var(--ok); stroke-width: 2; }
+.dg-txt { fill: var(--muted); font-size: 9px; font-family: var(--mono); }
+.dg-txt.on { fill: var(--fg); }
