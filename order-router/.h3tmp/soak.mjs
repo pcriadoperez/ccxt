@@ -1,0 +1,43 @@
+import ccxt from 'ccxt';
+const ex = new ccxt.pro.coinbase({ enableRateLimit: true });
+await ex.loadMarkets();
+const symbols = Object.keys(ex.markets).filter(s => s.endsWith('/USD')).slice(0, 10);
+const orphans = [];
+const socks = () => process._getActiveHandles().filter(h => h.constructor && /Socket|TLSSocket/.test(h.constructor.name)).length;
+const mb = n => +(n/1048576).toFixed(1);
+let msgs = 0;
+const orig = ex.handleMessage.bind(ex);
+ex.handleMessage = (c, m) => { msgs++; return orig(c, m); };
+const snap = (tag) => { global.gc(); global.gc();
+  const m = process.memoryUsage();
+  console.log(JSON.stringify({tag, sockets: socks(), orphans: orphans.length, rss: mb(m.rss), heap: mb(m.heapUsed), ext: mb(m.external), ab: mb(m.arrayBuffers)}));
+  return m; };
+void (async () => { for (;;) { try { await ex.watchOrderBookForSymbols(symbols); } catch (e) {} } })();
+await new Promise(r => setTimeout(r, 60000));
+let m0 = msgs; let t0 = Date.now();
+await new Promise(r => setTimeout(r, 20000));
+const rate1 = (msgs-m0)/((Date.now()-t0)/1000);
+const base = snap('baseline-1conn');
+console.log('msg/s with 1 connection:', rate1.toFixed(0));
+for (let i = 0; i < 10; i++) {
+  const c = ex.clients[Object.keys(ex.clients)[0]];
+  c.onError(new Error('keepalive miss'));
+  orphans.push(c);
+  await new Promise(r => setTimeout(r, 20000));
+}
+await new Promise(r => setTimeout(r, 60000));
+m0 = msgs; t0 = Date.now();
+await new Promise(r => setTimeout(r, 20000));
+const rate2 = (msgs-m0)/((Date.now()-t0)/1000);
+const after = snap('after-10-orphans');
+console.log('msg/s with 1 live + 10 orphans:', rate2.toFixed(0), ' amplification x', (rate2/rate1).toFixed(1));
+console.log('per-orphan RSS delta MB:', ((after.rss-base.rss)/1048576/10).toFixed(2),
+            ' external delta MB:', ((after.external-base.external)/1048576/10).toFixed(3));
+console.log('orphan readyStates:', orphans.map(o=>o.connection.readyState).join(','));
+const live = ex.clients[Object.keys(ex.clients)[0]];
+const sz = c => ({futures: Object.keys(c.futures).length, subs: Object.keys(c.subscriptions).length, rej: Object.keys(c.rejections).length});
+console.log('live client bookkeeping:', JSON.stringify(sz(live)));
+console.log('orphan bookkeeping:', orphans.map(o=>JSON.stringify(sz(o))).join(' '));
+console.log('ex.clients:', Object.keys(ex.clients).length, 'ex.orderbooks:', Object.keys(ex.orderbooks).length);
+console.log('total levels:', Object.values(ex.orderbooks).reduce((a,b)=>a+b.bids.length+b.asks.length,0));
+process.exit(0);

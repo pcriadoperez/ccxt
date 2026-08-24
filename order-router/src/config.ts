@@ -145,6 +145,11 @@ export const config = {
     // plus a first order-book snapshot; doing all of them at once is what builds the peak the
     // ceiling above then has to hold.
     shardStartConcurrency: Number(process.env['ORDER_ROUTER_SHARD_START_CONCURRENCY'] ?? 2),
+    // Order-book levels kept per side. Venues stream far more than routing can use — coinbase sends
+    // 44,298 levels per update — and relaying that across the shard->parent IPC channel is what put
+    // one shard at 19.8GB of queued native memory. A 5M USDT order fills in under 50 levels per
+    // venue, so this is roughly 10x the deepest order measured and ~90x less data than the wire.
+    maxBookDepth: Number(process.env['ORDER_ROUTER_MAX_BOOK_DEPTH'] ?? 500),
     // Postgres. Deliberately absent from the router process's environment — see
     // docs/product-plan.md §3: the router must never be able to make authentication wait on a
     // database, and withholding the credential is what makes that structural rather than a promise.

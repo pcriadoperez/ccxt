@@ -90,6 +90,9 @@ export function startShards (
                         lagMaxMs: message.lagMaxMs,
                         rssBytes: message.rssBytes,
                         heapUsedBytes: message.heapUsedBytes,
+                        externalBytes: message.externalBytes,
+                        sentBooks: message.sentBooks,
+                        droppedBooks: message.droppedBooks,
                     });
                     break;
             }

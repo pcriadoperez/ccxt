@@ -17,10 +17,18 @@ export function chunkSymbols (symbols: string[], size: number): string[][] {
 // ccxt's raw [price, amount] tuples type price/amount as possibly-undefined (Num = number |
 // undefined); drop any level missing either before it reaches the cache, which assumes complete
 // numeric levels.
-export function normalizeLevels (levels: [number | undefined, number | undefined][]): BookLevel[] {
-    return levels
-        .filter((level): level is [number, number] => level[0] !== undefined && level[1] !== undefined)
-        .map(([price, amount]) => ({ price, amount }));
+export function normalizeLevels (
+    levels: [number | undefined, number | undefined][],
+    depth = Number.POSITIVE_INFINITY,
+): BookLevel[] {
+    const out: BookLevel[] = [];
+    for (const level of levels) {
+        if (out.length >= depth) break;
+        const [price, amount] = level;
+        if (price === undefined || amount === undefined) continue;
+        out.push({ price, amount });
+    }
+    return out;
 }
 
 const BACKOFF_START_MS = 500;
@@ -75,6 +83,8 @@ export class ExchangeConnector {
     private symbols: string[] = [];
     private maxSymbolsPerSubscription: number;
     private maxSymbolsForExchange: number | undefined;
+    // Levels kept per side before a book crosses the IPC boundary. See applyOrderBook.
+    private maxDepth: number;
 
     // `existingExchange` lets a caller that already ran loadMarkets() (e.g. discovery, which
     // needs markets to compute the routable symbol universe before connectors exist) hand off
@@ -88,10 +98,12 @@ export class ExchangeConnector {
         existingExchange?: Exchange,
         maxSymbolsPerSubscription = 50,
         maxSymbolsForExchange?: number,
+        maxDepth = 500,
     ) {
         this.exchangeId = exchangeId;
         this.maxSymbolsPerSubscription = maxSymbolsPerSubscription;
         this.maxSymbolsForExchange = maxSymbolsForExchange;
+        this.maxDepth = maxDepth;
         if (existingExchange) {
             this.exchange = existingExchange;
         } else {
@@ -161,12 +173,26 @@ export class ExchangeConnector {
         }
     }
 
+    // Books are truncated HERE, before they cross the IPC boundary, and this is the single most
+    // consequential line in the connector.
+    //
+    // Measured: coinbase streams 44,298 levels per update at ~165 updates/sec. Serialised, that is
+    // ~31 MB/s per exchange pushed at a parent that cannot drain it — process.send() returned false
+    // on 96.3% of calls, libuv queued the remainder in native write buffers, and one shard reached
+    // 19.8 GB RSS with a flat 62 MB heap. An isolation test settles the attribution: bare stream
+    // 131 MB, +normalize 180 MB, +stringify 193 MB, +process.send 5,444 MB.
+    //
+    // The router does not need that depth. A 5,000,000 USDT order fills in under 50 levels per
+    // venue, so the default here is roughly an order of magnitude more than the largest order
+    // measured — while being ~90x less data than the venue sends. Depth limiting was deliberately
+    // declined earlier to protect large-order routing; the number below protects it, and the cost
+    // of not truncating turned out to be a swapping box.
     private applyOrderBook (symbol: string, ob: OrderBook, sequence: number): void {
         this.cache.setBook({
             exchangeId: this.exchangeId,
             symbol,
-            bids: normalizeLevels(ob.bids),
-            asks: normalizeLevels(ob.asks),
+            bids: normalizeLevels(ob.bids, this.maxDepth),
+            asks: normalizeLevels(ob.asks, this.maxDepth),
             exchangeTimestamp: ob.timestamp ?? undefined,
             receivedAt: Date.now(),
             sequence,

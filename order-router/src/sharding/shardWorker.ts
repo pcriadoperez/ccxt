@@ -8,8 +8,37 @@ import type { ShardInitMessage, ShardToParentMessage } from './messages.js';
 
 const HEALTH_FLUSH_MS = 2000;
 
+// process.send() returns false when the IPC pipe is full. That return value used to be discarded,
+// which is how a shard reached 19.8GB: measured, 96.3% of sends were backpressured against an idle
+// parent, and libuv queued every one of them in native write buffers. Heap stayed flat at 62MB the
+// whole time, which is why a heap ceiling did nothing and why a three-minute measurement after a
+// restart looked healthy — the queue had not formed yet.
+//
+// Book messages are IDEMPOTENT SNAPSHOTS, so the right response to a full pipe is to drop them.
+// A dropped book costs nothing: another arrives milliseconds later and supersedes it. A queued one
+// costs memory until the process dies. Health, fee and loop messages are rare and are still sent
+// unconditionally.
+let droppedBooks = 0;
+let sentBooks = 0;
+let pipeFull = false;
+
 function send (message: ShardToParentMessage): void {
-    process.send?.(message);
+    if (process.send === undefined) return;
+    if (message.type === 'book' && pipeFull) {
+        droppedBooks += 1;
+        return;
+    }
+    // The callback fires once the message is flushed; until then treat the pipe as full so the
+    // next book is dropped rather than enqueued behind this one.
+    const accepted = process.send(message, undefined, undefined, () => { pipeFull = false; });
+    if (message.type === 'book') {
+        sentBooks += 1;
+        if (!accepted) pipeFull = true;
+    }
+}
+
+export function ipcStats (): { sentBooks: number; droppedBooks: number } {
+    return { sentBooks, droppedBooks };
 }
 
 async function runShard (assignments: ShardInitMessage['assignments']): Promise<void> {
@@ -43,6 +72,10 @@ async function runShard (assignments: ShardInitMessage['assignments']): Promise<
         send({
             type: 'loop', shardPid: process.pid, ...h,
             rssBytes: mem.rss, heapUsedBytes: mem.heapUsed,
+            // external is where the IPC queue actually lives; without it the symptom was invisible
+            // and the whole problem read as "the box is swapping".
+            externalBytes: mem.external,
+            sentBooks, droppedBooks,
         });
     }, HEALTH_FLUSH_MS);
 
@@ -55,6 +88,7 @@ async function runShard (assignments: ShardInitMessage['assignments']): Promise<
             undefined,
             config.maxSymbolsPerSubscription,
             config.maxSymbolsPerExchangeOverrides.get(exchangeId),
+            config.maxBookDepth,
         ),
     );
 

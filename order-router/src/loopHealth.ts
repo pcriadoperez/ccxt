@@ -3,6 +3,9 @@ import { monitorEventLoopDelay, performance, type EventLoopUtilization } from 'n
 export interface LoopHealth {
     rssBytes?: number;
     heapUsedBytes?: number;
+    externalBytes?: number;
+    sentBooks?: number;
+    droppedBooks?: number;
     // Fraction of wall-clock the loop spent ACTIVE rather than idle, over the last window (0..1).
     // This is the honest saturation signal: at 1.0 the loop never idles, so every incoming message
     // queues behind work already in progress. Lag alone is noisier — it measures timer tardiness,

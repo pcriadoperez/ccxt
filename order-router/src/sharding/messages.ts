@@ -42,6 +42,13 @@ export interface ShardLoopMessage {
     // only symptom of a 20GB shard was the box swapping.
     rssBytes: number;
     heapUsedBytes: number;
+    // Native memory outside the V8 heap. This is where a backpressured IPC queue accumulates, and
+    // reporting only rss and heapUsed is why 19.8GB of it went unattributed for so long.
+    externalBytes: number;
+    sentBooks: number;
+    // Books dropped because the IPC pipe was full. A steadily climbing figure means the shard is
+    // producing faster than the parent can drain — which is a capacity signal, not an error.
+    droppedBooks: number;
 }
 
 export type ShardToParentMessage =

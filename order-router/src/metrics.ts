@@ -165,6 +165,36 @@ export function buildMetricsRegistry (deps: MetricsDeps): Registry {
         },
     });
 
+    // External memory is where a backpressured IPC queue accumulates. Reporting only rss and
+    // heapUsed is precisely why 19.8GB of it went unattributed: the heap looked healthy at 62MB
+    // throughout, so every heap-based diagnosis came back clean.
+    new Gauge({
+        name: 'order_router_shard_external_bytes',
+        help: 'Native memory outside the V8 heap per shard. A large gap between this and heap_used means queued IPC, not leaked objects.',
+        labelNames: ['shard'],
+        registers: [registry],
+        collect () {
+            for (const [shard, h] of deps.loopRegistry.entries()) {
+                if (h.externalBytes !== undefined) this.set({ shard }, h.externalBytes);
+            }
+        },
+    });
+
+    // The leading indicator. A climbing drop count means the shard is producing book updates faster
+    // than the parent can drain them — which is a capacity signal, and far better than the previous
+    // behaviour of queueing them until the box swapped.
+    new Gauge({
+        name: 'order_router_shard_books_dropped_total',
+        help: 'Book updates dropped because the IPC pipe was full. Rising means the shard out-produces the parent.',
+        labelNames: ['shard'],
+        registers: [registry],
+        collect () {
+            for (const [shard, h] of deps.loopRegistry.entries()) {
+                if (h.droppedBooks !== undefined) this.set({ shard }, h.droppedBooks);
+            }
+        },
+    });
+
     new Gauge({
         name: 'order_router_shard_event_loop_lag_p99_ms',
         help: 'p99 event loop delay per shard, milliseconds.',
