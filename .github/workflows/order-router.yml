@@ -18,6 +18,12 @@ on:
 permissions:
   contents: read
 
+# NOTE: the deploy concurrency group is declared on the `deploy` and `rollback` JOBS, not here.
+# A workflow-level group would put every PR's build-and-test into the same queue as a 45-minute
+# production deploy — and GitHub cancels a PENDING run when a newer one queues into an occupied
+# group, so a PR could show a cancelled required check it never got to run. build-and-test touches
+# no secrets and no box; only the two jobs that ssh to the VM need serialising.
+
 defaults:
   run:
     working-directory: order-router
@@ -171,3 +177,354 @@ jobs:
           if [ "$code" != "401" ]; then echo "::error::expected 401, got $code"; cat /tmp/mcp.log; exit 1; fi
 
           echo "MCP smoke test passed"
+
+  # ---------------------------------------------------------------------------------------------
+  # Ships the built tree to the VM behind docs.ccxt.com and restarts the systemd unit.
+  #
+  # `needs: build-and-test` is load-bearing: nothing reaches the box that has not type-checked,
+  # passed the offline suite and booted under the CI smoke test first.
+  #
+  # Transfer is tar-over-ssh rather than the Docker/GHCR flow the other two deploy workflows use.
+  # The router is a systemd service, not a container, and order-router/Dockerfile does not currently
+  # build (copy-assets reads openapi/openapi.yaml, which the image never COPYs). rsync is not
+  # installed on the box either, so tar over an ssh pipe is what is actually available — it needs
+  # nothing on the far end but ssh and tar, and it lands the tree in one stream.
+  # ---------------------------------------------------------------------------------------------
+  deploy:
+    needs: build-and-test
+    # Deploys must never overlap or be cancelled midway: the swap is a symlink move followed by a
+    # systemd restart, and a run killed between the two leaves the box pointing at a release nothing
+    # is serving. Queue instead. Scoped to this job (and `rollback`, which mutates the same symlink)
+    # so that PR CI is not serialised behind a production deploy.
+    concurrency:
+      group: order-router-deploy
+      cancel-in-progress: false
+    # THE guard. This workflow triggers on `pull_request`, so without this every PR — including one
+    # from a fork — would reach a job holding the deploy key. GitHub already withholds secrets from
+    # fork PRs, but that is a property of the platform, not of this file; this is the explicit belt.
+    # Note the repository name: copying `ccxt/ccxt` from the sibling deploy workflows would make the
+    # job silently never run in this fork.
+    if: >-
+      github.repository == 'pcriadoperez/ccxt' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'push' && github.ref == 'refs/heads/master'))
+    runs-on: ubuntu-24.04-arm        # arm64 — same box as docs.ccxt.com, so node_modules ships as-is
+    timeout-minutes: 30
+    # Optional hardening: create an environment named `order-router-prod` with a required reviewer
+    # and uncomment the next line to gate every production deploy on human approval.
+    # environment: order-router-prod
+    env:
+      BASE: /opt/order-router
+      # Where the unit listens on loopback. The public URL is nginx's business, not the deploy's —
+      # this smoke test deliberately talks to the process directly so a passing nginx config cannot
+      # mask a dead upstream (and a broken nginx cannot fail an otherwise good deploy).
+      PORT: '8080'
+      SERVICE: order-router
+      # Stateless companions to restart after the router, space separated, skipped when not
+      # installed. Only the router's restart costs anything (it rebuilds the whole book cache).
+      EXTRA_SERVICES: ''
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: order-router/package-lock.json
+
+      - name: Build the release
+        # GITHUB_SHA is what scripts/write-build-info.mjs bakes into dist/build-info.json, and that
+        # file is the only thing that lets the deployed process answer "which commit am I?" — which
+        # is what both smoke tests below assert against.
+        run: |
+          npm ci
+          npm run build
+          grep -q "\"commit\": \"${GITHUB_SHA}\"" dist/build-info.json \
+            || { echo "::error::dist/build-info.json does not carry ${GITHUB_SHA}"; cat dist/build-info.json; exit 1; }
+
+      - name: Prune to production dependencies
+        # The box gets a ready-to-run tree: no npm install there, no network needed at deploy time,
+        # and no build toolchain on a 7.5 GB host shared with the docs and playground containers.
+        # Safe to ship node_modules because this runner is arm64, exactly like the box.
+        run: npm ci --omit=dev --no-audit --no-fund
+
+      - name: Pack the release
+        # scripts/ rides along so live-integration.mjs can be run by hand from the box itself.
+        run: tar czf /tmp/order-router.tgz dist node_modules scripts package.json package-lock.json
+
+      - name: Configure SSH (pinned host key)
+        # Pinned, never ssh-keyscan'd at deploy time: keyscan-on-connect trusts whatever answers,
+        # which is precisely the attack host-key checking exists to stop.
+        env:
+          SSH_KEY: ${{ secrets.ORDER_ROUTER_DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.ORDER_ROUTER_DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      - name: Upload the release (tar over ssh — the box has no rsync)
+        # Unpacked into a per-run staging directory and swapped into place, NEVER unpacked over the
+        # release directory itself. Re-deploying a SHA that is already live (a re-run, a
+        # workflow_dispatch, a push that did not change the tree) used to `rm -rf` the very tree the
+        # running systemd unit executes from BEFORE anything replaced it — and this step runs before
+        # the activate step, so none of that step's rollback logic covers a failure here. A dropped
+        # connection or a full disk left `current` pointing at an empty directory with no automated
+        # recovery. Two renames inside one directory are atomic and cannot half-happen.
+        env:
+          HOST: ${{ secrets.ORDER_ROUTER_DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.ORDER_ROUTER_DEPLOY_USER }}
+          SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          ssh -i ~/.ssh/id_deploy "${DEPLOY_USER}@${HOST}" \
+            "set -e; rm -rf ${BASE}/releases/.incoming-${RUN_ID}; mkdir -p ${BASE}/releases/.incoming-${RUN_ID}"
+          ssh -i ~/.ssh/id_deploy "${DEPLOY_USER}@${HOST}" \
+            "tar xzf - -C ${BASE}/releases/.incoming-${RUN_ID}" < /tmp/order-router.tgz
+          ssh -i ~/.ssh/id_deploy "${DEPLOY_USER}@${HOST}" \
+            BASE="${BASE}" SHA="${SHA}" RUN_ID="${RUN_ID}" 'bash -se' <<'EOF'
+          set -e
+          REL="$BASE/releases/$SHA"
+          STAGE="$BASE/releases/.incoming-$RUN_ID"
+          [ -d "$STAGE" ] || { echo "::error::$STAGE was never unpacked"; exit 1; }
+          if [ -e "$REL" ]; then
+            # A redeploy of the same SHA. Move the old tree aside rather than deleting it: the
+            # running process may still lazily require a module out of it before the restart, and
+            # the retention prune in the activate step clears it later.
+            rm -rf "$REL.superseded"
+            mv "$REL" "$REL.superseded"
+          fi
+          mv "$STAGE" "$REL"
+          echo "unpacked $SHA"
+          EOF
+
+      - name: Activate, smoke test, auto-rollback on failure
+        env:
+          HOST: ${{ secrets.ORDER_ROUTER_DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.ORDER_ROUTER_DEPLOY_USER }}
+          SMOKE_KEY: ${{ secrets.ORDER_ROUTER_SMOKE_API_KEY }}
+          SHA: ${{ github.sha }}
+        run: |
+          ssh -i ~/.ssh/id_deploy "${DEPLOY_USER}@${HOST}" \
+            BASE="${BASE}" PORT="${PORT}" SERVICE="${SERVICE}" EXTRA_SERVICES="${EXTRA_SERVICES}" \
+            SHA="${SHA}" SMOKE_KEY="${SMOKE_KEY}" 'bash -se' <<'EOF'
+          set -e
+          SUDO=; [ "$(id -u)" -eq 0 ] || SUDO=sudo
+          REL="$BASE/releases/$SHA"
+          [ -d "$REL" ] || { echo "::error::$REL was never unpacked"; exit 1; }
+          PREV="$(readlink -f "$BASE/current" 2>/dev/null || true)"
+          if [ "$PREV" = "$REL" ]; then
+            # Re-deploying the SHA that is already live: `current` and the new release are the same
+            # PATH, so recording it as `previous` would leave both symlinks on the same directory
+            # and make the rollback job a no-op that reports success while the bad build stays up.
+            # Fall back to whatever `previous` already points at, and to "no target" if that is the
+            # same directory too — a rollback that cannot move must say so rather than lie.
+            PREV="$(readlink -f "$BASE/previous" 2>/dev/null || true)"
+            [ "$PREV" = "$REL" ] && PREV=""
+          fi
+
+          activate() {
+            # Symlink swap via mv -T is atomic: there is no instant where `current` does not exist,
+            # so a deploy interrupted here leaves a working tree rather than a missing one.
+            ln -sfn "$1" "$BASE/.current.tmp"
+            mv -Tf "$BASE/.current.tmp" "$BASE/current"
+            $SUDO systemctl restart "$SERVICE"
+            for extra in $EXTRA_SERVICES; do
+              # Stateless (MCP/web): restarting them is free, and skipping one that is not
+              # installed keeps this file honest about a box whose unit set may differ.
+              $SUDO systemctl list-unit-files "$extra.service" >/dev/null 2>&1 \
+                && $SUDO systemctl restart "$extra" || true
+            done
+          }
+
+          # A restart rebuilds the entire order-book cache and degrades /route for minutes, so the
+          # cheap, deterministic assertions run first and /route gets a long window of its own.
+          smoke() {
+            local body code
+            for i in $(seq 1 60); do
+              curl -fsS --max-time 5 "http://127.0.0.1:${PORT}/health" 2>/dev/null \
+                | grep -q '"status":"ok"' && break
+              sleep 2
+            done
+            body=$(curl -fsS --max-time 5 "http://127.0.0.1:${PORT}/health") \
+              || { echo "smoke: /health not answering"; return 1; }
+            echo "$body" | grep -q '"status":"ok"' || { echo "smoke: /health not ok: $body"; return 1; }
+            # Proves the NEW process is the one answering, not a survivor of a failed restart.
+            echo "$body" | grep -qE '"uptimeSec":[0-9]{1,3}(\.|,|})' \
+              || { echo "smoke: the service did not restart ($body)"; return 1; }
+
+            code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${PORT}/symbols")
+            [ "$code" = 401 ] || { echo "smoke: unauthenticated /symbols gave $code, want 401"; return 1; }
+            code=$(curl -s -o /dev/null -w '%{http_code}' -H "x-api-key: $SMOKE_KEY" \
+              "http://127.0.0.1:${PORT}/symbols")
+            [ "$code" = 200 ] || { echo "smoke: authenticated /symbols gave $code, want 200"; return 1; }
+
+            # The identity assertion, on the box, before anything is promoted or cleaned up: the
+            # commit the process reports must be the commit this run built.
+            body=$(curl -fsS --max-time 5 -H "x-api-key: $SMOKE_KEY" "http://127.0.0.1:${PORT}/version") \
+              || { echo "smoke: /version not answering"; return 1; }
+            echo "$body" | grep -q "\"commit\":\"$SHA\"" \
+              || { echo "smoke: /version reports the wrong commit, want $SHA, got $body"; return 1; }
+
+            for i in $(seq 1 60); do   # up to 5 min for the book cache to warm
+              body=$(curl -s -H "x-api-key: $SMOKE_KEY" \
+                "http://127.0.0.1:${PORT}/route?from=USDT&to=BTC&amountOut=0.001&strategy=split_optimal")
+              echo "$body" | grep -q '"legs":\[{' && { echo "smoke: OK"; return 0; }
+              sleep 5
+            done
+            echo "smoke: /route never returned legs: $body"; return 1
+          }
+
+          # Recorded BEFORE the swap so the rollback job (and a human at 3am) has a known-good
+          # target that does not depend on reading this run's logs.
+          if [ -n "$PREV" ] && [ -d "$PREV" ]; then
+            ln -sfn "$PREV" "$BASE/.previous.tmp"
+            mv -Tf "$BASE/.previous.tmp" "$BASE/previous"
+          fi
+
+          # Called in a condition so `set -e` cannot abort the run between the symlink swap and the
+          # rollback branch — a failed restart is exactly when the rollback is needed most.
+          if ! activate "$REL"; then
+            echo "::error::activation returned non-zero (systemctl restart failed?)"
+          fi
+          if smoke; then
+            # Keep the last 5 releases: enough to roll back past a bad one, few enough to not fill
+            # a shared 7.5 GB box with node_modules trees. `.superseded` trees left by a same-SHA
+            # redeploy are matched by the glob and age out with everything else.
+            ls -1dt "$BASE"/releases/* | tail -n +6 | xargs -r rm -rf
+            # Staging directories are dot-prefixed, so the glob above never sees them. Any that
+            # survive are from a run that died between unpacking and the swap; this deploy has
+            # already moved its own into place, and deploys are serialised, so all of them are dead.
+            rm -rf "$BASE"/releases/.incoming-*
+            echo "deployed $SHA"
+          else
+            echo "::error::smoke test failed — rolling back to ${PREV:-<none>}"
+            $SUDO journalctl -u "$SERVICE" -n 60 --no-pager || true
+            if [ -n "$PREV" ] && [ -d "$PREV" ]; then
+              activate "$PREV" || echo "::error::the rollback restart also returned non-zero"
+              for i in $(seq 1 30); do
+                curl -fsS -o /dev/null "http://127.0.0.1:${PORT}/health" 2>/dev/null && break
+                sleep 2
+              done
+              echo "rolled back to $PREV"
+            else
+              echo "::error::no previous release to roll back to — the service may be down"
+            fi
+            exit 1
+          fi
+          EOF
+
+  # ---------------------------------------------------------------------------------------------
+  # The assertions that matter: run against the REAL deployment, through nginx and TLS, exactly as a
+  # customer reaches it. The on-box smoke above proves the process came up; this proves the service
+  # is correct end to end — and, first of all, that the code answering is the code just pushed.
+  #
+  # Same script a human runs by hand (order-router/scripts/live-integration.mjs). CI is not a
+  # privileged caller here: it passes the same two env vars and gets the same output.
+  # ---------------------------------------------------------------------------------------------
+  live-integration:
+    needs: deploy
+    if: >-
+      github.repository == 'pcriadoperez/ccxt' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'push' && github.ref == 'refs/heads/master'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Live integration tests against the deployed service
+        # No `npm ci`: the script uses nothing but Node built-ins, on purpose — a post-deploy check
+        # that needs a dependency tree can fail for reasons that have nothing to do with the deploy.
+        env:
+          # Public URL, not a secret: this is the address customers use. Deliberately NOT the
+          # loopback port — going through nginx is what makes a broken proxy config a failed deploy.
+          ROUTER_BASE_URL: https://docs.ccxt.com/router/api
+          ROUTER_API_KEY: ${{ secrets.ORDER_ROUTER_SMOKE_API_KEY }}
+          # The whole point. A deploy that silently no-ops answers every other assertion here
+          # exactly like a successful one; only this fails.
+          ROUTER_EXPECT_COMMIT: ${{ github.sha }}
+        run: node scripts/live-integration.mjs
+
+  # ---------------------------------------------------------------------------------------------
+  # The deployed build is wrong even though it started cleanly: put the previous release back.
+  # Runs only when deploy succeeded and live-integration failed — a failed deploy has already rolled
+  # itself back, and a cancelled run must not touch the box at all.
+  # ---------------------------------------------------------------------------------------------
+  rollback:
+    needs: [ deploy, live-integration ]
+    if: >-
+      always() &&
+      github.repository == 'pcriadoperez/ccxt' &&
+      needs.deploy.result == 'success' &&
+      needs.live-integration.result == 'failure'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    # Same group as `deploy`: this job repoints the same symlink and restarts the same unit, so it
+    # must never run while a deploy is in flight.
+    concurrency:
+      group: order-router-deploy
+      cancel-in-progress: false
+    env:
+      BASE: /opt/order-router
+      PORT: '8080'
+      SERVICE: order-router
+    steps:
+      # REQUIRED even though this job builds nothing: the workflow-level
+      # `defaults.run.working-directory: order-router` applies here too, and a `run:` step whose
+      # working directory does not exist fails before bash starts ("An error occurred trying to
+      # start process '/usr/bin/bash' with working directory ..."). Without this checkout every
+      # step below — including the rollback itself — dies at the OS level and the bad build stays
+      # live while the run stays red for the earlier failure.
+      - uses: actions/checkout@v4
+
+      - name: Configure SSH (pinned host key)
+        env:
+          SSH_KEY: ${{ secrets.ORDER_ROUTER_DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.ORDER_ROUTER_DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      - name: Roll back to the previous release
+        env:
+          HOST: ${{ secrets.ORDER_ROUTER_DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.ORDER_ROUTER_DEPLOY_USER }}
+        run: |
+          ssh -i ~/.ssh/id_deploy "${DEPLOY_USER}@${HOST}" \
+            BASE="${BASE}" PORT="${PORT}" SERVICE="${SERVICE}" 'bash -se' <<'EOF'
+          set -e
+          SUDO=; [ "$(id -u)" -eq 0 ] || SUDO=sudo
+          PREV="$(readlink -f "$BASE/previous" 2>/dev/null || true)"
+          if [ -z "$PREV" ] || [ ! -d "$PREV" ]; then
+            echo "::error::no $BASE/previous to roll back to — the bad build is STILL LIVE, fix by hand"
+            exit 1
+          fi
+          ln -sfn "$PREV" "$BASE/.current.tmp"
+          mv -Tf "$BASE/.current.tmp" "$BASE/current"
+          $SUDO systemctl restart "$SERVICE" \
+            || echo "::error::systemctl restart returned non-zero during rollback"
+          for i in $(seq 1 60); do
+            curl -fsS --max-time 5 "http://127.0.0.1:${PORT}/health" 2>/dev/null \
+              | grep -q '"status":"ok"' && break
+            sleep 2
+          done
+          curl -fsS --max-time 5 "http://127.0.0.1:${PORT}/health" | grep -q '"status":"ok"' \
+            || { echo "::error::rolled back but /health is still not ok"; \
+                 $SUDO journalctl -u "$SERVICE" -n 60 --no-pager || true; exit 1; }
+          echo "rolled back to $PREV"
+          EOF
+
+      - name: Fail the run
+        # The rollback succeeding does not make the run green: a commit that failed its live tests
+        # is not deployed, and the build must say so.
+        run: |
+          echo "::error::live integration tests failed after deploy — rolled back to the previous release"
+          exit 1

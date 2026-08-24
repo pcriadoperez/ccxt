@@ -135,6 +135,7 @@ same "write path is async, read path is always local" shape, is a natural extens
 | Method | Path | Description |
 |---|---|---|
 | GET | `/health` | liveness |
+| GET | `/version` | which commit is deployed — build provenance baked in at build time (authenticated) |
 | GET | `/exchanges/status` | per-exchange WS health: connected, last update age, update/reconnect counts |
 | GET | `/symbols` | symbols currently cached |
 | GET | `/orderbook/:exchange/:symbol` | cached L2 book snapshot (symbol URL-encoded, e.g. `BTC%2FUSDT`) |
@@ -628,6 +629,173 @@ per-key limit, and can enforce client certificates or IP allowlists if you want 
 alongside the shared API key. What it does **not** solve: the API key is still a single shared
 secret with no rotation or revocation, so per-client identity remains an open gap.
 
+## Deploying from CI
+
+`.github/workflows/order-router.yml` deploys to the VPS behind `docs.ccxt.com` on every push to
+`master` that touches `order-router/**`, and on `workflow_dispatch`. Four jobs, in order:
+
+| Job | Runs when | What it does |
+|---|---|---|
+| `build-and-test` | every push, PR and dispatch | `npm ci`, `npm run build`, `npm test`, then boots the real router and MCP processes and asserts over HTTP |
+| `deploy` | **only** dispatch, or a push to `master`, and only in the repo that owns the VM | builds an arm64 release, tars it over ssh into a per-run staging directory and renames that into `/opt/order-router/releases/<sha>`, swaps the `current` symlink, restarts the unit, smoke-tests it on loopback, and auto-rolls-back if the smoke fails |
+| `live-integration` | after `deploy` | runs `scripts/live-integration.mjs` against the **public** URL — through nginx and TLS, exactly as a customer reaches it |
+| `rollback` | only if `deploy` succeeded and `live-integration` failed | puts `/opt/order-router/previous` back, restarts, and fails the run |
+
+`deploy` and `rollback` share a `concurrency` group so that two runs never mutate the box at once.
+It is declared **on those two jobs**, not on the workflow: a workflow-level group would queue every
+PR's `build-and-test` behind a production deploy, and GitHub cancels a *pending* run when a newer
+one queues into an occupied group — a PR would show a cancelled required check it never got to run.
+
+`rollback` checks the repository out even though it builds nothing. The workflow sets
+`defaults.run.working-directory: order-router`, and a `run:` step whose working directory does not
+exist fails before bash starts, so without the checkout every step in that job — the rollback
+included — dies at the OS level while the run stays red for the earlier failure.
+
+Re-deploying a SHA that is already live is safe: the tarball is unpacked into
+`releases/.incoming-<run id>` and renamed over the release directory, so the tree the running unit
+is executing from is never deleted before its replacement exists. `previous` is not repointed when
+it would land on the release being deployed — a rollback that cannot move says so instead of
+reporting success while the bad build stays up.
+
+**The deploy job never runs on a `pull_request`.** The workflow triggers on PRs, so the guard is
+what keeps the deploy key off that path:
+
+```yaml
+if: >-
+  github.repository == 'pcriadoperez/ccxt' &&
+  (github.event_name == 'workflow_dispatch' ||
+   (github.event_name == 'push' && github.ref == 'refs/heads/master'))
+```
+
+GitHub also withholds secrets from fork PRs, but that is a property of the platform rather than of
+this file. Note the repository name — a fork that copies `ccxt/ccxt` from the sibling deploy
+workflows gets a deploy job that silently never runs. A push to `main` builds but does not deploy;
+`master` is the deploy branch.
+
+### Why tar over ssh and not a container
+
+The other two deploy workflows in this repo (`deploy-playground.yml`, `docs-fumadocs.yml`) build an
+image, push it to GHCR and have the box pull it. This service cannot use that flow yet: it runs as a
+**systemd unit**, not a container, and `order-router/Dockerfile` does not currently build —
+`copy-assets` reads `openapi/openapi.yaml`, which the image never `COPY`s. The box also has no
+`rsync`. `tar czf - | ssh 'tar xzf -'` needs nothing on the far end but `ssh` and `tar`.
+
+`node_modules` ships **with** the tarball, pruned to production deps. The runner is
+`ubuntu-24.04-arm`, the same architecture as the box, so the tree is portable — and the box (7.5 GB,
+shared with the docs and playground containers) never has to run an install.
+
+### GitHub secrets you must create
+
+Five repository secrets in **`pcriadoperez/ccxt`** (Settings → Secrets and variables → Actions →
+New repository secret). Forks do **not** inherit secrets from upstream, so the `DOCS_DEPLOY_*` names
+that appear in the other deploy workflows have no values here — these must be created fresh even
+though the box is the same one.
+
+| Secret | What it is | How to produce it |
+|---|---|---|
+| `ORDER_ROUTER_DEPLOY_SSH_KEY` | **Private** ssh key authorised on the box. Deploy-only, not your personal key. | `ssh-keygen -t ed25519 -C order-router-deploy -f ~/.ssh/order-router-deploy -N ''` then append the **public** half to the box: `ssh-copy-id -i ~/.ssh/order-router-deploy.pub root@<host>`. Upload the private half: `gh secret set ORDER_ROUTER_DEPLOY_SSH_KEY -R pcriadoperez/ccxt < ~/.ssh/order-router-deploy` |
+| `ORDER_ROUTER_DEPLOY_KNOWN_HOSTS` | The box's host key, pinned. **Not optional** — it is what makes the connection MITM-resistant instead of trusting whatever answers. | `ssh-keyscan <host> \| gh secret set ORDER_ROUTER_DEPLOY_KNOWN_HOSTS -R pcriadoperez/ccxt` (run it from a network you trust, once, and verify the fingerprint against `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` on the box) |
+| `ORDER_ROUTER_DEPLOY_HOST` | Hostname or IP of the VM. | The address `docs.ccxt.com` resolves to — `dig +short docs.ccxt.com A` |
+| `ORDER_ROUTER_DEPLOY_USER` | SSH user. `root` works; a dedicated `deploy` user with `NOPASSWD` sudo limited to `systemctl restart order-router` is strictly better, and the remote script already falls back to `sudo` when it is not uid 0. | — |
+| `ORDER_ROUTER_SMOKE_API_KEY` | A router API key used **only** by the two post-deploy test steps. | Mint a dedicated one in the dashboard, or on the box: `node /opt/order-router/current/dist/cli/admin.js create-key --email <admin-email> --name ci-smoke`. Copy the `or_live_…` it prints once: `gh secret set ORDER_ROUTER_SMOKE_API_KEY -R pcriadoperez/ccxt` |
+
+**Do not put the production shared key (`ORDER_ROUTER_API_KEY` in `/opt/order-router/env`) in GitHub.**
+Mint a dedicated one instead: only its SHA-256 digest is stored, revoking it from the dashboard
+takes effect within ~10s with no restart (which at discovery scale would rebuild the whole book
+cache), and the blast radius of a leaked Actions secret is then one revocable key rather than every
+caller's credential. Box-only secrets
+stay box-only — the same rule the playground and docs deploys follow for their own API keys.
+
+Nothing else is a secret. The base URL the live tests hit (`https://docs.ccxt.com/router/api`) is
+in the workflow in the clear, because it is the address customers already use.
+
+### One-time setup on the box
+
+The deploy assumes a release-dir layout and a `current` symlink. Create it once, **before** the
+first CI deploy, or the swap and the rollback have nothing to swap:
+
+```bash
+mkdir -p /opt/order-router/releases
+# move whatever is deployed today into a release dir and point `current` at it
+mv /opt/order-router/dist /opt/order-router/releases/bootstrap/dist   # + node_modules, package.json
+ln -sfn /opt/order-router/releases/bootstrap /opt/order-router/current
+```
+
+Then repoint the unit at the symlink and pin every piece of **state** to a path outside the release
+dir — anything living inside a release is silently discarded on the next deploy:
+
+```ini
+# /etc/systemd/system/order-router.service
+WorkingDirectory=/opt/order-router/current
+ExecStart=/usr/bin/node /opt/order-router/current/dist/index.js
+EnvironmentFile=/opt/order-router/env
+```
+
+```bash
+# /opt/order-router/env — keys.json defaults to ./data/keys.json, i.e. inside the release. Pin it.
+ORDER_ROUTER_KEYS_FILE=/opt/order-router/keys.json
+```
+
+`systemctl daemon-reload && systemctl restart order-router`, then confirm
+`curl -H "x-api-key: …" localhost:8080/version` answers. The deploy keeps the last five releases, so
+a manual rollback is `ln -sfn /opt/order-router/releases/<sha> /opt/order-router/current && systemctl restart order-router`.
+
+### Post-deploy live tests
+
+`scripts/live-integration.mjs` asserts against a **running** deployment. It is read-only — every
+request is a GET against `/health`, `/version`, `/symbols`, `/route` or `/metrics`, and it never
+places, edits or cancels an order.
+
+```bash
+ROUTER_BASE_URL=https://docs.ccxt.com/router/api \
+ROUTER_API_KEY=or_live_... \
+node scripts/live-integration.mjs          # or: npm run live:integration
+```
+
+CI is not a privileged caller: it sets the same two env vars, plus `ROUTER_EXPECT_COMMIT=${{ github.sha }}`.
+Run it by hand before trusting the pipeline, and after any manual intervention on the box.
+
+| Env var | Default | Purpose |
+|---|---|---|
+| `ROUTER_BASE_URL` | — (required) | base URL, no trailing slash |
+| `ROUTER_API_KEY` | — (required) | a key that is accepted; the 401 checks synthesise their own bad key |
+| `ROUTER_EXPECT_COMMIT` | unset | the 40-char SHA the deployment must report. Unset relaxes it to "present and not `unknown`" |
+| `ROUTER_MAX_UPTIME_SEC` | `900` | how long the process may have been up and still count as *this* deploy. Only enforced when `ROUTER_EXPECT_COMMIT` is set |
+| `ROUTER_FROM` / `ROUTER_TO` / `ROUTER_AMOUNT_OUT` | `USDT` / `BTC` / `0.01` | the probe route |
+| `ROUTER_WARMUP_MS` | `180000` | how long `/route` may take to answer while the book cache rebuilds after a restart |
+| `ROUTER_TIMEOUT_MS` | `30000` | per-request timeout |
+
+What it asserts, and why each one earns its place:
+
+1. **`/version` reports the expected commit, and the process is young enough to be that build.**
+   The single most important assertion. Every other check here passes against the *previous* build —
+   `/health`, auth, `/route` and `/metrics` all answer identically from a process the deploy failed
+   to replace. A deploy that silently no-ops (tarball never unpacked, symlink never swapped, unit
+   never restarted) is only visible here. The commit alone is not enough when the SHA is
+   **unchanged**: Node resolves module realpaths, so a survivor process keeps reading its own
+   release's `build-info.json` and reports the expected commit even after `current` moved. The
+   `uptimeSec` bound (`ROUTER_MAX_UPTIME_SEC`, default 900s) is what separates "the new build is
+   answering" from "the old one never went away".
+2. `/health` returns `ok`.
+3. `/route` returns non-empty hops, every hop with at least one venue leg, and `fillRatio > 0`.
+4. `effectiveRate` is sane — bounded against the route's **own** `referenceRate`, never a hardcoded
+   price (BTC moves; a test that needs editing when it does is a test that gets deleted). It may not
+   beat frictionless, may not be more than 1000 bps worse, and must agree with `amountOut/amountIn`
+   to within a rounding epsilon — which catches a rate computed from the wrong side of the pair.
+5. **`balances=` end to end**: half the required funds must come back clamped, with `balancesApplied`
+   echoing the canonical spec and `balanceCapAmountIn` binding `amountIn`. The echo is the whole
+   point — `/route` takes an untyped querystring, so a server that predates the feature *ignores*
+   `balances` and answers byte-identically to one that honoured it.
+6. Auth is enforced: no key → 401, wrong key → 401, supplied key → 200.
+7. A malformed request (both `amountIn` and `amountOut`) → 400.
+8. `order_router_exchange_crossed_books_total` is present in `/metrics`. Presence, not value: the
+   counter is legitimately 0 on a healthy day, so `> 0` would be a coin flip. Presence proves the
+   guarded build — the one that rejects a crossed book rather than ranking on it — is the one live.
+
+Every assertion is named, prints its observed value, and a failure exits non-zero with a summary.
+There is no "warn" tier and nothing is skipped: a live test that goes green against a broken service
+is worse than no live test at all.
+
 ## OpenAPI spec
 
 `openapi/openapi.yaml` (OpenAPI 3.1) — importable into Postman, Insomnia, Swagger UI, or
@@ -682,6 +850,12 @@ assert over HTTP that `/health` is reachable unauthenticated, that a protected r
 without a key and `200` with the right one, that a *wrong* key is still rejected, and that the MCP
 endpoint rejects an unauthenticated JSON-RPC call. Those smoke assertions were verified locally
 before being committed.
+
+On a push to `master` (and on `workflow_dispatch`) the same workflow then deploys and live-tests the
+result — see [Deploying from CI](#deploying-from-ci) for the job graph, the five secrets you must
+create, and the one-time box setup. `concurrency: cancel-in-progress: false` is deliberate: the swap
+is a symlink move followed by a `systemctl restart`, and a run cancelled between the two would leave
+the box pointing at a release nothing is serving.
 
 ## Benchmarks
 

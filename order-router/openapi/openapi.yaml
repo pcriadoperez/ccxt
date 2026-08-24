@@ -110,6 +110,36 @@ paths:
                 properties:
                   status: { type: string, example: ok }
                   uptimeSec: { type: number, example: 1183.4 }
+  /version:
+    get:
+      tags: [Operations]
+      summary: Which commit is deployed
+      description: |
+        Build provenance of the running process, baked into the artifact at build time. This is
+        what a deploy pipeline asserts against: `/health` answers 200 from the OLD process just as
+        happily when a deploy silently no-ops, and `commit` is the only field that tells the two
+        apart. Authenticated like every other non-`/health` route — the deployed revision points an
+        attacker straight at the diff to read.
+
+        `commit` is `unknown` for a build made outside a git checkout with no `ORDER_ROUTER_BUILD_SHA`
+        or `GITHUB_SHA` set (e.g. a local `npm run dev`), never an error.
+      responses:
+        '200':
+          description: Build provenance
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  version: { type: string, example: '0.1.0' }
+                  commit: { type: string, example: 3c78552ddab1f2e4a9b8c7d6e5f40312a9b8c7d6 }
+                  commitShort: { type: string, example: 3c78552ddab1 }
+                  builtAt: { type: string, format: date-time, nullable: true }
+                  builtBy: { type: string, enum: [ci, local, unknown] }
+                  startedAt: { type: string, format: date-time }
+                  uptimeSec: { type: number, example: 1183.4 }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /route:
     get:
       tags: [Routing]

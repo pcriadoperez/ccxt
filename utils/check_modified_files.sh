@@ -7,7 +7,13 @@ diff=$(echo "$diff" | sed -e "s/^run\-tests\-simul\.sh//")
 diff=$(echo "$diff" | sed -e "s/^\w+.yml//") # tmp remove actions files
 diff_without_statics=$(echo "$diff" | sed -e "s/^ts\/src\/test\/static.*json//")
 
-critical_pattern='Client(Trait)?\.php|Exchange\.php|\/base|^build|static_dependencies|^run-tests|composer\.json|ccxt\.ts|__init__.py|test' # add \/test| # remove package json temporatily todo revert this!!
+# [Oo]rder[_]?[Rr]outer: the OrderRouter class is hand-written five times over
+# (ts/src/base, python/ccxt/base, php/, cs/ccxt/base, go/v4) and its only defence
+# against the five drifting apart is the offline suite the base-test steps run.
+# php/OrderRouter.php and go/v4/exchange_order_router.go match none of the other
+# alternatives below, so without this a Go-only or PHP-only divergence would ship
+# with the suite that catches it never having been run.
+critical_pattern='Client(Trait)?\.php|Exchange\.php|\/base|^build|static_dependencies|^run-tests|composer\.json|ccxt\.ts|__init__.py|test|[Oo]rder[_]?[Rr]outer' # add \/test| # remove package json temporatily todo revert this!!
 # critical_pattern='Client(Trait)?\.php|Exchange\.php|\/base|^build|static_dependencies|^run-tests|package(-lock)?\.json|composer\.json|ccxt\.ts|__init__.py|test' # add \/test|
 
 COMMIT_MESSAGE=$(git log -1 --pretty=%B)

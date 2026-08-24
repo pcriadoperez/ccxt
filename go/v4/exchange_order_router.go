@@ -1,0 +1,2161 @@
+package ccxt
+
+//  ---------------------------------------------------------------------------
+//  OrderRouter — a client for the CCXT order-router service, plus the pure
+//  planning / safety / reconciliation layer that sits between a routing
+//  recommendation and real orders.
+//
+//  This file is HAND-WRITTEN and is NOT produced by any transpiler. Four sibling
+//  implementations mirror it method for method:
+//
+//      ts/src/base/OrderRouter.ts          (the reference)
+//      python/ccxt/base/order_router.py
+//      php/OrderRouter.php
+//      cs/ccxt/base/OrderRouter.cs
+//
+//  The rules that keep the five ports honest, all of them observed here:
+//
+//    - plain dictionaries and arrays only (map[string]any / []map[string]any),
+//      never a language-specific container
+//    - NO NULLS in any returned structure. 0 means "unknown number", "" means
+//      "unknown string". Go has no natural null for a float64 or a string, and
+//      a null that only exists in three of five languages is a divergence
+//      waiting to happen
+//    - never iterate a hash map to produce ORDERED output. Build slices and
+//      search them linearly: Go randomises map iteration on purpose
+//    - all numbers are IEEE-754 float64 and every arithmetic sequence is written
+//      in a fixed order, so the five ports agree bit for bit
+//    - ONE number grammar, hand-rolled in all five (see routerParseFloat). No
+//      port calls its own parser: strconv.ParseFloat refuses "12abc" outright
+//      where JavaScript's parseFloat reads 12, and it reports an overflowing
+//      "1e400" as an error rather than a value. A cap read as 1234.5 in one
+//      language and 1 in another is a cap that silently disappears
+//    - NaN and +/-Inf are NOT numbers here. An infinite tolerance disables the
+//      halt verdict and an infinite rate disables the cap, so both fall back to
+//      the caller's default — in all five, identically
+//    - violation and verdict strings are CONSTANTS, never interpolated with
+//      numbers: "25" and "25.0" are the same value and different text
+//
+//  It talks to live venues through IExchange (exchange_typed_interface.go) and
+//  never through *Exchange: on the untyped layer CreateOrder is a NotSupported
+//  stub that compiles clean and panics.
+//
+//  This type never moves funds between venues. There is no call to any
+//  funds-transfer endpoint anywhere in it, deliberately and permanently.
+//  ---------------------------------------------------------------------------
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"math"
+	"math/big"
+	"net/http"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+)
+
+//  ---------------------------------------------------------------------------
+//  Static text for every violation and verdict code. Kept out of the methods so
+//  that a port can copy the table verbatim and a reviewer can diff two languages
+//  by eye. No number is ever interpolated into these.
+//  ---------------------------------------------------------------------------
+
+var orderRouterViolationMessages = map[string]string{
+	"empty_plan":           "the plan contains no steps",
+	"route_unroutable":     "the route carries an unroutableReason and must not be executed",
+	"partial_fill":         "the route does not fill completely at the requested size",
+	"unknown_symbol":       "the symbol is not listed on that venue",
+	"market_mismatch":      "the venue market trades a different pair than the route hop says it does",
+	"invalid_step":         "the step has a non-positive amount or price, or a side that is neither buy nor sell",
+	"amount_below_minimum": "the amount is below the market minimum",
+	"amount_above_maximum": "the amount is above the market maximum",
+	"cost_below_minimum":   "the notional is below the market minimum cost",
+	"price_out_of_range":   "the limit price falls outside the market price limits",
+	"notional_unvaluable":  "the step cannot be valued in USD, so the notional cap cannot be enforced",
+	"notional_exceeds_cap": "the notional exceeds the per-trade USD cap",
+	"amount_precision":     "the amount does not sit on the market amount precision",
+	"price_precision":      "the limit price does not sit on the market price precision",
+}
+
+var orderRouterKnownStrategies = []string{"dry_run", "sequential", "parallel_within_hop", "limit_protected", "best_effort", "atomic_ish"}
+
+// the query keys forwarded to GET /route, in a fixed order so that two ports
+// build a byte-identical URL
+var orderRouterQueryKeys = []string{"amountIn", "amountOut", "strategy", "maxVenues", "bridges", "exchanges", "balances", "balanceMode", "includeQuotes", "includeFees", "certified", "requireFullFill", "hopPenaltyBps", "minLegNotional"}
+
+// defaults, mirrored as constants in every port
+const (
+	OrderRouterDefaultBaseUrl = "https://docs.ccxt.com/router/api"
+
+	OrderRouterDefaultTimeoutMs = 30000.0
+
+	OrderRouterDefaultSlippageBps = 25.0
+
+	OrderRouterDefaultReconcileTolerance = 0.02
+
+	// CLAUDE.md: never risk more than 25 USD equivalent per trade. This is a
+	// ceiling, not a default — NewOrderRouter refuses to raise it.
+	OrderRouterMaxNotionalUsd = 25.0
+
+	// router-side caps on the `balances` query parameter; both REJECT rather
+	// than truncate server-side, so the client trims before sending
+	OrderRouterMaxBalanceEntries = 64
+
+	OrderRouterMaxBalanceChars = 4096
+
+	// relative tolerance for float comparisons; also the tolerance the five
+	// test suites compare fixture numbers with
+	OrderRouterTolerance = 1e-9
+
+	// how long a limit_protected order is left resting, and how often it is
+	// re-read while it rests
+	OrderRouterDefaultOrderTimeoutMs = 20000.0
+
+	OrderRouterDefaultPollIntervalMs = 1000.0
+)
+
+// OrderRouter is a client for the CCXT order-router service and the pure
+// planning layer around it. It is NOT an Exchange and NOT an Exchange subclass:
+// it calls CreateOrder on many venues at once, so a single this.Id, this.Markets
+// or this.Options would refer to one arbitrary venue that need not appear in the
+// route at all.
+type OrderRouter struct {
+	ApiKey         string
+	BaseUrl        string
+	TimeoutMs      float64
+	MaxNotionalUsd float64
+
+	// Transport performs the authenticated GET behind FetchRoute. It defaults
+	// to (*OrderRouter).Request; Go has no method overriding, so this field is
+	// how the offline test suite keeps itself off the network.
+	Transport func(url string) (map[string]any, error)
+
+	httpClient *http.Client
+}
+
+// NewOrderRouter creates a client for the CCXT order-router service.
+//
+// config keys:
+//
+//	apiKey         string  the router API key, sent as the x-api-key header (required)
+//	baseUrl        string  router base url, defaults to https://docs.ccxt.com/router/api
+//	timeoutMs      float   request timeout in milliseconds, defaults to 30000
+//	maxNotionalUsd float   per-trade USD notional cap, defaults to 25 and may only be LOWERED
+func NewOrderRouter(config map[string]any) (*OrderRouter, error) {
+	apiKey := routerStringAt(config, "apiKey", "")
+	if apiKey == "" {
+		return nil, ArgumentsRequired("OrderRouter requires an apiKey")
+	}
+	baseUrl := routerStringAt(config, "baseUrl", OrderRouterDefaultBaseUrl)
+	for len(baseUrl) > 0 && baseUrl[len(baseUrl)-1] == '/' {
+		baseUrl = baseUrl[:len(baseUrl)-1]
+	}
+	maxNotionalUsd := routerNumberAt(config, "maxNotionalUsd", OrderRouterMaxNotionalUsd)
+	if maxNotionalUsd > OrderRouterMaxNotionalUsd {
+		// the cap is a hard rule, not a preference; raising it is refused
+		return nil, BadRequest("OrderRouter maxNotionalUsd may not exceed the hard 25 USD per-trade cap")
+	}
+	if maxNotionalUsd <= 0 {
+		return nil, BadRequest("OrderRouter maxNotionalUsd must be positive")
+	}
+	timeoutMs := routerNumberAt(config, "timeoutMs", OrderRouterDefaultTimeoutMs)
+	router := &OrderRouter{
+		ApiKey:         apiKey,
+		BaseUrl:        baseUrl,
+		TimeoutMs:      timeoutMs,
+		MaxNotionalUsd: maxNotionalUsd,
+		httpClient:     &http.Client{},
+	}
+	router.Transport = router.Request
+	return router, nil
+}
+
+//  ---------------------------------------------------------------------------
+//  small container accessors. Every port has these five; they exist so the five
+//  implementations read line for line and so a missing key is never a
+//  language-specific crash.
+//  ---------------------------------------------------------------------------
+
+// routerContainer narrows an untyped container to a dictionary, or nil.
+func routerContainer(container any) map[string]any {
+	if dict, ok := container.(map[string]any); ok {
+		return dict
+	}
+	return nil
+}
+
+// routerNumberAt reads a numeric field out of a container, with a default for
+// missing, nil and unparseable values.
+func routerNumberAt(container any, key string, defaultValue float64) float64 {
+	dict := routerContainer(container)
+	if dict == nil {
+		return defaultValue
+	}
+	value, present := dict[key]
+	if !present || value == nil {
+		return defaultValue
+	}
+	return routerToNumber(value, defaultValue)
+}
+
+// routerToNumber converts one untyped value to a float64, mirroring the
+// reference's "a number stays, a string is parsed, anything else is the default".
+func routerToNumber(value any, defaultValue float64) float64 {
+	switch typed := value.(type) {
+	case float64:
+		// NaN and +/-Inf are not numbers this class will act on. An infinite
+		// tolerance silently disables the halt verdict and an infinite rate
+		// silently disables the cap, and "the default" is the only answer five
+		// languages can agree on for either.
+		if !routerIsFiniteNumber(typed) {
+			return defaultValue
+		}
+		return typed
+	case float32:
+		if !routerIsFiniteNumber(float64(typed)) {
+			return defaultValue
+		}
+		return float64(typed)
+	case int:
+		return float64(typed)
+	case int8:
+		return float64(typed)
+	case int16:
+		return float64(typed)
+	case int32:
+		return float64(typed)
+	case int64:
+		return float64(typed)
+	case uint:
+		return float64(typed)
+	case uint8:
+		return float64(typed)
+	case uint16:
+		return float64(typed)
+	case uint32:
+		return float64(typed)
+	case uint64:
+		return float64(typed)
+	case json.Number:
+		parsed, ok := routerParseFloat(typed.String())
+		if !ok {
+			return defaultValue
+		}
+		return parsed
+	case string:
+		parsed, ok := routerParseFloat(typed)
+		if !ok {
+			return defaultValue
+		}
+		return parsed
+	}
+	return defaultValue
+}
+
+// routerIsFiniteNumber reports whether a double is a real number, i.e. neither
+// NaN nor an infinity.
+func routerIsFiniteNumber(value float64) bool {
+	if value != value {
+		// the one NaN test that needs no library in any of the five
+		return false
+	}
+	if value > 1.7976931348623157e308 || value < -1.7976931348623157e308 {
+		return false
+	}
+	return true
+}
+
+// routerParseFloat parses the longest numeric prefix of a string, which is what
+// JavaScript's parseFloat does and therefore what the reference does. Go's own
+// ParseFloat refuses "12abc" where the other four languages read 12. The
+// whitespace set is the six ASCII spaces and nothing else, deliberately: Python,
+// PHP, C# and Go each draw the Unicode line in a different place, and a
+// non-breaking space that parses in one language and not the others is drift.
+func routerParseFloat(text string) (float64, bool) {
+	trimmed := strings.TrimLeft(text, " \t\n\r\f\v")
+	cursor := 0
+	if cursor < len(trimmed) && (trimmed[cursor] == '+' || trimmed[cursor] == '-') {
+		cursor = cursor + 1
+	}
+	digits := 0
+	for cursor < len(trimmed) && trimmed[cursor] >= '0' && trimmed[cursor] <= '9' {
+		cursor = cursor + 1
+		digits = digits + 1
+	}
+	if cursor < len(trimmed) && trimmed[cursor] == '.' {
+		cursor = cursor + 1
+		for cursor < len(trimmed) && trimmed[cursor] >= '0' && trimmed[cursor] <= '9' {
+			cursor = cursor + 1
+			digits = digits + 1
+		}
+	}
+	if digits == 0 {
+		// "Infinity", "inf", "NaN", "" and a string of Arabic-Indic digits all
+		// land here, in all five
+		return 0, false
+	}
+	end := cursor
+	if cursor < len(trimmed) && (trimmed[cursor] == 'e' || trimmed[cursor] == 'E') {
+		exponent := cursor + 1
+		if exponent < len(trimmed) && (trimmed[exponent] == '+' || trimmed[exponent] == '-') {
+			exponent = exponent + 1
+		}
+		exponentDigits := 0
+		for exponent < len(trimmed) && trimmed[exponent] >= '0' && trimmed[exponent] <= '9' {
+			exponent = exponent + 1
+			exponentDigits = exponentDigits + 1
+		}
+		if exponentDigits > 0 {
+			end = exponent
+		}
+	}
+	parsed, err := strconv.ParseFloat(trimmed[:end], 64)
+	if err != nil {
+		// ErrRange is NOT a parse failure. Today Go reports it only on overflow,
+		// where the finite check below rejects the +/-Inf anyway; if it ever
+		// reported it on underflow, discarding the value here would answer the
+		// default where the other four answer a legitimate 0. Only the VALUE
+		// decides whether a number came back, never the error alone.
+		if !errors.Is(err, strconv.ErrRange) {
+			return 0, false
+		}
+	}
+	if !routerIsFiniteNumber(parsed) {
+		// "1e400" overflows to an infinity, which is not a number the cap or the
+		// tolerance may be built out of
+		return 0, false
+	}
+	return parsed, true
+}
+
+// routerStringAt reads a string field out of a container, with a default for
+// missing and nil values.
+func routerStringAt(container any, key string, defaultValue string) string {
+	dict := routerContainer(container)
+	if dict == nil {
+		return defaultValue
+	}
+	value, present := dict[key]
+	if !present || value == nil {
+		return defaultValue
+	}
+	if text, ok := value.(string); ok {
+		return text
+	}
+	return defaultValue
+}
+
+// routerBoolAt reads a boolean field out of a container, with a default for
+// missing and nil values.
+func routerBoolAt(container any, key string, defaultValue bool) bool {
+	dict := routerContainer(container)
+	if dict == nil {
+		return defaultValue
+	}
+	value, present := dict[key]
+	if !present || value == nil {
+		return defaultValue
+	}
+	if flag, ok := value.(bool); ok {
+		return flag
+	}
+	return defaultValue
+}
+
+// routerListAt reads an array field out of a container, returning an empty slice
+// when absent. It accepts both the []any a JSON decode produces and the
+// []map[string]any this file produces.
+func routerListAt(container any, key string) []any {
+	dict := routerContainer(container)
+	if dict == nil {
+		return []any{}
+	}
+	switch value := dict[key].(type) {
+	case []any:
+		return value
+	case []map[string]any:
+		widened := make([]any, len(value))
+		for i := 0; i < len(value); i++ {
+			widened[i] = value[i]
+		}
+		return widened
+	}
+	return []any{}
+}
+
+// routerDictAt reads a nested dictionary out of a container, returning an empty
+// dictionary when absent.
+func routerDictAt(container any, key string) map[string]any {
+	dict := routerContainer(container)
+	if dict == nil {
+		return map[string]any{}
+	}
+	if nested := routerContainer(dict[key]); nested != nil {
+		return nested
+	}
+	return map[string]any{}
+}
+
+// FormatNumber renders a float64 as decimal text with no exponent, so that five
+// languages produce the same string.
+func (this *OrderRouter) FormatNumber(value float64) (string, error) {
+	// JavaScript prints 1e-7 where Python prints 1e-07 and Go prints 1e-07;
+	// a fixed 12-decimal rendering with the trailing zeros trimmed is the one
+	// spelling all five languages agree on for the magnitudes a balance or an
+	// amount can take.
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return "0", nil
+	}
+	if math.Abs(value) >= 1e18 {
+		// JavaScript's toFixed switches to exponent notation at 1e21 while the
+		// other four languages never do. Rather than let one language send a
+		// different string than the others, refuse — loudly, and at a magnitude
+		// no real amount reaches.
+		return "", BadRequest("OrderRouter: a number this large cannot be rendered identically in all five languages")
+	}
+	text := routerToFixed12(value)
+	if strings.IndexByte(text, '.') >= 0 {
+		for len(text) > 0 && text[len(text)-1] == '0' {
+			text = text[:len(text)-1]
+		}
+		if len(text) > 0 && text[len(text)-1] == '.' {
+			text = text[:len(text)-1]
+		}
+	}
+	if text == "" || text == "-" || text == "-0" {
+		return "0", nil
+	}
+	return text, nil
+}
+
+// routerToFixed12 renders a finite float64 with exactly twelve decimals, from
+// the exact binary value and under JavaScript's toFixed tie rule. ECMA-262
+// strips the sign BEFORE choosing n, so a tie rounds AWAY FROM ZERO on the
+// magnitude: (-0.0001220703125).toFixed(12) is -0.000122070313, not -…312.
+// strconv would round half to even here and disagree with the other four
+// languages on every value that lands exactly on a half tick, 2^-13 included.
+func routerToFixed12(value float64) string {
+	exact := new(big.Rat).SetFloat64(value)
+	if exact == nil {
+		return "0.000000000000"
+	}
+	sign := ""
+	if exact.Sign() < 0 {
+		sign = "-"
+		exact.Neg(exact)
+	}
+	scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(12), nil)
+	scaled := new(big.Rat).Mul(exact, new(big.Rat).SetInt(scale))
+	quotient, remainder := new(big.Int).QuoRem(scaled.Num(), scaled.Denom(), new(big.Int))
+	twiceRemainder := new(big.Int).Lsh(remainder, 1)
+	if twiceRemainder.Cmp(scaled.Denom()) >= 0 {
+		quotient.Add(quotient, big.NewInt(1))
+	}
+	digits := quotient.String()
+	for len(digits) < 13 {
+		digits = "0" + digits
+	}
+	return sign + digits[:len(digits)-12] + "." + digits[len(digits)-12:]
+}
+
+// routerEncodeURIComponent percent-encodes exactly the bytes JavaScript's
+// encodeURIComponent encodes. Go's url.QueryEscape differs (it renders a space
+// as "+" and escapes "!*'()"), and a query string that differs per language
+// defeats the point of a shared client.
+func routerEncodeURIComponent(text string) string {
+	const unreserved = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.!~*'()"
+	var builder strings.Builder
+	for i := 0; i < len(text); i++ {
+		character := text[i]
+		if strings.IndexByte(unreserved, character) >= 0 {
+			builder.WriteByte(character)
+		} else {
+			builder.WriteString(fmt.Sprintf("%%%02X", character))
+		}
+	}
+	return builder.String()
+}
+
+//  ---------------------------------------------------------------------------
+//  I/O: the router HTTP client
+//  ---------------------------------------------------------------------------
+
+// FetchRoute asks the router how to convert one asset into another, over the
+// venues and bridges it has live books for.
+//
+// See https://docs.ccxt.com/router/api
+//
+// params carries exactly one of amountIn or amountOut, plus any of strategy,
+// maxVenues, exchanges, bridges, balances, balanceMode, includeQuotes,
+// includeFees, certified, requireFullFill, hopPenaltyBps and minLegNotional.
+//
+// An unroutable pair comes back as a RouteResult carrying an unroutableReason,
+// not as an error.
+func (this *OrderRouter) FetchRoute(fromAsset string, toAsset string, params map[string]any) (map[string]any, error) {
+	if fromAsset == "" || toAsset == "" {
+		return nil, ArgumentsRequired("fetchRoute requires fromAsset and toAsset")
+	}
+	amountIn, hasAmountIn := params["amountIn"]
+	amountOut, hasAmountOut := params["amountOut"]
+	hasAmountIn = hasAmountIn && amountIn != nil
+	hasAmountOut = hasAmountOut && amountOut != nil
+	if hasAmountIn == hasAmountOut {
+		// refused client-side for the same reason the router refuses it: a typo
+		// must not become a confidently wrong route
+		return nil, BadRequest("fetchRoute requires exactly one of amountIn or amountOut")
+	}
+	query := "from=" + routerEncodeURIComponent(strings.ToUpper(fromAsset)) + "&to=" + routerEncodeURIComponent(strings.ToUpper(toAsset))
+	for i := 0; i < len(orderRouterQueryKeys); i++ {
+		key := orderRouterQueryKeys[i]
+		value, present := params[key]
+		if !present || value == nil {
+			continue
+		}
+		text, err := this.routerQueryValue(value)
+		if err != nil {
+			return nil, err
+		}
+		query = query + "&" + key + "=" + routerEncodeURIComponent(text)
+	}
+	url := this.BaseUrl + "/route?" + query
+	return this.Transport(url)
+}
+
+// routerQueryValue renders one query parameter the way the reference does:
+// booleans as true/false, numbers through FormatNumber, lists comma-joined and
+// everything else through the package's own ToString.
+func (this *OrderRouter) routerQueryValue(value any) (string, error) {
+	switch typed := value.(type) {
+	case bool:
+		if typed {
+			return "true", nil
+		}
+		return "false", nil
+	case string:
+		return typed, nil
+	case []any:
+		parts := make([]string, len(typed))
+		for i := 0; i < len(typed); i++ {
+			parts[i] = ToString(typed[i])
+		}
+		return strings.Join(parts, ","), nil
+	case []string:
+		return strings.Join(typed, ","), nil
+	}
+	number := routerToNumber(value, math.NaN())
+	if !math.IsNaN(number) {
+		return this.FormatNumber(number)
+	}
+	return ToString(value), nil
+}
+
+// Request performs the authenticated GET and maps router status codes onto CCXT
+// errors. FetchRoute reaches it through the Transport field.
+func (this *OrderRouter) Request(url string) (map[string]any, error) {
+	timeout := time.Duration(this.TimeoutMs) * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, ExchangeNotAvailable("OrderRouter request failed: " + err.Error())
+	}
+	request.Header.Set("x-api-key", this.ApiKey)
+	request.Header.Set("Accept", "application/json")
+	response, err := this.httpClient.Do(request)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, RequestTimeout("OrderRouter request timed out after " + strconv.FormatFloat(this.TimeoutMs, 'f', -1, 64) + "ms")
+		}
+		return nil, ExchangeNotAvailable("OrderRouter request failed: " + err.Error())
+	}
+	defer response.Body.Close()
+	status := response.StatusCode
+	text, err := io.ReadAll(response.Body)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, RequestTimeout("OrderRouter request timed out after " + strconv.FormatFloat(this.TimeoutMs, 'f', -1, 64) + "ms")
+		}
+		return nil, ExchangeNotAvailable("OrderRouter request failed: " + err.Error())
+	}
+	var decoded any
+	if err := json.Unmarshal(text, &decoded); err != nil {
+		return nil, ExchangeError("OrderRouter returned a non-JSON body")
+	}
+	body := routerContainer(decoded)
+	if body == nil {
+		body = map[string]any{}
+	}
+	if status >= 200 && status < 300 {
+		return body, nil
+	}
+	// 404 and 501 carry a complete RouteResult explaining the refusal —
+	// `no_market` and `exact_out_multi_hop_unsupported` are routing outcomes,
+	// and turning them into errors would make the caller parse an error string
+	// to recover a structure it already has
+	if (status == 404 || status == 501) && routerStringAt(body, "unroutableReason", "") != "" {
+		return body, nil
+	}
+	message := routerStringAt(body, "error", "http status "+strconv.Itoa(status))
+	if status == 400 {
+		return nil, BadRequest("OrderRouter: " + message)
+	}
+	if status == 401 || status == 403 {
+		return nil, AuthenticationError("OrderRouter: " + message)
+	}
+	if status == 429 {
+		return nil, RateLimitExceeded("OrderRouter: " + message)
+	}
+	if status == 408 || status == 504 {
+		return nil, RequestTimeout("OrderRouter: " + message)
+	}
+	return nil, ExchangeError("OrderRouter: " + message)
+}
+
+// FetchRouteWithBalances reads the live balances of the supplied venues, sends
+// them to the router, and returns a route you can actually fund. This is the ONE
+// method that needs live exchange objects for a READ.
+//
+// params accepts everything FetchRoute accepts minus balances, which this method
+// builds, plus requireBalancesApplied (default true) which decides whether a
+// router that silently ignored the balances is an error.
+//
+// The returned route carries the client-side keys balancesUsed and
+// balancesDropped.
+func (this *OrderRouter) FetchRouteWithBalances(fromAsset string, toAsset string, venues map[string]IExchange, params map[string]any) (map[string]any, error) {
+	requireApplied := routerBoolAt(params, "requireBalancesApplied", true)
+	exchangeIds := routerSortedVenueIds(venues)
+	entries := make([]map[string]any, 0)
+	dropped := make([]map[string]any, 0)
+	for i := 0; i < len(exchangeIds); i++ {
+		exchangeId := exchangeIds[i]
+		venue := venues[exchangeId]
+		balance, err := venue.FetchBalance()
+		if err != nil {
+			return nil, err
+		}
+		holdings := balance.Free
+		if len(holdings) == 0 {
+			holdings = balance.Total
+		}
+		codes := make([]string, 0, len(holdings))
+		for code := range holdings {
+			codes = append(codes, code)
+		}
+		sort.Strings(codes)
+		for j := 0; j < len(codes); j++ {
+			code := codes[j]
+			amount := 0.0
+			if holdings[code] != nil {
+				amount = *holdings[code]
+			}
+			if amount <= 0 {
+				// a zero holding is not information, and it costs one of the
+				// router's 64 entries
+				continue
+			}
+			if amount >= 1e18 {
+				// beyond fixed-point rendering; reported rather than sent,
+				// because a silently reshaped amount is worse than a missing one
+				dropped = append(dropped, map[string]any{"exchangeId": exchangeId, "asset": code, "amount": amount, "reason": "amount_out_of_range"})
+				continue
+			}
+			entries = append(entries, map[string]any{"exchangeId": exchangeId, "asset": code, "amount": amount})
+		}
+	}
+	// largest first, so trimming to the router's caps drops the smallest
+	// holdings. Ties break on exchangeId then asset so five languages produce
+	// the same list from the same wallet.
+	sort.SliceStable(entries, func(a int, b int) bool {
+		amountA := routerNumberAt(entries[a], "amount", 0)
+		amountB := routerNumberAt(entries[b], "amount", 0)
+		if amountA != amountB {
+			return amountA > amountB
+		}
+		exchangeA := routerStringAt(entries[a], "exchangeId", "")
+		exchangeB := routerStringAt(entries[b], "exchangeId", "")
+		if exchangeA != exchangeB {
+			return exchangeA < exchangeB
+		}
+		return routerStringAt(entries[a], "asset", "") < routerStringAt(entries[b], "asset", "")
+	})
+	for len(entries) > OrderRouterMaxBalanceEntries {
+		removed := entries[len(entries)-1]
+		entries = entries[:len(entries)-1]
+		removed["reason"] = "entry_cap"
+		dropped = append(dropped, removed)
+	}
+	balances, err := this.joinBalances(entries)
+	if err != nil {
+		return nil, err
+	}
+	for len(balances) > OrderRouterMaxBalanceChars && len(entries) > 0 {
+		removed := entries[len(entries)-1]
+		entries = entries[:len(entries)-1]
+		removed["reason"] = "char_cap"
+		dropped = append(dropped, removed)
+		balances, err = this.joinBalances(entries)
+		if err != nil {
+			return nil, err
+		}
+	}
+	routeParams := map[string]any{}
+	for key, value := range params {
+		routeParams[key] = value
+	}
+	routeParams["balances"] = balances
+	route, err := this.FetchRoute(fromAsset, toAsset, routeParams)
+	if err != nil {
+		return nil, err
+	}
+	if requireApplied && balances != "" {
+		// /route declares its query without a JSON schema, so a router that
+		// predates the balances feature answers byte-identically to one that
+		// never received it. Executing a plan computed against a portfolio the
+		// server never saw is the case worth failing on.
+		if routerStringAt(route, "balancesApplied", "") == "" {
+			return nil, ExchangeError("OrderRouter did not echo balancesApplied: the balances were ignored, so this route is not funded-aware")
+		}
+	}
+	route["balancesUsed"] = balances
+	route["balancesDropped"] = dropped
+	return route, nil
+}
+
+// joinBalances renders balance entries as the router's [exchangeId.]ASSET:amount
+// comma-separated form.
+func (this *OrderRouter) joinBalances(entries []map[string]any) (string, error) {
+	var builder strings.Builder
+	for i := 0; i < len(entries); i++ {
+		entry := entries[i]
+		if i > 0 {
+			builder.WriteString(",")
+		}
+		amount, err := this.FormatNumber(routerNumberAt(entry, "amount", 0))
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(routerStringAt(entry, "exchangeId", ""))
+		builder.WriteString(".")
+		builder.WriteString(routerStringAt(entry, "asset", ""))
+		builder.WriteString(":")
+		builder.WriteString(amount)
+	}
+	return builder.String(), nil
+}
+
+// routerSortedVenueIds lists the venue ids in a fixed order. Go randomises map
+// iteration, so nothing that reaches a returned structure may walk a map.
+func routerSortedVenueIds(venues map[string]IExchange) []string {
+	ids := make([]string, 0, len(venues))
+	for id := range venues {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+//  ---------------------------------------------------------------------------
+//  PURE: BuildExecutionPlan
+//  ---------------------------------------------------------------------------
+
+// BuildExecutionPlan flattens a RouteResult's hops and legs into a flat, ordered
+// list of orders to place. PURE — no I/O, no error, and the same input produces
+// the same output in all five languages.
+//
+// options keys:
+//
+//	slippageBps              float  how far the limit price is set past the expected price, default 25
+//	reconcileToleranceRatio  float  the shortfall ratio ReconcileExecutionStep halts on, default 0.02
+//
+// The returned plan's steps carry stepIndex, hopIndex, legIndex, exchangeId,
+// symbol, side, base, quote, amount, expectedPrice, effectivePrice, limitPrice
+// and notionalQuote.
+func (this *OrderRouter) BuildExecutionPlan(route map[string]any, options map[string]any) map[string]any {
+	slippageBps := routerNumberAt(options, "slippageBps", OrderRouterDefaultSlippageBps)
+	tolerance := routerNumberAt(options, "reconcileToleranceRatio", OrderRouterDefaultReconcileTolerance)
+	hops := routerListAt(route, "hops")
+	steps := make([]map[string]any, 0)
+	stepIndex := 0
+	for hopIndex := 0; hopIndex < len(hops); hopIndex++ {
+		hop := hops[hopIndex]
+		symbol := routerStringAt(hop, "pair", "")
+		side := routerStringAt(hop, "side", "")
+		base := routerStringAt(hop, "base", "")
+		quote := routerStringAt(hop, "quote", "")
+		legs := routerListAt(hop, "legs")
+		for legIndex := 0; legIndex < len(legs); legIndex++ {
+			leg := legs[legIndex]
+			// leg amounts are always in BASE units, on both sides of the market
+			// — see the router's RoutingQuote.filledAmount contract
+			amount := routerNumberAt(leg, "amount", 0)
+			expectedPrice := routerNumberAt(leg, "averagePrice", 0)
+			effectivePrice := routerNumberAt(leg, "effectivePrice", expectedPrice)
+			// the limit sits on the side that costs you: above for a buy, below
+			// for a sell
+			limitPrice := 0.0
+			if side == "buy" {
+				limitPrice = expectedPrice * (1 + slippageBps/10000)
+			} else {
+				limitPrice = expectedPrice * (1 - slippageBps/10000)
+			}
+			steps = append(steps, map[string]any{
+				"stepIndex":      float64(stepIndex),
+				"hopIndex":       float64(hopIndex),
+				"legIndex":       float64(legIndex),
+				"exchangeId":     routerStringAt(leg, "exchangeId", ""),
+				"symbol":         symbol,
+				"side":           side,
+				"base":           base,
+				"quote":          quote,
+				"amount":         amount,
+				"expectedPrice":  expectedPrice,
+				"effectivePrice": effectivePrice,
+				"limitPrice":     limitPrice,
+				"notionalQuote":  amount * expectedPrice,
+			})
+			stepIndex = stepIndex + 1
+		}
+	}
+	return map[string]any{
+		"requestId":               routerStringAt(route, "requestId", ""),
+		"calculatedAt":            routerNumberAt(route, "calculatedAt", 0),
+		"from":                    routerStringAt(route, "from", ""),
+		"to":                      routerStringAt(route, "to", ""),
+		"routingStrategy":         routerStringAt(route, "strategy", ""),
+		"exactSide":               routerStringAt(route, "exactSide", ""),
+		"amountIn":                routerNumberAt(route, "amountIn", 0),
+		"amountOut":               routerNumberAt(route, "amountOut", 0),
+		"fullyFillable":           routerBoolAt(route, "fullyFillable", false),
+		"fillRatio":               routerNumberAt(route, "fillRatio", 0),
+		"unroutableReason":        routerStringAt(route, "unroutableReason", ""),
+		"hopCount":                float64(len(hops)),
+		"stepCount":               float64(len(steps)),
+		"slippageBps":             slippageBps,
+		"reconcileToleranceRatio": tolerance,
+		"steps":                   steps,
+	}
+}
+
+//  ---------------------------------------------------------------------------
+//  PURE: CheckExecutionPlanSafety
+//  ---------------------------------------------------------------------------
+
+// CheckExecutionPlanSafety checks a plan against per-venue market rules and the
+// hard per-trade USD notional cap. PURE — no I/O. A step that cannot be valued in
+// USD BLOCKS; it is never skipped, because a cap that silently disappears when a
+// rate is missing is not a cap.
+//
+// markets is markets[exchangeId][symbol].
+//
+// options keys:
+//
+//	usdRates        dict    currency code to its USD price. USD itself is 1 implicitly; nothing else is assumed
+//	maxNotionalUsd  float   per-trade cap, clamped to the client's own cap, which is clamped to 25
+//	precisionMode   string  tick_size (default) or decimal_places, matching the venue's precisionMode
+//
+// Each violation carries stepIndex, exchangeId, symbol, code, blocking, actual,
+// limit and a constant message. An empty slice means the plan passed.
+func (this *OrderRouter) CheckExecutionPlanSafety(plan map[string]any, markets map[string]any, options map[string]any) []map[string]any {
+	violations := make([]map[string]any, 0)
+	maxNotionalUsd := routerNumberAt(options, "maxNotionalUsd", this.MaxNotionalUsd)
+	if maxNotionalUsd > this.MaxNotionalUsd {
+		maxNotionalUsd = this.MaxNotionalUsd
+	}
+	if maxNotionalUsd > OrderRouterMaxNotionalUsd {
+		// MaxNotionalUsd is an exported struct field, so the constructor's
+		// refusal is not the last word on it. The hard 25 USD ceiling is
+		// re-imposed HERE, where the number is used.
+		maxNotionalUsd = OrderRouterMaxNotionalUsd
+	}
+	usdRates := routerDictAt(options, "usdRates")
+	precisionMode := routerStringAt(options, "precisionMode", "tick_size")
+	steps := routerListAt(plan, "steps")
+	if len(steps) == 0 {
+		// an empty plan passing an empty violation list would read as "safe"
+		violations = append(violations, this.violation(-1, "", "", "empty_plan", true, 0, 0))
+		return violations
+	}
+	unroutableReason := routerStringAt(plan, "unroutableReason", "")
+	if unroutableReason != "" {
+		violations = append(violations, this.violation(-1, "", "", "route_unroutable", true, 0, 0))
+	}
+	if !routerBoolAt(plan, "fullyFillable", false) {
+		violations = append(violations, this.violation(-1, "", "", "partial_fill", false, routerNumberAt(plan, "fillRatio", 0), 1))
+	}
+	for i := 0; i < len(steps); i++ {
+		step := steps[i]
+		stepIndex := routerNumberAt(step, "stepIndex", float64(i))
+		exchangeId := routerStringAt(step, "exchangeId", "")
+		symbol := routerStringAt(step, "symbol", "")
+		amount := routerNumberAt(step, "amount", 0)
+		expectedPrice := routerNumberAt(step, "expectedPrice", 0)
+		limitPrice := routerNumberAt(step, "limitPrice", 0)
+		notionalQuote := routerNumberAt(step, "notionalQuote", 0)
+		side := routerStringAt(step, "side", "")
+		if amount <= 0 || expectedPrice <= 0 || (side != "buy" && side != "sell") {
+			violations = append(violations, this.violation(stepIndex, exchangeId, symbol, "invalid_step", true, amount, 0))
+			continue
+		}
+		venueMarkets := routerDictAt(markets, exchangeId)
+		market := routerDictAt(venueMarkets, symbol)
+		if len(market) == 0 {
+			violations = append(violations, this.violation(stepIndex, exchangeId, symbol, "unknown_symbol", true, 0, 0))
+			continue
+		}
+		// the same symbol string on a different venue is not necessarily the
+		// same pair, and the USD valuation below trusts the step's quote
+		// currency — so disagreement is fatal, not cosmetic
+		marketBase := routerStringAt(market, "base", "")
+		marketQuote := routerStringAt(market, "quote", "")
+		stepBase := routerStringAt(step, "base", "")
+		stepQuote := routerStringAt(step, "quote", "")
+		if (marketBase != "" && stepBase != "" && marketBase != stepBase) || (marketQuote != "" && stepQuote != "" && marketQuote != stepQuote) {
+			violations = append(violations, this.violation(stepIndex, exchangeId, symbol, "market_mismatch", true, 0, 0))
+			continue
+		}
+		limits := routerDictAt(market, "limits")
+		amountLimits := routerDictAt(limits, "amount")
+		priceLimits := routerDictAt(limits, "price")
+		costLimits := routerDictAt(limits, "cost")
+		minAmount := routerNumberAt(amountLimits, "min", 0)
+		maxAmount := routerNumberAt(amountLimits, "max", 0)
+		minPrice := routerNumberAt(priceLimits, "min", 0)
+		maxPrice := routerNumberAt(priceLimits, "max", 0)
+		minCost := routerNumberAt(costLimits, "min", 0)
+		if minAmount > 0 && amount < minAmount {
+			violations = append(violations, this.violation(stepIndex, exchangeId, symbol, "amount_below_minimum", true, amount, minAmount))
+		}
+		if maxAmount > 0 && amount > maxAmount {
+			violations = append(violations, this.violation(stepIndex, exchangeId, symbol, "amount_above_maximum", true, amount, maxAmount))
+		}
+		if minCost > 0 && notionalQuote < minCost {
+			violations = append(violations, this.violation(stepIndex, exchangeId, symbol, "cost_below_minimum", true, notionalQuote, minCost))
+		}
+		if (minPrice > 0 && limitPrice < minPrice) || (maxPrice > 0 && limitPrice > maxPrice) {
+			breached := maxPrice
+			if limitPrice < minPrice {
+				breached = minPrice
+			}
+			violations = append(violations, this.violation(stepIndex, exchangeId, symbol, "price_out_of_range", true, limitPrice, breached))
+		}
+		precision := routerDictAt(market, "precision")
+		amountPrecision := routerNumberAt(precision, "amount", 0)
+		pricePrecision := routerNumberAt(precision, "price", 0)
+		// precision findings are advisory: Execute snaps through the venue's own
+		// AmountToPrecision/PriceToPrecision before sending
+		if this.precisionViolated(amount, amountPrecision, precisionMode) {
+			violations = append(violations, this.violation(stepIndex, exchangeId, symbol, "amount_precision", false, amount, amountPrecision))
+		}
+		if this.precisionViolated(limitPrice, pricePrecision, precisionMode) {
+			violations = append(violations, this.violation(stepIndex, exchangeId, symbol, "price_precision", false, limitPrice, pricePrecision))
+		}
+		// the notional cap. The worst case is the higher of the expected and the
+		// limit price, which is the buy side; a sell's limit sits below, so its
+		// expected price is the one that governs.
+		worstPrice := expectedPrice
+		if limitPrice > worstPrice {
+			worstPrice = limitPrice
+		}
+		worstNotional := amount * worstPrice
+		usdValue := this.notionalUsd(step, worstNotional, usdRates)
+		if usdValue <= 0 {
+			// BLOCKING, and deliberately so. Skipping the cap for a step whose
+			// USD value is unknown defeats the entire safety layer.
+			violations = append(violations, this.violation(stepIndex, exchangeId, symbol, "notional_unvaluable", true, worstNotional, maxNotionalUsd))
+		} else if usdValue > maxNotionalUsd*(1+OrderRouterTolerance) {
+			violations = append(violations, this.violation(stepIndex, exchangeId, symbol, "notional_exceeds_cap", true, usdValue, maxNotionalUsd))
+		}
+	}
+	return violations
+}
+
+// violation builds one safety violation record. stepIndex is -1 for a
+// plan-level finding.
+func (this *OrderRouter) violation(stepIndex float64, exchangeId string, symbol string, code string, blocking bool, actual float64, limit float64) map[string]any {
+	message, known := orderRouterViolationMessages[code]
+	if !known {
+		message = code
+	}
+	return map[string]any{
+		"stepIndex":  stepIndex,
+		"exchangeId": exchangeId,
+		"symbol":     symbol,
+		"code":       code,
+		"blocking":   blocking,
+		"actual":     actual,
+		"limit":      limit,
+		"message":    message,
+	}
+}
+
+// notionalUsd values a step's quote-currency notional in USD, returning 0 when
+// it cannot be valued.
+func (this *OrderRouter) notionalUsd(step any, notionalQuote float64, usdRates map[string]any) float64 {
+	quote := routerStringAt(step, "quote", "")
+	quoteRate := this.usdRateFor(quote, usdRates)
+	if quoteRate > 0 {
+		return notionalQuote * quoteRate
+	}
+	// fall back to the base side: amount * usd(base) values the same trade
+	base := routerStringAt(step, "base", "")
+	baseRate := this.usdRateFor(base, usdRates)
+	if baseRate > 0 {
+		return routerNumberAt(step, "amount", 0) * baseRate
+	}
+	return 0
+}
+
+// usdRateFor resolves the USD price of a currency, treating USD itself as 1 and
+// assuming nothing about anything else.
+func (this *OrderRouter) usdRateFor(code string, usdRates map[string]any) float64 {
+	if code == "" {
+		return 0
+	}
+	if code == "USD" {
+		return 1
+	}
+	// USDT and USDC are NOT assumed to be one dollar. A stablecoin peg is an
+	// empirical fact, not a definition, and the caller supplying rates is the
+	// one who knows today's.
+	rate := routerNumberAt(usdRates, code, 0)
+	if rate > 0 {
+		return rate
+	}
+	return 0
+}
+
+// precisionViolated reports whether a value fails to sit on a market's precision
+// grid, i.e. whether it would have to be rounded before it could be sent.
+func (this *OrderRouter) precisionViolated(value float64, precision float64, mode string) bool {
+	if precision <= 0 {
+		// unknown or unconstrained precision is not a finding
+		return false
+	}
+	rounded := 0.0
+	if mode == "decimal_places" {
+		factor := math.Pow(10, precision)
+		rounded = math.Round(value*factor) / factor
+	} else {
+		// the rounding mode is irrelevant here: a value exactly halfway between
+		// two ticks is off-grid whichever neighbour it snaps to, so Go's
+		// round-half-away-from-zero and JavaScript's round-half-up cannot
+		// disagree on this predicate's answer
+		rounded = math.Round(value/precision) * precision
+	}
+	allowed := math.Abs(value)*OrderRouterTolerance + 1e-15
+	return math.Abs(rounded-value) > allowed
+}
+
+//  ---------------------------------------------------------------------------
+//  PURE: ReconcileExecutionStep
+//  ---------------------------------------------------------------------------
+
+// ReconcileExecutionStep compares what a step actually produced against what the
+// route predicted, resizes every downstream hop, and returns the proceed-or-halt
+// verdict. PURE — no I/O. The halt decision lives here rather than in the
+// execution loop because it is a money decision, and five separate loops is five
+// chances to omit it.
+//
+// realisedOut is measured in that step's output asset — base for a buy, quote
+// for a sell. The returned verdict carries expectedOut, realisedOut, shortfall,
+// shortfallRatio, scale, verdict, reason and resizedSteps.
+func (this *OrderRouter) ReconcileExecutionStep(plan map[string]any, stepIndex int, realisedOut float64) (map[string]any, error) {
+	steps := routerListAt(plan, "steps")
+	if stepIndex < 0 || stepIndex >= len(steps) {
+		return nil, BadRequest("reconcileExecutionStep: stepIndex is out of range")
+	}
+	step := steps[stepIndex]
+	hopIndex := routerNumberAt(step, "hopIndex", 0)
+	tolerance := routerNumberAt(plan, "reconcileToleranceRatio", OrderRouterDefaultReconcileTolerance)
+	expectedOut := this.stepExpectedOut(step)
+	resized := make([]map[string]any, 0)
+	if expectedOut <= 0 {
+		return map[string]any{
+			"stepIndex":      float64(stepIndex),
+			"hopIndex":       hopIndex,
+			"expectedOut":    0.0,
+			"realisedOut":    realisedOut,
+			"shortfall":      0.0,
+			"shortfallRatio": 0.0,
+			"scale":          0.0,
+			"verdict":        "halt",
+			"reason":         "zero_expected_output",
+			"resizedSteps":   resized,
+		}, nil
+	}
+	shortfall := expectedOut - realisedOut
+	if shortfall < 0 {
+		shortfall = 0
+	}
+	shortfallRatio := shortfall / expectedOut
+	// the downstream hops lost `shortfall` out of this hop's whole output, not
+	// out of this leg's, so the scale is measured against the hop
+	hopExpectedOut := 0.0
+	for i := 0; i < len(steps); i++ {
+		if routerNumberAt(steps[i], "hopIndex", 0) == hopIndex {
+			hopExpectedOut = hopExpectedOut + this.stepExpectedOut(steps[i])
+		}
+	}
+	scale := 1.0
+	if hopExpectedOut > 0 {
+		scale = (hopExpectedOut - shortfall) / hopExpectedOut
+	}
+	if scale > 1 {
+		// never scale UP. An overfill is good news, but growing a downstream
+		// order past the size that passed the safety check would place an order
+		// nobody ever approved.
+		scale = 1
+	}
+	if scale < 0 {
+		scale = 0
+	}
+	for i := 0; i < len(steps); i++ {
+		other := steps[i]
+		if routerNumberAt(other, "hopIndex", 0) <= hopIndex {
+			continue
+		}
+		previousAmount := routerNumberAt(other, "amount", 0)
+		amount := previousAmount * scale
+		resized = append(resized, map[string]any{
+			"stepIndex":      routerNumberAt(other, "stepIndex", float64(i)),
+			"previousAmount": previousAmount,
+			"amount":         amount,
+			"notionalQuote":  amount * routerNumberAt(other, "expectedPrice", 0),
+		})
+	}
+	verdict := "proceed"
+	reason := "within_tolerance"
+	if realisedOut <= 0 {
+		verdict = "halt"
+		reason = "nothing_filled"
+	} else if shortfallRatio > tolerance*(1+OrderRouterTolerance) {
+		verdict = "halt"
+		reason = "shortfall_exceeds_tolerance"
+	}
+	return map[string]any{
+		"stepIndex":      float64(stepIndex),
+		"hopIndex":       hopIndex,
+		"expectedOut":    expectedOut,
+		"realisedOut":    realisedOut,
+		"shortfall":      shortfall,
+		"shortfallRatio": shortfallRatio,
+		"scale":          scale,
+		"verdict":        verdict,
+		"reason":         reason,
+		"resizedSteps":   resized,
+	}, nil
+}
+
+// stepExpectedOut is how much of its output asset a step is expected to produce,
+// gross of fees: base units for a buy, quote units for a sell.
+func (this *OrderRouter) stepExpectedOut(step any) float64 {
+	amount := routerNumberAt(step, "amount", 0)
+	if routerStringAt(step, "side", "") == "buy" {
+		return amount
+	}
+	return amount * routerNumberAt(step, "expectedPrice", 0)
+}
+
+//  ---------------------------------------------------------------------------
+//  PURE: BuildUnwindPlan
+//  ---------------------------------------------------------------------------
+
+// BuildUnwindPlan takes a halted execution report and computes the reverse
+// orders that sell each stranded residual back toward the original from-asset,
+// on the venue that actually holds it. PURE — no I/O. NEVER automatic: the
+// result carries requiresConfirmation and nothing in this type executes it.
+//
+// steps come back in reverse execution order; unresolved carries the residuals
+// that cannot be reversed.
+func (this *OrderRouter) BuildUnwindPlan(report map[string]any) map[string]any {
+	fromAsset := routerStringAt(report, "from", "")
+	toAsset := routerStringAt(report, "to", "")
+	slippageBps := routerNumberAt(report, "slippageBps", OrderRouterDefaultSlippageBps)
+	results := routerListAt(report, "steps")
+	// net position per (exchangeId, asset). Held in a SLICE rather than a map
+	// because the output order must be identical in five languages and Go
+	// randomises map iteration on purpose.
+	positions := make([]map[string]any, 0)
+	for i := len(results) - 1; i >= 0; i-- {
+		result := results[i]
+		exchangeId := routerStringAt(result, "exchangeId", "")
+		outAsset := routerStringAt(result, "outAsset", "")
+		outAmount := routerNumberAt(result, "outAmount", 0)
+		if outAsset != "" && outAmount > 0 {
+			positions = this.addPosition(positions, exchangeId, outAsset, outAmount, result, true)
+		}
+		inAsset := routerStringAt(result, "inAsset", "")
+		inAmount := routerNumberAt(result, "inAmount", 0)
+		if inAsset != "" && inAmount > 0 {
+			// what a later hop consumed on this venue is not a residual.
+			// Netting is per venue: assets sitting on a venue the route never
+			// spent them on stay stranded, because this type never moves funds
+			// between venues.
+			positions = this.addPosition(positions, exchangeId, inAsset, -inAmount, result, false)
+		}
+	}
+	steps := make([]map[string]any, 0)
+	unresolved := make([]map[string]any, 0)
+	residualCount := 0
+	for i := 0; i < len(positions); i++ {
+		position := positions[i]
+		asset := routerStringAt(position, "asset", "")
+		amount := routerNumberAt(position, "amount", 0)
+		exchangeId := routerStringAt(position, "exchangeId", "")
+		if amount <= 0 {
+			continue
+		}
+		if asset == fromAsset {
+			// already home
+			continue
+		}
+		residualCount = residualCount + 1
+		source := routerDictAt(position, "source")
+		symbol := routerStringAt(source, "symbol", "")
+		sourceSide := routerStringAt(source, "side", "")
+		price := routerNumberAt(source, "averagePrice", 0)
+		if price <= 0 {
+			price = routerNumberAt(source, "expectedPrice", 0)
+		}
+		if symbol == "" || (sourceSide != "buy" && sourceSide != "sell") {
+			unresolved = append(unresolved, map[string]any{"exchangeId": exchangeId, "asset": asset, "amount": amount, "reason": "no_source_market"})
+			continue
+		}
+		if price <= 0 {
+			unresolved = append(unresolved, map[string]any{"exchangeId": exchangeId, "asset": asset, "amount": amount, "reason": "no_price"})
+			continue
+		}
+		// reverse the order that created the residual: a buy left you holding
+		// base, so sell it back; a sell left you holding quote, so buy the base
+		// back with it
+		side := ""
+		unwindAmount := 0.0
+		marketBase := ""
+		marketQuote := ""
+		// the counter asset is whatever the reversed order gives back, which is
+		// exactly what the original order spent
+		counterAsset := routerStringAt(source, "inAsset", "")
+		if sourceSide == "buy" {
+			side = "sell"
+			unwindAmount = amount
+			marketBase = routerStringAt(source, "outAsset", "")
+			marketQuote = routerStringAt(source, "inAsset", "")
+		} else {
+			side = "buy"
+			unwindAmount = amount / price
+			marketBase = routerStringAt(source, "inAsset", "")
+			marketQuote = routerStringAt(source, "outAsset", "")
+		}
+		limitPrice := 0.0
+		if side == "buy" {
+			limitPrice = price * (1 + slippageBps/10000)
+		} else {
+			limitPrice = price * (1 - slippageBps/10000)
+		}
+		steps = append(steps, map[string]any{
+			"stepIndex":  float64(len(steps)),
+			"exchangeId": exchangeId,
+			"symbol":     symbol,
+			"side":       side,
+			// base and quote are carried so that an unwind plan can be fed
+			// straight back into CheckExecutionPlanSafety: unwinding is trading,
+			// and it is subject to the same 25 USD cap
+			"base":          marketBase,
+			"quote":         marketQuote,
+			"asset":         asset,
+			"counterAsset":  counterAsset,
+			"amount":        unwindAmount,
+			"expectedPrice": price,
+			"limitPrice":    limitPrice,
+			"notionalQuote": unwindAmount * price,
+			"reachesFrom":   counterAsset == fromAsset,
+			"isDestination": asset == toAsset,
+		})
+	}
+	return map[string]any{
+		"from":                 fromAsset,
+		"to":                   toAsset,
+		"halted":               routerBoolAt(report, "halted", false),
+		"haltReason":           routerStringAt(report, "haltReason", ""),
+		"residualCount":        float64(residualCount),
+		"requiresConfirmation": true,
+		"automatic":            false,
+		"steps":                steps,
+		"unresolved":           unresolved,
+	}
+}
+
+// addPosition accumulates a signed amount into the (exchangeId, asset) position
+// list, appending in first-seen order. amount is positive for produced and
+// negative for consumed; produced marks the only kind of step an unwind can
+// reverse.
+func (this *OrderRouter) addPosition(positions []map[string]any, exchangeId string, asset string, amount float64, source any, produced bool) []map[string]any {
+	for i := 0; i < len(positions); i++ {
+		position := positions[i]
+		if routerStringAt(position, "exchangeId", "") == exchangeId && routerStringAt(position, "asset", "") == asset {
+			position["amount"] = routerNumberAt(position, "amount", 0) + amount
+			if produced && len(routerDictAt(position, "source")) == 0 {
+				position["source"] = source
+			}
+			return positions
+		}
+	}
+	// the source must be the step that PRODUCED the asset, never one that
+	// consumed it: reversing a step that spent your USDT would sell the wrong
+	// side of the wrong market. Walking the results backwards, the first
+	// producing step seen is the last one that ran, which is exactly the order
+	// an unwind undoes first.
+	var initialSource any = map[string]any{}
+	if produced {
+		initialSource = source
+	}
+	return append(positions, map[string]any{"exchangeId": exchangeId, "asset": asset, "amount": amount, "source": initialSource})
+}
+
+//  ---------------------------------------------------------------------------
+//  IMPURE: Execute
+//  ---------------------------------------------------------------------------
+
+// orderRouterPrecision is the slice of the exchange surface that snaps an amount
+// or a price onto a market's grid. It is not declared on IExchange, but every
+// concrete ccxt exchange embeds Exchange and therefore carries both methods.
+type orderRouterPrecision interface {
+	AmountToPrecision(symbol any, amount any) any
+	PriceToPrecision(symbol any, price any) any
+}
+
+// orderRouterSink collects everything one step wants to write into the shared
+// report. Legs of a hop run concurrently, so nothing writes to the report
+// directly: the caller merges the sinks back in step order, which keeps the
+// report byte-identical however the goroutines happen to be scheduled.
+type orderRouterSink struct {
+	errors     []map[string]any
+	openOrders []map[string]any
+	placed     int
+}
+
+// Execute runs a plan against live exchange instances. THE ONLY IMPURE METHOD.
+// dry_run is the default and options["live"] must be exactly the boolean true
+// for any order to be placed, so a call that looks live but forgot the flag
+// places nothing.
+//
+// options keys:
+//
+//	strategy               string  dry_run, sequential, parallel_within_hop, limit_protected, best_effort or atomic_ish
+//	live                   bool    must be exactly true for any order to be placed
+//	usdRates               dict    currency code to USD price, required when live because the notional cap cannot be enforced without it
+//	allowMarketOrders      bool    permit a market order when the venue cannot do IOC, default false
+//	maxOrders              float   hard order-count cap, required by best_effort
+//	acknowledgeDispersion  bool    required by best_effort, which can leave you holding an unintended asset mix
+//	orderTimeoutMs         float   how long limit_protected leaves an order resting, default 20000
+//	pollIntervalMs         float   how often limit_protected checks a resting order, default 1000
+//	orderParams            dict    extra params merged into every CreateOrder call
+func (this *OrderRouter) Execute(plan map[string]any, venues map[string]IExchange, options map[string]any) (map[string]any, error) {
+	requestedStrategy := routerStringAt(options, "strategy", "dry_run")
+	known := false
+	for i := 0; i < len(orderRouterKnownStrategies); i++ {
+		if orderRouterKnownStrategies[i] == requestedStrategy {
+			known = true
+		}
+	}
+	if !known {
+		return nil, BadRequest("OrderRouter: unknown execution strategy " + requestedStrategy)
+	}
+	live := routerBoolAt(options, "live", false)
+	// THE default. Anything short of an explicit true is a rehearsal.
+	strategy := "dry_run"
+	if live {
+		strategy = requestedStrategy
+	}
+	steps := this.cloneSteps(plan)
+	report, results := this.emptyReport(plan, strategy, requestedStrategy, live, steps)
+	if strategy == "dry_run" {
+		// not one call is made against a venue on this path, not even a read
+		report["wouldPlaceOrders"] = float64(len(steps))
+		return report, nil
+	}
+	if len(venues) == 0 {
+		return nil, ArgumentsRequired("OrderRouter.Execute requires a venues dictionary when live")
+	}
+	// derived from the steps about to be executed, NEVER read off the plan: a plan
+	// that travelled through JSON, a persisted step list or a hand-rebuilt tail of
+	// a halted route can be missing hopCount, and a refusal that a missing key
+	// switches off is not a refusal
+	hopCount := routerHopCountOf(steps)
+	if strategy == "best_effort" {
+		if hopCount > 1 {
+			// best-effort multi-hop is the most reliable way to strand money in
+			// a bridge asset
+			return nil, NotSupported("OrderRouter: best_effort refuses multi-hop routes")
+		}
+		if !routerBoolAt(options, "acknowledgeDispersion", false) {
+			return nil, BadRequest("OrderRouter: best_effort requires acknowledgeDispersion")
+		}
+		if routerNumberAt(options, "maxOrders", 0) <= 0 {
+			return nil, BadRequest("OrderRouter: best_effort requires a positive maxOrders")
+		}
+	}
+	// markets are needed for the safety check and for precision snapping
+	markets := map[string]any{}
+	exchangeIds := routerSortedVenueIds(venues)
+	for i := 0; i < len(exchangeIds); i++ {
+		exchangeId := exchangeIds[i]
+		venue := venues[exchangeId]
+		venueMarkets := routerVenueMarkets(venue)
+		if len(venueMarkets) == 0 {
+			if _, err := venue.LoadMarkets(); err != nil {
+				return nil, err
+			}
+			venueMarkets = routerVenueMarkets(venue)
+		}
+		markets[exchangeId] = venueMarkets
+	}
+	usdRates := routerDictAt(options, "usdRates")
+	safetyOptions := map[string]any{
+		"usdRates":       usdRates,
+		"maxNotionalUsd": routerNumberAt(options, "maxNotionalUsd", this.MaxNotionalUsd),
+		"precisionMode":  routerStringAt(options, "precisionMode", "tick_size"),
+	}
+	violations := this.CheckExecutionPlanSafety(plan, markets, safetyOptions)
+	blockers := ""
+	for i := 0; i < len(violations); i++ {
+		if routerBoolAt(violations[i], "blocking", false) {
+			if blockers != "" {
+				blockers = blockers + ", "
+			}
+			blockers = blockers + routerStringAt(violations[i], "code", "")
+		}
+	}
+	if blockers != "" {
+		// returned as an error, not reported. A refusal a caller can forget to
+		// read is not a refusal.
+		return nil, ExchangeError("OrderRouter: refusing to execute, blocking safety violations: " + blockers)
+	}
+	if strategy == "atomic_ish" {
+		if err := this.assertPrefunded(steps, venues); err != nil {
+			return nil, err
+		}
+	}
+	var err error
+	if strategy == "parallel_within_hop" {
+		err = this.executeParallelWithinHop(report, results, steps, venues, options, usdRates)
+	} else if strategy == "best_effort" {
+		err = this.executeBestEffort(report, results, steps, venues, options, usdRates)
+	} else {
+		// sequential, limit_protected and atomic_ish all walk the plan one order
+		// at a time; they differ in how a single order is placed and in whether
+		// they lean on the previous hop's proceeds
+		err = this.executeSequential(report, results, steps, venues, options, usdRates, strategy)
+	}
+	if err != nil {
+		return nil, err
+	}
+	this.summariseReport(report, results, steps)
+	return report, nil
+}
+
+// routerVenueMarkets copies a venue's loaded markets into the plain
+// symbol -> market dictionary the pure layer speaks.
+func routerVenueMarkets(venue IExchange) map[string]any {
+	markets := map[string]any{}
+	loaded := venue.GetMarkets()
+	if loaded == nil {
+		return markets
+	}
+	loaded.Range(func(key any, value any) bool {
+		markets[ToString(key)] = value
+		return true
+	})
+	return markets
+}
+
+// cloneSteps copies a plan's steps so that execution-time resizing never mutates
+// the caller's plan.
+// routerHopCountOf counts the distinct hops a step list spans, which is the only
+// authority on whether a plan is multi-hop.
+func routerHopCountOf(steps []map[string]any) float64 {
+	// a slice rather than a map, so the count is the same in five languages and
+	// does not depend on hash iteration order
+	seen := make([]float64, 0)
+	for i := 0; i < len(steps); i++ {
+		hopIndex := routerNumberAt(steps[i], "hopIndex", 0)
+		found := false
+		for j := 0; j < len(seen); j++ {
+			if seen[j] == hopIndex {
+				found = true
+				break
+			}
+		}
+		if !found {
+			seen = append(seen, hopIndex)
+		}
+	}
+	return float64(len(seen))
+}
+
+func (this *OrderRouter) cloneSteps(plan map[string]any) []map[string]any {
+	steps := routerListAt(plan, "steps")
+	copies := make([]map[string]any, 0, len(steps))
+	for i := 0; i < len(steps); i++ {
+		step := steps[i]
+		copies = append(copies, map[string]any{
+			"stepIndex":      routerNumberAt(step, "stepIndex", float64(i)),
+			"hopIndex":       routerNumberAt(step, "hopIndex", 0),
+			"legIndex":       routerNumberAt(step, "legIndex", 0),
+			"exchangeId":     routerStringAt(step, "exchangeId", ""),
+			"symbol":         routerStringAt(step, "symbol", ""),
+			"side":           routerStringAt(step, "side", ""),
+			"base":           routerStringAt(step, "base", ""),
+			"quote":          routerStringAt(step, "quote", ""),
+			"amount":         routerNumberAt(step, "amount", 0),
+			"expectedPrice":  routerNumberAt(step, "expectedPrice", 0),
+			"effectivePrice": routerNumberAt(step, "effectivePrice", 0),
+			"limitPrice":     routerNumberAt(step, "limitPrice", 0),
+			"notionalQuote":  routerNumberAt(step, "notionalQuote", 0),
+		})
+	}
+	return copies
+}
+
+// emptyReport builds the report skeleton with every step marked planned, and
+// hands back the results slice the strategies write into. The slice is the same
+// one stored under report["steps"], so an element written here is visible there.
+func (this *OrderRouter) emptyReport(plan map[string]any, strategy string, requestedStrategy string, live bool, steps []map[string]any) (map[string]any, []map[string]any) {
+	results := make([]map[string]any, 0, len(steps))
+	for i := 0; i < len(steps); i++ {
+		step := steps[i]
+		results = append(results, map[string]any{
+			"stepIndex":       routerNumberAt(step, "stepIndex", float64(i)),
+			"hopIndex":        routerNumberAt(step, "hopIndex", 0),
+			"legIndex":        routerNumberAt(step, "legIndex", 0),
+			"exchangeId":      routerStringAt(step, "exchangeId", ""),
+			"symbol":          routerStringAt(step, "symbol", ""),
+			"side":            routerStringAt(step, "side", ""),
+			"status":          "planned",
+			"requestedAmount": routerNumberAt(step, "amount", 0),
+			"filledAmount":    0.0,
+			"averagePrice":    0.0,
+			"expectedPrice":   routerNumberAt(step, "expectedPrice", 0),
+			"cost":            0.0,
+			"inAsset":         "",
+			"inAmount":        0.0,
+			"outAsset":        "",
+			"outAmount":       0.0,
+			"orderId":         "",
+			"errorCode":       "",
+		})
+	}
+	report := map[string]any{
+		"strategy":                strategy,
+		"requestedStrategy":       requestedStrategy,
+		"dryRun":                  strategy == "dry_run",
+		"live":                    live,
+		"from":                    routerStringAt(plan, "from", ""),
+		"to":                      routerStringAt(plan, "to", ""),
+		"slippageBps":             routerNumberAt(plan, "slippageBps", OrderRouterDefaultSlippageBps),
+		"reconcileToleranceRatio": routerNumberAt(plan, "reconcileToleranceRatio", OrderRouterDefaultReconcileTolerance),
+		"stepCount":               float64(len(steps)),
+		"wouldPlaceOrders":        0.0,
+		"ordersPlaced":            0.0,
+		"halted":                  false,
+		"haltReason":              "",
+		"haltStepIndex":           -1.0,
+		"filledIn":                0.0,
+		"filledOut":               0.0,
+		"steps":                   results,
+		"openOrders":              make([]map[string]any, 0),
+		"errors":                  make([]map[string]any, 0),
+		"reconciliations":         make([]map[string]any, 0),
+	}
+	return report, results
+}
+
+// mergeSink folds one step's collected errors, open orders and order count into
+// the shared report. Always called from the goroutine that owns the report.
+func (this *OrderRouter) mergeSink(report map[string]any, sink *orderRouterSink) {
+	for i := 0; i < len(sink.errors); i++ {
+		routerAppendDict(report, "errors", sink.errors[i])
+	}
+	for i := 0; i < len(sink.openOrders); i++ {
+		routerAppendDict(report, "openOrders", sink.openOrders[i])
+	}
+	report["ordersPlaced"] = routerNumberAt(report, "ordersPlaced", 0) + float64(sink.placed)
+}
+
+// routerAppendDict appends one record to a report list, writing the grown slice
+// back so that the report always holds the current backing array.
+func routerAppendDict(report map[string]any, key string, item map[string]any) {
+	list, _ := report[key].([]map[string]any)
+	report[key] = append(list, item)
+}
+
+// executeSequential places one order at a time in plan order, reconciling after
+// each and obeying the halt verdict.
+func (this *OrderRouter) executeSequential(report map[string]any, results []map[string]any, steps []map[string]any, venues map[string]IExchange, options map[string]any, usdRates map[string]any, strategy string) error {
+	for i := 0; i < len(steps); i++ {
+		sink := &orderRouterSink{}
+		result := this.placeStep(steps[i], venues, options, usdRates, strategy, sink)
+		results[i] = result
+		this.mergeSink(report, sink)
+		if routerStringAt(result, "status", "") == "failed" {
+			report["halted"] = true
+			report["haltReason"] = "order_failed"
+			report["haltStepIndex"] = float64(i)
+			this.markRemainingSkipped(results, i+1)
+			return nil
+		}
+		reconciliation, err := this.ReconcileExecutionStep(map[string]any{"steps": steps, "reconcileToleranceRatio": routerNumberAt(report, "reconcileToleranceRatio", OrderRouterDefaultReconcileTolerance)}, i, routerNumberAt(result, "outAmount", 0))
+		if err != nil {
+			return err
+		}
+		routerAppendDict(report, "reconciliations", reconciliation)
+		if strategy != "atomic_ish" {
+			// atomic_ish is pre-funded end to end, so a hop's shortfall does not
+			// shrink the next hop's order — the money for it was already there
+			// before the first order went out
+			this.applyResize(steps, reconciliation)
+		}
+		if routerStringAt(reconciliation, "verdict", "") == "halt" {
+			report["halted"] = true
+			report["haltReason"] = routerStringAt(reconciliation, "reason", "")
+			report["haltStepIndex"] = float64(i)
+			this.markRemainingSkipped(results, i+1)
+			return nil
+		}
+	}
+	return nil
+}
+
+// executeParallelWithinHop runs the legs of one hop concurrently and the hops
+// strictly in order.
+func (this *OrderRouter) executeParallelWithinHop(report map[string]any, results []map[string]any, steps []map[string]any, venues map[string]IExchange, options map[string]any, usdRates map[string]any) error {
+	cursor := 0
+	for cursor < len(steps) {
+		hopIndex := routerNumberAt(steps[cursor], "hopIndex", 0)
+		end := cursor
+		for end < len(steps) && routerNumberAt(steps[end], "hopIndex", 0) == hopIndex {
+			end = end + 1
+		}
+		sinks := make([]*orderRouterSink, end-cursor)
+		var waitGroup sync.WaitGroup
+		for i := cursor; i < end; i++ {
+			// placeStep contains its own failures and never returns an error, so
+			// "wait for all" means the same thing in all five languages. Without
+			// that containment JavaScript rejects fast while sibling orders are
+			// still live and Go's WaitGroup waits for every one — the same source
+			// abandoning in-flight orders differently per language.
+			sink := &orderRouterSink{}
+			sinks[i-cursor] = sink
+			waitGroup.Add(1)
+			go func(index int, sink *orderRouterSink) {
+				defer waitGroup.Done()
+				results[index] = this.placeStep(steps[index], venues, options, usdRates, "parallel_within_hop", sink)
+			}(i, sink)
+		}
+		waitGroup.Wait()
+		for i := 0; i < len(sinks); i++ {
+			this.mergeSink(report, sinks[i])
+		}
+		for i := cursor; i < end; i++ {
+			result := results[i]
+			if routerStringAt(result, "status", "") == "failed" {
+				report["halted"] = true
+				report["haltReason"] = "order_failed"
+				report["haltStepIndex"] = float64(i)
+				this.markRemainingSkipped(results, end)
+				return nil
+			}
+			reconciliation, err := this.ReconcileExecutionStep(map[string]any{"steps": steps, "reconcileToleranceRatio": routerNumberAt(report, "reconcileToleranceRatio", OrderRouterDefaultReconcileTolerance)}, i, routerNumberAt(result, "outAmount", 0))
+			if err != nil {
+				return err
+			}
+			routerAppendDict(report, "reconciliations", reconciliation)
+			this.applyResize(steps, reconciliation)
+			if routerStringAt(reconciliation, "verdict", "") == "halt" {
+				report["halted"] = true
+				report["haltReason"] = routerStringAt(reconciliation, "reason", "")
+				report["haltStepIndex"] = float64(i)
+				this.markRemainingSkipped(results, end)
+				return nil
+			}
+		}
+		cursor = end
+	}
+	return nil
+}
+
+// executeBestEffort places what it can and never halts, on a single hop only, up
+// to maxOrders.
+func (this *OrderRouter) executeBestEffort(report map[string]any, results []map[string]any, steps []map[string]any, venues map[string]IExchange, options map[string]any, usdRates map[string]any) error {
+	maxOrders := routerNumberAt(options, "maxOrders", 0)
+	placed := 0
+	for i := 0; i < len(steps); i++ {
+		if float64(placed) >= maxOrders {
+			results[i]["status"] = "skipped"
+			results[i]["errorCode"] = "max_orders_reached"
+			continue
+		}
+		sink := &orderRouterSink{}
+		results[i] = this.placeStep(steps[i], venues, options, usdRates, "best_effort", sink)
+		this.mergeSink(report, sink)
+		placed = placed + 1
+		// no reconciliation and no halt: that is the whole point of the strategy,
+		// and why it is refused on anything but a single hop
+	}
+	return nil
+}
+
+// placeStep places one order for one step and NEVER returns an error and never
+// propagates a panic, so that a sibling leg's failure cannot abandon an
+// in-flight order.
+func (this *OrderRouter) placeStep(step map[string]any, venues map[string]IExchange, options map[string]any, usdRates map[string]any, strategy string, sink *orderRouterSink) (result map[string]any) {
+	stepIndex := routerNumberAt(step, "stepIndex", 0)
+	exchangeId := routerStringAt(step, "exchangeId", "")
+	symbol := routerStringAt(step, "symbol", "")
+	side := routerStringAt(step, "side", "")
+	result = map[string]any{
+		"stepIndex":       stepIndex,
+		"hopIndex":        routerNumberAt(step, "hopIndex", 0),
+		"legIndex":        routerNumberAt(step, "legIndex", 0),
+		"exchangeId":      exchangeId,
+		"symbol":          symbol,
+		"side":            side,
+		"status":          "failed",
+		"requestedAmount": routerNumberAt(step, "amount", 0),
+		"filledAmount":    0.0,
+		"averagePrice":    0.0,
+		"expectedPrice":   routerNumberAt(step, "expectedPrice", 0),
+		"cost":            0.0,
+		"inAsset":         "",
+		"inAmount":        0.0,
+		"outAsset":        "",
+		"outAmount":       0.0,
+		"orderId":         "",
+		"errorCode":       "",
+	}
+	// containment, part one. The ccxt Go base signals failure by panicking —
+	// AmountToPrecision does — and a leg that panics must not take its siblings
+	// with it.
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			code := routerErrorCode(routerRecoveredError(recovered))
+			result["status"] = "failed"
+			result["errorCode"] = code
+			sink.errors = append(sink.errors, routerErrorRecord(stepIndex, exchangeId, symbol, code))
+			// CreateOrder may already have succeeded: every path between it and
+			// the final read leaves a real order on a real venue, and reporting
+			// the id is the difference between an operator who can go cancel it
+			// and one who never learns it exists.
+			routerRecordOpenOrder(sink, exchangeId, symbol, routerStringAt(result, "orderId", ""), "outcome_unknown")
+		}
+	}()
+	// containment, part two: every ordinary failure comes back as an error and
+	// is turned into the same failed result.
+	if err := this.placeStepInner(result, step, venues, options, usdRates, strategy, sink); err != nil {
+		code := routerErrorCode(err)
+		result["status"] = "failed"
+		result["errorCode"] = code
+		sink.errors = append(sink.errors, routerErrorRecord(stepIndex, exchangeId, symbol, code))
+		routerRecordOpenOrder(sink, exchangeId, symbol, routerStringAt(result, "orderId", ""), "outcome_unknown")
+	}
+	return result
+}
+
+// placeStepInner does the work of one order and fills in result on success.
+func (this *OrderRouter) placeStepInner(result map[string]any, step map[string]any, venues map[string]IExchange, options map[string]any, usdRates map[string]any, strategy string, sink *orderRouterSink) error {
+	exchangeId := routerStringAt(step, "exchangeId", "")
+	symbol := routerStringAt(step, "symbol", "")
+	side := routerStringAt(step, "side", "")
+	venue, present := venues[exchangeId]
+	if !present || venue == nil {
+		return NewError("venue_missing", "OrderRouter: no venue instance for "+exchangeId)
+	}
+	snapper, ok := venue.(orderRouterPrecision)
+	if !ok {
+		return NotSupported("OrderRouter: " + exchangeId + " cannot snap an amount onto its market precision")
+	}
+	amount, amountOk := routerParseFloat(ToString(snapper.AmountToPrecision(symbol, routerNumberAt(step, "amount", 0))))
+	price, priceOk := routerParseFloat(ToString(snapper.PriceToPrecision(symbol, routerNumberAt(step, "limitPrice", 0))))
+	if !amountOk || !priceOk || !(amount > 0) || !(price > 0) {
+		return NewError("rounded_to_zero", "OrderRouter: the snapped amount or price is not positive")
+	}
+	// CLAUDE.md: compute the notional before EVERY CreateOrder. The plan-level
+	// check already ran, but the plan can have been resized by a reconciliation
+	// since, and the snapped price is not the one that was checked.
+	if err := this.assertUnderCap(step, amount, price, usdRates, options); err != nil {
+		return err
+	}
+	orderParams := map[string]any{}
+	extra := routerDictAt(options, "orderParams")
+	for key, value := range extra {
+		orderParams[key] = value
+	}
+	var order Order
+	var err error
+	if strategy == "limit_protected" {
+		order, err = this.placeProtectedLimit(venue, step, symbol, side, amount, price, orderParams, options, sink, result)
+	} else {
+		order, err = this.placeImmediateOrder(venue, symbol, side, amount, price, orderParams, options, result)
+	}
+	if err != nil {
+		return err
+	}
+	result["orderId"] = routerDerefString(order.Id)
+	filled := routerDerefFloat(order.Filled)
+	average := routerDerefFloat(order.Average)
+	if average <= 0 {
+		average = routerDerefFloat(order.Price)
+	}
+	if average <= 0 {
+		average = price
+	}
+	cost := routerDerefFloat(order.Cost)
+	if cost <= 0 {
+		cost = filled * average
+	}
+	result["filledAmount"] = filled
+	result["averagePrice"] = average
+	result["cost"] = cost
+	if side == "buy" {
+		result["inAsset"] = routerStringAt(step, "quote", "")
+		result["inAmount"] = cost
+		result["outAsset"] = routerStringAt(step, "base", "")
+		result["outAmount"] = filled
+	} else {
+		result["inAsset"] = routerStringAt(step, "base", "")
+		result["inAmount"] = filled
+		result["outAsset"] = routerStringAt(step, "quote", "")
+		result["outAmount"] = cost
+	}
+	if filled <= 0 {
+		result["status"] = "unfilled"
+	} else if filled >= amount*(1-OrderRouterTolerance) {
+		result["status"] = "filled"
+	} else {
+		result["status"] = "partial"
+	}
+	if routerDerefString(order.Status) == "open" {
+		// an order the venue explicitly calls open is RESTING. It should not be,
+		// on either path: placeProtectedLimit only returns a closed or canceled
+		// order, and placeImmediateOrder asked for immediate-or-cancel. A venue
+		// that silently dropped the timeInForce param leaves a plain limit order
+		// sitting there, and "unfilled" on its own reads like nothing happened.
+		routerRecordOpenOrder(sink, exchangeId, symbol, routerStringAt(result, "orderId", ""), "still_open")
+	}
+	sink.placed = sink.placed + 1
+	return nil
+}
+
+// routerErrorCode names an error by its ccxt class, which is the one label all
+// five languages agree on.
+func routerErrorCode(err error) string {
+	if err == nil {
+		return "unknown_error"
+	}
+	var ccxtError *Error
+	if errors.As(err, &ccxtError) {
+		code := string(ccxtError.Type)
+		if code != "" {
+			return code
+		}
+	}
+	return "unknown_error"
+}
+
+// routerRecoveredError turns whatever a panic carried into an error, preserving
+// a ccxt error class when the panic value has one.
+func routerRecoveredError(recovered any) error {
+	if err, ok := recovered.(error); ok {
+		return err
+	}
+	if text, ok := recovered.(string); ok {
+		if IsError(text) {
+			return CreateReturnError(text)
+		}
+		return NewError("unknown_error", text)
+	}
+	return NewError("unknown_error", ToString(recovered))
+}
+
+// routerErrorRecord builds one report error entry.
+// routerRecordOpenOrder appends one possibly-live order to a step's sink,
+// ignoring a blank id and never recording the same id twice.
+func routerRecordOpenOrder(sink *orderRouterSink, exchangeId string, symbol string, orderId string, reason string) {
+	if orderId == "" {
+		// nothing to point an operator at
+		return
+	}
+	for i := 0; i < len(sink.openOrders); i++ {
+		if routerStringAt(sink.openOrders[i], "orderId", "") == orderId && routerStringAt(sink.openOrders[i], "exchangeId", "") == exchangeId {
+			return
+		}
+	}
+	sink.openOrders = append(sink.openOrders, map[string]any{"exchangeId": exchangeId, "symbol": symbol, "orderId": orderId, "reason": reason})
+}
+
+func routerErrorRecord(stepIndex float64, exchangeId string, symbol string, code string) map[string]any {
+	return map[string]any{"stepIndex": stepIndex, "exchangeId": exchangeId, "symbol": symbol, "code": code}
+}
+
+// routerDerefFloat reads an optional float64 as 0 when absent — the class emits
+// no nulls, and 0 is its "unknown number".
+func routerDerefFloat(value *float64) float64 {
+	if value == nil {
+		return 0
+	}
+	return *value
+}
+
+// routerDerefString reads an optional string as "" when absent.
+func routerDerefString(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+// placeImmediateOrder places an immediate-or-cancel limit order, falling back to
+// a market order only when the venue cannot do IOC and the caller explicitly
+// allowed it.
+func (this *OrderRouter) placeImmediateOrder(venue IExchange, symbol string, side string, amount float64, price float64, orderParams map[string]any, options map[string]any, result map[string]any) (Order, error) {
+	if this.venueSupportsIoc(venue) {
+		orderParams["timeInForce"] = "IOC"
+		iocOrder, err := venue.CreateOrder(symbol, "limit", side, amount, WithCreateOrderPrice(price), WithCreateOrderParams(orderParams))
+		result["orderId"] = routerDerefString(iocOrder.Id)
+		return iocOrder, err
+	}
+	if !routerBoolAt(options, "allowMarketOrders", false) {
+		// a market order is an unbounded price, and switching to one on a
+		// caller's behalf is exactly the decision they did not delegate
+		return Order{}, NotSupported("OrderRouter: venue cannot do IOC and allowMarketOrders was not set")
+	}
+	marketOrder, err := venue.CreateOrder(symbol, "market", side, amount, WithCreateOrderParams(orderParams))
+	result["orderId"] = routerDerefString(marketOrder.Id)
+	return marketOrder, err
+}
+
+// placeProtectedLimit rests a limit order, then cancels it on timeout and ALWAYS
+// re-reads it, because a cancel and a fill can cross. The order as last observed
+// is the authoritative fill.
+func (this *OrderRouter) placeProtectedLimit(venue IExchange, step map[string]any, symbol string, side string, amount float64, price float64, orderParams map[string]any, options map[string]any, sink *orderRouterSink, result map[string]any) (Order, error) {
+	timeoutMs := routerNumberAt(options, "orderTimeoutMs", OrderRouterDefaultOrderTimeoutMs)
+	pollIntervalMs := routerNumberAt(options, "pollIntervalMs", OrderRouterDefaultPollIntervalMs)
+	order, err := venue.CreateOrder(symbol, "limit", side, amount, WithCreateOrderPrice(price), WithCreateOrderParams(orderParams))
+	if err != nil {
+		return Order{}, err
+	}
+	orderId := routerDerefString(order.Id)
+	// before the first poll, the first sleep and the first thing that can go
+	// wrong: from here on the caller can always name what is resting
+	result["orderId"] = orderId
+	waited := 0.0
+	for waited < timeoutMs {
+		status := routerDerefString(order.Status)
+		if status == "closed" || status == "canceled" {
+			return order, nil
+		}
+		time.Sleep(time.Duration(pollIntervalMs) * time.Millisecond)
+		waited = waited + pollIntervalMs
+		order, err = venue.FetchOrder(orderId, WithFetchOrderSymbol(symbol))
+		if err != nil {
+			return Order{}, err
+		}
+	}
+	finalStatus := routerDerefString(order.Status)
+	if finalStatus == "closed" || finalStatus == "canceled" {
+		// the venue ended it on the last poll — an expiry, a self-trade
+		// prevention, a post-only rejection of the remainder. Cancelling an order
+		// the venue already closed errors, and the partial fill this order carries
+		// is real: dropping it would hide a live position from the report AND from
+		// the unwind plan built out of it.
+		return order, nil
+	}
+	if _, err := venue.CancelOrder(orderId, WithCancelOrderSymbol(symbol)); err != nil {
+		// the order may still be live. Reporting a fill we did not observe would
+		// be a lie, and continuing to the next hop on top of an unknown position
+		// is worse.
+		routerRecordOpenOrder(sink, routerStringAt(step, "exchangeId", ""), symbol, orderId, "cancel_failed")
+		return Order{}, ExchangeError("OrderRouter: cancelOrder failed and an order is left OPEN, refusing to proceed")
+	}
+	// ALWAYS re-read after a cancel: the cancel and the fill can cross, and the
+	// observed order is the only authority on what actually happened
+	return venue.FetchOrder(orderId, WithFetchOrderSymbol(symbol))
+}
+
+// venueSupportsIoc reports whether a venue is known NOT to support
+// immediate-or-cancel.
+func (this *OrderRouter) venueSupportsIoc(venue IExchange) bool {
+	// Defaults to TRUE on purpose. An unknown answer here must not fall through
+	// to a market order; a rejected IOC is a loud, cheap failure and an
+	// unintended market order is a silent, expensive one.
+	features := venue.GetFeatures()
+	spot := routerDictAt(features, "spot")
+	createOrder := routerDictAt(spot, "createOrder")
+	// EVERY real ccxt exchange declares this as a dictionary of booleans —
+	// {"IOC": true, "FOK": true, "GTC": true, ...} — and not one declares it as a
+	// list. Reading it as a list only ever answered "empty", which is the same
+	// answer as "the venue said nothing", so the check always said yes and the
+	// market-order path below was unreachable.
+	timeInForceFlags := routerDictAt(createOrder, "timeInForce")
+	if len(timeInForceFlags) > 0 {
+		// a venue that enumerates its time-in-force values and leaves IOC out has
+		// said no, exactly as one that says IOC: false has
+		return routerBoolAt(timeInForceFlags, "IOC", false)
+	}
+	// a list is still honoured, for a caller-built stub venue
+	timeInForce := routerListAt(createOrder, "timeInForce")
+	if len(timeInForce) == 0 {
+		return true
+	}
+	for i := 0; i < len(timeInForce); i++ {
+		if text, ok := timeInForce[i].(string); ok && text == "IOC" {
+			return true
+		}
+	}
+	return false
+}
+
+// assertUnderCap refuses unless a single order's USD notional is known and
+// within the per-trade cap.
+func (this *OrderRouter) assertUnderCap(step map[string]any, amount float64, price float64, usdRates map[string]any, options map[string]any) error {
+	notionalCap := routerNumberAt(options, "maxNotionalUsd", this.MaxNotionalUsd)
+	if notionalCap > this.MaxNotionalUsd {
+		notionalCap = this.MaxNotionalUsd
+	}
+	if notionalCap > OrderRouterMaxNotionalUsd {
+		// same ceiling as CheckExecutionPlanSafety, re-imposed at the last moment
+		// before an order goes out
+		notionalCap = OrderRouterMaxNotionalUsd
+	}
+	probe := map[string]any{
+		"base":   routerStringAt(step, "base", ""),
+		"quote":  routerStringAt(step, "quote", ""),
+		"amount": amount,
+	}
+	usdValue := this.notionalUsd(probe, amount*price, usdRates)
+	if usdValue <= 0 {
+		return ExchangeError("OrderRouter: refusing to place an order that cannot be valued in USD")
+	}
+	if usdValue > notionalCap*(1+OrderRouterTolerance) {
+		return ExchangeError("OrderRouter: refusing to place an order above the per-trade USD notional cap")
+	}
+	return nil
+}
+
+// assertPrefunded verifies every step's input is already sitting on its venue,
+// which is what atomic_ish actually requires.
+func (this *OrderRouter) assertPrefunded(steps []map[string]any, venues map[string]IExchange) error {
+	// built as a slice, not a map, so the first shortfall reported is the same
+	// one in all five languages
+	required := make([]map[string]any, 0)
+	for i := 0; i < len(steps); i++ {
+		step := steps[i]
+		exchangeId := routerStringAt(step, "exchangeId", "")
+		amount := routerNumberAt(step, "amount", 0)
+		asset := ""
+		needed := 0.0
+		if routerStringAt(step, "side", "") == "buy" {
+			asset = routerStringAt(step, "quote", "")
+			needed = amount * routerNumberAt(step, "limitPrice", 0)
+		} else {
+			asset = routerStringAt(step, "base", "")
+			needed = amount
+		}
+		found := false
+		for j := 0; j < len(required); j++ {
+			if routerStringAt(required[j], "exchangeId", "") == exchangeId && routerStringAt(required[j], "asset", "") == asset {
+				required[j]["amount"] = routerNumberAt(required[j], "amount", 0) + needed
+				found = true
+				break
+			}
+		}
+		if !found {
+			required = append(required, map[string]any{"exchangeId": exchangeId, "asset": asset, "amount": needed})
+		}
+	}
+	balances := map[string]Balances{}
+	for i := 0; i < len(required); i++ {
+		exchangeId := routerStringAt(required[i], "exchangeId", "")
+		if _, cached := balances[exchangeId]; !cached {
+			venue, present := venues[exchangeId]
+			if !present || venue == nil {
+				return ArgumentsRequired("OrderRouter: atomic_ish needs a venue instance for " + exchangeId)
+			}
+			balance, err := venue.FetchBalance()
+			if err != nil {
+				return err
+			}
+			balances[exchangeId] = balance
+		}
+		free := balances[exchangeId].Free
+		asset := routerStringAt(required[i], "asset", "")
+		available := 0.0
+		if free != nil && free[asset] != nil {
+			available = *free[asset]
+		}
+		if available < routerNumberAt(required[i], "amount", 0) {
+			// most routes fail this, and that is the correct outcome: atomic_ish
+			// names its own hedge, because there is no cross-venue atomicity and
+			// there cannot be
+			return InsufficientFunds("OrderRouter: atomic_ish requires the whole route pre-funded, and " + exchangeId + " is short of " + asset)
+		}
+	}
+	return nil
+}
+
+// applyResize writes a reconciliation's downstream resize back into the working
+// steps.
+func (this *OrderRouter) applyResize(steps []map[string]any, reconciliation map[string]any) {
+	resized := routerListAt(reconciliation, "resizedSteps")
+	for i := 0; i < len(resized); i++ {
+		entry := resized[i]
+		stepIndex := routerNumberAt(entry, "stepIndex", -1)
+		for j := 0; j < len(steps); j++ {
+			if routerNumberAt(steps[j], "stepIndex", -1) == stepIndex {
+				steps[j]["amount"] = routerNumberAt(entry, "amount", 0)
+				steps[j]["notionalQuote"] = routerNumberAt(entry, "notionalQuote", 0)
+				break
+			}
+		}
+	}
+}
+
+// markRemainingSkipped marks every step from an index onwards as skipped after a
+// halt.
+func (this *OrderRouter) markRemainingSkipped(results []map[string]any, start int) {
+	for i := start; i < len(results); i++ {
+		if routerStringAt(results[i], "status", "") == "planned" {
+			results[i]["status"] = "skipped"
+		}
+	}
+}
+
+// summariseReport totals what the first hop spent and what the last hop produced.
+func (this *OrderRouter) summariseReport(report map[string]any, results []map[string]any, steps []map[string]any) {
+	lastHop := 0.0
+	for i := 0; i < len(steps); i++ {
+		hopIndex := routerNumberAt(steps[i], "hopIndex", 0)
+		if hopIndex > lastHop {
+			lastHop = hopIndex
+		}
+	}
+	filledIn := 0.0
+	filledOut := 0.0
+	for i := 0; i < len(results); i++ {
+		hopIndex := routerNumberAt(results[i], "hopIndex", 0)
+		if hopIndex == 0 {
+			filledIn = filledIn + routerNumberAt(results[i], "inAmount", 0)
+		}
+		if hopIndex == lastHop {
+			filledOut = filledOut + routerNumberAt(results[i], "outAmount", 0)
+		}
+	}
+	report["filledIn"] = filledIn
+	report["filledOut"] = filledOut
+}

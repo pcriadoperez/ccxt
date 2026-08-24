@@ -49,6 +49,29 @@ test('GET /health returns ok', async () => {
     await app.close();
 });
 
+// /version is what a deploy asserts against, so the two properties that make it usable for that are
+// worth pinning: it answers at all, and it is NOT public. A public /version would hand an attacker
+// the exact revision to go read for a vulnerability — the same reason /exchanges/status is behind
+// the key. The commit itself is 'unknown' here because nothing wrote dist/build-info.json for a
+// tsx run from src/; that fallback not throwing is precisely what keeps `npm run dev` working.
+test('GET /version requires a key and reports build provenance', async () => {
+    const { app } = await buildTestServer();
+
+    const anonymous = await app.inject({ method: 'GET', url: '/version' });
+    assert.equal(anonymous.statusCode, 401);
+
+    const response = await app.inject({ method: 'GET', url: '/version', headers: AUTH });
+    assert.equal(response.statusCode, 200);
+    const body = response.json();
+    assert.equal(typeof body.commit, 'string');
+    assert.ok(body.commit.length > 0);
+    assert.equal(typeof body.version, 'string');
+    assert.equal(typeof body.uptimeSec, 'number');
+    // Parses as a date, so a deploy check can compare it rather than guess at the format.
+    assert.ok(!Number.isNaN(Date.parse(body.startedAt)));
+    await app.close();
+});
+
 test('GET /symbols reflects the cache contents', async () => {
     const { app, cache } = await buildTestServer();
     cache.setBook(book({ symbol: 'BTC/USDT' }));

@@ -15,6 +15,7 @@ import { extractApiKey, isPublicPath, makeAuthHook, resolveKey } from './auth.js
 import { ApiKeyStore } from './keyStore.js';
 import { buildHttpHistogram, buildMetricsRegistry } from '../metrics.js';
 import { LoopRegistry } from '../cache/loopRegistry.js';
+import { buildInfo } from '../buildInfo.js';
 
 // Above this many bytes still queued for the peer, a stream frame is dropped rather than added to
 // the backlog. A router quote is only useful while it is current, so the newest frame the client
@@ -324,6 +325,29 @@ export async function buildServer (
     });
 
     app.get('/health', async () => ({ status: 'ok', uptimeSec: process.uptime() }));
+
+    // Which commit is actually serving. Authenticated, like everything except /health: the venue
+    // list is protected for reconnaissance reasons and the deployed revision is the same class of
+    // fact — it tells an attacker exactly which published diff to read for a vulnerability.
+    //
+    // This is the endpoint a deploy asserts against. /health cannot do that job: a deploy that
+    // never restarted the unit, or that unpacked into a release dir the symlink never pointed at,
+    // leaves the OLD process answering /health with a cheerful 200. `commit` is the only field
+    // that distinguishes the two, and uptimeSec alongside it distinguishes a genuine restart from
+    // a redeploy of the same SHA.
+    app.get('/version', async () => {
+        const info = buildInfo();
+        const uptimeSec = process.uptime();
+        return {
+            version: info.version,
+            commit: info.commit,
+            commitShort: info.commitShort,
+            builtAt: info.builtAt,
+            builtBy: info.builtBy,
+            startedAt: new Date(Date.now() - uptimeSec * 1000).toISOString(),
+            uptimeSec,
+        };
+    });
 
     // Authenticated like every other non-health route: it exposes the venue list, traffic volume
     // and internal health, which is exactly the reconnaissance an attacker wants. Scrapers must
