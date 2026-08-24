@@ -2,7 +2,7 @@ import Fastify from 'fastify';
 import fastifyStatic from '@fastify/static';
 import formbody from '@fastify/formbody';
 import rateLimit from '@fastify/rate-limit';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
 import type { Logger } from 'pino';
@@ -44,8 +44,44 @@ function readContent (name: string): string {
     }
 }
 
+// A freshly-minted key is shown exactly once, and getting it to that render is the one moment the
+// plaintext exists outside the caller's clipboard. It must not travel in a URL: a query string is
+// written to the nginx access log, kept in browser history, and sent to any third party the page
+// links to via the Referer header — this page links to github.com, so that is not hypothetical.
+// (Measured: the first version of this leaked a live key into /var/log/nginx/access.log.)
+//
+// It must not go in the database either. The entire design stores keys only as digests; writing the
+// plaintext to a sessions row, even briefly, would be the one place a leak of that table yielded a
+// usable credential.
+//
+// So: the plaintext is held in memory in this process, behind a single-use 128-bit id bound to the
+// session, for two minutes. The id may appear in a log; it is worthless after one read.
+interface Reveal { key: string; sessionToken: string; expires: number }
+
 export async function buildWebServer (opts: WebOptions) {
     const { pool, logger, base, keysFile, csrfSecret, secureCookies } = opts;
+    const reveals = new Map<string, Reveal>();
+    const REVEAL_TTL_MS = 120_000;
+
+    const stashReveal = (key: string, sessionToken: string): string => {
+        const id = randomBytes(16).toString('base64url');
+        reveals.set(id, { key, sessionToken, expires: Date.now() + REVEAL_TTL_MS });
+        return id;
+    };
+    const takeReveal = (id: string | undefined, sessionToken: string | undefined): string | undefined => {
+        if (id === undefined || sessionToken === undefined) return undefined;
+        const entry = reveals.get(id);
+        reveals.delete(id);                       // single use, whatever the outcome
+        if (entry === undefined || entry.expires < Date.now()) return undefined;
+        // Bound to the session that created it, so a leaked id is useless to anyone else.
+        return entry.sessionToken === sessionToken ? entry.key : undefined;
+    };
+    // Unread reveals would otherwise accumulate for the life of the process.
+    const sweeper = setInterval(() => {
+        const now = Date.now();
+        for (const [id, entry] of reveals) if (entry.expires < now) reveals.delete(id);
+    }, 60_000);
+    sweeper.unref();
     const app = Fastify({ loggerInstance: logger, trustProxy: true });
 
     await app.register(formbody);
@@ -154,7 +190,7 @@ export async function buildWebServer (opts: WebOptions) {
             const sessionToken = await createSession(pool, userId, request.ip, request.headers['user-agent']);
             setSessionCookie(reply, sessionToken, secureCookies);
             logger.info({ email, userId }, 'signup');
-            void reply.redirect(`${base}/dashboard?new=${encodeURIComponent(plaintext)}`);
+            void reply.redirect(`${base}/dashboard?reveal=${stashReveal(plaintext, sessionToken)}`);
             return reply;
         },
     );
@@ -201,7 +237,7 @@ export async function buildWebServer (opts: WebOptions) {
 
     // ---- dashboard ------------------------------------------------------------
 
-    app.get<{ Querystring: { new?: string } }>(`${base}/dashboard`, async (request, reply) => {
+    app.get<{ Querystring: { reveal?: string } }>(`${base}/dashboard`, async (request, reply) => {
         const { token, user } = await sessionOf(request as never);
         if (user === undefined) { void reply.redirect(`${base}/login`); return reply; }
         void reply.type('text/html');
@@ -210,7 +246,7 @@ export async function buildWebServer (opts: WebOptions) {
             keys: await keysFor(pool, user.id),
             buckets: await bucketsFor(pool, user.id),
             recent: await recentRoutes(pool, user.id),
-            newKey: request.query.new,
+            newKey: takeReveal(request.query.reveal, token),
         });
     });
 
@@ -221,7 +257,7 @@ export async function buildWebServer (opts: WebOptions) {
         if (bad !== undefined) { void reply.redirect(`${base}/dashboard`); return reply; }
         const name = (request.body.name ?? '').trim().slice(0, 40) || 'default';
         const plaintext = await mintKey(pool, keysFile, user.id, name, logger);
-        void reply.redirect(`${base}/dashboard?new=${encodeURIComponent(plaintext)}`);
+        void reply.redirect(`${base}/dashboard?reveal=${stashReveal(plaintext, token!)}`);
         return reply;
     });
 
@@ -323,6 +359,7 @@ export async function buildWebServer (opts: WebOptions) {
     });
 
     app.get(`${base}/health`, async () => ({ status: 'ok' }));
+    app.addHook('onClose', async () => { clearInterval(sweeper); });
     return app;
 }
 
