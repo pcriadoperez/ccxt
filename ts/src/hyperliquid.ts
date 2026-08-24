@@ -52,6 +52,7 @@ export default class hyperliquid extends Exchange {
                 'createReduceOnlyOrder': true,
                 'createStopOrder': true,
                 'createTriggerOrder': true,
+                'createTwapOrder': true,
                 'editOrder': true,
                 'editOrders': true,
                 'fetchAccounts': false,
@@ -284,6 +285,7 @@ export default class hyperliquid extends Exchange {
                         'marketBuyRequiresPrice': false,
                         'selfTradePrevention': false,
                         'iceberg': false,
+                        'twap': true,
                     },
                     'createOrders': {
                         'max': 1000,
@@ -2144,7 +2146,7 @@ export default class hyperliquid extends Exchange {
         await this.initializeClient ();
         const market = this.market (symbol);
         const nonce = this.milliseconds ();
-        const isBuy = (side === 'BUY');
+        const isBuy = ((side as string).toUpperCase () === 'BUY');
         let vaultAddress: Str = undefined;
         const randomize = this.safeBool (params, 'randomize', false);
         params = this.omit (params, 'randomize');

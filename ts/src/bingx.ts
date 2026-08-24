@@ -54,6 +54,7 @@ export default class bingx extends Exchange {
                 'createTrailingAmountOrder': true,
                 'createTrailingPercentOrder': true,
                 'createTriggerOrder': true,
+                'createTwapOrder': true,
                 'editOrder': true,
                 'fetchAllGreeks': false,
                 'fetchBalance': true,
@@ -766,6 +767,9 @@ export default class bingx extends Exchange {
                 'swap': {
                     'linear': {
                         'extends': 'defaultForLinear',
+                        'createOrder': {
+                            'twap': true,
+                        },
                     },
                     'inverse': {
                         'extends': 'defaultForInverse',
@@ -3175,6 +3179,9 @@ export default class bingx extends Exchange {
             }
         } else {
             if (isTwapOrder) {
+                if (triggerPrice === undefined) {
+                    throw new ArgumentsRequired (this.id + ' createOrder() twap orders require a triggerPrice parameter, the price limit the strategy must not trade through');
+                }
                 const twapRequest: Dict = {
                     'symbol': request['symbol'],
                     'side': request['side'],
@@ -3358,13 +3365,14 @@ export default class bingx extends Exchange {
         const test = this.safeBool (params, 'test', false);
         params = this.omit (params, 'test');
         const request = this.createOrderRequest (symbol, type, side, amount, price, params);
+        const uppercaseType = (type as string).toUpperCase ();
         let response: Dict | string;
         if (market['swap']) {
             if (test) {
                 response = await this.swapV2PrivatePostTradeOrderTest (request);
             } else if (market['inverse']) {
                 response = await this.cswapV1PrivatePostTradeOrder (request);
-            } else if (type === 'twap') {
+            } else if (uppercaseType === 'TWAP') {
                 response = await this.swapV1PrivatePostTwapOrder (request);
             } else {
                 response = await this.swapV2PrivatePostTradeOrder (request);
@@ -3468,6 +3476,70 @@ export default class bingx extends Exchange {
             result['takeProfit'] = this.parseJson (takeProfit);
         }
         return this.parseOrder (result, market);
+    }
+
+    /**
+     * @method
+     * @name bingx#createTwapOrder
+     * @description create a TWAP order, bingx works the parent order on its own strategy engine
+     * @see https://bingx-api.github.io/docs/#/en-us/swapV2/trade-api.html
+     * @param {string} symbol unified symbol of the market to create an order in, linear swap markets only
+     * @param {string} side 'buy' or 'sell'
+     * @param {float} amount how much of currency you want to trade in units of base currency
+     * @param {int} duration the window the slices are spread over, in milliseconds, bingx caps a strategy at 24 hours
+     * @param {object} [params] extra parameters specific to the exchange API endpoint
+     * @param {float} params.price the price limit the strategy must not trade through, bingx requires it
+     * @param {int} [params.slices] how many slices to spread the duration over, default 20, ignored when interval is given
+     * @param {int} [params.interval] seconds between slices, overrides slices
+     * @param {float} [params.amountPerOrder] the size cap of a single slice, derived from amount and the slice count when omitted
+     * @param {string} [params.priceType] "constant" or "percentage", how priceVariance is applied to the best offer
+     * @param {float} [params.priceVariance] the offset applied to the best offer when pricing a slice
+     * @returns {object} an [order structure]{@link https://docs.ccxt.com/#/?id=order-structure}
+     */
+    override async createTwapOrder (symbol: string, side: OrderSide, amount: number, duration: number, params = {}): Promise<Order> {
+        if (this.markets === undefined) {
+            await this.loadMarkets ();
+        }
+        const market = this.market (symbol);
+        if (!market['swap'] || market['inverse']) {
+            throw new NotSupported (this.id + ' createTwapOrder() supports linear swap markets only');
+        }
+        const durationSeconds = this.parseToInt (duration / 1000);
+        let slices = this.safeInteger (params, 'slices', 20);
+        let interval = this.safeInteger (params, 'interval');
+        params = this.omit (params, [ 'slices', 'interval' ]);
+        if (interval === undefined) {
+            if (slices < 1) {
+                slices = 1;
+            }
+            interval = this.parseToInt (durationSeconds / slices);
+        }
+        if (interval < 1) {
+            interval = 1; // bingx counts the gap between slices in seconds
+        }
+        slices = this.parseToInt (durationSeconds / interval);
+        if (slices < 1) {
+            slices = 1;
+        }
+        const request: Dict = {
+            'interval': interval,
+        };
+        let amountPerOrder = this.safeString (params, 'amountPerOrder');
+        params = this.omit (params, 'amountPerOrder');
+        if (amountPerOrder === undefined) {
+            // string division: `amount / slices` truncates to zero in the transpiled
+            // C# when both sides arrive as integers
+            const sliceSize = Precise.stringDiv (this.numberToString (amount), this.numberToString (slices));
+            amountPerOrder = this.amountToPrecision (symbol, sliceSize);
+        }
+        request['amountPerOrder'] = this.parseToNumeric (amountPerOrder);
+        // ccxt passes the unified limit cap as params.price, bingx calls it triggerPrice
+        const price = this.safeString2 (params, 'price', 'triggerPrice');
+        params = this.omit (params, [ 'price', 'triggerPrice' ]);
+        if (price !== undefined) {
+            request['triggerPrice'] = price;
+        }
+        return await this.createOrder (symbol, 'twap', side, amount, undefined, this.extend (request, params));
     }
 
     /**

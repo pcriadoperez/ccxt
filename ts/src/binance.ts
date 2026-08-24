@@ -63,6 +63,7 @@ export default class binance extends Exchange {
                 'createTakeProfitOrder': true,
                 'createTrailingPercentOrder': true,
                 'createTriggerOrder': true,
+                'createTwapOrder': true,
                 'editOrder': true,
                 'editOrders': true,
                 'fetchAccounts': undefined,
@@ -1608,6 +1609,7 @@ export default class binance extends Exchange {
                         },
                         'trailing': false, // todo: this is different from standard trailing https://github.com/binance/binance-spot-api-docs/blob/master/faqs/trailing-stop-faq.md
                         'icebergAmount': true,
+                        'twap': true,
                     },
                     'createOrders': undefined,
                     'fetchMyTrades': {
@@ -1731,6 +1733,9 @@ export default class binance extends Exchange {
                 'swap': {
                     'linear': {
                         'extends': 'forDerivatives',
+                        'createOrder': {
+                            'twap': true, // the algo futures endpoints are USD-M only
+                        },
                     },
                     'inverse': {
                         'extends': 'forDerivatives',
@@ -7479,6 +7484,374 @@ export default class binance extends Exchange {
 
     /**
      * @method
+     * @name binance#createTwapOrder
+     * @description create a TWAP order, binance works the parent order on its own algo engine over the requested duration
+     * @see https://developers.binance.com/docs/algo/spot-algo/Time-Weighted-Average-Price-New-Order
+     * @see https://developers.binance.com/docs/algo/future-algo/Time-Weighted-Average-Price-New-Order
+     * @param {string} symbol unified symbol of the market to create an order in
+     * @param {string} side 'buy' or 'sell'
+     * @param {float} amount how much of currency you want to trade in units of base currency
+     * @param {int} duration how long binance should work the order for, in milliseconds, binance accepts 5 minutes up to 24 hours
+     * @param {object} [params] extra parameters specific to the exchange API endpoint
+     * @param {float} [params.price] the limit price the algo must not trade through, binance uses the market price when omitted
+     * @param {bool} [params.reduceOnly] contract markets only, not available in hedge mode
+     * @param {string} [params.positionSide] contract markets only, "BOTH", "LONG" or "SHORT"
+     * @param {string} [params.clientOrderId] a client supplied identifier for the parent order, binance requires exactly 32 characters
+     * @returns {object} an [order structure]{@link https://docs.ccxt.com/#/?id=order-structure}
+     */
+    override async createTwapOrder (symbol: string, side: OrderSide, amount: number, duration: number, params = {}): Promise<Order> {
+        if (this.markets === undefined) {
+            await this.loadMarkets ();
+        }
+        const market = this.market (symbol);
+        let type: Str = undefined;
+        [ type, params ] = this.handleMarketTypeAndParams ('createTwapOrder', market, params);
+        let subType: SubType = undefined;
+        [ subType, params ] = this.handleSubTypeAndParams ('createTwapOrder', market, params);
+        const request: Dict = {
+            'symbol': market['id'],
+            'side': (side as string).toUpperCase (),
+            'quantity': this.amountToPrecision (symbol, amount),
+            'duration': this.parseToInt (duration / 1000), // binance takes whole seconds
+        };
+        const price = this.safeString2 (params, 'price', 'limitPrice');
+        if (price !== undefined) {
+            request['limitPrice'] = this.priceToPrecision (symbol, price);
+        }
+        const clientOrderId = this.safeString2 (params, 'clientOrderId', 'clientAlgoId');
+        if (clientOrderId !== undefined) {
+            request['clientAlgoId'] = clientOrderId;
+        }
+        params = this.omit (params, [ 'price', 'limitPrice', 'clientOrderId', 'clientAlgoId' ]);
+        let response: NullableDict = undefined;
+        if (type === 'spot') {
+            response = await this.sapiPostAlgoSpotNewOrderTwap (this.extend (request, params));
+        } else if (this.isLinear (type, subType)) {
+            response = await this.sapiPostAlgoFuturesNewOrderTwap (this.extend (request, params));
+        } else {
+            throw new NotSupported (this.id + ' createTwapOrder() supports spot and linear contract markets only');
+        }
+        //
+        //     {
+        //         "clientAlgoId": "65ce1630101a480b85915d7e11fd5078",
+        //         "success": true,
+        //         "code": 0,
+        //         "msg": "OK"
+        //     }
+        //
+        const parseType = (type === 'spot') ? 'spot' : 'linear';
+        return this.parseTwapOrder (response, market, parseType);
+    }
+
+    parseTwapOrderStatus (status: Str) {
+        const statuses: Dict = {
+            'WORKING': 'open',
+            'FINISHED': 'closed',
+            'CANCELLED': 'canceled',
+            'EXPIRED': 'expired',
+        };
+        return this.safeString (statuses, status, status);
+    }
+
+    /**
+     * @ignore
+     * @method
+     * @name binance#parseTwapOrder
+     * @description parses a binance algo (TWAP) order into a unified order structure
+     * @param {object} order the raw algo order, either the create response or a row of an algo order list
+     * @param {object} [market] the market the order belongs to
+     * @param {string} [marketType] "spot" or "linear", disambiguates market ids shared by spot and contract markets
+     * @returns {object} an [order structure]{@link https://docs.ccxt.com/#/?id=order-structure}
+     */
+    parseTwapOrder (order: Dict, market: Market = undefined, marketType: Str = undefined): Order {
+        //
+        // createTwapOrder
+        //
+        //     {
+        //         "clientAlgoId": "65ce1630101a480b85915d7e11fd5078",
+        //         "success": true,
+        //         "code": 0,
+        //         "msg": "OK"
+        //     }
+        //
+        // fetchOpenOrders, fetchOrders
+        //
+        //     {
+        //         "algoId": 14517,
+        //         "symbol": "ETHUSDT",
+        //         "side": "SELL",
+        //         "positionSide": "SHORT",
+        //         "totalQty": "5.000",
+        //         "executedQty": "0.000",
+        //         "executedAmt": "0.00000000",
+        //         "avgPrice": "0.00",
+        //         "clientAlgoId": "d7096549481642f8a0bb69e9e2e31f2e",
+        //         "bookTime": 1649756817004,
+        //         "endTime": 0,
+        //         "algoStatus": "WORKING",
+        //         "algoType": "TWAP",
+        //         "urgency": "LOW"
+        //     }
+        //
+        const marketId = this.safeString (order, 'symbol');
+        // binance reuses the same market id across spot and contract markets, so the
+        // caller has to say which side of the api the rows came from
+        market = this.safeMarket (marketId, market, undefined, marketType);
+        const timestamp = this.safeInteger (order, 'bookTime');
+        let status = this.parseTwapOrderStatus (this.safeString (order, 'algoStatus'));
+        if (status === undefined) {
+            // the create response carries no status, only a success flag
+            const success = this.safeBool (order, 'success');
+            if (success === true) {
+                status = 'open';
+            }
+        }
+        let endTime = this.safeInteger (order, 'endTime');
+        if (endTime === 0) {
+            endTime = undefined; // binance sends 0 while the algo is still working
+        }
+        return this.safeOrder ({
+            'info': order,
+            'id': this.safeString (order, 'algoId'),
+            'clientOrderId': this.safeString (order, 'clientAlgoId'),
+            'timestamp': timestamp,
+            'datetime': this.iso8601 (timestamp),
+            'lastTradeTimestamp': undefined,
+            'lastUpdateTimestamp': endTime,
+            'symbol': market['symbol'],
+            'type': 'twap',
+            'timeInForce': undefined,
+            'postOnly': undefined,
+            'reduceOnly': undefined,
+            'side': this.safeStringLower (order, 'side'),
+            'price': undefined,
+            'triggerPrice': undefined,
+            'takeProfitPrice': undefined,
+            'stopLossPrice': undefined,
+            'amount': this.safeString (order, 'totalQty'),
+            'cost': this.safeString (order, 'executedAmt'),
+            'average': this.safeString (order, 'avgPrice'),
+            'filled': this.safeString (order, 'executedQty'),
+            'remaining': undefined,
+            'status': status,
+            'fee': undefined,
+            'trades': undefined,
+        }, market);
+    }
+
+    /**
+     * @ignore
+     * @method
+     * @name binance#parseTwapOrders
+     * @description parses a binance algo order list response, keeping only TWAP orders
+     * @param {object} response the raw algo order list response
+     * @param {object} [market] the market the orders belong to
+     * @param {int} [since] the earliest time in ms to fetch orders for
+     * @param {int} [limit] the maximum number of order structures to retrieve
+     * @param {string} [marketType] "spot" or "linear", disambiguates market ids shared by spot and contract markets
+     * @returns {object[]} a list of [order structures]{@link https://docs.ccxt.com/#/?id=order-structure}
+     */
+    parseTwapOrders (response: Dict, market: Market = undefined, since: Int = undefined, limit: Int = undefined, marketType: Str = undefined): Order[] {
+        const rawOrders = this.safeList (response, 'orders', []);
+        const result = [];
+        for (let i = 0; i < rawOrders.length; i++) {
+            const rawOrder = rawOrders[i];
+            const algoType = this.safeString (rawOrder, 'algoType');
+            if (algoType !== 'TWAP') {
+                continue; // the same endpoints also serve VP (volume participation) orders
+            }
+            result.push (this.parseTwapOrder (rawOrder, market, marketType));
+        }
+        const symbol = (market !== undefined) ? market['symbol'] : undefined;
+        return this.filterBySymbolSinceLimit (result, symbol, since, limit) as Order[];
+    }
+
+    /**
+     * @method
+     * @name binance#cancelTwapOrder
+     * @description cancels a running TWAP order
+     * @see https://developers.binance.com/docs/algo/spot-algo/Cancel-Algo-Order
+     * @see https://developers.binance.com/docs/algo/future-algo/Cancel-Algo-Order
+     * @param {string} id the algoId of the TWAP order, as returned by fetchOpenOrders() with params.twap
+     * @param {string} [symbol] unified symbol of the market the order was made in
+     * @param {object} [params] extra parameters specific to the exchange API endpoint
+     * @param {string} [params.type] "spot" or "swap", used when no symbol is provided
+     * @returns {object} an [order structure]{@link https://docs.ccxt.com/#/?id=order-structure}
+     */
+    async cancelTwapOrder (id: string, symbol: Str = undefined, params = {}): Promise<Order> {
+        if (this.markets === undefined) {
+            await this.loadMarkets ();
+        }
+        let market: Market = undefined;
+        if (symbol !== undefined) {
+            market = this.market (symbol);
+        }
+        let type: Str = undefined;
+        [ type, params ] = this.handleMarketTypeAndParams ('cancelTwapOrder', market, params, 'spot');
+        let subType: SubType = undefined;
+        [ subType, params ] = this.handleSubTypeAndParams ('cancelTwapOrder', market, params);
+        const request: Dict = {
+            'algoId': id,
+        };
+        let response: NullableDict = undefined;
+        if (type === 'spot') {
+            response = await this.sapiDeleteAlgoSpotOrder (this.extend (request, params));
+        } else if (this.isLinear (type, subType)) {
+            response = await this.sapiDeleteAlgoFuturesOrder (this.extend (request, params));
+        } else {
+            throw new NotSupported (this.id + ' cancelTwapOrder() supports spot and linear contract markets only');
+        }
+        //
+        //     {
+        //         "algoId": 14511,
+        //         "success": true,
+        //         "code": 0,
+        //         "msg": "OK"
+        //     }
+        //
+        const parseType = (type === 'spot') ? 'spot' : 'linear';
+        const order = this.parseTwapOrder (response, market, parseType);
+        order['status'] = 'canceled';
+        return order;
+    }
+
+    /**
+     * @method
+     * @name binance#fetchOpenTwapOrders
+     * @description fetch all currently running TWAP orders
+     * @see https://developers.binance.com/docs/algo/spot-algo/Query-Current-Algo-Open-Orders
+     * @see https://developers.binance.com/docs/algo/future-algo/Query-Current-Algo-Open-Orders
+     * @param {string} [symbol] unified market symbol, binance returns every open algo order and ccxt filters the result
+     * @param {int} [since] the earliest time in ms to fetch orders for
+     * @param {int} [limit] the maximum number of order structures to retrieve
+     * @param {object} [params] extra parameters specific to the exchange API endpoint
+     * @param {string} [params.type] "spot" or "swap", used when no symbol is provided
+     * @returns {object[]} a list of [order structures]{@link https://docs.ccxt.com/#/?id=order-structure}
+     */
+    async fetchOpenTwapOrders (symbol: Str = undefined, since: Int = undefined, limit: Int = undefined, params = {}): Promise<Order[]> {
+        if (this.markets === undefined) {
+            await this.loadMarkets ();
+        }
+        let market: Market = undefined;
+        if (symbol !== undefined) {
+            market = this.market (symbol);
+        }
+        let type: Str = undefined;
+        [ type, params ] = this.handleMarketTypeAndParams ('fetchOpenTwapOrders', market, params, 'spot');
+        let subType: SubType = undefined;
+        [ subType, params ] = this.handleSubTypeAndParams ('fetchOpenTwapOrders', market, params);
+        let response: NullableDict = undefined;
+        if (type === 'spot') {
+            response = await this.sapiGetAlgoSpotOpenOrders (params);
+        } else if (this.isLinear (type, subType)) {
+            response = await this.sapiGetAlgoFuturesOpenOrders (params);
+        } else {
+            throw new NotSupported (this.id + ' fetchOpenTwapOrders() supports spot and linear contract markets only');
+        }
+        //
+        //     {
+        //         "total": 1,
+        //         "orders": [
+        //             {
+        //                 "algoId": 14517,
+        //                 "symbol": "ETHUSDT",
+        //                 "side": "SELL",
+        //                 "positionSide": "SHORT",
+        //                 "totalQty": "5.000",
+        //                 "executedQty": "0.000",
+        //                 "executedAmt": "0.00000000",
+        //                 "avgPrice": "0.00",
+        //                 "clientAlgoId": "d7096549481642f8a0bb69e9e2e31f2e",
+        //                 "bookTime": 1649756817004,
+        //                 "endTime": 0,
+        //                 "algoStatus": "WORKING",
+        //                 "algoType": "TWAP",
+        //                 "urgency": "LOW"
+        //             }
+        //         ]
+        //     }
+        //
+        const parseType = (type === 'spot') ? 'spot' : 'linear';
+        return this.parseTwapOrders (response, market, since, limit, parseType);
+    }
+
+    /**
+     * @method
+     * @name binance#fetchTwapOrders
+     * @description fetch the history of TWAP orders, both finished and canceled
+     * @see https://developers.binance.com/docs/algo/spot-algo/Query-Historical-Algo-Orders
+     * @see https://developers.binance.com/docs/algo/future-algo/Query-Historical-Algo-Orders
+     * @param {string} [symbol] unified market symbol
+     * @param {int} [since] the earliest time in ms to fetch orders for
+     * @param {int} [limit] the maximum number of order structures to retrieve, binance allows up to 100 per page
+     * @param {object} [params] extra parameters specific to the exchange API endpoint
+     * @param {int} [params.until] the latest time in ms to fetch orders for
+     * @param {int} [params.page] the page of results to fetch, defaults to 1
+     * @param {string} [params.type] "spot" or "swap", used when no symbol is provided
+     * @returns {object[]} a list of [order structures]{@link https://docs.ccxt.com/#/?id=order-structure}
+     */
+    async fetchTwapOrders (symbol: Str = undefined, since: Int = undefined, limit: Int = undefined, params = {}): Promise<Order[]> {
+        if (this.markets === undefined) {
+            await this.loadMarkets ();
+        }
+        const request: Dict = {};
+        let market: Market = undefined;
+        if (symbol !== undefined) {
+            market = this.market (symbol);
+            request['symbol'] = market['id'];
+        }
+        let type: Str = undefined;
+        [ type, params ] = this.handleMarketTypeAndParams ('fetchTwapOrders', market, params, 'spot');
+        let subType: SubType = undefined;
+        [ subType, params ] = this.handleSubTypeAndParams ('fetchTwapOrders', market, params);
+        const until = this.safeInteger2 (params, 'until', 'endTime');
+        params = this.omit (params, [ 'until' ]);
+        if (since !== undefined) {
+            request['startTime'] = since;
+        }
+        if (until !== undefined) {
+            request['endTime'] = until;
+        }
+        if (limit !== undefined) {
+            request['pageSize'] = Math.min (limit, 100); // max 100
+        }
+        let response: NullableDict = undefined;
+        if (type === 'spot') {
+            response = await this.sapiGetAlgoSpotHistoricalOrders (this.extend (request, params));
+        } else if (this.isLinear (type, subType)) {
+            response = await this.sapiGetAlgoFuturesHistoricalOrders (this.extend (request, params));
+        } else {
+            throw new NotSupported (this.id + ' fetchTwapOrders() supports spot and linear contract markets only');
+        }
+        //
+        //     {
+        //         "total": 1,
+        //         "orders": [
+        //             {
+        //                 "algoId": 14518,
+        //                 "symbol": "BNBUSDT",
+        //                 "side": "BUY",
+        //                 "positionSide": "BOTH",
+        //                 "totalQty": "100.00",
+        //                 "executedQty": "0.00",
+        //                 "executedAmt": "0.00000000",
+        //                 "avgPrice": "0.000",
+        //                 "clientAlgoId": "acacab56b3c44bef9f6a8f8ebd2a8408",
+        //                 "bookTime": 1649757019503,
+        //                 "endTime": 1649757088101,
+        //                 "algoStatus": "CANCELLED",
+        //                 "algoType": "TWAP",
+        //                 "urgency": "LOW"
+        //             }
+        //         ]
+        //     }
+        //
+        const parseType = (type === 'spot') ? 'spot' : 'linear';
+        return this.parseTwapOrders (response, market, since, limit, parseType);
+    }
+
+    /**
+     * @method
      * @name binance#fetchOrder
      * @description fetches information on an order made by the user
      * @see https://developers.binance.com/docs/binance-spot-api-docs/rest-api/trading-endpoints#query-order-user_data
@@ -7613,6 +7986,11 @@ export default class binance extends Exchange {
     override async fetchOrders (symbol: Str = undefined, since: Int = undefined, limit: Int = undefined, params = {}): Promise<Order[]> {
         if (this.markets === undefined) {
             await this.loadMarkets ();
+        }
+        const isTwapOrder = this.safeBool (params, 'twap', false);
+        if (isTwapOrder) {
+            params = this.omit (params, 'twap');
+            return await this.fetchTwapOrders (symbol, since, limit, params);
         }
         let paginate = false;
         [ paginate, params ] = this.handleOptionAndParams (params, 'fetchOrders', 'paginate');
@@ -7951,6 +8329,11 @@ export default class binance extends Exchange {
     override async fetchOpenOrders (symbol: Str = undefined, since: Int = undefined, limit: Int = undefined, params = {}): Promise<Order[]> {
         if (this.markets === undefined) {
             await this.loadMarkets ();
+        }
+        const isTwapOrder = this.safeBool (params, 'twap', false);
+        if (isTwapOrder) {
+            params = this.omit (params, 'twap');
+            return await this.fetchOpenTwapOrders (symbol, since, limit, params);
         }
         let market: Market = undefined;
         let type: Str = undefined;
@@ -8412,6 +8795,11 @@ export default class binance extends Exchange {
     override async cancelOrder (id: string, symbol: Str = undefined, params = {}) {
         if (this.markets === undefined) {
             await this.loadMarkets ();
+        }
+        const isTwapOrder = this.safeBool (params, 'twap', false);
+        if (isTwapOrder) {
+            params = this.omit (params, 'twap');
+            return await this.cancelTwapOrder (id, symbol, params);
         }
         const request: Dict = {};
         let market: Market = undefined;

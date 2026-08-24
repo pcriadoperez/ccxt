@@ -2828,6 +2828,7 @@ export class BaseExchange {
                 'createTrailingPercentOrderWs': undefined,
                 'createTriggerOrder': undefined,
                 'createTriggerOrderWs': undefined,
+                'createTwapOrder': undefined,
                 'deposit': undefined,
                 'editOrder': 'emulated',
                 'editOrderWithClientOrderId': undefined,
@@ -6982,6 +6983,20 @@ export class BaseExchange {
         throw new NotSupported (this.id + ' unWatchFundingRate() is not supported yet');
     }
 
+    /**
+     * @method
+     * @name exchange#createTwapOrder
+     * @description create a TWAP (time-weighted average price) order, the exchange slices the parent order and works it over the requested duration
+     * @param {string} symbol unified symbol of the market to create an order in
+     * @param {string} side 'buy' or 'sell'
+     * @param {float} amount how much of currency you want to trade in units of base currency
+     * @param {int} duration how long the exchange should work the order for, in milliseconds
+     * @param {object} [params] extra parameters specific to the exchange API endpoint
+     * @param {float} [params.price] limit price the exchange must not trade through, market price is used when omitted
+     * @param {bool} [params.reduceOnly] true if the order should only reduce an existing position
+     * @param {string} [params.clientOrderId] a client supplied identifier for the parent order
+     * @returns {object} an [order structure]{@link https://docs.ccxt.com/#/?id=order-structure}
+     */
     async createTwapOrder (symbol: string, side: OrderSide, amount: number, duration: number, params = {}): Promise<Order> {
         throw new NotSupported (this.id + ' createTwapOrder() is not supported yet');
     }

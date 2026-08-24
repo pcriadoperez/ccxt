@@ -657,6 +657,72 @@
                 "output": { "action": { "type": "order", "orders": [ { "a": 5, "b": true, "p": "183.75", "s": "0.1", "r": false, "t": { "limit": { "tif": "Ioc" } } } ], "grouping": "na", "builder": { "b": "0x6530512A6c89C7cfCEbC3BA7fcD9aDa5f30827a6", "f": 10 } }, "nonce": 1711104140105, "signature": { "r": "0xf389ba0e2bd5f1384e80e4fba5e337273bd02d40b19127206dea14ffe6c7e0af", "s": "0xc4089eac6cc70d6834f595acce82d32252f11c9459e4a3868548b6fc3087043", "v": 27 }, "vaultAddress": "eba57e1d6bd242ba5f41b61ff1d30b481a535b58" }
             }
         ],
+        "createTwapOrder": [
+            {
+                "description": "twap buy - side must be sent as isBuy true",
+                "method": "createTwapOrder",
+                "url": "https://api.hyperliquid.xyz/exchange",
+                "input": [
+                    "HYPE/USDC:USDC",
+                    "buy",
+                    1,
+                    1800000
+                ],
+                "output": {
+                    "action": {
+                        "type": "twapOrder",
+                        "twap": {
+                            "a": 159,
+                            "b": true,
+                            "s": "1",
+                            "r": false,
+                            "m": 30,
+                            "t": false
+                        }
+                    },
+                    "nonce": 1787591072675,
+                    "signature": {
+                        "r": "0x93935b2e76c763ad41a02503c305f0caa66f0564a1394e1e158030773fb191c3",
+                        "s": "0x2def0d6d3daf372f0618b85e96d8e15056444879be3ae84af1512245e83a8ba9",
+                        "v": 27
+                    }
+                }
+            },
+            {
+                "description": "twap sell, randomized and reduce only",
+                "method": "createTwapOrder",
+                "url": "https://api.hyperliquid.xyz/exchange",
+                "input": [
+                    "HYPE/USDC:USDC",
+                    "sell",
+                    2,
+                    3600000,
+                    {
+                        "randomize": true,
+                        "reduceOnly": true
+                    }
+                ],
+                "output": {
+                    "action": {
+                        "type": "twapOrder",
+                        "twap": {
+                            "a": 159,
+                            "b": false,
+                            "s": "2",
+                            "r": true,
+                            "m": 60,
+                            "t": true
+                        }
+                    },
+                    "nonce": 1787591072721,
+                    "signature": {
+                        "r": "0xafea08a64b549eb9c402655bd19f647f8df1b5e29122da374ae40401e45cc297",
+                        "s": "0x1f1ce80f585d1c7400a480fb558f7e9409c2ee58756a89aa1e8eed070ab160f1",
+                        "v": 28
+                    }
+                }
+            }
+        ],
         "createOrders": [
             {
                 "description": "create limit orders",
