@@ -4,7 +4,7 @@ import rateLimit from '@fastify/rate-limit';
 import fastifyPlugin from 'fastify-plugin';
 import type { Logger } from 'pino';
 import { config } from '../config.js';
-import { auditLogger } from '../logger.js';
+import { auditLogger as moduleAuditLogger } from '../logger.js';
 import type { OrderBookCache } from '../cache/orderBookCache.js';
 import type { FeeRegistry } from '../cache/feeRegistry.js';
 import { computeRoute } from '../routing/route.js';
@@ -34,6 +34,10 @@ export interface ServerOptions {
     // Injected so tests can drive a real multi-key store without touching the filesystem. In
     // production src/index.ts builds it, loads it, and starts its reload poll.
     keyStore?: ApiKeyStore;
+    // Where the audit records go. Defaults to the dedicated audit stream in production, and to the
+    // injected logger when no audit file is configured — so a caller that supplies a logger still
+    // receives the audit trail rather than silently losing it to a module-level destination.
+    auditLogger?: Logger;
 }
 
 export async function buildServer (
@@ -48,6 +52,13 @@ export async function buildServer (
     // proxy that overwrites the header (see config.ts). Off by default.
     // The store is the single source of truth for who may call. Built here only as a fallback so
     // the existing test and dev entry points keep working unchanged.
+    // The level override matters wherever the audit trail shares a logger with diagnostics: the
+    // production box runs LOG_LEVEL=warn because a misbehaving exchange once wrote 930MB of retry
+    // chatter, and quieting that must not also silence the record of who called what.
+    const audit = options.auditLogger
+        ?? (config.auditLogFile === undefined
+            ? logger.child({}, { level: config.auditLogLevel })
+            : moduleAuditLogger);
     const store = options.keyStore ?? new ApiKeyStore(
         config.keysFile, logger, process.env['NODE_ENV'] !== 'production');
     if (options.keyStore === undefined) store.load();
@@ -224,10 +235,11 @@ export async function buildServer (
         // child logger. This is the row an invoice or a "why was I charged for that?" is settled
         // from; it has to be readable on its own, by an ingester that has no idea what a Fastify
         // child logger is.
-        auditLogger.info({
+        audit.info({
             event: 'request',
             reqId: String(request.id),
             keyId: record?.id ?? null,
+            keyName: record?.name ?? null,
             keyUuid: record?.keyUuid ?? null,
             userId: record?.userId ?? null,
             method: request.method,
@@ -294,7 +306,7 @@ export async function buildServer (
             // Audit record: one line per recommendation, keyed by requestId. This is the trail
             // that makes a future billing dispute or "why did you route it there?" answerable
             // after the fact, so it logs the decision and its inputs, not just the outcome.
-            auditLogger.info({
+            audit.info({
                 // A stable event name so queries grep on a field rather than a message string.
                 event: 'route_recommendation',
                 // reqId, under exactly the name the access line uses. The two events describe one
