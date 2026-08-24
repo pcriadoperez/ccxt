@@ -6340,6 +6340,109 @@ If exchange supports [feature](#features) for `hedged` orders, user can pass `pa
 
 
 
+#### TWAP Orders
+
+A TWAP (Time-Weighted Average Price) order is a *parent* order that the exchange slices into
+smaller child orders and works over a fixed duration, so the resulting fill price tracks the
+time-weighted average price of the market during that window. It is used to reduce the market
+impact of an order that is large relative to the book.
+
+`createTwapOrder` is a wrapper around the exchange's **native** TWAP engine. The schedule lives
+on the exchange, which means it keeps running if your process dies. CCXT does not emulate TWAP
+client-side: when `exchange.has['createTwapOrder']` is not `true`, the exchange has no native
+TWAP and the method throws `NotSupported`.
+
+```javascript
+createTwapOrder (symbol, side, amount, duration, params = {})
+```
+
+Parameters
+
+- **symbol** (String) *required* Unified CCXT market symbol (e.g. `BTC/USDT`)
+- **side** (String) *required* `buy` or `sell`
+- **amount** (Number) *required* how much of the base currency to trade in total
+- **duration** (Integer) *required* how long the exchange should work the order for, **in milliseconds**
+- **params** (Dictionary) Extra parameters specific to the exchange API endpoint
+  - **params.price** (Float) a limit price the algo must not trade through, the market price is used when omitted
+  - **params.reduceOnly** (Boolean) contract markets only
+  - **params.clientOrderId** (String) a client supplied identifier for the parent order
+
+Returns
+
+- An [order structure](#order-structure) with `type` set to `twap`
+
+<!-- tabs:start -->
+#### **Javascript**
+```javascript
+// work a 0.5 BTC buy over 4 hours, never paying more than 60000
+const order = await exchange.createTwapOrder ('BTC/USDT', 'buy', 0.5, 4 * 60 * 60 * 1000, {
+    'price': 60000,
+})
+```
+#### **Python**
+```python
+# work a 0.5 BTC buy over 4 hours, never paying more than 60000
+order = exchange.create_twap_order('BTC/USDT', 'buy', 0.5, 4 * 60 * 60 * 1000, {
+    'price': 60000,
+})
+```
+#### **PHP**
+```php
+// work a 0.5 BTC buy over 4 hours, never paying more than 60000
+$order = $exchange->create_twap_order('BTC/USDT', 'buy', 0.5, 4 * 60 * 60 * 1000, array(
+    'price' => 60000,
+));
+```
+<!-- tabs:end -->
+
+##### Tracking And Canceling A TWAP Order
+
+A running TWAP parent order is not returned by a plain `fetchOpenOrders` — the exchanges keep
+algo orders in a separate namespace. Pass `params['twap'] = true` to reach it, the same way
+`params['trigger']` reaches conditional orders:
+
+<!-- tabs:start -->
+#### **Javascript**
+```javascript
+const running = await exchange.fetchOpenOrders (symbol, undefined, undefined, { 'twap': true })
+const history = await exchange.fetchOrders (symbol, undefined, undefined, { 'twap': true })
+await exchange.cancelOrder (running[0]['id'], symbol, { 'twap': true })
+```
+#### **Python**
+```python
+running = exchange.fetch_open_orders(symbol, params={'twap': True})
+history = exchange.fetch_orders(symbol, params={'twap': True})
+exchange.cancel_order(running[0]['id'], symbol, {'twap': True})
+```
+#### **PHP**
+```php
+$running = $exchange->fetch_open_orders($symbol, null, null, array('twap' => true));
+$history = $exchange->fetch_orders($symbol, null, null, array('twap' => true));
+$exchange->cancel_order($running[0]['id'], $symbol, array('twap' => true));
+```
+<!-- tabs:end -->
+
+##### Exchange-specific Notes
+
+| exchange | markets | duration limits | notes |
+| -------- | ------- | --------------- | ----- |
+| `binance` | spot, linear swap | 5 minutes to 24 hours | the create response only carries `clientAlgoId`, so the returned order has no `id` — read the `algoId` back from `fetchOpenOrders(..., { 'twap': true })` before canceling. Minimum notional is 1000 USDT on futures. `params.price` maps to `limitPrice` |
+| `hyperliquid` | swap | rounded down to whole minutes | `params.randomize` varies the interval between slices so the schedule is harder to detect. Minimum order value is $1200 ($10 per minute) |
+
+Exchanges that expose TWAP only through non-unified parameters, and are not yet wired into
+`createTwapOrder`: `okx` (`ordType: 'twap'` with `szLimit` and `timeInterval`), `bingx`
+(`createOrder(symbol, 'TWAP', ...)` with `interval` and `amountPerOrder`), `btse`
+(`type: 'TWAP'` with `timePeriod`).
+
+##### TWAP Is Single-Venue
+
+One CCXT `Exchange` instance is one venue, so `createTwapOrder` slices an order on that
+exchange only. Executing a parent order across several exchanges is a smart-order-routing
+problem that lives above CCXT: it needs a consolidated order book, per-venue fee tiers, and —
+the constraint that dominates in crypto — inventory that is already sitting on each venue,
+since moving coins between exchanges takes minutes and costs a withdrawal fee.
+
+
 ### Editing Orders
 
 To edit an order, you can use the `editOrder` method
