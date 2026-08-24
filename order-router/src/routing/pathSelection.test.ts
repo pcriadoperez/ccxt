@@ -19,7 +19,7 @@ function book (
 const OPTS = (o: Partial<RouteOptions> = {}): RouteOptions => ({
     strategy: 'split_optimal', includeFees: false, maxVenues: 3, minLegNotional: 0,
     staleBookMs: 5000, requestId: 'test', certifiedOnly: false, requireFullFill: false,
-    stalenessPenaltyBps: 0, hopPenaltyBps: 0, includeQuotes: true, ...o,
+    stalenessPenaltyBps: 0, hopPenaltyBps: 0, includeQuotes: true, balances: null, balanceMode: 'cap', ...o,
 });
 const DEEP = 1_000_000;
 

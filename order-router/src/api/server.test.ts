@@ -4,6 +4,7 @@ import pino from 'pino';
 import { OrderBookCache } from '../cache/orderBookCache.js';
 import { FeeRegistry } from '../cache/feeRegistry.js';
 import { buildServer } from './server.js';
+import { STREAM_BALANCES_UNSUPPORTED } from './routeQuery.js';
 import type { CachedOrderBook } from '../types.js';
 
 const silentLogger = pino({ level: 'silent' });
@@ -1035,4 +1036,195 @@ test('the staleness penalty is applied by default, not merely available', async 
     // And still be echoed, so a caller can always see what judgment was applied to their quote.
     assert.ok(r.json().staleBookMs > 0);
     await app.close();
+});
+
+test('GET /route honours balances end to end and echoes what it applied', async () => {
+    const { app, cache } = await buildTestServer();
+    // kraken alone quotes BTC/USDT here, at 101 with 5 BTC on offer — plenty for 300 USDT.
+    cache.setBook(book());
+
+    const wide = await app.inject({ method: 'GET', url: '/route?from=USDT&to=BTC&amountIn=300', headers: AUTH });
+    assert.equal(wide.json().balancesApplied, null, 'an absent balances must stay indistinguishable from before');
+    assert.equal(wide.json().balanceCapAmountIn, null);
+
+    const held = await app.inject({
+        method: 'GET', url: '/route?from=USDT&to=BTC&amountIn=300&balances=kraken.USDT:100', headers: AUTH,
+    });
+    const body = held.json();
+    // The echo is what a client verifies before executing: /route declares its query type to
+    // Fastify with no JSON schema, so a server that predates this feature IGNORES balances and
+    // answers byte-identically to one that never received them.
+    assert.equal(body.balancesApplied, 'kraken.USDT:100');
+    assert.equal(body.balanceMode, 'cap');
+    assert.equal(body.balanceEntryCount, 1);
+    assert.equal(body.balanceCapAmountIn, 100);
+    assert.ok(Math.abs(body.amountIn - 100) < 1e-9, `spent ${body.amountIn}, expected the wallet's 100`);
+    assert.equal(body.requestedAmount, 300, 'the ask is unchanged; only the fill was clamped');
+    assert.equal(body.fullyFillable, false);
+
+    const unfunded = await app.inject({
+        method: 'GET', url: '/route?from=USDT&to=BTC&amountIn=300&balances=binance.USDT:5000', headers: AUTH,
+    });
+    assert.equal(unfunded.json().unroutableReason, 'insufficient_balance');
+
+    for (const q of ['balances=nonsense', 'balances=a.USDT:1,a.USDT:2', 'balanceMode=maybe']) {
+        const bad = await app.inject({ method: 'GET', url: `/route?from=USDT&to=BTC&amountIn=300&${q}`, headers: AUTH });
+        assert.equal(bad.statusCode, 400, q);
+    }
+    await app.close();
+});
+
+test('a repeated balances parameter is a 400, inherited from the blanket array check', async () => {
+    const { app, cache } = await buildTestServer();
+    cache.setBook(book());
+    const r = await app.inject({
+        method: 'GET', url: '/route?from=USDT&to=BTC&amountIn=300&balances=USDT:1&balances=BTC:1', headers: AUTH,
+    });
+    assert.equal(r.statusCode, 400);
+    assert.equal(r.json().error, 'balances must not be repeated');
+    await app.close();
+});
+
+test('WS /stream/route refuses balances rather than pricing a portfolio it cannot refresh', async () => {
+    // A socket lives for minutes and there is no socket.on('message') to update the holdings it
+    // opened with, so every frame after the first prices a wallet that may already have moved.
+    const { WebSocket } = await import('ws');
+    const previous = process.env['ORDER_ROUTER_API_KEY'];
+    process.env['ORDER_ROUTER_API_KEY'] = TEST_API_KEY;
+    const cache = new OrderBookCache();
+    cache.setBook(book());
+    const app = await buildServer(cache, new FeeRegistry(), silentLogger, { rateLimitMax: 100000 });
+    try {
+        await app.listen({ port: 0, host: '127.0.0.1' });
+        const address = app.server.address();
+        const port = typeof address === 'object' && address ? address.port : 0;
+
+        // REST accepts exactly what the stream refuses — the one place the two are allowed to
+        // differ, and it is stated in the frame rather than left to be inferred from a close code.
+        const rest = await app.inject({
+            method: 'GET', url: '/route?from=USDT&to=BTC&amountOut=1&balances=USDT:5000', headers: AUTH,
+        });
+        assert.equal(rest.statusCode, 200);
+
+        const refusal = await new Promise<{ code: number; error: string }>((resolve) => {
+            let error = '';
+            const ws = new WebSocket(
+                `ws://127.0.0.1:${port}/stream/route?from=USDT&to=BTC&amountOut=1&balances=USDT:5000`,
+                { headers: { 'x-api-key': TEST_API_KEY } });
+            ws.on('message', (d: Buffer) => { error = JSON.parse(d.toString()).error; });
+            ws.on('close', (code: number) => resolve({ code, error }));
+            ws.on('error', () => resolve({ code: -1, error }));
+            setTimeout(() => resolve({ code: 0, error }), 3000);
+        });
+        assert.equal(refusal.code, 1008);
+        assert.equal(refusal.error, STREAM_BALANCES_UNSUPPORTED);
+    } finally {
+        await app.close();
+        if (previous === undefined) delete process.env['ORDER_ROUTER_API_KEY'];
+        else process.env['ORDER_ROUTER_API_KEY'] = previous;
+    }
+});
+
+test('the access log redacts the balances parameter the ROUTER honoured, however it was spelled', async () => {
+    // Two ends that disagreed on what "balances" is. Fastify's querystring parser percent-decodes
+    // parameter NAMES, so `bal%61nces=` is honoured and the constraint is fully applied — while a
+    // redactor reading the raw URL for the literal text never matched, and the amounts went to the
+    // diagnostic log in the clear. The test sends the encoded spelling precisely because the
+    // un-encoded one already passed.
+    const lines: string[] = [];
+    const capturing = pino({ level: 'info' }, { write: (line: string) => { lines.push(line); } });
+    const previous = process.env['ORDER_ROUTER_API_KEY'];
+    process.env['ORDER_ROUTER_API_KEY'] = TEST_API_KEY;
+    const cache = new OrderBookCache();
+    cache.setBook(book());
+    const app = await buildServer(cache, new FeeRegistry(), capturing);
+    try {
+        const r = await app.inject({
+            method: 'GET',
+            url: '/route?from=USDT&to=BTC&amountIn=300&bal%61nces=kraken.USDT:40817',
+            headers: AUTH,
+        });
+        // The constraint really was applied — which is what makes the leak a leak rather than a
+        // parameter the server ignored.
+        assert.equal(r.statusCode, 200);
+        assert.equal(r.json().balancesApplied, 'kraken.USDT:40817');
+        assert.equal(r.json().balanceCapAmountIn, 40817);
+
+        const serialised = lines.join('\n');
+        assert.ok(!serialised.includes('40817'), `the log leaked 40817:\n${serialised}`);
+        assert.ok(serialised.includes('[redacted]'), 'the parameter must be redacted, not dropped');
+        // The spelling the caller used is kept: redaction must not rewrite the request into one
+        // the server never saw.
+        assert.ok(serialised.includes('bal%61nces=[redacted]'), serialised);
+    } finally {
+        await app.close();
+        if (previous === undefined) delete process.env['ORDER_ROUTER_API_KEY'];
+        else process.env['ORDER_ROUTER_API_KEY'] = previous;
+    }
+});
+
+test('the access line still carries every field Fastify would have logged', async () => {
+    // requestLogLine REPLACES Fastify's default req serializer, so anything it forgets is gone from
+    // every access line for every request — a field you discover missing mid-incident.
+    const lines: string[] = [];
+    const capturing = pino({ level: 'info' }, { write: (line: string) => { lines.push(line); } });
+    const previous = process.env['ORDER_ROUTER_API_KEY'];
+    process.env['ORDER_ROUTER_API_KEY'] = TEST_API_KEY;
+    const app = await buildServer(new OrderBookCache(), new FeeRegistry(), capturing);
+    try {
+        // A real socket rather than inject(), because remotePort is one of the fields being
+        // checked and inject() has no socket to read one from.
+        await app.listen({ port: 0, host: '127.0.0.1' });
+        const address = app.server.address();
+        const port = typeof address === 'object' && address ? address.port : 0;
+        await fetch(`http://127.0.0.1:${port}/health`, { headers: { ...AUTH, 'accept-version': '1.x' } });
+        const access = lines.map((l) => JSON.parse(l)).find((l) => l.req !== undefined);
+        assert.ok(access, 'an access line must be emitted');
+        // The exact field set fastify/lib/logger-pino.js emits.
+        assert.deepEqual(Object.keys(access.req).sort(),
+            ['host', 'method', 'remoteAddress', 'remotePort', 'url', 'version']);
+        assert.equal(access.req.version, '1.x');
+    } finally {
+        await app.close();
+        if (previous === undefined) delete process.env['ORDER_ROUTER_API_KEY'];
+        else process.env['ORDER_ROUTER_API_KEY'] = previous;
+    }
+});
+
+test('the access log never records the amounts a caller holds', async () => {
+    // The access line carries the full request URL, so redacting only the audit record would
+    // accomplish nothing. Asserted on the SERIALISED line rather than on the redaction helper,
+    // because redaction-by-regex is exactly the thing that silently stops matching after an
+    // unrelated refactor — and the failure mode is a compliance incident, not a broken route.
+    const lines: string[] = [];
+    const capturing = pino({ level: 'info' }, { write: (line: string) => { lines.push(line); } });
+    const previous = process.env['ORDER_ROUTER_API_KEY'];
+    process.env['ORDER_ROUTER_API_KEY'] = TEST_API_KEY;
+    const cache = new OrderBookCache();
+    cache.setBook(book());
+    const app = await buildServer(cache, new FeeRegistry(), capturing);
+    try {
+        await app.inject({
+            method: 'GET',
+            url: '/route?from=USDT&to=BTC&amountIn=300&balances=kraken.USDT:40817,binance.BTC:0.31337',
+            headers: AUTH,
+        });
+        const serialised = lines.join('\n');
+        assert.ok(serialised.includes('"url"'), 'the access line must still record the URL it redacted');
+        for (const secret of ['40817', '0.31337']) {
+            assert.ok(!serialised.includes(secret), `the log leaked ${secret}:\n${serialised}`);
+        }
+        // The record still has to be useful: how many entries, which mode, and a stable fingerprint
+        // to correlate the same portfolio across requests.
+        const audit = lines.map((l) => JSON.parse(l)).find((l) => l.event === 'route_recommendation');
+        assert.ok(audit, 'the routing decision must still be audited');
+        assert.equal(audit.balancesApplied, true);
+        assert.equal(audit.balanceEntryCount, 2);
+        assert.equal(audit.balanceMode, 'cap');
+        assert.match(audit.balancesHash, /^[0-9a-f]{16}$/);
+    } finally {
+        await app.close();
+        if (previous === undefined) delete process.env['ORDER_ROUTER_API_KEY'];
+        else process.env['ORDER_ROUTER_API_KEY'] = previous;
+    }
 });

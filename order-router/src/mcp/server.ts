@@ -125,6 +125,26 @@ export function buildMcpServer (clientOptions: RouterClientOptions): McpServer {
                     .describe('How much better a bridged route must be, per extra hop, to beat a direct '
                         + 'market. Defaults to 5. An extra hop is a second order and a second chance for '
                         + 'the price to move, which no order book prices in. 0 compares purely on rate.'),
+                // Bounded here as well as server-side so an agent gets a validation error it can act
+                // on, rather than a 400 whose body it has to parse — and never a silently dropped
+                // constraint, which would hand it a route it cannot fund.
+                balances: z.string().max(4096, 'balances must not exceed 4096 characters')
+                    .refine((raw) => raw.split(',').filter((e) => e.trim().length > 0).length <= 64,
+                        'balances must not exceed 64 entries')
+                    .optional()
+                    .describe('What you actually hold, as comma-separated `[exchange.]ASSET:amount` '
+                        + 'entries, e.g. "binance.USDT:40000,kraken.BTC:0.5,USDT:1000". The venue prefix '
+                        + 'is optional and a bare asset is spendable anywhere. Constrains the route to '
+                        + 'what you can fund: the source amount is capped and each venue gets a spending '
+                        + 'budget. An empty string means you hold nothing. Omit for no constraint.'),
+                balanceMode: z.enum(['cap', 'require']).optional()
+                    .describe('What to do when balances cannot cover the request. cap (default) routes '
+                        + 'what you can fund; require refuses with unroutableReason '
+                        + 'insufficient_balance instead. require covers every way the wallet falls '
+                        + 'short — too little in total, the right total sitting on venues that do not '
+                        + 'quote the pair, and the amountOut side — but never a shortfall the market '
+                        + 'caused: thin books are depth, not funding, and requireFullFill is the flag '
+                        + 'for refusing those.'),
             },
         },
         async (params) => {

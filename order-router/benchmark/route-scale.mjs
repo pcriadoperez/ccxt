@@ -34,6 +34,7 @@ for (let e = 0; e < EXCHANGES; e++) {
 
 const opts = {
     strategy: 'split_optimal', includeFees: true, maxVenues: 3, minLegNotional: 0,
+    balances: null, balanceMode: 'cap',
     staleBookMs: 60_000, requestId: 'bench', certifiedOnly: false, requireFullFill: false,
     stalenessPenaltyBps: 0,
 };

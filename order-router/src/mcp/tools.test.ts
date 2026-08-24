@@ -93,3 +93,28 @@ test('listSymbols and getExchangesStatus round-trip fixture data', async () => {
         },
     );
 });
+
+test('getRoute forwards balances verbatim, including the meaningful empty string', async () => {
+    // Passed through as the caller wrote it: the router's parser is the single authority on the
+    // grammar, and an empty value is a real answer ("I hold nothing"), not an unset option.
+    let capturedPath = '';
+    await withFixture(
+        (path) => { capturedPath = path; return { status: 200, body: { hops: [] } }; },
+        async (baseUrl) => {
+            await routerClient.getRoute(
+                { from: 'USDT', to: 'BTC', amountIn: 1000, balances: 'binance.USDT:40000,USDT:1000', balanceMode: 'require' },
+                { baseUrl },
+            );
+        },
+    );
+    assert.equal(capturedPath,
+        '/route?from=USDT&to=BTC&amountIn=1000&balances=binance.USDT%3A40000%2CUSDT%3A1000&balanceMode=require');
+
+    await withFixture(
+        (path) => { capturedPath = path; return { status: 200, body: { hops: [] } }; },
+        async (baseUrl) => {
+            await routerClient.getRoute({ from: 'USDT', to: 'BTC', amountIn: 1000, balances: '' }, { baseUrl });
+        },
+    );
+    assert.equal(capturedPath, '/route?from=USDT&to=BTC&amountIn=1000&balances=');
+});

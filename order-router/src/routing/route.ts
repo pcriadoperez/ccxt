@@ -2,6 +2,7 @@ import type { OrderBookCache } from '../cache/orderBookCache.js';
 import type { FeeRegistry } from '../cache/feeRegistry.js';
 import { candidatePaths, type CandidatePath, type ResolvedHop } from './market.js';
 import { solveHop, createSolveCache, type SolveCache } from './engine.js';
+import { budgetsForHop, capFor, hopSpendAsset, type HopBudgets } from './balances.js';
 import type { ConsideredPath, RouteHop, RouteOptions, RouteResult, UnroutableReason } from './types.js';
 
 export * from './types.js';
@@ -19,6 +20,17 @@ export interface RouteRequest {
 
 // Amount is in the hop's INPUT asset: base when selling it, quote when buying with it.
 const inputIsBase = (hop: ResolvedHop): boolean => hop.side === 'sell';
+
+// Only the FIRST hop of a path spends something the caller holds. Every later hop spends what the
+// route just produced, in an asset the wallet says nothing about — and treating pre-held bridge
+// inventory as supply at hop 2 is deliberately out of scope: a route has one amountIn and defines
+// effectiveRate against it, and the backward trim would attribute the seeded amount to hop 1's
+// production and cut hop 1 back for delivering it. A caller holding bridge inventory asks for a
+// second route from that asset. Built fresh on every call rather than shared, so the solve memo —
+// which spans every candidate path — cannot leak one candidate's spending into another's.
+function budgetsFor (opts: RouteOptions, candidate: CandidatePath, hopIndex: number): HopBudgets | null {
+    return hopIndex === 0 ? budgetsForHop(opts.balances, candidate.hops[0]!) : null;
+}
 
 interface SolvedPath {
     candidate: CandidatePath;
@@ -43,11 +55,17 @@ function solvePathExactIn (
 ): SolvedPath {
     const hops: RouteHop[] = [];
     let bestSingleEffective: number | null = null;
-    let carry = amountIn;
+    // The wallet caps the source HERE, inside the solver, so every candidate is scored at the size
+    // the caller can actually fund. It changes which path wins and it is meant to: a size a thin
+    // market cannot absorb may be fully fillable once clamped, and comparePaths ranks fully
+    // fillable first. Clamping the winner afterwards could only mutilate it — the same mistake
+    // comparePaths' second criterion was added to undo.
+    let carry = Math.min(amountIn, capFor(opts.balances, hopSpendAsset(candidate.hops[0]!)));
     let deadHopIndex: number | null = null;
     for (let i = 0; i < candidate.hops.length; i++) {
         const h = candidate.hops[i]!;
-        const sol = solveHop(cache, fees, h, carry, inputIsBase(h), opts, { collectQuotes }, memo);
+        const sol = solveHop(cache, fees, h, carry, inputIsBase(h), opts,
+            { collectQuotes, budgets: budgetsFor(opts, candidate, i) }, memo);
         if (i === 0) bestSingleEffective = sol.bestSingleEffective;
         hops.push(sol.hop);
         carry = sol.hop.amountOut;
@@ -66,7 +84,8 @@ function solvePathExactIn (
             const h = candidate.hops[i]!;
             // Re-solve this hop against its OUTPUT rather than its input: base units when buying
             // the base, quote units when selling into it.
-            const retrimmed = solveHop(cache, fees, h, needed, h.side === 'buy', opts, { collectQuotes }, memo);
+            const retrimmed = solveHop(cache, fees, h, needed, h.side === 'buy', opts,
+                { collectQuotes, budgets: budgetsFor(opts, candidate, i) }, memo);
             // Only accept a trim that actually delivers what the next hop needs; a hop whose book
             // cannot hit the reduced target exactly is left as it was rather than made worse.
             if (retrimmed.hop.amountOut >= needed * (1 - 1e-9)) {
@@ -149,6 +168,9 @@ function emptyResult (
         certifiedOnly: opts.certifiedOnly, staleBookMs: opts.staleBookMs,
         stalenessPenaltyBps: opts.stalenessPenaltyBps, hopPenaltyBps: opts.hopPenaltyBps,
         requireFullFill: opts.requireFullFill,
+        balancesApplied: opts.balances?.normalized ?? null, balanceMode: opts.balanceMode,
+        balanceCapAmountIn: opts.balances === null ? null : capFor(opts.balances, req.from),
+        balanceEntryCount: opts.balances?.entryCount ?? 0,
         hops, effectiveRate: null, referenceRate: null, impactBps: null,
         fullyFillable: false, fillRatio: 0, unfilledAmount: requested,
         unroutableReason: reason, unroutableHopIndex: hopIndex, warnings: [],
@@ -165,6 +187,16 @@ export function computeRoute (
 
     const candidates = candidatePaths(cache, req.from, req.to, req.bridges);
     if (candidates.length === 0) return emptyResult(req, opts, now, 'no_market', null);
+    // `require` refuses where the default clamps. Checked after no_market so a mistyped asset is
+    // still reported as a mistyped asset. This is the cheap half of the test and the only half that
+    // can run before a book is walked: it sees the whole-wallet total against an exact-in ask, and
+    // it is blind to WHERE the money sits and to the exact-out side, where the input a route needs
+    // is not known until the book is walked. Both of those are caught after the solve instead —
+    // see balanceBound() below, which reads the evidence the walk leaves behind.
+    if (opts.balanceMode === 'require' && exactSide === 'in'
+        && capFor(opts.balances, req.from) < requested * (1 - 1e-9)) {
+        return emptyResult(req, opts, now, 'insufficient_balance', null);
+    }
     // Shared across every candidate path AND the winner's re-solve: the same market appears in
     // more than one candidate, and the winner is solved twice.
     const memo = createSolveCache();
@@ -185,7 +217,7 @@ export function computeRoute (
         const h = direct.hops[0]!;
         // Amount is in the hop's OUTPUT asset: base when buying it, quote when selling into it.
         const sol = solveHop(cache, feeRegistry, h, requested, h.side === 'buy', opts,
-            { collectQuotes: opts.includeQuotes }, memo);
+            { collectQuotes: opts.includeQuotes, budgets: budgetsForHop(opts.balances, h) }, memo);
         hops = [sol.hop];
         bestSingleEff = sol.bestSingleEffective;
         deadHopIndex = sol.hop.amountOut <= 0 ? 0 : null;
@@ -230,6 +262,23 @@ export function computeRoute (
     }
     const achieved = exactSide === 'in' ? amountIn : amountOut;
     const fillRatio = requested > 0 ? achieved / requested : 0;
+    // Both opt-in "refuse rather than shrink" flags are settled HERE, against what the caller
+    // asked for. Neither can be settled inside the engine any more: the balance clamp rewrites the
+    // hop target, so a hop handed a clamped 40k fills it exactly and reports itself full, and a
+    // request for 50k silently became a plan for 40k with unroutableReason null. Only reachable
+    // with balances in play — an unconstrained request is solved against the caller's own number,
+    // so the engine's own checks still say everything they used to.
+    if (opts.balances !== null && achieved < requested * (1 - 1e-9)
+        && (opts.requireFullFill || opts.balanceMode === 'require')) {
+        const walletCaused = balanceBound(hops, opts, req.from, requested, exactSide);
+        // `require` inverts the clamp; it does not second-guess the market. A book too thin to
+        // fill the ask is what requireFullFill is for, and answering insufficient_balance there
+        // would send the caller off to move money that was never the constraint.
+        if (walletCaused || opts.requireFullFill) {
+            return emptyResult(req, opts, now,
+                walletCaused ? 'insufficient_balance' : 'insufficient_depth', null, hops, pathsConsidered);
+        }
+    }
     // Both conditions are needed. Hop flags alone miss a trimmed route (every hop fills its own
     // reduced target, yet the request did not go through); the ratio alone misses a single hop that
     // filled the pinned side while reporting itself short.
@@ -282,6 +331,9 @@ export function computeRoute (
         certifiedOnly: opts.certifiedOnly, staleBookMs: opts.staleBookMs,
         stalenessPenaltyBps: opts.stalenessPenaltyBps, hopPenaltyBps: opts.hopPenaltyBps,
         requireFullFill: opts.requireFullFill,
+        balancesApplied: opts.balances?.normalized ?? null, balanceMode: opts.balanceMode,
+        balanceCapAmountIn: opts.balances === null ? null : capFor(opts.balances, req.from),
+        balanceEntryCount: opts.balances?.entryCount ?? 0,
         hops, effectiveRate, referenceRate, impactBps,
         fullyFillable, fillRatio, unfilledAmount,
         unroutableReason: null, unroutableHopIndex: null,
@@ -289,10 +341,34 @@ export function computeRoute (
     };
 }
 
+// Whether the WALLET, rather than the book, is why the route came up short. Only the first hop
+// spends anything the caller holds, so it is the only place the evidence can be — and it has to be
+// read off the finished walk, because the two shortfalls the whole-wallet total cannot see are
+// exactly the two that matter: money parked on a venue that does not quote the pair, and an
+// exact-out ask whose input is not known until the book is walked.
+function balanceBound (
+    hops: RouteHop[], opts: RouteOptions, from: string, requested: number, exactSide: 'in' | 'out',
+): boolean {
+    if (opts.balances === null) return false;
+    if (exactSide === 'in' && capFor(opts.balances, from) < requested * (1 - 1e-9)) return true;
+    const first = hops[0];
+    if (first === undefined) return false;
+    if (first.legs.some((l) => l.balanceLimited)) return true;
+    // A fresh venue with depth that the caller holds nothing on is capacity the book had and the
+    // wallet did not — the per-venue shortfall, which shows up nowhere in the legs that DID fill.
+    return first.fundedVenueCount < first.freshVenueCount;
+}
+
 function classify (hop: RouteHop, opts: RouteOptions): UnroutableReason {
     // venueCount, not quotes.length: quotes can be suppressed by includeQuotes=false, and the
     // reason a route failed must not depend on whether the caller asked for diagnostics.
     if (hop.venueCount === 0) return 'no_venues_matched_filter';
+    // Ahead of all_books_stale deliberately: when both are true the wallet is the half the caller
+    // can do something about within the next second. Gated on balances being supplied at all,
+    // because fundedVenueCount counts only venues that were fresh AND had depth on this side: it
+    // reaches zero for want of a book as readily as for want of money, and without the gate an
+    // all-stale unconstrained request would be answered with a wallet nobody described.
+    if (opts.balances !== null && hop.fundedVenueCount === 0) return 'insufficient_balance';
     if (hop.freshVenueCount === 0) return 'all_books_stale';
     if (opts.requireFullFill) return 'insufficient_depth';
     return 'no_liquidity';

@@ -10,7 +10,7 @@ import type { FeeRegistry } from '../cache/feeRegistry.js';
 import { computeRoute } from '../routing/route.js';
 import { candidatePairs } from '../routing/market.js';
 import { parseRouteQuery, type RouteQuery } from './routeQuery.js';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { extractApiKey, isPublicPath, makeAuthHook, resolveKey } from './auth.js';
 import { ApiKeyStore } from './keyStore.js';
 import { buildHttpHistogram, buildMetricsRegistry } from '../metrics.js';
@@ -20,6 +20,73 @@ import { LoopRegistry } from '../cache/loopRegistry.js';
 // the backlog. A router quote is only useful while it is current, so the newest frame the client
 // can actually receive beats a faithful replay of every stale one.
 const WS_MAX_BUFFERED_BYTES = 1_000_000;
+
+// A caller's holdings are the one query parameter that is nobody's business but theirs. The access
+// line records the full request URL, so redacting the audit record alone would accomplish exactly
+// nothing — the amounts would still be sitting in the diagnostic log, the one with the looser
+// retention and the wider read access of the two. Scrubbed where the URL is serialised, once, so
+// every line that carries a URL is covered rather than the ones anybody remembered.
+//
+// Matched on the DECODED parameter name rather than on the literal text `balances=`, because the
+// two ends of this disagreed: Fastify's querystring parser percent-decodes names, so `bal%61nces=`
+// is honoured as `balances` and the constraint is fully applied — while a regex reading the raw URL
+// never fired, and the amounts went to the log in the clear. Decoding here is what makes the
+// redactor see the same parameter the router acted on.
+function redactBalancesInUrl (url: string): string {
+    const q = url.indexOf('?');
+    if (q === -1) return url;
+    const parts = url.slice(q + 1).split('&');
+    for (let i = 0; i < parts.length; i++) {
+        const eq = parts[i]!.indexOf('=');
+        if (eq === -1) continue;
+        const rawName = parts[i]!.slice(0, eq);
+        if (decodedName(rawName) !== 'balances') continue;
+        // The name is left exactly as it arrived: redaction must not rewrite the request into one
+        // the server never saw, and how the caller spelled the parameter is itself worth keeping.
+        parts[i] = `${rawName}=[redacted]`;
+    }
+    return `${url.slice(0, q + 1)}${parts.join('&')}`;
+}
+
+// Lower-cased so a spelling the parser would NOT honour is still redacted: erring towards scrubbing
+// a parameter that turned out to be inert costs a log field, and erring the other way costs a
+// wallet. A malformed escape decodes to itself rather than throwing, for the same reason.
+function decodedName (raw: string): string {
+    try {
+        return decodeURIComponent(raw.replace(/\+/g, ' ')).toLowerCase();
+    } catch {
+        return raw.toLowerCase();
+    }
+}
+
+// Fastify's default req serializer, reproduced rather than wrapped: the real one lives on the root
+// logger Fastify wraps ours in, and childLoggerFactory cannot reach it. Reproducing its fields is
+// the cheap half of the trade — the alternative to overriding it is a URL with a wallet in it on
+// every access line, and the alternative to reproducing it is pino logging the raw Node request.
+// Every field Fastify emits is reproduced, `version` included: an access line that quietly drops a
+// field is a worse thing to discover mid-incident than the wallet redaction is to explain.
+function requestLogLine (request: unknown): Record<string, unknown> {
+    const req = request as {
+        method?: string; url?: string; host?: string; ip?: string;
+        headers?: Record<string, unknown>; socket?: { remotePort?: number };
+    };
+    return {
+        method: req.method,
+        url: typeof req.url === 'string' ? redactBalancesInUrl(req.url) : req.url,
+        version: req.headers?.['accept-version'],
+        host: req.host,
+        remoteAddress: req.ip,
+        remotePort: req.socket?.remotePort,
+    };
+}
+
+// Correlates one caller's portfolio across requests without recording it. Truncated because this
+// is an equality check between audit rows, not a commitment — and a full digest of a short,
+// low-entropy string invites someone to try reversing it.
+function balancesFingerprint (normalized: string | null): string | null {
+    if (normalized === null) return null;
+    return createHash('sha256').update(normalized).digest('hex').slice(0, 16);
+}
 
 export interface ServerOptions {
     // Overrides for the module-level config defaults. Injected rather than read from the global
@@ -99,7 +166,11 @@ export async function buildServer (
                 // Explicitly levelled so the audit trail survives LOG_LEVEL. A child may be more
                 // verbose than its parent in pino, which is exactly what is wanted here: turning
                 // down connector noise must not turn off the record of who called what.
-            }, { ...opts, level: config.auditLogLevel });
+            }, {
+                ...opts,
+                serializers: { ...opts.serializers, req: requestLogLine },
+                level: config.auditLogLevel,
+            });
         },
     });
 
@@ -346,6 +417,14 @@ export async function buildServer (
                 unroutableReason: result.unroutableReason,
                 unroutableHopIndex: result.unroutableHopIndex,
                 requireFullFill: parsed.opts.requireFullFill,
+                // The COUNT, the MODE and a fingerprint — never the amounts. What a dispute needs
+                // to answer is "was this route computed against a wallet, which one, and how big",
+                // and the fingerprint settles the middle question without the record itself
+                // becoming a copy of the caller's portfolio.
+                balancesApplied: result.balancesApplied !== null,
+                balancesHash: balancesFingerprint(result.balancesApplied),
+                balanceEntryCount: result.balanceEntryCount,
+                balanceMode: result.balanceMode,
                 stalenessPenaltyBps: result.stalenessPenaltyBps,
                 hopPenaltyBps: result.hopPenaltyBps,
                 staleBookMs: result.staleBookMs,
@@ -373,7 +452,10 @@ export async function buildServer (
         '/stream/route',
         { websocket: true },
         (socket, request) => {
-            const parsed = parseRouteQuery(request.query, randomUUID(), { includeQuotes: false });
+            // balances is refused here rather than honoured: a socket lives for minutes, and there
+            // is no socket.on('message') below to update the holdings it was opened with.
+            const parsed = parseRouteQuery(request.query, randomUUID(),
+                { includeQuotes: false, rejectBalances: true });
             if (!parsed.ok) {
                 socket.send(JSON.stringify({ error: parsed.error }));
                 socket.close(1008, 'invalid request');

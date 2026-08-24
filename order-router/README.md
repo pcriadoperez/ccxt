@@ -138,7 +138,7 @@ same "write path is async, read path is always local" shape, is a natural extens
 | GET | `/exchanges/status` | per-exchange WS health: connected, last update age, update/reconnect counts |
 | GET | `/symbols` | symbols currently cached |
 | GET | `/orderbook/:exchange/:symbol` | cached L2 book snapshot (symbol URL-encoded, e.g. `BTC%2FUSDT`) |
-| GET | `/route?from=&to=&amountIn=\|amountOut=` | book-walked, fee-adjusted route between two assets; multi-venue and multi-hop |
+| GET | `/route?from=&to=&amountIn=\|amountOut=` | book-walked, fee-adjusted route between two assets; multi-venue and multi-hop, optionally constrained to `balances` you hold |
 | WS | `/stream/route?from=&to=&amountIn=\|amountOut=` | the same route, pushed on book change (event-driven, not polled) |
 
 ### Using `/route`
@@ -234,6 +234,89 @@ The comparison costs real time: at full-discovery scale a single-candidate bridg
 of compute, and two compared candidates 1.10ms. Both are far below the HTTP round trip, but the
 work is not free, and `bridges=` (explicitly empty) turns it off entirely.
 
+### Routing what you can actually fund
+
+`balances` constrains the route to the money you hold, so what comes back is a plan you can
+execute rather than one you would have to fund first.
+
+```bash
+# "I hold 40k USDT on binance and another 1k somewhere I haven't said — route 50k of it"
+curl -H "x-api-key: $KEY" \
+  "$BASE/route?from=USDT&to=BTC&amountIn=50000&balances=binance.USDT:40000,USDT:1000"
+```
+
+Entries are comma-separated `[<exchangeId>.]<ASSET>:<amount>`. The venue prefix is **optional**: a
+bare `USDT:1000` is spendable anywhere ("I have not told you where it sits"), a qualified
+`binance.USDT:40000` funds only binance's legs. Per-venue qualification is the point — you cannot
+sell BTC on kraken because your BTC is on binance, and an asset-only constraint would keep
+returning five-venue splits nobody can execute while looking like it had been checked.
+
+It does two things, both **inside** the path solver:
+
+- **Caps the source.** `amountIn` is clamped to what you hold before any candidate path is scored.
+- **Budgets each venue.** During the book walk every venue can spend only what you have there, in
+  that hop's spend asset — quote on a buy, base on a sell.
+
+Both happen before `comparePaths` ranks, and that ordering is the whole feature. A size a thin
+market could not absorb may be *fully fillable* once clamped, and a fully-fillable path outranks a
+partial one — so the constraint changes **which path wins**, not just how big the winner is.
+Applying it to the finished answer could only mutilate that answer; it could never reach back and
+change the ranking. This is the same mistake the `comparePaths` tie-breaks above were added to
+undo.
+
+A shortfall **clamps** by default and `balanceMode=require` refuses instead, with
+`unroutableReason: insufficient_balance` — the polarity matches `requireFullFill` being the opt-in
+flag for "refuse rather than shrink". The ask itself is never rewritten: request 50,000 while
+holding 40,000 and you get `requestedAmount: 50000`, `fillRatio: 0.8`, `fullyFillable: false` and
+`balanceCapAmountIn: 40000`. Folding the clamp into `requestedAmount` would have made `fillRatio`
+report a full fill on a route that leaves 10,000 of your intent unmet.
+
+`require` covers every way the wallet can come up short, not only the one a whole-wallet total can
+see before a book is walked: too little of the asset, the right total sitting on venues that do not
+quote the pair (or that `exchanges` excludes), and the same on the `amountOut` side. It does not
+second-guess the market — a shortfall caused by thin books is depth, not funding, and
+`requireFullFill` is the flag for refusing that.
+
+`requireFullFill` is measured against **your** number too. The clamp rewrites the size before any
+book is walked, so a hop can fill its reduced target exactly while your request goes unmet; that
+refuses as well, reported as `insufficient_balance` rather than `insufficient_depth` because the
+wallet is the half you can do something about.
+
+Three more things worth knowing:
+
+- **Verify the echo before you execute.** `/route` declares its query type to Fastify with no JSON
+  schema, so a server that predates this feature *ignores* `balances` and answers byte-identically
+  to one that never received it. `balancesApplied` echoes back what was applied, canonicalised and
+  key-sorted; a client that does not check it can trade a plan computed against a portfolio the
+  server never saw.
+- **Bounds reject, they do not truncate.** At most 64 entries and 4096 characters, and a duplicate
+  key is a `400` rather than last-wins — a silently dropped entry is a route you cannot fund, which
+  is the exact failure this exists to prevent. An explicitly empty `balances=` means you hold
+  *nothing*, the same polarity `exchanges=` and `bridges=` already use; omit it for no constraint.
+- **Nothing is logged.** The access line's URL is redacted and the audit record keeps the entry
+  count, the mode and a truncated hash of the normalised string — never the amounts.
+
+Per hop you get `fundedVenueCount` beside `venueCount` and `freshVenueCount` (a venue you hold
+nothing on was neither filtered out nor stale, so folding it into either would make that counter
+lie), and per leg `balanceLimited`, which separates a leg capped by your wallet from one capped by
+the book. `fundedVenueCount` counts only venues a wallet could actually have funded — fresh, and
+with depth on the side being traded — so it equals `freshVenueCount` when you send no balances.
+Money on a stale venue is not funded capacity, and counting it as such made the router blame the
+market for a wallet problem.
+
+**What it deliberately does not do: seed a bridge.** Holdings in an intermediary asset are not
+treated as extra supply at hop 2. Two independent reasons. A `RouteResult` carries one scalar
+`amountIn` and defines `effectiveRate = amountOut / amountIn`, which is meaningless with two inputs
+in different assets. And it collides head-on with the backward trim above, which re-solves hop 1
+against what hop 2 actually took: the seeded amount would be attributed to hop 1's production and
+cut hop 1 back for delivering it, possibly to zero. If you hold bridge inventory, ask for a second
+route starting from that asset.
+
+`/stream/route` **refuses** `balances` outright, closing with `1008`. A socket is held open for
+minutes and there is no message channel on it to update the holdings it was opened with, so every
+frame after the first would price a portfolio you may already have traded away. Refusing is honest;
+silently pricing stale holdings is not.
+
 ### Price impact
 
 Every hop reports `referencePrice` — the best fee-adjusted price available on **any** fresh
@@ -259,8 +342,8 @@ available price, simply because the cheapest venue was too thin to use.
 
 ### Streaming
 
-`GET /stream/route` takes exactly the same query parameters as `GET /route` and pushes exactly the
-same body, recomputed whenever any market the route depends on moves — every leg of every candidate
+`GET /stream/route` takes the same query parameters as `GET /route` (bar `balances`, which it
+refuses — see above) and pushes exactly the same body, recomputed whenever any market the route depends on moves — every leg of every candidate
 path, so a bridged route does not miss half the price changes that alter its answer.
 
 ```bash

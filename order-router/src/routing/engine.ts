@@ -3,6 +3,7 @@ import type { FeeRegistry } from '../cache/feeRegistry.js';
 import type { RoutingQuote } from '../types.js';
 import { isCertified } from '../exchangeMeta.js';
 import type { RouteLeg, RouteOptions, RouteHop } from './types.js';
+import { budgetFor, cloneBudgets, drawBudget, type HopBudgets } from './balances.js';
 import type { ResolvedHop } from './market.js';
 
 interface ConsolidatedLevel {
@@ -105,7 +106,12 @@ function mergeFresh (venues: VenueBook[], side: 'buy' | 'sell', allow?: Set<stri
 }
 
 interface Allocation {
-    perVenue: Map<string, { amount: number; rawNotional: number; effNotional: number; feeCost: number; fee: number }>;
+    perVenue: Map<string, {
+        amount: number; rawNotional: number; effNotional: number; feeCost: number; fee: number;
+        // The walk stopped short at this venue because the budget ran out, not because the book
+        // did. The two look identical in the numbers and need different follow-up.
+        budgetLimited: boolean;
+    }>;
     baseFilled: number;
     quoteSpent: number;
 }
@@ -115,21 +121,49 @@ const EMPTY_ALLOCATION = (): Allocation => ({ perVenue: new Map(), baseFilled: 0
 // `target` is interpreted in BASE units when byBase, else in QUOTE units. Exact-in on a buy
 // ("spend 50k USDT") is a notional walk, which is a genuinely different traversal from the
 // quantity walk — you stop when the money runs out, not when the size is reached.
-function allocate (levels: ConsolidatedLevel[], target: number, byBase: boolean): Allocation {
+//
+// `budgets` is what the caller can actually fund at each venue, in this hop's SPEND asset. It is
+// drawn down here, level by level, rather than trimmed off the finished allocation: the greedy is
+// cost-minimal only because it walks a price-ordered list, and a capacitated greedy over that same
+// list keeps that structure, while cutting the result afterwards would take the size off whichever
+// venue happened to be last rather than off the dearest levels. The budget is MUTATED, so every
+// pass hands in its own clone.
+function allocate (
+    levels: ConsolidatedLevel[], target: number, byBase: boolean, budgets: HopBudgets | null = null,
+): Allocation {
     const perVenue: Allocation['perVenue'] = new Map();
+    // Venues the WALLET cut short, collected separately from the entries above. A budget that runs
+    // out exactly on a level boundary leaves nothing to take at the venue's next level, so a flag
+    // set only while something is still being taken never fires — and the executor is told
+    // "depth-capped" about a leg that was purely wallet-capped.
+    const budgetLimited = new Set<string>();
     let baseFilled = 0;
     let quoteSpent = 0;
     let remaining = target;
     for (const lvl of levels) {
         if (remaining <= 1e-15) break;
-        const takeBase = byBase
+        const wanted = byBase
             ? Math.min(remaining, lvl.amount)
             : Math.min(remaining / lvl.effectivePrice, lvl.amount);
+        // Capacity, not set membership: a venue the caller is only partly funded on still supplies
+        // its cheap levels, up to what the wallet covers. The spend is measured in effectivePrice
+        // terms because that is what the hop reports as amountIn — a budget checked against the raw
+        // price would permit a route the response then prices above it.
+        const capInBase = budgets === null
+            ? Infinity
+            : (budgets.spendIsBase
+                ? budgetFor(budgets, lvl.exchangeId)
+                : budgetFor(budgets, lvl.exchangeId) / lvl.effectivePrice);
+        const takeBase = Math.min(wanted, capInBase);
+        // Recorded BEFORE the zero-take bail-out below, which is the level the exhausted budget
+        // actually shows up on.
+        if (budgets !== null && capInBase < wanted) budgetLimited.add(lvl.exchangeId);
         if (takeBase <= 0) continue;
         const eff = takeBase * lvl.effectivePrice;
         const raw = takeBase * lvl.rawPrice;
         const e = perVenue.get(lvl.exchangeId)
-            ?? { amount: 0, rawNotional: 0, effNotional: 0, feeCost: 0, fee: lvl.takerFeeRate };
+            ?? { amount: 0, rawNotional: 0, effNotional: 0, feeCost: 0, fee: lvl.takerFeeRate, budgetLimited: false };
+        if (budgets !== null) drawBudget(budgets, lvl.exchangeId, budgets.spendIsBase ? takeBase : eff);
         e.amount += takeBase;
         e.rawNotional += raw;
         e.effNotional += eff;
@@ -139,6 +173,7 @@ function allocate (levels: ConsolidatedLevel[], target: number, byBase: boolean)
         quoteSpent += eff;
         remaining -= byBase ? takeBase : eff;
     }
+    for (const [exchangeId, e] of perVenue) e.budgetLimited = budgetLimited.has(exchangeId);
     return { perVenue, baseFilled, quoteSpent };
 }
 
@@ -154,6 +189,7 @@ function toLegs (alloc: Allocation, side: 'buy' | 'sell'): RouteLeg[] {
             takerFeeRate: v.fee,
             feeCost: v.feeCost,
             effectivePrice: side === 'buy' ? averagePrice * (1 + v.fee) : averagePrice * (1 - v.fee),
+            balanceLimited: v.budgetLimited,
         });
     }
     return legs.sort((a, b) => b.amount - a.amount);
@@ -183,6 +219,10 @@ export interface SolveHopOptions {
     // Per-venue diagnostic quotes. Skipped while comparing candidate paths, where only the
     // end-to-end output of each path matters and the losing paths are never reported in full.
     collectQuotes: boolean;
+    // What the caller can fund at each venue for this hop, or null/absent when unconstrained.
+    // Treated as immutable input here: every allocate() pass below draws down its OWN clone,
+    // because the passes are alternative plans for the same money, not successive spends of it.
+    budgets?: HopBudgets | null;
 }
 
 // Whether the per-venue pass has to run at all. It is what produces quotes[] and the best-single
@@ -190,6 +230,35 @@ export interface SolveHopOptions {
 // paths needs neither, and that pass is the most expensive part of a hop.
 function needsPerVenuePass (opts: RouteOptions, solveOpts: SolveHopOptions): boolean {
     return solveOpts.collectQuotes || opts.strategy === 'best_single';
+}
+
+interface SingleVenueSolve {
+    filled: number;
+    effective: number;
+    fullyFillable: boolean;
+}
+
+// Ranks two single-venue solves for best_single. Fill first, price second — rate is meaningless on
+// size you cannot get. `rankByFilled` generalises that first criterion from a flag to a comparison
+// and is on ONLY when a wallet is in play: budgets can make EVERY venue capacity-bound at once, the
+// flag then reads false everywhere, and the choice fell through to price — handing the whole order
+// to the cheap venue holding 10 USDT while the one holding 900 sat unused. Unconstrained the flag
+// still decides on its own, so those requests rank exactly as they always did.
+function betterSingle (
+    candidate: SingleVenueSolve, incumbent: SingleVenueSolve | undefined,
+    side: 'buy' | 'sell', rankByFilled: boolean,
+): boolean {
+    if (incumbent === undefined) return true;
+    if (candidate.fullyFillable !== incumbent.fullyFillable) return candidate.fullyFillable;
+    if (rankByFilled) {
+        // Relative, so two venues that filled the same size down to float noise are still settled
+        // on price rather than on which of them the cache happened to list first.
+        const scale = Math.max(candidate.filled, incumbent.filled);
+        if (Math.abs(candidate.filled - incumbent.filled) > scale * 1e-12) {
+            return candidate.filled > incumbent.filled;
+        }
+    }
+    return side === 'buy' ? candidate.effective < incumbent.effective : candidate.effective > incumbent.effective;
 }
 
 // Solves ONE hop. `target` is in base units when byBase, else quote units.
@@ -220,15 +289,39 @@ export function solveHop (
         return m;
     };
 
-    const quotes: RoutingQuote[] = [];
-    let bestSingle: { exchangeId: string; effective: number; fullyFillable: boolean } | undefined;
+    // The pristine wallet for this hop. Never spent from directly — every pass below draws down a
+    // clone, because they are alternative plans for the same money.
+    const budgets = solveOpts.budgets ?? null;
+    // Both counted over the BOOKS rather than over what they happened to fill. freshVenueCount was
+    // the same number as "venues that filled something" while every fresh book with levels filled
+    // SOMETHING of a positive target — then a budget of zero, or a target clamped to zero by an
+    // empty wallet, made a perfectly fresh venue fill nothing, and a counter whose job is to say
+    // "every book was stale" started saying it about books that were not.
     let freshVenueCount = 0;
+    // A THIRD bucket beside venueCount and freshVenueCount: an unfunded venue was neither filtered
+    // out nor stale, so folding it into either would make that one lie. Read off the untouched
+    // budget, so it reports the wallet rather than whatever the last allocation left behind — and
+    // counted over the SAME venues freshVenueCount is, because a stale venue, or one quoting only
+    // the other side, is not capacity the wallet failed to reach. Counting those as funded made
+    // "every venue that could have traded was unfunded" unreachable in the two commonest shapes
+    // there are, and the router went on blaming the market for the caller's wallet.
+    let fundedVenueCount = 0;
+    for (const v of venues) {
+        if (!v.fresh || v.levels.length === 0) continue;
+        freshVenueCount += 1;
+        if (budgets === null || budgetFor(budgets, v.exchangeId) > 0) fundedVenueCount += 1;
+    }
+
+    const quotes: RoutingQuote[] = [];
+    let bestSingle: SingleVenueSolve & { exchangeId: string } | undefined;
     // Per-venue solve: needed for the best_single strategy and for savingVsBestSingleBps, so it
     // runs whether or not the quotes array is ultimately reported — but not when neither is
     // wanted, which is the case for every losing candidate in a path comparison.
     const perVenue = needsPerVenuePass(opts, solveOpts);
     for (const v of (perVenue ? venues : [])) {
-        const single = allocate(v.levels, target, byBase);
+        // Each venue's own clone: this pass asks "what would this venue alone do?" of every venue,
+        // and sharing one budget would let the first one answered spend the wallet for the rest.
+        const single = allocate(v.levels, target, byBase, cloneBudgets(budgets));
         if (single.baseFilled <= 0) {
             if (solveOpts.collectQuotes) {
                 quotes.push({
@@ -256,29 +349,25 @@ export function solveHop (
             });
         }
         if (!v.fresh) continue;
-        freshVenueCount += 1;
-        // Prefer a venue that can fill the whole size; among equals, the better effective price.
-        const better = bestSingle === undefined
-            || (fullyFillable !== bestSingle.fullyFillable ? fullyFillable
-                : (hop.side === 'buy' ? effAvg < bestSingle.effective : effAvg > bestSingle.effective));
-        if (better) bestSingle = { exchangeId: v.exchangeId, effective: effAvg, fullyFillable };
-    }
-    if (!perVenue) {
-        for (const v of venues) if (v.fresh && v.levels.length > 0) freshVenueCount += 1;
+        const filled = byBase ? single.baseFilled : single.quoteSpent;
+        if (betterSingle({ filled, effective: effAvg, fullyFillable }, bestSingle, hop.side, budgets !== null)) {
+            bestSingle = { exchangeId: v.exchangeId, effective: effAvg, fullyFillable, filled };
+        }
     }
 
     let alloc: Allocation;
     if (opts.strategy === 'best_single') {
         alloc = bestSingle
-            ? allocate(mergeFresh(venues, hop.side, new Set([bestSingle.exchangeId])), target, byBase)
+            ? allocate(mergeFresh(venues, hop.side, new Set([bestSingle.exchangeId])), target, byBase,
+                cloneBudgets(budgets))
             : EMPTY_ALLOCATION();
     } else {
-        alloc = allocate(mergedAll(), target, byBase);
+        alloc = allocate(mergedAll(), target, byBase, cloneBudgets(budgets));
 
         if (opts.strategy === 'split_capped' && alloc.perVenue.size > opts.maxVenues) {
             const keep = new Set([...alloc.perVenue.entries()]
                 .sort((a, b) => b[1].amount - a[1].amount).slice(0, opts.maxVenues).map(([e]) => e));
-            let capped = allocate(mergeFresh(venues, hop.side, keep), target, byBase);
+            let capped = allocate(mergeFresh(venues, hop.side, keep), target, byBase, cloneBudgets(budgets));
             // Feasibility repair: top-N-by-volume favours venues that were cheap at the top, not
             // deep ones, so it can select a set that cannot fill at all.
             const filled = byBase ? capped.baseFilled : capped.quoteSpent;
@@ -292,7 +381,8 @@ export function solveHop (
                 }
                 const deepest = new Set([...depth.entries()]
                     .sort((a, b) => b[1] - a[1]).slice(0, opts.maxVenues).map(([e]) => e));
-                const repaired = allocate(mergeFresh(venues, hop.side, deepest), target, byBase);
+                const repaired = allocate(mergeFresh(venues, hop.side, deepest), target, byBase,
+                    cloneBudgets(budgets));
                 if ((byBase ? repaired.baseFilled : repaired.quoteSpent) > filled) capped = repaired;
             }
             alloc = capped;
@@ -303,7 +393,19 @@ export function solveHop (
                 .filter(([, v]) => v.effNotional < opts.minLegNotional).map(([e]) => e));
             if (dust.size > 0 && dust.size < alloc.perVenue.size) {
                 const keep = new Set([...alloc.perVenue.keys()].filter((e) => !dust.has(e)));
-                alloc = allocate(mergeFresh(venues, hop.side, keep), target, byBase);
+                const redone = allocate(mergeFresh(venues, hop.side, keep), target, byBase, cloneBudgets(budgets));
+                // The re-solve is single-pass and assumes the freed size is always absorbable
+                // somewhere else. That stops being true once venues are capacity-bound: the
+                // survivors may have the depth but not the funding, and then dropping a dust leg
+                // SHRINKS the route instead of redistributing it. Keep the better of the two —
+                // but ONLY where a budget could have caused it. minLegNotional is a hard floor the
+                // caller set because their venues reject smaller orders, and applying this guard
+                // unconditionally turned it into a suggestion: a survivor that merely lacked DEPTH
+                // also shrinks the re-solve, and the dust leg came back on requests that sent no
+                // balances at all — reported as a full fill, with a leg the venue will bounce.
+                const before = byBase ? alloc.baseFilled : alloc.quoteSpent;
+                const after = byBase ? redone.baseFilled : redone.quoteSpent;
+                if (budgets === null || after >= before - Math.abs(before) * 1e-12) alloc = redone;
             }
         }
     }
@@ -339,7 +441,7 @@ export function solveHop (
             referencePrice, impactBps,
             quotes,
             venueCount: venues.length,
-            freshVenueCount,
+            freshVenueCount, fundedVenueCount,
         },
         bestSingleEffective: bestSingle?.effective ?? null,
     };

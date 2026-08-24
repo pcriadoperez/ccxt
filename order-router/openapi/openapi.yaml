@@ -55,7 +55,7 @@ info:
 
     ### Streaming
 
-    `GET /stream/route` is the same request over a WebSocket: identical query parameters, identical
+    `GET /stream/route` is the same request over a WebSocket: the same query parameters, identical
     response body, pushed whenever any market the route depends on moves. Bridged routes watch
     every leg, and the watch set is re-derived as markets appear, so a route that switches to a
     newly-listed market stays subscribed to it. Invalid parameters close the socket with code 1008
@@ -120,110 +120,23 @@ paths:
         "best venue" endpoint or field: a single-venue answer is just a hop with one leg, so
         `strategy` changes the number of legs and nothing else about the shape.
       parameters:
-        - name: from
-          in: query
-          required: true
-          description: The asset you are spending, e.g. `USDT`. Case-insensitive.
-          schema: { type: string }
-          example: USDT
-        - name: to
-          in: query
-          required: true
-          description: The asset you want to acquire, e.g. `BTC`. Must differ from `from`.
-          schema: { type: string }
-          example: BTC
-        - name: amountIn
-          in: query
-          description: |
-            Exact amount of `from` to spend. Supply this OR `amountOut`, never both — supplying
-            both is a 400 rather than a silent preference, so a typo cannot become a confidently
-            wrong route.
-          schema: { type: number, format: double, exclusiveMinimum: 0 }
-          example: 50000
-        - name: amountOut
-          in: query
-          description: Exact amount of `to` to acquire. Supply this OR `amountIn`, never both.
-          schema: { type: number, format: double, exclusiveMinimum: 0 }
-          example: 1
-        - name: bridges
-          in: query
-          description: |
-            Comma-separated intermediary assets to consider. Defaults to `USDT,USDC,BTC,ETH`. An
-            explicitly EMPTY value disables bridging entirely (direct markets only).
-
-            Every listed bridge that has both legs available is solved and scored against the direct
-            market, and the best wins — the router does not stop at the first bridge that happens to
-            work. Each extra candidate costs real compute (roughly +0.5ms per two-hop candidate at
-            full-discovery scale), so trim the list when you know which intermediary you want.
-          schema: { type: string, default: 'USDT,USDC,BTC,ETH' }
-          example: USDT,USDC
-        - name: includeQuotes
-          in: query
-          description: |
-            Return the per-venue `quotes[]` diagnostic. Defaults to true on this endpoint and
-            **false on `/stream/route`**, where it is roughly 90% of the payload and would be
-            re-sent many times a second for an explanation nobody reads that often. Suppressing it
-            never changes the routing decision — only `savingVsBestSingleBps` may become null, since
-            the single-venue baseline comes from the same pass.
-          schema: { type: boolean, default: true }
-        - name: hopPenaltyBps
-          in: query
-          description: |
-            How much better a bridged route must be, per EXTRA hop, before it beats a direct market.
-            Defaults to 5. A second order is a second chance for the price to move between fills,
-            and that risk is not priced into any order book — so a bridge winning by a hair is not
-            actually the better trade. Set 0 to compare purely on rate.
-          schema: { type: number, minimum: 0, maximum: 10000, default: 5 }
-        - name: strategy
-          in: query
-          description: |
-            `best_single` — one venue per hop (a hop with one leg).
-            `split_optimal` — minimum cost across the consolidated fee-adjusted book, unlimited venues.
-            `split_capped` — best price using at most `maxVenues` per hop. Greedy approximation, not
-            a proven optimum: it solves unconstrained, keeps the highest-volume venues, re-solves,
-            and falls back to the deepest venues if that set cannot fill.
-          schema: { type: string, enum: [best_single, split_optimal, split_capped], default: best_single }
-        - name: maxVenues
-          in: query
-          description: Per-hop venue cap for `split_capped`. Fewer venues means less execution risk and fewer funded accounts.
-          schema: { type: integer, minimum: 1, default: 3 }
-        - name: includeFees
-          in: query
-          description: Set false to rank on raw price only — useful with negotiated tiers or maker rebates. Then feeCost is 0 and effectivePrice equals averagePrice.
-          schema: { type: boolean, default: true }
-        - name: minLegNotional
-          in: query
-          description: |
-            Suppress legs below this quote-currency notional and reallocate the freed size, so a
-            split does not produce legs that would be rejected by venue minimum-order rules.
-            If EVERY leg falls below it the route is kept rather than emptied.
-          schema: { type: number, minimum: 0, default: 0 }
-        - name: exchanges
-          in: query
-          description: |
-            Comma-separated venue allowlist — only these are considered, e.g. `binance,kraken,bybit`.
-            Omit for no restriction. An explicitly EMPTY value means no venues (yielding an empty
-            route), not all venues.
-          schema: { type: string }
-          example: binance,kraken,bybit
-        - name: certified
-          in: query
-          description: |
-            When true, consider only exchanges CCXT marks as certified — the subset it actively
-            maintains and tests to a higher bar (22 of 80 pro classes at time of writing).
-            Composes with `exchanges` as an intersection.
-          schema: { type: boolean, default: false }
-        - name: requireFullFill
-          in: query
-          description: |
-            Refuse partial fills. When cached depth cannot cover the whole size the route is empty
-            with `unroutableReason: insufficient_depth`, rather than returning a partial whose
-            `effectiveRate` prices only the filled portion.
-          schema: { type: boolean, default: false }
-        - name: x-request-id
-          in: header
-          description: Optional caller-supplied audit id. Echoed in the body and the `x-request-id` response header; one is minted if absent.
-          schema: { type: string, maxLength: 200 }
+        - $ref: '#/components/parameters/RouteFrom'
+        - $ref: '#/components/parameters/RouteTo'
+        - $ref: '#/components/parameters/RouteAmountIn'
+        - $ref: '#/components/parameters/RouteAmountOut'
+        - $ref: '#/components/parameters/RouteBridges'
+        - $ref: '#/components/parameters/RouteIncludeQuotes'
+        - $ref: '#/components/parameters/RouteHopPenaltyBps'
+        - $ref: '#/components/parameters/RouteStrategy'
+        - $ref: '#/components/parameters/RouteMaxVenues'
+        - $ref: '#/components/parameters/RouteIncludeFees'
+        - $ref: '#/components/parameters/RouteMinLegNotional'
+        - $ref: '#/components/parameters/RouteExchanges'
+        - $ref: '#/components/parameters/RouteCertified'
+        - $ref: '#/components/parameters/RouteRequireFullFill'
+        - $ref: '#/components/parameters/RouteBalances'
+        - $ref: '#/components/parameters/RouteBalanceMode'
+        - $ref: '#/components/parameters/RouteRequestIdHeader'
       responses:
         '200':
           description: |
@@ -257,6 +170,67 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/RouteResult' }
+  /stream/route:
+    get:
+      tags: [Routing]
+      summary: The same route, pushed over a WebSocket whenever it changes
+      description: |
+        A WebSocket upgrade rather than a plain GET: the server answers `101` and then pushes a
+        `RouteResult` frame whenever any market the route depends on moves — every leg of every
+        candidate path, so a bridged route does not miss half the price changes that alter its
+        answer. The watch set is re-derived as markets appear, so a route that switches to a
+        newly-listed market stays subscribed to it.
+
+        The parameters below are shared objects, not copies: both endpoints run ONE parser, so they
+        cannot disagree about what is valid. When they had separate parsing the streaming path
+        skipped amount validation entirely, and `amount=abc` became a NaN that defeated the book
+        walk's termination check and traversed every level of every book — repeatedly, on every
+        update.
+
+        Two divergences, both deliberate:
+
+        - `includeQuotes` defaults to FALSE here. Measured on the live service, one socket pushed
+          658 frames/sec at 9.3KB each, of which the per-venue quotes array was the overwhelming
+          majority. A once-per-request explanation is cheap; the same explanation ten times a
+          second is not.
+        - `balances` is REFUSED outright, and so is `balanceMode`. A socket is held open for
+          minutes and there is no message channel on it to update the holdings it was opened with,
+          so every frame after the first would price a portfolio the caller may already have traded
+          away. Refusing is honest; silently pricing stale holdings is not. `balanceMode` alone
+          says what to do about holdings this endpoint will not accept, so it is refused with them
+          rather than accepted and dropped. Use `GET /route`.
+      parameters:
+        - $ref: '#/components/parameters/RouteFrom'
+        - $ref: '#/components/parameters/RouteTo'
+        - $ref: '#/components/parameters/RouteAmountIn'
+        - $ref: '#/components/parameters/RouteAmountOut'
+        - $ref: '#/components/parameters/RouteBridges'
+        - $ref: '#/components/parameters/RouteHopPenaltyBps'
+        - $ref: '#/components/parameters/RouteStrategy'
+        - $ref: '#/components/parameters/RouteMaxVenues'
+        - $ref: '#/components/parameters/RouteIncludeFees'
+        - $ref: '#/components/parameters/RouteMinLegNotional'
+        - $ref: '#/components/parameters/RouteExchanges'
+        - $ref: '#/components/parameters/RouteCertified'
+        - $ref: '#/components/parameters/RouteRequireFullFill'
+        - $ref: '#/components/parameters/RouteRequestIdHeader'
+        - $ref: '#/components/parameters/StreamIncludeQuotes'
+      responses:
+        '101':
+          description: |
+            Upgraded. Every subsequent frame is a JSON RouteResult, identical in shape to the body
+            `GET /route` returns.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RouteResult' }
+        '400':
+          description: |
+            Never returned as an HTTP status once the upgrade is accepted. A rejected request is
+            closed with WebSocket code `1008` after one JSON frame carrying the same `error` string
+            the REST endpoint would have returned as a 400 — including `balances` being unsupported
+            here, and a bridged exact-out, which REST refuses as a 501.
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
   /orderbook/{exchange}/{symbol}:
     get:
       tags: [Market data]
@@ -338,6 +312,191 @@ paths:
               schema: { type: string }
         '401': { $ref: '#/components/responses/Unauthorized' }
 components:
+  parameters:
+    RouteFrom:
+      name: from
+      in: query
+      required: true
+      description: The asset you are spending, e.g. `USDT`. Case-insensitive.
+      schema: { type: string }
+      example: USDT
+    RouteTo:
+      name: to
+      in: query
+      required: true
+      description: The asset you want to acquire, e.g. `BTC`. Must differ from `from`.
+      schema: { type: string }
+      example: BTC
+    RouteAmountIn:
+      name: amountIn
+      in: query
+      description: |
+        Exact amount of `from` to spend. Supply this OR `amountOut`, never both — supplying
+        both is a 400 rather than a silent preference, so a typo cannot become a confidently
+        wrong route.
+      schema: { type: number, format: double, exclusiveMinimum: 0 }
+      example: 50000
+    RouteAmountOut:
+      name: amountOut
+      in: query
+      description: Exact amount of `to` to acquire. Supply this OR `amountIn`, never both.
+      schema: { type: number, format: double, exclusiveMinimum: 0 }
+      example: 1
+    RouteBridges:
+      name: bridges
+      in: query
+      description: |
+        Comma-separated intermediary assets to consider. Defaults to `USDT,USDC,BTC,ETH`. An
+        explicitly EMPTY value disables bridging entirely (direct markets only).
+
+        Every listed bridge that has both legs available is solved and scored against the direct
+        market, and the best wins — the router does not stop at the first bridge that happens to
+        work. Each extra candidate costs real compute (roughly +0.5ms per two-hop candidate at
+        full-discovery scale), so trim the list when you know which intermediary you want.
+      schema: { type: string, default: 'USDT,USDC,BTC,ETH' }
+      example: USDT,USDC
+    RouteIncludeQuotes:
+      name: includeQuotes
+      in: query
+      description: |
+        Return the per-venue `quotes[]` diagnostic. Defaults to true on this endpoint and
+        **false on `/stream/route`**, where it is roughly 90% of the payload and would be
+        re-sent many times a second for an explanation nobody reads that often. Suppressing it
+        never changes the routing decision — only `savingVsBestSingleBps` may become null, since
+        the single-venue baseline comes from the same pass.
+      schema: { type: boolean, default: true }
+    RouteHopPenaltyBps:
+      name: hopPenaltyBps
+      in: query
+      description: |
+        How much better a bridged route must be, per EXTRA hop, before it beats a direct market.
+        Defaults to 5. A second order is a second chance for the price to move between fills,
+        and that risk is not priced into any order book — so a bridge winning by a hair is not
+        actually the better trade. Set 0 to compare purely on rate.
+      schema: { type: number, minimum: 0, maximum: 10000, default: 5 }
+    RouteStrategy:
+      name: strategy
+      in: query
+      description: |
+        `best_single` — one venue per hop (a hop with one leg).
+        `split_optimal` — minimum cost across the consolidated fee-adjusted book, unlimited venues.
+        `split_capped` — best price using at most `maxVenues` per hop. Greedy approximation, not
+        a proven optimum: it solves unconstrained, keeps the highest-volume venues, re-solves,
+        and falls back to the deepest venues if that set cannot fill.
+      schema: { type: string, enum: [best_single, split_optimal, split_capped], default: best_single }
+    RouteMaxVenues:
+      name: maxVenues
+      in: query
+      description: Per-hop venue cap for `split_capped`. Fewer venues means less execution risk and fewer funded accounts.
+      schema: { type: integer, minimum: 1, default: 3 }
+    RouteIncludeFees:
+      name: includeFees
+      in: query
+      description: Set false to rank on raw price only — useful with negotiated tiers or maker rebates. Then feeCost is 0 and effectivePrice equals averagePrice.
+      schema: { type: boolean, default: true }
+    RouteMinLegNotional:
+      name: minLegNotional
+      in: query
+      description: |
+        Suppress legs below this quote-currency notional and reallocate the freed size, so a
+        split does not produce legs that would be rejected by venue minimum-order rules.
+        Two exceptions, both of which keep a sub-floor leg rather than return a worse route:
+        if EVERY leg falls below it the route is kept rather than emptied, and if `balances` are
+        in play and the surviving venues cannot absorb the freed size — they have the depth but
+        not your funding — the dropped leg is reinstated instead of shrinking the fill. Without
+        `balances` the floor is absolute.
+      schema: { type: number, minimum: 0, default: 0 }
+    RouteExchanges:
+      name: exchanges
+      in: query
+      description: |
+        Comma-separated venue allowlist — only these are considered, e.g. `binance,kraken,bybit`.
+        Omit for no restriction. An explicitly EMPTY value means no venues (yielding an empty
+        route), not all venues.
+      schema: { type: string }
+      example: binance,kraken,bybit
+    RouteCertified:
+      name: certified
+      in: query
+      description: |
+        When true, consider only exchanges CCXT marks as certified — the subset it actively
+        maintains and tests to a higher bar (22 of 80 pro classes at time of writing).
+        Composes with `exchanges` as an intersection.
+      schema: { type: boolean, default: false }
+    RouteRequireFullFill:
+      name: requireFullFill
+      in: query
+      description: |
+        Refuse partial fills. When cached depth cannot cover the whole size the route is empty
+        with `unroutableReason: insufficient_depth`, rather than returning a partial whose
+        `effectiveRate` prices only the filled portion.
+
+        Measured against what YOU asked for, not against whatever the solver was finally handed:
+        with `balances` in play the size is clamped to what you hold before any book is walked, so
+        a hop can fill its reduced target exactly and still leave your request unmet. That case
+        refuses too, with `unroutableReason: insufficient_balance` — the reason names the half you
+        can do something about.
+      schema: { type: boolean, default: false }
+    RouteBalances:
+      name: balances
+      in: query
+      description: |
+        What you actually hold, so the route is one you can execute. Comma-separated
+        `[<exchangeId>.]<ASSET>:<amount>` entries, e.g.
+        `binance.USDT:40000,kraken.BTC:0.5,USDT:1000`. The venue prefix is OPTIONAL: a bare
+        asset is spendable anywhere ("I have not told you where it sits"), a qualified one funds
+        only that venue's legs — you cannot sell BTC on kraken because your BTC is on binance.
+
+        Applied INSIDE the path solver, before candidate paths are ranked: the source amount is
+        capped at what you hold, and each venue is given a spending budget during the book walk.
+        It therefore changes WHICH path wins, not just how big the winner is — a size a thin
+        market could not absorb may be fully fillable once clamped, and a fully-fillable path
+        outranks a partial one.
+
+        An explicitly EMPTY value means you hold nothing (an unroutable request with
+        `unroutableReason: insufficient_balance`), not "no constraint". Omit the parameter for
+        no constraint. At most 64 entries and 4096 characters; both bounds REJECT rather than
+        truncate, because a silently dropped entry is a route you cannot fund. A duplicate key
+        is a 400 rather than last-wins.
+
+        NOT accepted on `/stream/route`: a socket lives for minutes and has no channel to update
+        the holdings it opened with.
+
+        Never logged. The access line's URL is redacted and the audit record keeps the entry
+        count, the mode and a truncated hash — never the amounts.
+      schema: { type: string, maxLength: 4096 }
+      example: binance.USDT:40000,kraken.BTC:0.5,USDT:1000
+    RouteBalanceMode:
+      name: balanceMode
+      in: query
+      description: |
+        What to do when `balances` cannot cover the request. `cap` (default) routes what you can
+        fund and reports the shortfall through `fillRatio` and `balanceCapAmountIn`; `require`
+        refuses instead, with `unroutableReason: insufficient_balance`. Clamping is the default
+        because `requireFullFill` is the opt-in flag for "refuse rather than shrink".
+
+        `require` covers every way your wallet can come up short, not just the obvious one: too
+        little of the asset in total, the right total sitting on venues that do not quote the
+        pair (or that `exchanges` excludes), and the same on the `amountOut` side, where the
+        input a route needs is not known until the book is walked.
+
+        What it does NOT do is second-guess the market. A shortfall caused by thin books is
+        depth, not funding, and answering `insufficient_balance` there would send you off to move
+        money that was never the constraint — use `requireFullFill` to refuse that.
+      schema: { type: string, enum: [cap, require], default: cap }
+    RouteRequestIdHeader:
+      name: x-request-id
+      in: header
+      description: Optional caller-supplied audit id. Echoed in the body and the `x-request-id` response header; one is minted if absent.
+      schema: { type: string, maxLength: 200 }
+    StreamIncludeQuotes:
+      name: includeQuotes
+      in: query
+      description: |
+        Return the per-venue `quotes[]` diagnostic. Defaults to FALSE on this endpoint — see the
+        endpoint description for the measured reason. An explicit `includeQuotes=true` still wins,
+        and suppressing it never changes the routing decision.
+      schema: { type: boolean, default: false }
   securitySchemes:
     ApiKeyHeader:
       type: apiKey
@@ -415,7 +574,11 @@ components:
         filledAmount:
           type: number
           format: double
-          description: How much this venue's cached book could fill, always in BASE units.
+          description: |
+            How much this venue's cached book could fill, always in BASE units. When `balances` are
+            supplied this is what the venue could fill FOR YOU — bounded by what you hold there —
+            because the same figure decides the `best_single` venue, and a baseline drawn from a
+            venue you cannot fund would recommend one you cannot use.
         averagePrice:
           type: [number, 'null']
           description: |
@@ -443,6 +606,12 @@ components:
         takerFeeRate: { type: number, format: double, example: 0.001 }
         feeCost: { type: number, format: double, description: What the fee costs on this leg, in quote currency. }
         effectivePrice: { type: number, format: double, description: Fee-adjusted price for this leg. }
+        balanceLimited:
+          type: boolean
+          description: |
+            True when this leg was cut short by your balance rather than by the book — more was on
+            offer here, you just could not pay for it. Size-capped, not depth-capped: the two look
+            identical in the numbers and need different follow-up. Always false without `balances`.
     RouteHop:
       type: object
       description: |
@@ -497,6 +666,16 @@ components:
         freshVenueCount:
           type: integer
           description: How many considered venues for this hop were within the freshness cutoff.
+        fundedVenueCount:
+          type: integer
+          description: |
+            How many considered venues you could actually spend at for this hop. A THIRD bucket
+            beside the two above, for the same reason they are separate from each other: a venue you
+            hold nothing on was neither excluded by a filter nor stale, and folding it into either
+            counter would make that counter lie. Counted over the venues a wallet COULD have
+            funded — fresh, and with depth on the side being traded — so it equals
+            `freshVenueCount` when no `balances` were sent; a stale venue you happen to hold money
+            on is not funded capacity.
         quotes:
           type: array
           description: Every venue considered for this hop, including stale and unfillable ones — the "why these?" diagnostic.
@@ -591,6 +770,28 @@ components:
         hopPenaltyBps:
           type: number
           description: The per-extra-hop penalty applied when comparing candidate paths, echoed back.
+        balancesApplied:
+          type: [string, 'null']
+          description: |
+            The balances that were applied, canonicalised and key-sorted, or null when none were
+            sent. VERIFY THIS BEFORE EXECUTING. `/route` declares its query type without a JSON
+            schema, so a server that predates this feature IGNORES `balances` and answers
+            byte-identically to one that never received it — and executing a plan computed against a
+            portfolio the server never saw is the case worth failing loudly on.
+        balanceMode:
+          type: string
+          enum: [cap, require]
+          description: The balance mode applied, echoed back.
+        balanceCapAmountIn:
+          type: [number, 'null']
+          description: |
+            The ceiling your balances put on `amountIn`, or null when unconstrained. Carried
+            separately from `requestedAmount` precisely so `fillRatio` cannot lie: asking for 50000
+            while holding 40000 reports `requestedAmount: 50000`, `fillRatio: 0.8` and
+            `balanceCapAmountIn: 40000` — not a full fill of 40000.
+        balanceEntryCount:
+          type: integer
+          description: How many balance entries were parsed. 0 when none were sent, and also when an empty `balances=` said you hold nothing.
         referenceRate:
           type: [number, 'null']
           description: |
@@ -633,7 +834,7 @@ components:
         unfilledAmount: { type: number, format: double }
         unroutableReason:
           type: [string, 'null']
-          enum: [no_market, exact_out_multi_hop_unsupported, no_venues_matched_filter, all_books_stale, no_liquidity, insufficient_depth, null]
+          enum: [no_market, exact_out_multi_hop_unsupported, no_venues_matched_filter, all_books_stale, no_liquidity, insufficient_depth, insufficient_balance, null]
           description: |
             Why `hops` is empty; null when routing succeeded. An empty route is a deliberate
             refusal to quote, not a failure:
@@ -645,6 +846,11 @@ components:
             `all_books_stale` — venues exist but every book exceeded the freshness cutoff.
             `no_liquidity` — fresh books exist but none had depth to fill any of the size.
             `insufficient_depth` — requireFullFill was set and depth could not cover the size.
+            `insufficient_balance` — the market could have filled this; your wallet could not.
+            Either nothing was spendable at any venue quoting the pair, or `balanceMode=require`
+            was set and the balances fell short of the request (in total, or at the venues that
+            quote it, or on the `amountOut` side), or `requireFullFill` was set and the balance
+            clamp — not depth — is what left the request unmet.
         unroutableHopIndex:
           type: [integer, 'null']
           description: Which hop failed, for a bridged route. Null when the whole request was unroutable or routing succeeded.

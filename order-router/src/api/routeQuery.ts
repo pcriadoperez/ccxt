@@ -2,6 +2,7 @@ import { config } from '../config.js';
 import { ROUTE_STRATEGIES, type RouteStrategy, type RouteOptions } from '../routing/route.js';
 import type { RouteRequest } from '../routing/route.js';
 import { DEFAULT_BRIDGES } from '../routing/market.js';
+import { parseBalancesParam, type BalanceBook } from '../routing/balances.js';
 
 // Every query parameter /route and /stream/route accept. Shared so the two endpoints cannot drift
 // apart: the streaming endpoint previously did its own ad-hoc parsing and skipped amount
@@ -22,7 +23,17 @@ export interface RouteQuery {
     requireFullFill?: string;
     hopPenaltyBps?: string;
     includeQuotes?: string;
+    balances?: string;
+    balanceMode?: string;
 }
+
+// Refusing balances on a socket is honest; silently pricing holdings the caller traded away half an
+// hour ago is not. A stream is held open for minutes and there is no message channel on it to
+// update them — /stream/route registers no socket.on('message') — so there is no version of this
+// that stays true.
+export const STREAM_BALANCES_UNSUPPORTED =
+    'balances is not supported on /stream/route: a stream would keep pricing a portfolio that may '
+    + 'already have been traded away, and there is no channel to update it. Use GET /route.';
 
 export type ParsedRoute = { ok: true; req: RouteRequest; opts: RouteOptions }
     | { ok: false; error: string };
@@ -51,7 +62,7 @@ export function parseRouteQuery (
     // /stream/route socket pushed 658 frames/sec at 9.3KB each — 6.3 MB/s, of which the per-venue
     // quotes array is the overwhelming majority. A once-per-request explanation is cheap; the same
     // explanation ten times a second is not. An explicit includeQuotes= always wins.
-    defaults: { includeQuotes?: boolean } = {},
+    defaults: { includeQuotes?: boolean; rejectBalances?: boolean } = {},
 ): ParsedRoute {
     const fail = (error: string): ParsedRoute => ({ ok: false, error });
 
@@ -93,6 +104,27 @@ export function parseRouteQuery (
         return fail('hopPenaltyBps must be between 0 and 10000');
     }
 
+    // Parsed after the amounts so a request malformed on BOTH is rejected on the amount — the
+    // cheaper thing to fix, and the one that makes the portfolio moot.
+    let balances: BalanceBook | null = null;
+    if (query.balances !== undefined) {
+        if (defaults.rejectBalances === true) return fail(STREAM_BALANCES_UNSUPPORTED);
+        const parsed = parseBalancesParam(query.balances);
+        if (!parsed.ok) return fail(parsed.error);
+        balances = parsed.book;
+    }
+    // An enum rather than a boolean, deliberately: the existing flags split into opt-out
+    // (includeFees, includeQuotes) and opt-in (certified, requireFullFill), so a third polarity
+    // would be a coin flip for anyone reading a query string. Naming both modes settles it.
+    // Refused wherever balances are, rather than validated and then dropped: on its own the mode
+    // says what to do about holdings the endpoint will not accept, so honouring it is impossible
+    // and accepting it silently tells the caller their instruction landed.
+    if (query.balanceMode !== undefined && defaults.rejectBalances === true) {
+        return fail(STREAM_BALANCES_UNSUPPORTED);
+    }
+    const balanceMode = query.balanceMode ?? 'cap';
+    if (balanceMode !== 'cap' && balanceMode !== 'require') return fail('balanceMode must be cap or require');
+
     // Freshness is NOT a caller parameter. Deciding whether a book is too old to price is the
     // router's judgment, not something to outsource to someone who cannot see the update rates it
     // is judging against — and a millisecond number is the wrong shape for that question anyway.
@@ -126,6 +158,7 @@ export function parseRouteQuery (
                 ? (defaults.includeQuotes ?? true)
                 : query.includeQuotes !== 'false',
             stalenessPenaltyBps: config.stalenessPenaltyBps, hopPenaltyBps,
+            balances, balanceMode,
         },
     };
 }

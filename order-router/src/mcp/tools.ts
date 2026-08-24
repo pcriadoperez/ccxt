@@ -55,6 +55,11 @@ export interface RouteParams {
     certified?: boolean;
     bridges?: string[];
     hopPenaltyBps?: number;
+    // Passed through as the raw `[exchange.]ASSET:amount` string rather than a structured object:
+    // the router's parser is the single authority on the grammar, and re-encoding it here would be
+    // a second implementation to keep in step with it.
+    balances?: string;
+    balanceMode?: 'cap' | 'require';
 }
 
 export function getRoute (params: RouteParams, options: RouterClientOptions): Promise<unknown> {
@@ -69,5 +74,8 @@ export function getRoute (params: RouteParams, options: RouterClientOptions): Pr
     // An empty array is meaningful — it disables bridging — so it must still be sent.
     if (params.bridges !== undefined) q.set('bridges', params.bridges.join(','));
     if (params.hopPenaltyBps !== undefined) q.set('hopPenaltyBps', String(params.hopPenaltyBps));
+    // An empty string is meaningful — it means the caller holds nothing — so it must still be sent.
+    if (params.balances !== undefined) q.set('balances', params.balances);
+    if (params.balanceMode !== undefined) q.set('balanceMode', params.balanceMode);
     return getJson(`/route?${q.toString()}`, options);
 }
