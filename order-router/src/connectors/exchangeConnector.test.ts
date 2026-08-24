@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chunkSymbols, normalizeLevels, isPermanentError } from './exchangeConnector.js';
+import pino from 'pino';
+import { chunkSymbols, normalizeLevels, isPermanentError, reapOrphanedSockets } from './exchangeConnector.js';
+
+const silentLogger = pino({ level: 'silent' });
 
 test('chunkSymbols splits into groups no larger than the given size', () => {
     const symbols = Array.from({ length: 125 }, (_, i) => `SYM${i}`);
@@ -91,4 +94,39 @@ test('a partial or malformed level is still dropped, not counted against the dep
     const kept = normalizeLevels(mixed, 3);
     assert.deepEqual(kept.map((l) => l.price), [100, 102, 103],
         'incomplete levels must not consume depth that a real level could have used');
+});
+
+test('orphaned websocket clients are closed; live ones are not', () => {
+    // ccxt.pro drops a client from exchange.clients when its connection errors but does not close
+    // the socket, so it stays OPEN and keeps dispatching into the same handler with nothing holding
+    // a reference that could stop it. Verified against bitstamp: three forced errors left three
+    // clients removed from exchange.clients, all three with readyState 1. Live, that showed as 78
+    // sockets to one okx host and 45 to coinbase.
+    const mk = (state: number) => {
+        const c = { connection: { readyState: state }, closed: false, close () { c.closed = true; } };
+        return c;
+    };
+    const live = mk(1);
+    const orphanOpen = mk(1);
+    const orphanConnecting = mk(0);
+    const orphanAlreadyClosed = mk(3);
+    const exchange = { clients: { 'wss://live': live } };
+    const seen = new Set<unknown>([live, orphanOpen, orphanConnecting, orphanAlreadyClosed]);
+
+    const closed = reapOrphanedSockets(exchange, seen, silentLogger);
+
+    assert.equal(closed, 2, 'both the OPEN and the CONNECTING orphan hold a socket and must be closed');
+    assert.equal(orphanOpen.closed, true);
+    assert.equal(orphanConnecting.closed, true);
+    assert.equal(orphanAlreadyClosed.closed, false, 'an already-closed orphan needs no action');
+    // The one the exchange still owns must be left strictly alone — closing it would kill a live feed.
+    assert.equal(live.closed, false, 'a client the exchange still owns must never be reaped');
+    assert.equal(seen.size, 0, 'the tracking set must be cleared, or it grows without bound');
+});
+
+test('reaping tolerates a client shape it does not recognise', () => {
+    // ccxt internals are not ours; a shape change must degrade to doing nothing, not to a throw
+    // inside an error handler that is already handling a failure.
+    const seen = new Set<unknown>([{}, null, { connection: {} }, { connection: { readyState: 1 } }]);
+    assert.doesNotThrow(() => reapOrphanedSockets({ clients: {} }, seen, silentLogger));
 });

@@ -44,6 +44,46 @@ function sleep (ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// ccxt.pro drops a client from `exchange.clients` when its connection errors, but does NOT close
+// the underlying socket — so the socket stays OPEN, keeps receiving and keeps dispatching into the
+// same message handler, with nothing left holding a reference that could close it.
+//
+// Verified directly against bitstamp: three forced errors produced three clients removed from
+// exchange.clients, all three with connection.readyState === 1. On the live box this showed as 78
+// sockets to one okx host and 45 to coinbase — roughly one orphan per logged watch error — and the
+// duplicate traffic multiplies the very message rate that saturates the IPC channel and the event
+// loop. Measured amplification: one live connection plus ten orphans took 125 msg/s to 1,378.
+//
+// This is a bug in ccxt.pro and belongs upstream. Until then the connector reaps them itself: any
+// client it saw before a failure that the exchange no longer owns is ours to close.
+export function reapOrphanedSockets (
+    exchange: { clients?: Record<string, unknown> },
+    seen: Set<unknown>,
+    logger: Logger,
+): number {
+    const owned = new Set(Object.values(exchange.clients ?? {}));
+    let closed = 0;
+    for (const client of seen) {
+        if (owned.has(client)) continue;
+        if (client === null || typeof client !== 'object') continue;
+        const c = client as { connection?: { readyState?: number }; close?: () => unknown };
+        // 1 is OPEN, 0 is CONNECTING — both still hold a socket. Anything else is already gone.
+        // ccxt internals are not ours, so an unrecognised shape must degrade to doing nothing
+        // rather than throwing from inside a handler that is already handling a failure.
+        const state = c.connection?.readyState;
+        if (state !== 1 && state !== 0) continue;
+        try {
+            c.close?.();
+            closed += 1;
+        } catch {
+            // Already closing, or a shape we do not recognise. Nothing useful to do.
+        }
+    }
+    seen.clear();
+    if (closed > 0) logger.warn({ closed }, 'closed orphaned websocket clients ccxt left open');
+    return closed;
+}
+
 // Full jitter: spreads out retries so N loops that all failed at the same instant (e.g. a shared
 // WS connection dropping, which fails every per-symbol watchOrderBook call on that exchange at
 // once) don't all retry in lockstep and repeat the thundering-herd rate-limit hit every backoff
@@ -203,8 +243,10 @@ export class ExchangeConnector {
     private async batchWatchLoop (symbols: string[]): Promise<void> {
         let backoff = BACKOFF_START_MS;
         let sequence = 0;
+        const seen = new Set<unknown>();
         while (!this.stopped) {
             try {
+                for (const c of Object.values(this.exchange.clients ?? {})) seen.add(c);
                 const ob = await this.exchange.watchOrderBookForSymbols(symbols);
                 sequence += 1;
                 if (ob.symbol) {
@@ -222,6 +264,7 @@ export class ExchangeConnector {
                 this.logger.error({ err: message }, 'watchOrderBookForSymbols failed, backing off');
                 this.cache.recordError(this.exchangeId, message);
                 this.cache.recordReconnect(this.exchangeId);
+                reapOrphanedSockets(this.exchange, seen, this.logger);
                 await sleep(jittered(backoff));
                 backoff = Math.min(backoff * 2, BACKOFF_MAX_MS);
             }
@@ -231,8 +274,10 @@ export class ExchangeConnector {
     private async singleSymbolWatchLoop (symbol: string): Promise<void> {
         let backoff = BACKOFF_START_MS;
         let sequence = 0;
+        const seenPerSymbol = new Set<unknown>();
         while (!this.stopped) {
             try {
+                for (const c of Object.values(this.exchange.clients ?? {})) seenPerSymbol.add(c);
                 const ob = await this.exchange.watchOrderBook(symbol);
                 sequence += 1;
                 this.applyOrderBook(symbol, ob, sequence);
@@ -248,6 +293,7 @@ export class ExchangeConnector {
                 this.logger.error({ symbol, err: message }, 'watchOrderBook failed, backing off');
                 this.cache.recordError(this.exchangeId, message);
                 this.cache.recordReconnect(this.exchangeId);
+                reapOrphanedSockets(this.exchange, seenPerSymbol, this.logger);
                 await sleep(jittered(backoff));
                 backoff = Math.min(backoff * 2, BACKOFF_MAX_MS);
             }
