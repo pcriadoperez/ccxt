@@ -5,7 +5,12 @@ import type { Logger } from 'pino';
 import { DEV_API_KEY } from './auth.js';
 
 export interface ApiKeyRecord {
+    // The human-readable display id ('k_…'). Kept as `id` so every existing consumer — the rate
+    // limiter's bucket key, the WS connection map, every log line — is unchanged.
     id: string;
+    // The database primary key. Never appears in a log line; used to attribute request rows.
+    keyUuid?: string;
+    userId?: string;
     name: string;
     hash: string;
     last4: string;
@@ -286,14 +291,22 @@ export function readKeyFile (path: string): KeyFile {
 // atomic, so a concurrent reader sees either the whole old file or the whole new one — never a
 // truncation. chmod happens before any content is written, so the digests never briefly exist
 // world-readable.
-export function writeKeyFile (path: string, file: KeyFile): void {
+// Returns true when the file's contents actually changed. The projection runs every few seconds
+// and almost never has news; without this it would rewrite and log on every tick.
+export function writeKeyFile (path: string, file: KeyFile): boolean {
     // The very first `keys create` on a fresh box runs before the directory exists — which is step
     // 2 of the documented migration, so an uncaught ENOENT here would break the rollout at its
     // first command.
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    const next = `${JSON.stringify(file, null, 2)}\n`;
+    try {
+        if (readFileSync(path, 'utf8') === next) return false;
+    } catch {
+        // Missing or unreadable: fall through and write it.
+    }
     const tmp = `${path}.tmp.${process.pid}`;
     writeFileSync(tmp, '', { mode: 0o600 });
-    writeFileSync(tmp, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600 });
+    writeFileSync(tmp, next, { mode: 0o600 });
     const fd = openSync(tmp, 'r');
     try {
         fsyncSync(fd);
@@ -306,4 +319,5 @@ export function writeKeyFile (path: string, file: KeyFile): void {
         try { unlinkSync(tmp); } catch { /* best effort */ }
         throw err;
     }
+    return true;
 }

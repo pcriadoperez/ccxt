@@ -14,12 +14,9 @@
     "bench:load": "node benchmark/load-test.mjs",
     "bench:multi-connect": "node benchmark/multi-exchange-connect.mjs",
     "test": "tsx --test \"src/**/*.test.ts\"",
-    "keys:create": "node dist/cli/keys.js create",
-    "keys:list": "node dist/cli/keys.js list",
-    "keys:revoke": "node dist/cli/keys.js revoke",
-    "keys:delete": "node dist/cli/keys.js delete",
     "copy-assets": "node -e \"const{cpSync,mkdirSync}=require('node:fs');mkdirSync('dist/db',{recursive:true});cpSync('src/db/schema.sql','dist/db/schema.sql')\"",
-    "db:migrate": "node dist/db/migrate.js"
+    "db:migrate": "node dist/db/migrate.js",
+    "admin": "node dist/cli/admin.js"
   },
   "dependencies": {
     "@fastify/rate-limit": "^11.2.0",
