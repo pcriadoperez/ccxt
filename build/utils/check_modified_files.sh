@@ -11,6 +11,13 @@ diff=$(echo "$diff" | sed -e "s/^build\.sh//")
 diff=$(echo "$diff" | sed -e "s/^skip\-tests\.json//")
 diff=$(echo "$diff" | sed -e "s/^run\-tests\-simul\.sh//")
 diff=$(echo "$diff" | sed -e "s/^\w+.yml//") # tmp remove actions files
+# order-router/ is a standalone service with its own package.json, lockfile, tsconfig and
+# workflow, depending on the PUBLISHED ccxt package rather than the workspace. Its paths are
+# stripped before the critical check because the shared arm is an unanchored "test", which
+# matches order-router/src/api/server.test.ts and scheduled a full six-language transpile and
+# live-test matrix for one service unit test. The language workflows also paths-ignore the
+# directory; this covers the mixed commit those filters deliberately do not skip.
+diff=$(echo "$diff" | sed -e "s|^order-router/.*||")
 diff_without_statics=$(echo "$diff" | sed -e "s/^ts\/src\/test\/static.*json//")
 
 # ts/ccxt.ts sits in the critical set because structural changes to the entry file affect every
