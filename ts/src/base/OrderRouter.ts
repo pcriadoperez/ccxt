@@ -554,8 +554,8 @@ class OrderRouter {
         const requireApplied = this.boolAt (params, 'requireBalancesApplied', true);
         const exchangeIds = Object.keys (venues);
         exchangeIds.sort ();
-        const entries = [];
-        const dropped = [];
+        const entries: Dict[] = [];
+        const dropped: Dict[] = [];
         for (let i = 0; i < exchangeIds.length; i++) {
             const exchangeId = exchangeIds[i];
             const venue = venues[exchangeId];
@@ -597,13 +597,13 @@ class OrderRouter {
             return (a['asset'] < b['asset']) ? -1 : 1;
         });
         while (entries.length > OrderRouter.MAX_BALANCE_ENTRIES) {
-            const removed = entries.pop ();
+            const removed = entries.pop () as Dict;
             removed['reason'] = 'entry_cap';
             dropped.push (removed);
         }
         let balances = this.joinBalances (entries);
         while (balances.length > OrderRouter.MAX_BALANCE_CHARS && entries.length > 0) {
-            const removed = entries.pop ();
+            const removed = entries.pop () as Dict;
             removed['reason'] = 'char_cap';
             dropped.push (removed);
             balances = this.joinBalances (entries);

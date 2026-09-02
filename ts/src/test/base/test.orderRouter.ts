@@ -399,7 +399,7 @@ class StubVenue {
         return { 'free': { 'USDT': 1000, 'BTC': 1, 'ZERO': 0 }, 'total': { 'USDT': 1000, 'BTC': 1 } };
     }
 
-    async createOrder (symbol: string, type: string, side: string, amount: number, price: number = undefined, params: any = {}) {
+    async createOrder (symbol: string, type: string, side: string, amount: number, price: any = undefined, params: any = {}) {
         this.calls.push ('createOrder:' + type + ':' + side + ':' + amount.toString ());
         if (this.failCreate) {
             throw new ExchangeError ('stub refuses');
@@ -734,7 +734,7 @@ class RecordingRouter extends OrderRouter {
         this.lastUrl = '';
     }
 
-    async request (url: string): Promise<any> {
+    override async request (url: string): Promise<any> {
         this.lastUrl = url;
         return this.body;
     }

@@ -115,7 +115,7 @@ public partial class toobit : ccxt.toobit
         //     ]
         //
         object topic = this.safeString(message, "topic");
-        if (isTrue(this.handleErrorMessage(client as WebSocketClient, message)))
+        if (isTrue(isEqual(this.handleErrorMessage(client as WebSocketClient, message), true)))
         {
             return;
         }
@@ -170,24 +170,24 @@ public partial class toobit : ccxt.toobit
      * @method
      * @name toobit#watchTrades
      * @description watches information on multiple trades made in a market
-     * @see https://toobit-docs.github.io/apidocs/spot/v1/en/#trade-streams
+     * @see https://api-docs.toobit.com/api/spot-websocket-market-data.html#trade-streams
      * @param {string} symbol unified market symbol of the market trades were made in
      * @param {int} [since] the earliest time in ms to fetch trades for
      * @param {int} [limit] the maximum number of trade structures to retrieve
      * @param {object} [params] extra parameters specific to the exchange API endpoint
      * @returns {object[]} a list of [trade structures]{@link https://docs.ccxt.com/?id=trade-structure}
      */
-    public async override Task<object> watchTrades(object symbol, object since = null, object limit = null, object parameters = null)
+    public async override Task<List<ccxt.Trade>> WatchTrades(string symbol, Int64? since = null, Int64? limit = null, object parameters = null)
     {
         parameters ??= new Dictionary<string, object>();
-        return await this.watchTradesForSymbols(new List<object>() {symbol}, since, limit, parameters);
+        return await this.WatchTradesForSymbols(new List<object>() {symbol},ccxt.BaseExchange.ToInt64Arg(since),ccxt.BaseExchange.ToInt64Arg(limit), parameters);
     }
 
     /**
      * @method
      * @name toobit#watchTradesForSymbols
      * @description get the list of most recent trades for a list of symbols
-     * @see https://toobit-docs.github.io/apidocs/spot/v1/en/#trade-streams
+     * @see https://api-docs.toobit.com/api/spot-websocket-market-data.html#trade-streams
      * @param {string[]} symbols unified symbol of the market to fetch trades for
      * @param {int} [since] timestamp in ms of the earliest trade to fetch
      * @param {int} [limit] the maximum amount of trades to fetch
@@ -195,8 +195,9 @@ public partial class toobit : ccxt.toobit
      * @param {string} [params.name] the name of the method to call, 'trade' or 'aggTrade', default is 'trade'
      * @returns {object[]} a list of [trade structures]{@link https://docs.ccxt.com/?id=public-trades}
      */
-    public async override Task<object> watchTradesForSymbols(object symbols, object since = null, object limit = null, object parameters = null)
+    public async override Task<List<ccxt.Trade>> WatchTradesForSymbols(object symbols, Int64? since = null, Int64? limit = null, object parameters = null)
     {
+        object limitVar = limit;
         parameters ??= new Dictionary<string, object>();
         if (isTrue(isEqual(this.markets, null)))
         {
@@ -225,9 +226,9 @@ public partial class toobit : ccxt.toobit
         {
             object first = this.safeValue(trades, 0);
             object tradeSymbol = this.safeString(first, "symbol");
-            limit = callDynamically(trades, "getLimit", new object[] {tradeSymbol, limit});
+            limitVar = callDynamically(trades, "getLimit", new object[] {tradeSymbol, limitVar});
         }
-        return this.filterBySinceLimit(trades, since, limit, "timestamp", true);
+        return ccxt.BaseExchange.ToTradeList(this.filterBySinceLimit(trades, since, limitVar, "timestamp", true));
     }
 
     public virtual void handleTrades(WebSocketClient client, object message)
@@ -285,7 +286,8 @@ public partial class toobit : ccxt.toobit
      * @method
      * @name toobit#watchOHLCV
      * @description watches historical candlestick data containing the open, high, low, and close price, and the volume of a market
-     * @see https://toobit-docs.github.io/apidocs/spot/v1/en/#kline-candlestick-streams
+     * @see https://api-docs.toobit.com/api/spot-websocket-market-data.html#kline-candlestick-streams
+     * @see https://api-docs.toobit.com/api/usdt-m-websocket-market-data.html#kline-candlestick-streams
      * @param {string} symbol unified symbol of the market to fetch OHLCV data for
      * @param {string} timeframe the length of time each candle represents
      * @param {int} [since] timestamp in ms of the earliest candle to fetch
@@ -293,20 +295,22 @@ public partial class toobit : ccxt.toobit
      * @param {object} [params] extra parameters specific to the exchange API endpoint
      * @returns {int[][]} A list of candles ordered as timestamp, open, high, low, close, volume
      */
-    public async override Task<object> watchOHLCV(object symbol, object timeframe = null, object since = null, object limit = null, object parameters = null)
+    public async override Task<List<ccxt.OHLCV>> WatchOHLCV(string symbol, string timeframe = null, Int64? since = null, Int64? limit = null, object parameters = null)
     {
-        timeframe ??= "1m";
+        object timeframeVar = timeframe;
+        timeframeVar ??= "1m";
         parameters ??= new Dictionary<string, object>();
         ((IDictionary<string,object>)parameters)["callerMethodName"] = "watchOHLCV";
-        object result = await this.watchOHLCVForSymbols(new List<object>() {new List<object>() {symbol, timeframe}}, since, limit, parameters);
-        return getValue(getValue(result, symbol), timeframe);
+        object result = await this.watchOHLCVForSymbols(new List<object>() {new List<object>() {symbol, timeframeVar}}, since, limit, parameters);
+        return ccxt.BaseExchange.ToOHLCVList(getValue(getValue(result, symbol), timeframeVar));
     }
 
     /**
      * @method
      * @name toobit#watchOHLCVForSymbols
      * @description watches historical candlestick data containing the open, high, low, and close price, and the volume of a market
-     * @see https://toobit-docs.github.io/apidocs/spot/v1/en/#kline-candlestick-streams
+     * @see https://api-docs.toobit.com/api/spot-websocket-market-data.html#kline-candlestick-streams
+     * @see https://api-docs.toobit.com/api/usdt-m-websocket-market-data.html#kline-candlestick-streams
      * @param {string[][]} symbolsAndTimeframes array of arrays containing unified symbols and timeframes to fetch OHLCV data for, example [['BTC/USDT', '1m'], ['LTC/USDT', '5m']]
      * @param {int} [since] timestamp in ms of the earliest candle to fetch
      * @param {int} [limit] the maximum amount of candles to fetch
@@ -397,12 +401,16 @@ public partial class toobit : ccxt.toobit
         {
             ((IDictionary<string,object>)this.ohlcvs)[(string)symbol] = new Dictionary<string, object>() {};
         }
-        if (!isTrue((inOp(getValue(this.ohlcvs, symbol), timeframe))))
+        object stored = this.safeValue(getValue(this.ohlcvs, symbol), timeframe);
+        if (isTrue(isEqual(stored, null)))
         {
             object limit = this.safeInteger(getValue(this.options, "ws"), "OHLCVLimit", 1000);
-            ((IDictionary<string,object>)getValue(this.ohlcvs, symbol))[(string)timeframe] = new ArrayCacheByTimestamp(limit);
+            stored = new ArrayCacheByTimestamp(limit);
+            if (isTrue(!isEqual(timeframe, null)))
+            {
+                ((IDictionary<string,object>)getValue(this.ohlcvs, symbol))[(string)timeframe] = stored;
+            }
         }
-        object stored = getValue(getValue(this.ohlcvs, symbol), timeframe);
         object data = this.safeList(message, "data", new List<object>() {});
         for (object i = 0; isLessThan(i, getArrayLength(data)); postFixIncrement(ref i))
         {
@@ -436,28 +444,31 @@ public partial class toobit : ccxt.toobit
     /**
      * @method
      * @name toobit#watchTicker
-     * @see https://toobit-docs.github.io/apidocs/spot/v1/en/#individual-symbol-ticker-streams
+     * @see https://api-docs.toobit.com/api/spot-websocket-market-data.html#individual-symbol-ticker-streams
+     * @see https://api-docs.toobit.com/api/usdt-m-websocket-market-data.html#individual-symbol-ticker-streams
      * @description watches a price ticker, a statistical calculation with the information calculated over the past 24 hours for a specific market
      * @param {string} symbol unified symbol of the market to fetch the ticker for
      * @param {object} [params] extra parameters specific to the exchange API endpoint
      * @returns {object} a [ticker structure]{@link https://docs.ccxt.com/?id=ticker-structure}
      */
-    public async override Task<object> watchTicker(object symbol, object parameters = null)
+    public async override Task<ccxt.Ticker> WatchTicker(string symbol, object parameters = null)
     {
+        object symbolVar = symbol;
         parameters ??= new Dictionary<string, object>();
         if (isTrue(isEqual(this.markets, null)))
         {
             await this.loadMarkets();
         }
-        symbol = this.symbol(symbol);
-        object tickers = await this.watchTickers(new List<object>() {symbol}, parameters);
-        return getValue(tickers, symbol);
+        symbolVar = this.symbol(symbolVar);
+        object tickers = await this.watchTickers(new List<object>() {symbolVar}, parameters);
+        return ccxt.BaseExchange.ToTicker(getValue(tickers, symbolVar));
     }
 
     /**
      * @method
      * @name toobit#watchTickers
-     * @see https://toobit-docs.github.io/apidocs/spot/v1/en/#individual-symbol-ticker-streams
+     * @see https://api-docs.toobit.com/api/spot-websocket-market-data.html#individual-symbol-ticker-streams
+     * @see https://api-docs.toobit.com/api/usdt-m-websocket-market-data.html#individual-symbol-ticker-streams
      * @description watches a price ticker, a statistical calculation with the information calculated over the past 24 hours for all markets of a specific list
      * @param {string[]} symbols unified symbol of the market to fetch the ticker for
      * @param {object} [params] extra parameters specific to the exchange API endpoint
@@ -536,14 +547,24 @@ public partial class toobit : ccxt.toobit
         //    }
         //
         object data = this.safeList(message, "data");
+        if (isTrue(isEqual(data, null)))
+        {
+            return;
+        }
         object newTickers = new Dictionary<string, object>() {};
         for (object i = 0; isLessThan(i, getArrayLength(data)); postFixIncrement(ref i))
         {
             object ticker = getValue(data, i);
             object parsed = this.parseWsTicker(ticker);
             object symbol = getValue(parsed, "symbol");
-            ((IDictionary<string,object>)this.tickers)[(string)symbol] = parsed;
-            ((IDictionary<string,object>)newTickers)[(string)symbol] = parsed;
+            if (isTrue(!isEqual(symbol, null)))
+            {
+                ((IDictionary<string,object>)this.tickers)[(string)symbol] = parsed;
+            }
+            if (isTrue(!isEqual(symbol, null)))
+            {
+                ((IDictionary<string,object>)newTickers)[(string)symbol] = parsed;
+            }
             object messageHash = add("ticker::", symbol);
             callDynamically(client as WebSocketClient, "resolve", new object[] {parsed, messageHash});
         }
@@ -559,29 +580,35 @@ public partial class toobit : ccxt.toobit
      * @method
      * @name toobit#watchOrderBook
      * @description watches information on open orders with bid (buy) and ask (sell) prices, volumes and other data
-     * @see https://toobit-docs.github.io/apidocs/spot/v1/en/#partial-book-depth-streams
+     * @see https://api-docs.toobit.com/api/spot-websocket-market-data.html#partial-book-depth-streams
+     * @see https://api-docs.toobit.com/api/spot-websocket-market-data.html#diff-depth-stream
+     * @see https://api-docs.toobit.com/api/usdt-m-websocket-market-data.html#partial-book-depth-streams
+     * @see https://api-docs.toobit.com/api/usdt-m-websocket-market-data.html#diff-book-depth-streams
      * @param {string} symbol unified symbol of the market to fetch the order book for
      * @param {int} [limit] the maximum amount of order book entries to return.
      * @param {object} [params] extra parameters specific to the exchange API endpoint
      * @returns {object} A dictionary of [order book structures]{@link https://docs.ccxt.com/?id=order-book-structure}
      */
-    public async override Task<object> watchOrderBook(object symbol, object limit = null, object parameters = null)
+    public async override Task<ccxt.pro.IOrderBook> WatchOrderBook(string symbol, Int64? limit = null, object parameters = null)
     {
         parameters ??= new Dictionary<string, object>();
-        return await this.watchOrderBookForSymbols(new List<object>() {symbol}, limit, parameters);
+        return await this.WatchOrderBookForSymbols(new List<object>() {symbol},ccxt.BaseExchange.ToInt64Arg(limit), parameters);
     }
 
     /**
      * @method
      * @name toobit#watchOrderBookForSymbols
      * @description watches information on open orders with bid (buy) and ask (sell) prices, volumes and other data
-     * @see https://toobit-docs.github.io/apidocs/spot/v1/en/#partial-book-depth-streams
+     * @see https://api-docs.toobit.com/api/spot-websocket-market-data.html#partial-book-depth-streams
+     * @see https://api-docs.toobit.com/api/spot-websocket-market-data.html#diff-depth-stream
+     * @see https://api-docs.toobit.com/api/usdt-m-websocket-market-data.html#partial-book-depth-streams
+     * @see https://api-docs.toobit.com/api/usdt-m-websocket-market-data.html#diff-book-depth-streams
      * @param {string[]} symbols unified array of symbols
      * @param {int} [limit] the maximum amount of order book entries to return.
      * @param {object} [params] extra parameters specific to the exchange API endpoint
-     * @returns {object} A dictionary of [order book structures]{@link https://docs.ccxt.com/?id=order-book-structure}
+     * @returns {object} an [order book structure]{@link https://docs.ccxt.com/?id=order-book-structure}
      */
-    public async override Task<object> watchOrderBookForSymbols(object symbols, object limit = null, object parameters = null)
+    public async override Task<ccxt.pro.IOrderBook> WatchOrderBookForSymbols(object symbols, Int64? limit = null, object parameters = null)
     {
         parameters ??= new Dictionary<string, object>();
         if (isTrue(isEqual(this.markets, null)))
@@ -611,7 +638,7 @@ public partial class toobit : ccxt.toobit
             { "event", "sub" },
         };
         object orderbook = await this.watchMultiple(url, messageHashes, this.extend(request, parameters), messageHashes);
-        return (orderbook as IOrderBook).limit();
+        return ccxt.BaseExchange.ToOrderBookSnapshot((orderbook as IOrderBook).limit());
     }
 
     public virtual void handleOrderBook(WebSocketClient client, object message)
@@ -638,7 +665,7 @@ public partial class toobit : ccxt.toobit
         //     }
         //
         object isSnapshot = this.safeBool(message, "f", false);
-        if (isTrue(isSnapshot))
+        if (isTrue(isEqual(isSnapshot, true)))
         {
             this.setOrderBookSnapshot(client as WebSocketClient, message, "diffDepth");
             return;
@@ -704,7 +731,7 @@ public partial class toobit : ccxt.toobit
     public virtual void setOrderBookSnapshot(WebSocketClient client, object message, object channel)
     {
         object data = this.safeList(message, "data", new List<object>() {});
-        object length = getArrayLength(data);
+        int length = getArrayLength(data);
         if (isTrue(isEqual(length, 0)))
         {
             return;
@@ -732,11 +759,12 @@ public partial class toobit : ccxt.toobit
      * @method
      * @name toobit#watchBalance
      * @description query for balance and get the amount of funds available for trading or funds locked in orders
-     * @see https://toobit-docs.github.io/apidocs/spot/v1/en/#payload-account-update
+     * @see https://api-docs.toobit.com/api/spot-websocket-account.html#payload-account-update
+     * @see https://api-docs.toobit.com/api/usdt-m-websocket-account.html#event-balance
      * @param {object} [params] extra parameters specific to the exchange API endpoint
      * @returns {object} a [balance structure]{@link https://docs.ccxt.com/?id=balance-structure}
      */
-    public async override Task<object> watchBalance(object parameters = null)
+    public async override Task<ccxt.Balances> WatchBalance(object parameters = null)
     {
         parameters ??= new Dictionary<string, object>();
         if (isTrue(isEqual(this.markets, null)))
@@ -748,25 +776,29 @@ public partial class toobit : ccxt.toobit
         var marketTypeparametersVariable = this.handleMarketTypeAndParams("watchBalance", null, parameters);
         marketType = ((IList<object>)marketTypeparametersVariable)[0];
         parameters = ((IList<object>)marketTypeparametersVariable)[1];
-        object isSpot = (isEqual(marketType, "spot"));
+        bool isSpot = (isEqual(marketType, "spot"));
         object type = ((bool) isTrue(isSpot)) ? "spot" : "contract";
-        object spotSubHash = "spot:balance";
-        object swapSubHash = "contract:private";
-        object spotMessageHash = "spot:balance";
-        object swapMessageHash = "contract:balance";
+        string spotSubHash = "spot:balance";
+        string swapSubHash = "contract:private";
+        string spotMessageHash = "spot:balance";
+        string swapMessageHash = "contract:balance";
         object messageHash = ((bool) isTrue(isSpot)) ? spotMessageHash : swapMessageHash;
         object subscriptionHash = ((bool) isTrue(isSpot)) ? spotSubHash : swapSubHash;
+        if (isTrue(isEqual(subscriptionHash, null)))
+        {
+            throw new ArgumentsRequired ((string)add(this.id, " watchBalance() requires a subscription hash")) ;
+        }
         object url = this.getUserStreamUrl();
         var client = this.client(url);
         this.setBalanceCache(client as WebSocketClient, marketType, subscriptionHash, parameters);
         client.future(add(type, ":fetchBalanceSnapshot"));
-        return await this.watch(url, messageHash, parameters, subscriptionHash);
+        return ccxt.BaseExchange.ToBalances(await this.watch(url, messageHash, parameters, subscriptionHash));
     }
 
     public virtual void setBalanceCache(WebSocketClient client, object marketType, object subscriptionHash = null, object parameters = null)
     {
         parameters ??= new Dictionary<string, object>();
-        if (isTrue(inOp(((WebSocketClient)client).subscriptions, subscriptionHash)))
+        if (isTrue(isTrue((isEqual(subscriptionHash, null))) || isTrue((inOp(((WebSocketClient)client).subscriptions, subscriptionHash)))))
         {
             return;
         }
@@ -834,7 +866,10 @@ public partial class toobit : ccxt.toobit
             ((IDictionary<string,object>)account)["info"] = balance;
             ((IDictionary<string,object>)account)["used"] = this.safeString(balance, "l");
             ((IDictionary<string,object>)account)["free"] = this.safeString(balance, "f");
-            ((IDictionary<string,object>)getValue(this.balance, type))[(string)code] = account;
+            if (isTrue(isTrue((!isEqual(type, null))) && isTrue((!isEqual(code, null)))))
+            {
+                ((IDictionary<string,object>)getValue(this.balance, type))[(string)code] = account;
+            }
         }
         ((IDictionary<string,object>)this.balance)[(string)type] = this.safeBalance(getValue(this.balance, type));
         callDynamically(client as WebSocketClient, "resolve", new object[] {getValue(this.balance, type), add(type, ":balance")});
@@ -861,35 +896,38 @@ public partial class toobit : ccxt.toobit
      * @method
      * @name toobit#watchOrders
      * @description watches information on multiple orders made by the user
-     * @see https://toobit-docs.github.io/apidocs/spot/v1/en/#payload-order-update
+     * @see https://api-docs.toobit.com/api/spot-websocket-account.html#payload-order-update
+     * @see https://api-docs.toobit.com/api/usdt-m-websocket-account.html#event-order
      * @param {string} symbol unified market symbol of the market orders were made in
      * @param {int} [since] the earliest time in ms to fetch orders for
      * @param {int} [limit] the maximum number of order structures to retrieve
      * @param {object} [params] extra parameters specific to the exchange API endpoint
      * @returns {object[]} a list of [order structures]{@link https://docs.ccxt.com/?id=order-structure}
      */
-    public async override Task<object> watchOrders(object symbol = null, object since = null, object limit = null, object parameters = null)
+    public async override Task<List<ccxt.Order>> WatchOrders(string symbol = null, Int64? since = null, Int64? limit = null, object parameters = null)
     {
+        object symbolVar = symbol;
+        object limitVar = limit;
         parameters ??= new Dictionary<string, object>();
         if (isTrue(isEqual(this.markets, null)))
         {
             await this.loadMarkets();
         }
         await this.authenticate();
-        object market = this.marketOrNull(symbol);
-        symbol = this.safeString(market, "symbol", symbol);
+        object market = this.marketOrNull(symbolVar);
+        symbolVar = this.safeString(market, "symbol", symbolVar);
         object messageHash = "orders";
-        if (isTrue(!isEqual(symbol, null)))
+        if (isTrue(!isEqual(symbolVar, null)))
         {
-            messageHash = add(add(messageHash, ":"), symbol);
+            messageHash = add(add(messageHash, ":"), symbolVar);
         }
         object url = this.getUserStreamUrl();
         object orders = await this.watch(url, messageHash, parameters, messageHash);
         if (isTrue(this.newUpdates))
         {
-            limit = callDynamically(orders, "getLimit", new object[] {symbol, limit});
+            limitVar = callDynamically(orders, "getLimit", new object[] {symbolVar, limitVar});
         }
-        return this.filterBySymbolSinceLimit(orders, symbol, since, limit, true);
+        return ccxt.BaseExchange.ToOrderList(this.filterBySymbolSinceLimit(orders, symbolVar, since, limitVar, true));
     }
 
     public virtual void handleOrder(WebSocketClient client, object message)
@@ -993,7 +1031,8 @@ public partial class toobit : ccxt.toobit
      * @method
      * @name toobit#watchMyTrades
      * @description watches information on multiple trades made by the user
-     * @see https://toobit-docs.github.io/apidocs/spot/v1/en/#payload-ticket-push
+     * @see https://api-docs.toobit.com/api/spot-websocket-account.html#payload-ticket-push
+     * @see https://api-docs.toobit.com/api/usdt-m-websocket-account.html#event-trade-update
      * @param {string} symbol unified market symbol of the market trades were made in
      * @param {int} [since] the earliest time in ms to fetch trades for
      * @param {int} [limit] the maximum number of trade structures to retrieve
@@ -1001,28 +1040,30 @@ public partial class toobit : ccxt.toobit
      * @param {boolean} [params.unifiedMargin] use unified margin account
      * @returns {object[]} a list of [trade structures]{@link https://docs.ccxt.com/?id=trade-structure}
      */
-    public async override Task<object> watchMyTrades(object symbol = null, object since = null, object limit = null, object parameters = null)
+    public async override Task<List<ccxt.Trade>> WatchMyTrades(string symbol = null, Int64? since = null, Int64? limit = null, object parameters = null)
     {
+        object symbolVar = symbol;
+        object limitVar = limit;
         parameters ??= new Dictionary<string, object>();
         if (isTrue(isEqual(this.markets, null)))
         {
             await this.loadMarkets();
         }
         await this.authenticate();
-        object market = this.marketOrNull(symbol);
-        symbol = this.safeString(market, "symbol", symbol);
+        object market = this.marketOrNull(symbolVar);
+        symbolVar = this.safeString(market, "symbol", symbolVar);
         object messageHash = "myTrades";
-        if (isTrue(!isEqual(symbol, null)))
+        if (isTrue(!isEqual(symbolVar, null)))
         {
-            messageHash = add(add(messageHash, ":"), symbol);
+            messageHash = add(add(messageHash, ":"), symbolVar);
         }
         object url = this.getUserStreamUrl();
         object trades = await this.watch(url, messageHash, parameters, messageHash);
         if (isTrue(this.newUpdates))
         {
-            limit = callDynamically(trades, "getLimit", new object[] {symbol, limit});
+            limitVar = callDynamically(trades, "getLimit", new object[] {symbolVar, limitVar});
         }
-        return this.filterBySinceLimit(trades, since, limit, "timestamp", true);
+        return ccxt.BaseExchange.ToTradeList(this.filterBySinceLimit(trades, since, limitVar, "timestamp", true));
     }
 
     public virtual void handleMyTrade(WebSocketClient client, object message)
@@ -1061,6 +1102,8 @@ public partial class toobit : ccxt.toobit
     {
         object marketId = this.safeString(trade, "s");
         object ts = this.safeString(trade, "t");
+        bool isMaker = (isEqual(this.safeBool(trade, "m"), true));
+        object takerOrMaker = ((bool) isTrue(isMaker)) ? "maker" : "taker";
         return this.safeTrade(new Dictionary<string, object>() {
             { "info", trade },
             { "id", this.safeString(trade, "T") },
@@ -1070,7 +1113,7 @@ public partial class toobit : ccxt.toobit
             { "order", this.safeString(trade, "o") },
             { "type", null },
             { "side", this.safeStringLower(trade, "S") },
-            { "takerOrMaker", ((bool) isTrue(this.safeBool(trade, "m"))) ? "maker" : "taker" },
+            { "takerOrMaker", takerOrMaker },
             { "price", this.safeString(trade, "p") },
             { "amount", this.safeString(trade, "q") },
             { "cost", null },
@@ -1081,7 +1124,7 @@ public partial class toobit : ccxt.toobit
     /**
      * @method
      * @name toobit#watchPositions
-     * @see https://toobit-docs.github.io/apidocs/usdt_swap/v1/en/#event-position-update
+     * @see https://api-docs.toobit.com/api/usdt-m-websocket-account.html#event-position-update
      * @description watch all open positions
      * @param {string[]} [symbols] list of unified market symbols
      * @param {int} [since] the earliest time in ms to fetch positions for
@@ -1089,7 +1132,7 @@ public partial class toobit : ccxt.toobit
      * @param {object} params extra parameters specific to the exchange API endpoint
      * @returns {object[]} a list of [position structure]{@link https://docs.ccxt.com/en/latest/manual.html#position-structure}
      */
-    public async override Task<object> watchPositions(object symbols = null, object since = null, object limit = null, object parameters = null)
+    public async override Task<List<ccxt.Position>> WatchPositions(object symbols = null, Int64? since = null, Int64? limit = null, object parameters = null)
     {
         parameters ??= new Dictionary<string, object>();
         if (isTrue(isEqual(this.markets, null)))
@@ -1097,28 +1140,33 @@ public partial class toobit : ccxt.toobit
             await this.loadMarkets();
         }
         await this.authenticate();
+        string type = "swap"; // the only account type that carries positions here
         object messageHash = "";
         if (!isTrue(this.isEmpty(symbols)))
         {
             symbols = this.marketSymbols(symbols);
+            if (isTrue(isEqual(symbols, null)))
+            {
+                throw new ArgumentsRequired ((string)add(this.id, " watchPositions() symbols is required")) ;
+            }
             messageHash = add("::", String.Join(",", ((IList<object>)symbols).ToArray()));
         }
+        messageHash = add(add(type, ":positions"), messageHash);
         object url = this.getUserStreamUrl();
         var client = this.client(url);
-        await this.authenticate(url);
-        this.setPositionsCache(client as WebSocketClient, symbols);
-        object cache = this.positions;
+        this.setPositionsCache(client as WebSocketClient, type, symbols);
+        object cache = this.safeValue(this.positions, type);
         if (isTrue(isEqual(cache, null)))
         {
-            object snapshot = await client.future("fetchPositionsSnapshot");
-            return this.filterBySymbolsSinceLimit(snapshot, symbols, since, limit, true);
+            object snapshot = await client.future(add(type, ":fetchPositionsSnapshot"));
+            return ccxt.BaseExchange.ToPositionList(this.filterBySymbolsSinceLimit(snapshot, symbols, since, limit, true));
         }
         object newPositions = await this.watch(url, messageHash, null, messageHash);
         if (isTrue(this.newUpdates))
         {
-            return newPositions;
+            return ccxt.BaseExchange.ToPositionList(newPositions);
         }
-        return this.filterBySymbolsSinceLimit(cache, symbols, since, limit, true);
+        return ccxt.BaseExchange.ToPositionList(this.filterBySymbolsSinceLimit(cache, symbols, since, limit, true));
     }
 
     public virtual void setPositionsCache(WebSocketClient client, object type, object symbols = null, object isPortfolioMargin = null)
@@ -1133,7 +1181,7 @@ public partial class toobit : ccxt.toobit
             return;
         }
         object fetchPositionsSnapshot = this.handleOption("watchPositions", "fetchPositionsSnapshot", false);
-        if (isTrue(fetchPositionsSnapshot))
+        if (isTrue(isEqual(fetchPositionsSnapshot, true)))
         {
             object messageHash = add(type, ":fetchPositionsSnapshot");
             if (!isTrue((inOp(client.futures, messageHash))))
@@ -1152,7 +1200,7 @@ public partial class toobit : ccxt.toobit
         object parameters = new Dictionary<string, object>() {
             { "type", type },
         };
-        object positions = await this.fetchPositions(null, parameters);
+        object positions = await this.FetchPositions(null, parameters);
         ((IDictionary<string,object>)this.positions)[(string)type] = new ArrayCacheBySymbolBySide();
         object cache = getValue(this.positions, type);
         for (object i = 0; isLessThan(i, getArrayLength(positions)); postFixIncrement(ref i))
@@ -1195,8 +1243,7 @@ public partial class toobit : ccxt.toobit
         //     }
         // ]
         //
-        object subscriptions = new List<object>(((IDictionary<string,object>)((WebSocketClient)client).subscriptions).Keys);
-        object accountType = getValue(subscriptions, 0);
+        string accountType = "swap";
         if (isTrue(isEqual(this.positions, null)))
         {
             this.positions = new Dictionary<string, object>() {};
@@ -1206,10 +1253,16 @@ public partial class toobit : ccxt.toobit
             ((IDictionary<string,object>)this.positions)[(string)accountType] = new ArrayCacheBySymbolBySide();
         }
         object cache = getValue(this.positions, accountType);
-        object newPositions = new List<object>() {};
-        for (object i = 0; isLessThan(i, getArrayLength(message)); postFixIncrement(ref i))
+        // handleMessage's fallback dispatches one item at a time
+        object rawPositions = message;
+        if (!isTrue(((message is IList<object>) || (message.GetType().IsGenericType && message.GetType().GetGenericTypeDefinition().IsAssignableFrom(typeof(List<>))))))
         {
-            object rawPosition = getValue(message, i);
+            rawPositions = new List<object>() {message};
+        }
+        object newPositions = new List<object>() {};
+        for (object i = 0; isLessThan(i, getArrayLength(rawPositions)); postFixIncrement(ref i))
+        {
+            object rawPosition = getValue(rawPositions, i);
             object position = this.parseWsPosition(rawPosition);
             object timestamp = this.safeInteger(rawPosition, "E");
             ((IDictionary<string,object>)position)["timestamp"] = timestamp;
@@ -1217,17 +1270,21 @@ public partial class toobit : ccxt.toobit
             ((IList<object>)newPositions).Add(position);
             callDynamically(cache, "append", new object[] {position});
         }
+        // no local may be named `positions` in this method: build/transpile.ts
+        // appends `$` to every local name wherever it appears, string literals
+        // included, so a local `positions` rewrites the hash prefix below to
+        // ':$positions::' and find_message_hashes () matches nothing in PHP
         object messageHashes = this.findMessageHashes(client as WebSocketClient, add(accountType, ":positions::"));
         for (object i = 0; isLessThan(i, getArrayLength(messageHashes)); postFixIncrement(ref i))
         {
             object messageHash = getValue(messageHashes, i);
-            object parts = ((string)messageHash).Split(new [] {((string)"::")}, StringSplitOptions.None).ToList<object>();
+            List<object> parts = ((string)messageHash).Split(new [] {((string)"::")}, StringSplitOptions.None).ToList<object>();
             object symbolsString = getValue(parts, 1);
-            object symbols = ((string)symbolsString).Split(new [] {((string)",")}, StringSplitOptions.None).ToList<object>();
-            object positions = this.filterByArray(newPositions, "symbol", symbols, false);
-            if (!isTrue(this.isEmpty(positions)))
+            List<object> symbols = ((string)symbolsString).Split(new [] {((string)",")}, StringSplitOptions.None).ToList<object>();
+            object filtered = this.filterByArray(newPositions, "symbol", symbols, false);
+            if (!isTrue(this.isEmpty(filtered)))
             {
-                callDynamically(client as WebSocketClient, "resolve", new object[] {positions, messageHash});
+                callDynamically(client as WebSocketClient, "resolve", new object[] {filtered, messageHash});
             }
         }
         callDynamically(client as WebSocketClient, "resolve", new object[] {newPositions, add(accountType, ":positions")});
@@ -1239,7 +1296,7 @@ public partial class toobit : ccxt.toobit
         return this.safePosition(new Dictionary<string, object>() {
             { "info", position },
             { "id", null },
-            { "symbol", this.safeSymbol(marketId, null) },
+            { "symbol", this.safeSymbol(marketId) },
             { "notional", this.omitZero(this.safeString(position, "pv")) },
             { "marginMode", this.safeStringLower(position, "mt") },
             { "liquidationPrice", this.safeString(position, "f") },
@@ -1264,42 +1321,65 @@ public partial class toobit : ccxt.toobit
         });
     }
 
-    public async virtual Task<object> authenticate(object parameters = null)
+    public async virtual Task authenticate(object parameters = null)
     {
         parameters ??= new Dictionary<string, object>();
-        var client = this.client(this.getUserStreamUrl());
-        object messageHash = "authenticated";
-        var future = client.reusableFuture(messageHash);
-        object authenticated = this.safeValue(((WebSocketClient)client).subscriptions, messageHash);
-        if (isTrue(isEqual(authenticated, null)))
+        Int64 time = this.milliseconds();
+        object lastAuthenticatedTime = this.safeInteger(getValue(this.options, "ws"), "lastAuthenticatedTime", 0);
+        object listenKeyRefreshRate = this.safeInteger(getValue(this.options, "ws"), "listenKeyRefreshRate", 1200000);
+        object delay = this.sum(listenKeyRefreshRate, 10000);
+        if (isTrue(isGreaterThan(subtract(time, lastAuthenticatedTime), delay)))
         {
             this.checkRequiredCredentials();
-            object time = this.milliseconds();
-            object lastAuthenticatedTime = this.safeInteger(getValue(this.options, "ws"), "lastAuthenticatedTime", 0);
-            object listenKeyRefreshRate = this.safeInteger(getValue(this.options, "ws"), "listenKeyRefreshRate", 1200000);
-            object delay = this.sum(listenKeyRefreshRate, 10000);
-            if (isTrue(isGreaterThan(subtract(time, lastAuthenticatedTime), delay)))
+            // single-flight leader election on a never-dialed client, see
+            // https://github.com/ccxt/ccxt/issues/29393. the election used to
+            // run on this.client (this.getUserStreamUrl ()), but that url
+            // embeds the listenKey it is about to mint, so the client the
+            // flight registers on is not the client the next caller looks at:
+            // the cold call elected on .../ws/undefined and every later call
+            // landed on .../ws/<key> with an empty subscriptions map, found
+            // the key still fresh, skipped the fetch and hung on a future
+            // nobody resolves. client.futures is the registry: client.future ()
+            // is the atomic check-and-insert and client.resolve () /
+            // ((WebSocketClient)client).reject () settle and remove the entry under the same lock
+            // in every port
+            string messageHash = "authenticate";
+            var client = this.client("authenticationFlights");
+            if (isTrue(inOp(client.futures, messageHash)))
             {
-                try
-                {
-                    ((IDictionary<string,object>)((WebSocketClient)client).subscriptions)[(string)messageHash] = true;
-                    object response = await this.privatePostApiV1UserDataStream(parameters);
-                    ((IDictionary<string,object>)getValue(this.options, "ws"))["listenKey"] = this.safeString(response, "listenKey");
-                    ((IDictionary<string,object>)getValue(this.options, "ws"))["lastAuthenticatedTime"] = time;
-                    (future as Future).resolve(true);
-                    this.delay(listenKeyRefreshRate,  this.keepAliveListenKey, new object[] { parameters});
-                } catch(Exception e)
-                {
-                    var err = new AuthenticationError(add(add(this.id, " "), this.exceptionMessage(e)));
-                    ((WebSocketClient)client).reject(err, messageHash);
-                    if (isTrue(inOp(((WebSocketClient)client).subscriptions, messageHash)))
-                    {
-                        ((IDictionary<string,object>)((WebSocketClient)client).subscriptions).Remove((string)messageHash);
-                    }
-                }
+                // a flight is already in progress - wake when the leader
+                // settles it: the listenKey is then in the bucket
+                await client.future(messageHash);
+                return;
             }
+            // reusableFuture (), not future () - the two match in
+            // js/py/php/cs/java, but go's Client.Future () yields a channel
+            // that the trailing suspension point below would panic on
+            var future = client.reusableFuture(messageHash);
+            try
+            {
+                object response = await this.privatePostApiV1UserDataStream(parameters);
+                object listenKey = this.safeString(response, "listenKey");
+                if (isTrue(isEqual(listenKey, null)))
+                {
+                    throw new AuthenticationError ((string)add(this.id, " authenticate() received an empty listenKey")) ;
+                }
+                ((IDictionary<string,object>)getValue(this.options, "ws"))["listenKey"] = listenKey;
+                ((IDictionary<string,object>)getValue(this.options, "ws"))["lastAuthenticatedTime"] = time;
+                this.delay(listenKeyRefreshRate,  this.keepAliveListenKey, new object[] { parameters});
+                // settle the flight: client.resolve () removes the future from
+                // client.futures and wakes every waiter
+                callDynamically(client as WebSocketClient, "resolve", new object[] {listenKey, messageHash});
+            } catch(Exception e)
+            {
+                // reject the flight - waiters throw and the next caller re-leads.
+                // no rethrow here, the trailing suspension point rethrows to this
+                // caller AND attaches the handler an alone leader needs
+                var err = new AuthenticationError(add(add(this.id, " "), this.exceptionMessage(e)));
+                ((WebSocketClient)client).reject(err, messageHash);
+            }
+            await future;
         }
-        return await (future as Exchange.Future);
     }
 
     public async virtual Task keepAliveListenKey(object parameters = null)
@@ -1321,7 +1401,7 @@ public partial class toobit : ccxt.toobit
         {
             object url = this.getUserStreamUrl();
             var client = this.client(url);
-            object messageHashes = new List<object>(((IDictionary<string, ccxt.Exchange.Future>)client.futures).Keys);
+            List<object> messageHashes = new List<object>(((IDictionary<string, ccxt.Exchange.Future>)client.futures).Keys);
             for (object i = 0; isLessThan(i, getArrayLength(messageHashes)); postFixIncrement(ref i))
             {
                 object messageHash = getValue(messageHashes, i);
@@ -1354,7 +1434,7 @@ public partial class toobit : ccxt.toobit
         {
             object desc = this.safeString(message, "desc");
             object msg = add(add(add(add(this.id, " code: "), code), " message: "), desc);
-            var exception = new ExchangeError(            ((string)msg)); // c# fix
+            var exception = new ExchangeError(((string)msg)); // c# fix
             ((WebSocketClient)client).reject(exception);
             return true;
         }
