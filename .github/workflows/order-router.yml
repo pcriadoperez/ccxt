@@ -37,7 +37,7 @@ jobs:
     # there is no way to exercise it without the source it projects from.
     services:
       postgres:
-        image: postgres:16
+        image: postgres:18
         env:
           POSTGRES_USER: orderrouter
           POSTGRES_PASSWORD: orderrouter
