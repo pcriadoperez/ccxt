@@ -7,6 +7,9 @@ Read the migration guide at https://github.com/ccxt/ccxt/blob/master/wiki/Migrat
 (also published on docs.ccxt.com) as the source of truth for the migration, and load the \`ccxt-migrate\` skill if your tooling supports skills
 (\`npx skills add ccxt/ccxt\`, or \`curl -fsSL https://raw.githubusercontent.com/ccxt/ccxt/master/install-skills.sh | bash\`).
 Also load the language skill for this codebase — \`ccxt-typescript\` or \`ccxt-python\`.
+For anything about the pmxt side — what a method returns, what a venue class
+supports — read pmxt's own docs rather than inferring it from the call site:
+https://github.com/pmxt-dev/pmxt#readme and https://www.pmxt.dev/docs.
 
 Start by running the codemod for the mechanical half:
 
@@ -38,10 +41,27 @@ Explain the plan in plain language before making broad changes. Follow the
 documented mapping and keep moving unless a change is destructive, credentials
 are missing, or the correct migration is genuinely ambiguous — then ask me.
 
+Then review the whole diff adversarially, assuming a regression is in there.
+Every touched call site can now do something different and still compile. pmxt
+called its hosted API and CCXT calls the venue directly, so the literal requests
+will differ — what must match is the intent of each call: same instrument, same
+time window, same limit, same order side/amount/price, same account. Check
+specifically for: \`fetchOHLCV\`'s \`since\`/\`limit\` swap and a dropped \`end\`;
+price scale (pmxt prices are 0–1 probabilities, so every threshold, spread check
+and position-size calculation downstream is suspect); array-vs-object response
+shapes failing silently; \`createOrder\` positional slots and amount units;
+options the codemod reported as dropped; error classes whose hierarchy changed;
+and \`fetchBalance\`/\`fetchPositions\` call sites that used to take a per-address
+argument and now always return the same account. Set \`exchange.verbose = true\`
+and read what actually goes out on the wire rather than reasoning about it. If
+the project has tests, they should pass unchanged — a test you edited to make
+green is a behaviour change, and you need to tell me about it.
+
 Verify before you claim it works: type-check or lint the project, run its tests,
 then smoke-test against a live *public* endpoint (\`fetchTicker\`, \`fetchOrderBook\`)
 with no API keys involved. Never place a live order to verify a migration.
 
-Finish with a summary of what changed, what you verified, and every call site
-that still has no CCXT equivalent.
+Finish with a summary of what changed, what you verified, every regression the
+review turned up and how you resolved it, and every call site that still has no
+CCXT equivalent.
 `;

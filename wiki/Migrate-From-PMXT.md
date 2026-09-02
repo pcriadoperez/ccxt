@@ -41,6 +41,9 @@ Read the migration guide at https://github.com/ccxt/ccxt/blob/master/wiki/Migrat
 (also published on docs.ccxt.com) as the source of truth for the migration, and load the `ccxt-migrate` skill if your tooling supports skills
 (`npx skills add ccxt/ccxt`). Also load the language skill for this codebase —
 `ccxt-typescript` or `ccxt-python`.
+For anything about the pmxt side — what a method returns, what a venue class
+supports — read pmxt's own docs rather than inferring it from the call site:
+https://github.com/pmxt-dev/pmxt#readme and https://www.pmxt.dev/docs.
 
 Start by running the codemod for the mechanical half:
 
@@ -72,12 +75,29 @@ Explain the plan in plain language before making broad changes. Follow the
 documented mapping and keep moving unless a change is destructive, credentials
 are missing, or the correct migration is genuinely ambiguous — then ask me.
 
+Then review the whole diff adversarially, assuming a regression is in there.
+Every touched call site can now do something different and still compile. pmxt
+called its hosted API and CCXT calls the venue directly, so the literal requests
+will differ — what must match is the intent of each call: same instrument, same
+time window, same limit, same order side/amount/price, same account. Check
+specifically for: `fetchOHLCV`'s `since`/`limit` swap and a dropped `end`;
+price scale (pmxt prices are 0–1 probabilities, so every threshold, spread check
+and position-size calculation downstream is suspect); array-vs-object response
+shapes failing silently; `createOrder` positional slots and amount units;
+options the codemod reported as dropped; error classes whose hierarchy changed;
+and `fetchBalance`/`fetchPositions` call sites that used to take a per-address
+argument and now always return the same account. Set `exchange.verbose = true`
+and read what actually goes out on the wire rather than reasoning about it. If
+the project has tests, they should pass unchanged — a test you edited to make
+green is a behaviour change, and you need to tell me about it.
+
 Verify before you claim it works: type-check or lint the project, run its tests,
 then smoke-test against a live *public* endpoint (`fetchTicker`, `fetchOrderBook`)
 with no API keys involved. Never place a live order to verify a migration.
 
-Finish with a summary of what changed, what you verified, and every call site
-that still has no CCXT equivalent.
+Finish with a summary of what changed, what you verified, every regression the
+review turned up and how you resolved it, and every call site that still has no
+CCXT equivalent.
 ```
 
 `npx ccxt-migrate@latest prompt` prints this same prompt, so you can pipe it straight
@@ -306,6 +326,40 @@ public endpoint. Read your exchange's page rather than assuming.
 
 ---
 
+## Check for regressions
+
+The migration is only done if the code still does the same thing, and every call site the
+codemod touched can now behave differently **and still compile**. Read the diff once
+assuming a regression is in it.
+
+pmxt calls its hosted API and CCXT calls the venue directly, so the literal HTTP requests
+will never match — that is expected, not a bug. What must match is the *intent* of each
+call: same instrument, same time window, same limit, same order side/amount/price, same
+account.
+
+These are the ones that compile:
+
+| Regression | How to catch it |
+|---|---|
+| **Wrong time window** — `fetchOHLCV`'s `limit` and start time swap position, and pmxt's `end` has no slot | Is `since` a millisecond integer, not a `Date`? Did `end` become `params['until']` or vanish? |
+| **Price scale** — pmxt prices are `0.0`–`1.0` probabilities, CCXT prices are quote-currency | Every threshold, spread check, percentage format and position-size calculation downstream of a price is suspect |
+| **Response shape** — `book.bids[0].price` → `book['bids'][0][0]` | Arithmetic on an array throws, but truthiness checks and string interpolation fail silently |
+| **Order semantics** — `createOrder({...})` → positional `(symbol, type, side, amount, price)` | Did `type` and `side` swap? Does `amount` mean the same unit (check `market['contractSize']`)? |
+| **Dropped arguments** — `loadMarkets()` takes no filters | Every drop is listed in `MIGRATION-REPORT.md`; re-implement client-side if the code needed it |
+| **Error hierarchy** — `MarketNotFound` → `BadSymbol`, `PmxtError` → `ExchangeError` | A broad catch that used to swallow everything may now let a different error through |
+| **Account identity** — `fetchBalance(address)` → credentials on the instance | Code that queried several addresses now returns the same account from all of those call sites |
+| **Request pacing** — CCXT enables `enableRateLimit` by default | Code relying on pmxt's aggregated pacing may hit a venue limit the hosted layer absorbed |
+
+Then look at the wire instead of reasoning about it. `exchange.verbose = true` (or
+`--verbose` in [ccxt-cli](ccxt-cli.md)) prints every outbound request and raw response;
+run the migrated path and check the market id, window, limit and order fields against
+what the pmxt version was asking for.
+
+If the project has tests, they should pass **unchanged**. A test you had to edit to make
+it green is a behaviour change — possibly the right one, but never a silent one.
+
+---
+
 ## Verify
 
 In this order:
@@ -332,3 +386,6 @@ on an exchange with a testnet if you need to exercise the order path.
 - [Supported Exchanges](Exchange-Markets.md)
 - [AI Skills](AI-Skills.md) — including `ccxt-migrate`
 - [Install](Install.md)
+- pmxt's own documentation, for the source side of the migration:
+  [github.com/pmxt-dev/pmxt](https://github.com/pmxt-dev/pmxt#readme) and
+  [www.pmxt.dev/docs](https://www.pmxt.dev/docs)
