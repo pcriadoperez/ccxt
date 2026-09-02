@@ -31,6 +31,24 @@ defaults:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
+    # The key-lifecycle smoke test needs a database: Postgres is the source of truth for
+    # api_keys, and the router reads only the projected snapshot. Asserting that a minted key
+    # authenticates and a revoked one stops is therefore an assertion about the projection, and
+    # there is no way to exercise it without the source it projects from.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: orderrouter
+          POSTGRES_PASSWORD: orderrouter
+          POSTGRES_DB: orderrouter
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
 
@@ -63,6 +81,11 @@ jobs:
           # script would leave the two reading different files and the key-lifecycle block below
           # would assert against a store the server never loaded.
           ORDER_ROUTER_KEYS_FILE: /tmp/ci-keys.json
+          # Read by the admin CLI only. The ROUTER never receives it, deliberately: it reads the
+          # projected snapshot and nothing else, so a database outage cannot take authentication
+          # down with it. Handing it the connection string here would quietly test a topology
+          # production does not run.
+          DATABASE_URL: postgres://orderrouter:orderrouter@localhost:5432/orderrouter
           LOG_LEVEL: warn
         run: |
           node dist/index.js > /tmp/router.log 2>&1 &
@@ -126,17 +149,27 @@ jobs:
           # and confirm it stops working. The three assertions above still pass through the legacy
           # env bridge, so both schemes are covered simultaneously — which is exactly the property
           # the migration depends on.
-          echo "--- a CLI-minted key works, and revoking it takes effect on reload ---"
-          node dist/cli/keys.js create --name ci-key > /tmp/ci-key-create.txt
+          echo "--- a database-minted key works, and revoking it takes effect on reload ---"
+          # The keys CLI was deleted when Postgres became the source of truth for api_keys; with
+          # the database holding the rows, a second writer is a lost-update problem nobody needs.
+          # This block is the same assertion against the replacement path: mint in Postgres,
+          # project to the snapshot, and check the router honours it.
+          node dist/db/migrate.js
+          node dist/cli/admin.js create-admin --email ci@example.invalid --password ci-smoke-password
+          node dist/cli/admin.js create-key --email ci@example.invalid --name ci-key > /tmp/ci-key-create.txt
           NEWKEY=$(grep -o 'or_live_[A-Za-z0-9_-]*' /tmp/ci-key-create.txt)
-          if [ -z "$NEWKEY" ]; then echo "::error::keys create printed no key"; cat /tmp/ci-key-create.txt; exit 1; fi
+          if [ -z "$NEWKEY" ]; then echo "::error::create-key printed no key"; cat /tmp/ci-key-create.txt; exit 1; fi
 
           # The router was started before the file existed, so this also exercises reload-from-absent.
           kill -HUP $ROUTER_PID; sleep 2
           code=$(curl -s -o /dev/null -w '%{http_code}' -H "x-api-key: $NEWKEY" http://localhost:8080/symbols)
           if [ "$code" != "200" ]; then echo "::error::a new key should be 200, got $code"; cat /tmp/router.log; exit 1; fi
 
-          node dist/cli/keys.js revoke ci-key
+          # Revocation is a database write plus a re-projection — there is no CLI verb for it,
+          # because the dashboard owns that action.
+          PGPASSWORD=orderrouter psql -h localhost -U orderrouter -d orderrouter \
+            -c "UPDATE api_keys SET revoked_at = now() WHERE name = 'ci-key'"
+          node dist/cli/admin.js project
           kill -HUP $ROUTER_PID; sleep 2
           code=$(curl -s -o /dev/null -w '%{http_code}' -H "x-api-key: $NEWKEY" http://localhost:8080/symbols)
           if [ "$code" != "401" ]; then echo "::error::a revoked key should be 401, got $code"; exit 1; fi
