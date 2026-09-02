@@ -156,7 +156,18 @@ export class ApiKeyStore {
             || envRaw === 'undefined' || envRaw === 'null')
             ? undefined
             : envRaw;
-        if (envKey !== undefined && !tombstoned.has(LEGACY_KEY_ID)) {
+        // The dev literal is PUBLISHED in this repository, so it is not a credential wherever it
+        // comes from. It used to be reachable here rather than through the dev fallback below,
+        // which meant it authenticated with none of that path's gating and none of its warnings —
+        // a compose file defaulting the variable to it (as ours did) silently produced a live
+        // service anyone could call. Refuse it on this path unless the dev fallback is explicitly
+        // permitted, in which case the block below owns it and says so loudly.
+        if (envKey === DEV_API_KEY && !this.allowDevFallback) {
+            this.logger.error(
+                'ORDER_ROUTER_API_KEY is set to the published development key. Refusing to load '
+                + 'it as a credential — set a real key.',
+            );
+        } else if (envKey !== undefined && !tombstoned.has(LEGACY_KEY_ID)) {
             byHash.set(hashKey(envKey), syntheticRecord(LEGACY_KEY_ID, 'legacy-shared-key', envKey));
         }
 

@@ -1,10 +1,13 @@
 import { config } from '../config.js';
 import { createLoopMonitor } from '../loopHealth.js';
 import { logger } from '../logger.js';
+import { installCrashHandlers } from '../crashHandlers.js';
 import { OrderBookCache } from '../cache/orderBookCache.js';
 import { FeeRegistry } from '../cache/feeRegistry.js';
 import { ExchangeConnector } from '../connectors/exchangeConnector.js';
 import type { ShardInitMessage, ShardToParentMessage } from './messages.js';
+
+installCrashHandlers(logger, 'shard');
 
 const HEALTH_FLUSH_MS = 2000;
 

@@ -5,8 +5,11 @@
 import { randomBytes } from 'node:crypto';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
+import { installCrashHandlers } from '../crashHandlers.js';
 import { createPool } from '../db/pool.js';
 import { buildWebServer } from './server.js';
+
+installCrashHandlers(logger, 'web');
 
 const pool = createPool(logger);
 // A stable secret matters: regenerating it on every boot invalidates every in-flight form and

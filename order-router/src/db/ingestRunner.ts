@@ -4,9 +4,12 @@
 // to wait on a query.
 import { config } from '../config.js';
 import { logger } from '../logger.js';
+import { installCrashHandlers } from '../crashHandlers.js';
 import { createPool, ensurePartitions } from './pool.js';
 import { startIngest } from './ingest.js';
 import { startKeyProjection } from './keyProjection.js';
+
+installCrashHandlers(logger, 'ingest');
 
 const pool = createPool(logger);
 const auditPath = config.auditLogFile;

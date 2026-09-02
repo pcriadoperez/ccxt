@@ -25,7 +25,16 @@ export function normalizeLevels (
     for (const level of levels) {
         if (out.length >= depth) break;
         const [price, amount] = level;
+        // Reject anything that is not a usable level, not merely a missing one. A zero or negative
+        // price sorts to the front of the merged book and wins the allocation, and the walk then
+        // divides by it — reporting unlimited size at no cost from one venue. NaN is worse: it
+        // fails every comparison, so it is neither filtered nor ordered and simply poisons the
+        // arithmetic downstream. The venues that motivated the crossed-book guard (deepcoin,
+        // whitebit) are proof that books arrive corrupt, and that guard only inspects the top of
+        // each side — a bad level in the interior reaches the cache untouched without this.
         if (price === undefined || amount === undefined) continue;
+        if (!Number.isFinite(price) || !Number.isFinite(amount)) continue;
+        if (price <= 0 || amount <= 0) continue;
         out.push({ price, amount });
     }
     return out;

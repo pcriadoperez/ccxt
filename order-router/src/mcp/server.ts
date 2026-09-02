@@ -3,6 +3,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
 import { logger } from '../logger.js';
+import { installCrashHandlers } from '../crashHandlers.js';
 import { extractApiKey } from '../api/auth.js';
 import { ApiKeyStore } from '../api/keyStore.js';
 import { config } from '../config.js';
@@ -10,6 +11,8 @@ import { FixedWindowRateLimiter } from '../api/rateLimiter.js';
 import * as routerClient from './tools.js';
 import type { RouterClientOptions } from './tools.js';
 import { ROUTE_STRATEGIES } from '../routing/route.js';
+
+installCrashHandlers(logger, 'mcp');
 
 const API_BASE_URL = process.env['ORDER_ROUTER_API_URL'] ?? 'http://localhost:8080';
 const MCP_PORT = Number(process.env['ORDER_ROUTER_MCP_PORT'] ?? 8081);

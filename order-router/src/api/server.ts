@@ -593,6 +593,23 @@ export async function buildServer (
             // hundreds of book updates/sec, and a bridged route watches several such symbols) into
             // at most one computed result per event-loop tick.
             function flush () {
+                try {
+                    flushOrThrow();
+                } catch (err) {
+                    // This runs from setImmediate/setTimeout, so a throw here has no caller to
+                    // catch it and would take the whole API process down — every other client's
+                    // stream and every in-flight request with it. One socket's failure is that
+                    // socket's problem: log it, close that socket, leave the process up.
+                    request.log.error({ err }, 'stream_flush_failed');
+                    try {
+                        socket.close(1011, 'internal error');
+                    } catch {
+                        // the socket may already be gone; nothing further to do
+                    }
+                }
+            }
+
+            function flushOrThrow () {
                 flushPending = false;
                 if (socket.readyState !== socket.OPEN) return;
                 lastPushAt = Date.now();

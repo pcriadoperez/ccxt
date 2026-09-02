@@ -2,6 +2,7 @@ import type { ChildProcess } from 'node:child_process';
 import type { Exchange } from 'ccxt';
 import { config } from './config.js';
 import { logger } from './logger.js';
+import { installCrashHandlers } from './crashHandlers.js';
 import { OrderBookCache } from './cache/orderBookCache.js';
 import { FeeRegistry } from './cache/feeRegistry.js';
 import { ExchangeConnector } from './connectors/exchangeConnector.js';
@@ -14,6 +15,8 @@ import { partitionAssignments, imbalanceRatio, startShards, type ShardHandle } f
 import { LoopRegistry } from './cache/loopRegistry.js';
 import { createLoopMonitor } from './loopHealth.js';
 import type { ShardAssignment } from './sharding/messages.js';
+
+installCrashHandlers(logger, 'router');
 
 async function startConnectors (
     assignments: ShardAssignment[],

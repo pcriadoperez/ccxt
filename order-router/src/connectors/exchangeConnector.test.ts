@@ -39,6 +39,29 @@ test('normalizeLevels drops levels missing price or amount', () => {
     ]);
 });
 
+test('normalizeLevels rejects levels that are present but unusable', () => {
+    // Not a "missing field" case: these arrive complete and wrong. A non-positive price sorts to
+    // the front of the merged book, wins the allocation, and is then divided by — one venue
+    // appearing to offer unlimited size for nothing. NaN fails every comparison, so it is neither
+    // filtered nor ordered and poisons the arithmetic instead.
+    const levels: [number | undefined, number | undefined][] = [
+        [100, 1],
+        [0, 5],
+        [-1, 5],
+        [Number.NaN, 5],
+        [Number.POSITIVE_INFINITY, 5],
+        [101, 0],
+        [101, -2],
+        [101, Number.NaN],
+        [102, 3],
+    ];
+
+    assert.deepEqual(normalizeLevels(levels), [
+        { price: 100, amount: 1 },
+        { price: 102, amount: 3 },
+    ]);
+});
+
 test('normalizeLevels on an all-valid input passes through unchanged', () => {
     const levels: [number | undefined, number | undefined][] = [[100, 1], [99, 2]];
     assert.deepEqual(normalizeLevels(levels), [{ price: 100, amount: 1 }, { price: 99, amount: 2 }]);
