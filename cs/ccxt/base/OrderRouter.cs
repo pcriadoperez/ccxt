@@ -1932,6 +1932,8 @@ public class OrderRouter
             { "outAmount", 0.0 },
             { "orderId", "" },
             { "errorCode", "" },
+            // false until an order is actually dispatched; set at each CreateOrder below
+            { "placementAttempted", false },
         };
         try
         {
@@ -2042,7 +2044,20 @@ public class OrderRouter
             //  re-check — leaves a real order on a real venue. Reporting the id is
             //  the difference between an operator who can go cancel it and one who
             //  never learns it exists.
-            this.RecordOpenOrder(report, exchangeId, symbol, this.StringAt(result, "orderId", ""), "outcome_unknown");
+            var knownId = this.StringAt(result, "orderId", "");
+            if (knownId != "")
+            {
+                this.RecordOpenOrder(report, exchangeId, symbol, knownId, "outcome_unknown");
+            }
+            else if (this.BoolAt(result, "placementAttempted", false) && this.IsOutcomeUnknownError(this.StringAt(result, "errorCode", "")))
+            {
+                //  The order was dispatched and the venue's answer never arrived. It may well have
+                //  been accepted; we simply never learned its id. Reporting that as a plain failure
+                //  asserts "nothing happened", which is the one reading that is certainly wrong.
+                //  A DEFINITE rejection stays 'failed' on purpose: those are answers, not silence.
+                result["status"] = "outcome_unknown";
+                this.RecordUnconfirmedPlacement(report, exchangeId, symbol, "placement_unconfirmed");
+            }
             return result;
         }
     }
@@ -2051,6 +2066,40 @@ public class OrderRouter
     /// Appends one possibly-live order to the report, ignoring a blank id and
     /// never recording the same id twice.
     /// </summary>
+    /// <summary>
+    /// Reports whether a thrown error leaves a placement's outcome genuinely unknown. ccxt's
+    /// NetworkError family means the request failed without telling us whether the venue processed
+    /// it; everything else is the venue ANSWERING. Matched by class name so the five ports agree
+    /// without depending on each language's type-test mechanics.
+    /// </summary>
+    public bool IsOutcomeUnknownError(string errorCode)
+    {
+        return errorCode == "RequestTimeout" || errorCode == "ExchangeNotAvailable"
+            || errorCode == "NetworkError" || errorCode == "OnMaintenance";
+    }
+
+    /// <summary>
+    /// Appends one dispatched-but-unconfirmed placement, keyed on venue/symbol/reason since there
+    /// is no id to key on — the call that would have returned it is the call that died.
+    /// </summary>
+    public void RecordUnconfirmedPlacement(dict report, string exchangeId, string symbol, string reason)
+    {
+        var openOrders = this.ListAt(report, "openOrders");
+        foreach (var entryObject in openOrders)
+        {
+            var entry = this.AsDict(entryObject);
+            if (this.StringAt(entry, "exchangeId", "") == exchangeId
+                && this.StringAt(entry, "symbol", "") == symbol
+                && this.StringAt(entry, "reason", "") == reason)
+            {
+                return;
+            }
+        }
+        ((list)report["openOrders"]).Add(new dict() {
+            { "exchangeId", exchangeId }, { "symbol", symbol }, { "orderId", "" }, { "reason", reason },
+        });
+    }
+
     public void RecordOpenOrder(dict report, string exchangeId, string symbol, string orderId, string reason)
     {
         if (orderId == "")
@@ -2115,6 +2164,9 @@ public class OrderRouter
         if (this.VenueSupportsIoc(venue))
         {
             orderParams["timeInForce"] = "IOC";
+            //  Set immediately before the call that can leave a real order on a real venue, and
+            //  never reset. Anything failing before this point dispatched nothing.
+            result["placementAttempted"] = true;
             var iocOrder = this.OrderToDict(await venue.CreateOrder(symbol, "limit", side, amount, price, orderParams));
             result["orderId"] = this.StringAt(iocOrder, "id", "");
             return iocOrder;
@@ -2125,6 +2177,7 @@ public class OrderRouter
             //  caller's behalf is exactly the decision they did not delegate
             throw new NotSupported("OrderRouter: venue cannot do IOC and allowMarketOrders was not set");
         }
+        result["placementAttempted"] = true;
         var marketOrder = this.OrderToDict(await venue.CreateOrder(symbol, "market", side, amount, null, orderParams));
         result["orderId"] = this.StringAt(marketOrder, "id", "");
         return marketOrder;
@@ -2139,6 +2192,7 @@ public class OrderRouter
     {
         var timeoutMs = this.NumberAt(options, "orderTimeoutMs", 20000);
         var pollIntervalMs = this.NumberAt(options, "pollIntervalMs", 1000);
+        result["placementAttempted"] = true;
         var order = this.OrderToDict(await venue.CreateOrder(symbol, "limit", side, amount, price, orderParams));
         var orderId = this.StringAt(order, "id", "");
         //  before the first poll, the first sleep and the first thing that can go

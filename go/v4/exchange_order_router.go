@@ -1738,6 +1738,8 @@ func (this *OrderRouter) placeStep(step map[string]any, venues map[string]IExcha
 		"outAmount":       0.0,
 		"orderId":         "",
 		"errorCode":       "",
+		// false until an order is actually dispatched; set at each CreateOrder below
+		"placementAttempted": false,
 	}
 	// containment, part one. The ccxt Go base signals failure by panicking —
 	// AmountToPrecision does — and a leg that panics must not take its siblings
@@ -1752,7 +1754,7 @@ func (this *OrderRouter) placeStep(step map[string]any, venues map[string]IExcha
 			// the final read leaves a real order on a real venue, and reporting
 			// the id is the difference between an operator who can go cancel it
 			// and one who never learns it exists.
-			routerRecordOpenOrder(sink, exchangeId, symbol, routerStringAt(result, "orderId", ""), "outcome_unknown")
+			routerNoteUnconfirmed(sink, result, exchangeId, symbol)
 		}
 	}()
 	// containment, part two: every ordinary failure comes back as an error and
@@ -1762,9 +1764,48 @@ func (this *OrderRouter) placeStep(step map[string]any, venues map[string]IExcha
 		result["status"] = "failed"
 		result["errorCode"] = code
 		sink.errors = append(sink.errors, routerErrorRecord(stepIndex, exchangeId, symbol, code))
-		routerRecordOpenOrder(sink, exchangeId, symbol, routerStringAt(result, "orderId", ""), "outcome_unknown")
+		routerNoteUnconfirmed(sink, result, exchangeId, symbol)
 	}
 	return result
+}
+
+// routerNoteUnconfirmed records what is known about an order that may exist. With an id, the entry
+// is id-keyed as usual. Without one — CreateOrder itself failed, so the call that would have
+// returned the id is the call that died — an id-less entry is recorded ONLY when the error leaves
+// the outcome genuinely unknown. Reporting a network failure as a plain failure asserts "nothing
+// happened", which is the one reading that is certainly wrong; reporting a definite rejection that
+// way would bury the ambiguous ones among answers the venue actually gave.
+func routerNoteUnconfirmed(sink *orderRouterSink, result map[string]any, exchangeId string, symbol string) {
+	if knownId := routerStringAt(result, "orderId", ""); knownId != "" {
+		routerRecordOpenOrder(sink, exchangeId, symbol, knownId, "outcome_unknown")
+		return
+	}
+	if !routerBoolAt(result, "placementAttempted", false) {
+		return
+	}
+	if !routerIsOutcomeUnknownError(routerStringAt(result, "errorCode", "")) {
+		return
+	}
+	result["status"] = "outcome_unknown"
+	for _, entry := range sink.openOrders {
+		if routerStringAt(entry, "exchangeId", "") == exchangeId &&
+			routerStringAt(entry, "symbol", "") == symbol &&
+			routerStringAt(entry, "reason", "") == "placement_unconfirmed" {
+			return
+		}
+	}
+	sink.openOrders = append(sink.openOrders, map[string]any{
+		"exchangeId": exchangeId, "symbol": symbol, "orderId": "", "reason": "placement_unconfirmed",
+	})
+}
+
+// routerIsOutcomeUnknownError reports whether an error leaves a placement's outcome unknown.
+// ccxt's NetworkError family means the request failed without telling us whether the venue
+// processed it; everything else is the venue ANSWERING. Matched by class name so the five ports
+// agree without depending on each language's type-assertion mechanics.
+func routerIsOutcomeUnknownError(errorCode string) bool {
+	return errorCode == "RequestTimeout" || errorCode == "ExchangeNotAvailable" ||
+		errorCode == "NetworkError" || errorCode == "OnMaintenance"
 }
 
 // placeStepInner does the work of one order and fills in result on success.
@@ -1926,6 +1967,8 @@ func routerDerefString(value *string) string {
 func (this *OrderRouter) placeImmediateOrder(venue IExchange, symbol string, side string, amount float64, price float64, orderParams map[string]any, options map[string]any, result map[string]any) (Order, error) {
 	if this.venueSupportsIoc(venue) {
 		orderParams["timeInForce"] = "IOC"
+		// set immediately before the call that can leave a real order on a real venue
+		result["placementAttempted"] = true
 		iocOrder, err := venue.CreateOrder(symbol, "limit", side, amount, WithCreateOrderPrice(price), WithCreateOrderParams(orderParams))
 		result["orderId"] = routerDerefString(iocOrder.Id)
 		return iocOrder, err
@@ -1935,6 +1978,7 @@ func (this *OrderRouter) placeImmediateOrder(venue IExchange, symbol string, sid
 		// caller's behalf is exactly the decision they did not delegate
 		return Order{}, NotSupported("OrderRouter: venue cannot do IOC and allowMarketOrders was not set")
 	}
+	result["placementAttempted"] = true
 	marketOrder, err := venue.CreateOrder(symbol, "market", side, amount, WithCreateOrderParams(orderParams))
 	result["orderId"] = routerDerefString(marketOrder.Id)
 	return marketOrder, err
@@ -1946,6 +1990,7 @@ func (this *OrderRouter) placeImmediateOrder(venue IExchange, symbol string, sid
 func (this *OrderRouter) placeProtectedLimit(venue IExchange, step map[string]any, symbol string, side string, amount float64, price float64, orderParams map[string]any, options map[string]any, sink *orderRouterSink, result map[string]any) (Order, error) {
 	timeoutMs := routerNumberAt(options, "orderTimeoutMs", OrderRouterDefaultOrderTimeoutMs)
 	pollIntervalMs := routerNumberAt(options, "pollIntervalMs", OrderRouterDefaultPollIntervalMs)
+	result["placementAttempted"] = true
 	order, err := venue.CreateOrder(symbol, "limit", side, amount, WithCreateOrderPrice(price), WithCreateOrderParams(orderParams))
 	if err != nil {
 		return Order{}, err

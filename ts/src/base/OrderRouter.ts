@@ -1638,6 +1638,8 @@ class OrderRouter {
             'outAmount': 0,
             'orderId': '',
             'errorCode': '',
+            //  false until an order is actually dispatched; see the assignment in the try below
+            'placementAttempted': false,
         };
         try {
             const venue = venues[exchangeId];
@@ -1725,9 +1727,50 @@ class OrderRouter {
             //  re-check — leaves a real order on a real venue. Reporting the id
             //  is the difference between an operator who can go cancel it and
             //  one who never learns it exists.
-            this.recordOpenOrder (report, exchangeId, symbol, this.stringAt (result, 'orderId', ''), 'outcome_unknown');
+            const knownId = this.stringAt (result, 'orderId', '');
+            if (knownId !== '') {
+                this.recordOpenOrder (report, exchangeId, symbol, knownId, 'outcome_unknown');
+            } else if (this.boolAt (result, 'placementAttempted', false)
+                && this.isOutcomeUnknownError (result['errorCode'])) {
+                //  The order was dispatched and the venue's answer never arrived. It may well have
+                //  been accepted; we simply never learned its id. Reporting that as a plain
+                //  failure asserts "nothing happened", which is the one reading that is certainly
+                //  wrong, so the step is marked outcome-unknown and an id-less entry goes into
+                //  openOrders for an operator to reconcile by symbol and timestamp.
+                //
+                //  A DEFINITE rejection — insufficient funds, an invalid price, an unsupported
+                //  order type — is left as 'failed' on purpose. Those are answers, not silence,
+                //  and flagging every rejection as a possibly-live order would bury the ones that
+                //  really are ambiguous.
+                result['status'] = 'outcome_unknown';
+                this.recordUnconfirmedPlacement (report, exchangeId, symbol, 'placement_unconfirmed');
+            }
             return result;
         }
+    }
+
+    /**
+     * @ignore
+     * @method
+     * @name OrderRouter#recordOpenOrder
+     * @description appends one possibly-live order to the report, ignoring a blank id and never recording the same id twice
+     * @param {object} report the report
+     * @param {string} exchangeId the venue
+     * @param {string} symbol the market
+     * @param {string} orderId the venue's order id
+     * @param {string} reason why the order may still be open
+     * @returns {undefined}
+     */
+    recordUnconfirmedPlacement (report: Dict, exchangeId: string, symbol: string, reason: string) {
+        const openOrders = this.listAt (report, 'openOrders');
+        for (let i = 0; i < openOrders.length; i++) {
+            if (this.stringAt (openOrders[i], 'exchangeId', '') === exchangeId
+                && this.stringAt (openOrders[i], 'symbol', '') === symbol
+                && this.stringAt (openOrders[i], 'reason', '') === reason) {
+                return;
+            }
+        }
+        report['openOrders'].push ({ 'exchangeId': exchangeId, 'symbol': symbol, 'orderId': '', 'reason': reason });
     }
 
     /**
@@ -1764,6 +1807,25 @@ class OrderRouter {
      * @param {object} e the caught exception
      * @returns {string} the exception class name, or unknown_error
      */
+    isOutcomeUnknownError (errorCode: string): boolean {
+        //  ccxt's NetworkError family: the request failed in a way that does not tell us whether
+        //  the venue processed it. Everything else in the hierarchy is the venue ANSWERING, which
+        //  means no order exists. Matched by class name so the five ports agree without depending
+        //  on each language's instanceof/isa mechanics.
+        return errorCode === 'RequestTimeout'
+            || errorCode === 'ExchangeNotAvailable'
+            || errorCode === 'NetworkError'
+            || errorCode === 'OnMaintenance';
+    }
+
+    /**
+     * @ignore
+     * @method
+     * @name OrderRouter#errorCodeOf
+     * @description names the class of a thrown error, for the report
+     * @param {object} e the thrown value
+     * @returns {string} the error class name, or unknown_error
+     */
     errorCodeOf (e: any): string {
         if (e === undefined || e === null) {
             return 'unknown_error';
@@ -1791,6 +1853,11 @@ class OrderRouter {
     async placeImmediateOrder (venue: any, symbol: string, side: string, amount: number, price: number, orderParams: Dict, options: Dict, result: Dict): Promise<Dict> {
         if (this.venueSupportsIoc (venue)) {
             orderParams['timeInForce'] = 'IOC';
+            // Set immediately before the call that can leave a real order on a real venue, and
+            // never reset. Anything that fails before this point — a missing venue, a size that
+            // rounds to zero, the notional cap, a venue that cannot do IOC — dispatched nothing,
+            // and recording an unconfirmed placement for it would be a false alarm.
+            result['placementAttempted'] = true;
             const iocOrder = await venue.createOrder (symbol, 'limit', side, amount, price, orderParams);
             result['orderId'] = this.stringAt (iocOrder, 'id', '');
             return iocOrder;
@@ -1800,6 +1867,7 @@ class OrderRouter {
             //  caller's behalf is exactly the decision they did not delegate
             throw new NotSupported ('OrderRouter: venue cannot do IOC and allowMarketOrders was not set');
         }
+        result['placementAttempted'] = true;
         const marketOrder = await venue.createOrder (symbol, 'market', side, amount, undefined, orderParams);
         result['orderId'] = this.stringAt (marketOrder, 'id', '');
         return marketOrder;
@@ -1824,6 +1892,7 @@ class OrderRouter {
     async placeProtectedLimit (venue: any, step: Dict, symbol: string, side: string, amount: number, price: number, orderParams: Dict, options: Dict, report: Dict, result: Dict): Promise<Dict> {
         const timeoutMs = this.numberAt (options, 'orderTimeoutMs', 20000);
         const pollIntervalMs = this.numberAt (options, 'pollIntervalMs', 1000);
+        result['placementAttempted'] = true;
         let order = await venue.createOrder (symbol, 'limit', side, amount, price, orderParams);
         const orderId = this.stringAt (order, 'id', '');
         //  before the first poll, the first sleep and the first thing that can

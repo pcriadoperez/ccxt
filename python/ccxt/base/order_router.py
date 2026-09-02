@@ -1424,6 +1424,8 @@ class OrderRouter:
             'outAmount': 0,
             'orderId': '',
             'errorCode': '',
+            # False until an order is actually dispatched; see the assignment at each create_order
+            'placementAttempted': False,
         }
         try:
             venue = venues.get(exchange_id)
@@ -1500,8 +1502,53 @@ class OrderRouter:
             # re-check — leaves a real order on a real venue. Reporting the id is
             # the difference between an operator who can go cancel it and one who
             # never learns it exists.
-            self.record_open_order(report, exchange_id, symbol, self.string_at(result, 'orderId', ''), 'outcome_unknown')
+            known_id = self.string_at(result, 'orderId', '')
+            if known_id != '':
+                self.record_open_order(report, exchange_id, symbol, known_id, 'outcome_unknown')
+            elif self.bool_at(result, 'placementAttempted', False) and self.is_outcome_unknown_error(result['errorCode']):
+                # The order was dispatched and the venue's answer never arrived. It may well have
+                # been accepted; we simply never learned its id. Reporting that as a plain failure
+                # asserts "nothing happened", which is the one reading that is certainly wrong, so
+                # the step is marked outcome-unknown and an id-less entry goes into openOrders for
+                # an operator to reconcile by symbol and timestamp.
+                #
+                # A DEFINITE rejection — insufficient funds, an invalid price, an unsupported order
+                # type — is left as 'failed' on purpose. Those are answers, not silence.
+                result['status'] = 'outcome_unknown'
+                self.record_unconfirmed_placement(report, exchange_id, symbol, 'placement_unconfirmed')
             return result
+
+    def is_outcome_unknown_error(self, error_code):
+        """
+        reports whether a thrown error leaves the outcome of a placement genuinely unknown
+
+        :param str error_code: the error class name
+        :returns bool: True when the request may or may not have reached the venue
+        """
+        # ccxt's NetworkError family: the request failed in a way that does not tell us whether the
+        # venue processed it. Everything else in the hierarchy is the venue ANSWERING, which means
+        # no order exists. Matched by class name so the five ports agree without depending on each
+        # language's isinstance mechanics.
+        return error_code in ('RequestTimeout', 'ExchangeNotAvailable', 'NetworkError', 'OnMaintenance')
+
+    def record_unconfirmed_placement(self, report, exchange_id, symbol, reason):
+        """
+        appends one dispatched-but-unconfirmed placement to the report, keyed on venue/symbol/reason since there is no id
+
+        :param dict report: the report
+        :param str exchange_id: the venue
+        :param str symbol: the market
+        :param str reason: why the outcome is unknown
+        :returns None:
+        """
+        with self.lock:
+            open_orders = self.list_at(report, 'openOrders')
+            for entry in open_orders:
+                if (self.string_at(entry, 'exchangeId', '') == exchange_id
+                        and self.string_at(entry, 'symbol', '') == symbol
+                        and self.string_at(entry, 'reason', '') == reason):
+                    return
+            report['openOrders'].append({'exchangeId': exchange_id, 'symbol': symbol, 'orderId': '', 'reason': reason})
 
     def record_open_order(self, report, exchange_id, symbol, order_id, reason):
         """
@@ -1570,6 +1617,11 @@ class OrderRouter:
         """
         if self.venue_supports_ioc(venue):
             order_params['timeInForce'] = 'IOC'
+            # Set immediately before the call that can leave a real order on a real venue, and
+            # never reset. Anything that fails before this point — a missing venue, a size that
+            # rounds to zero, the notional cap, a venue that cannot do IOC — dispatched nothing,
+            # and recording an unconfirmed placement for it would be a false alarm.
+            result['placementAttempted'] = True
             ioc_order = venue.create_order(symbol, 'limit', side, amount, price, order_params)
             result['orderId'] = self.string_at(ioc_order, 'id', '')
             return ioc_order
@@ -1577,6 +1629,7 @@ class OrderRouter:
             # a market order is an unbounded price, and switching to one on a
             # caller's behalf is exactly the decision they did not delegate
             raise NotSupported('OrderRouter: venue cannot do IOC and allowMarketOrders was not set')
+        result['placementAttempted'] = True
         market_order = venue.create_order(symbol, 'market', side, amount, None, order_params)
         result['orderId'] = self.string_at(market_order, 'id', '')
         return market_order
@@ -1599,6 +1652,7 @@ class OrderRouter:
         """
         timeout_ms = self.number_at(options, 'orderTimeoutMs', 20000)
         poll_interval_ms = self.number_at(options, 'pollIntervalMs', 1000)
+        result['placementAttempted'] = True
         order = venue.create_order(symbol, 'limit', side, amount, price, order_params)
         order_id = self.string_at(order, 'id', '')
         # before the first poll, the first sleep and the first thing that can go

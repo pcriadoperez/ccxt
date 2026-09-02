@@ -1622,6 +1622,8 @@ class OrderRouter {
             'outAmount' => 0,
             'orderId' => '',
             'errorCode' => '',
+            // false until an order is actually dispatched; see the assignment at each createOrder
+            'placementAttempted' => false,
         );
         try {
             $venue = $this->fieldAt($venues, $exchangeId);
@@ -1709,7 +1711,18 @@ class OrderRouter {
             //  re-check — leaves a real order on a real venue. Reporting the id
             //  is the difference between an operator who can go cancel it and one
             //  who never learns it exists.
-            $this->recordOpenOrder($report, $exchangeId, $symbol, $this->stringAt($result, 'orderId', ''), 'outcome_unknown');
+            $knownId = $this->stringAt($result, 'orderId', '');
+            if ($knownId !== '') {
+                $this->recordOpenOrder($report, $exchangeId, $symbol, $knownId, 'outcome_unknown');
+            } elseif ($this->boolAt($result, 'placementAttempted', false) && $this->isOutcomeUnknownError($result['errorCode'])) {
+                // The order was dispatched and the venue's answer never arrived. It may well have
+                // been accepted; we simply never learned its id. Reporting that as a plain failure
+                // asserts "nothing happened", which is the one reading that is certainly wrong.
+                // A DEFINITE rejection is left as 'failed' on purpose: those are answers, not
+                // silence, and flagging every rejection would bury the genuinely ambiguous ones.
+                $result['status'] = 'outcome_unknown';
+                $this->recordUnconfirmedPlacement($report, $exchangeId, $symbol, 'placement_unconfirmed');
+            }
             return $result;
         }
     }
@@ -1724,6 +1737,25 @@ class OrderRouter {
      * @param string $reason why the order may still be open
      * @return void
      */
+    public function isOutcomeUnknownError($errorCode) {
+        // ccxt's NetworkError family: the request failed in a way that does not tell us whether
+        // the venue processed it. Everything else in the hierarchy is the venue ANSWERING.
+        return $errorCode === 'RequestTimeout' || $errorCode === 'ExchangeNotAvailable'
+            || $errorCode === 'NetworkError' || $errorCode === 'OnMaintenance';
+    }
+
+    public function recordUnconfirmedPlacement(&$report, $exchangeId, $symbol, $reason) {
+        $openOrders = $this->listAt($report, 'openOrders');
+        foreach ($openOrders as $entry) {
+            if ($this->stringAt($entry, 'exchangeId', '') === $exchangeId
+                && $this->stringAt($entry, 'symbol', '') === $symbol
+                && $this->stringAt($entry, 'reason', '') === $reason) {
+                return;
+            }
+        }
+        $report['openOrders'][] = array('exchangeId' => $exchangeId, 'symbol' => $symbol, 'orderId' => '', 'reason' => $reason);
+    }
+
     public function recordOpenOrder(&$report, $exchangeId, $symbol, $orderId, $reason) {
         if ($orderId === '') {
             //  nothing to point an operator at
@@ -1775,6 +1807,10 @@ class OrderRouter {
     public function placeImmediateOrder($venue, $symbol, $side, $amount, $price, $orderParams, $options, &$result) {
         if ($this->venueSupportsIoc($venue)) {
             $orderParams['timeInForce'] = 'IOC';
+            // Set immediately before the call that can leave a real order on a real venue, and
+            // never reset. Anything that fails before this point — a missing venue, a size that
+            // rounds to zero, the notional cap, a venue that cannot do IOC — dispatched nothing.
+            $result['placementAttempted'] = true;
             $iocOrder = $venue->createOrder($symbol, 'limit', $side, $amount, $price, $orderParams);
             $result['orderId'] = $this->stringAt($iocOrder, 'id', '');
             return $iocOrder;
@@ -1784,6 +1820,7 @@ class OrderRouter {
             //  caller's behalf is exactly the decision they did not delegate
             throw new NotSupported('OrderRouter: venue cannot do IOC and allowMarketOrders was not set');
         }
+        $result['placementAttempted'] = true;
         $marketOrder = $venue->createOrder($symbol, 'market', $side, $amount, null, $orderParams);
         $result['orderId'] = $this->stringAt($marketOrder, 'id', '');
         return $marketOrder;
@@ -1807,6 +1844,7 @@ class OrderRouter {
     public function placeProtectedLimit($venue, $step, $symbol, $side, $amount, $price, $orderParams, $options, &$report, &$result) {
         $timeoutMs = $this->numberAt($options, 'orderTimeoutMs', 20000);
         $pollIntervalMs = $this->numberAt($options, 'pollIntervalMs', 1000);
+        $result['placementAttempted'] = true;
         $order = $venue->createOrder($symbol, 'limit', $side, $amount, $price, $orderParams);
         $orderId = $this->stringAt($order, 'id', '');
         //  before the first poll, the first sleep and the first thing that can go

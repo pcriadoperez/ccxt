@@ -27,7 +27,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { test } from 'node:test';
 import OrderRouter from '../../base/OrderRouter.js';
-import { BadRequest, ExchangeError, NotSupported, ArgumentsRequired } from '../../base/errors.js';
+import { BadRequest, ExchangeError, NotSupported, ArgumentsRequired, RequestTimeout } from '../../base/errors.js';
 
 const here = path.dirname (fileURLToPath (import.meta.url));
 //  The fixture lives in the TypeScript tree and is read from there by all five
@@ -348,6 +348,8 @@ class StubVenue {
     fetchOrderThrows: boolean;
     cancelThrows: boolean;
     createdStatus: string;
+    //  createOrder throws a NETWORK error: the order may or may not have reached the venue
+    timeoutCreate: boolean;
 
     constructor (id: string, fillRatio: number = 1, failCreate: boolean = false) {
         this.id = id;
@@ -360,6 +362,7 @@ class StubVenue {
         this.fetchOrderThrows = false;
         this.cancelThrows = false;
         this.createdStatus = '';
+        this.timeoutCreate = false;
     }
 
     async fetchOrder (id: string, symbol: string) {
@@ -401,6 +404,9 @@ class StubVenue {
 
     async createOrder (symbol: string, type: string, side: string, amount: number, price: any = undefined, params: any = {}) {
         this.calls.push ('createOrder:' + type + ':' + side + ':' + amount.toString ());
+        if (this.timeoutCreate) {
+            throw new RequestTimeout ('stub timed out');
+        }
         if (this.failCreate) {
             throw new ExchangeError ('stub refuses');
         }
@@ -800,4 +806,44 @@ test ('formatNumber never emits exponent notation', () => {
     assert.strictEqual (router.formatNumber (1000000), '1000000');
     assert.strictEqual (router.formatNumber (0.5), '0.5');
     assert.strictEqual (router.formatNumber (1e-15), '0');
+});
+
+test ('a createOrder that times out is outcome-unknown, not a plain failure', async () => {
+    //  The venue's answer never arrived, so the order may be live. Reporting 'failed' asserts
+    //  nothing happened — the one reading that is certainly wrong — and the id is blank precisely
+    //  because the call that would have returned it is the call that died, so an id-keyed
+    //  openOrders entry cannot carry the warning either.
+    const plan = router.buildExecutionPlan (oneLegRoute ('buy', 'BTC', 'USDT', 0.1, 100), {});
+    const venue = new StubVenue ('stub');
+    venue.timeoutCreate = true;
+    const report = await router.execute (plan, { 'stub': venue }, { 'strategy': 'sequential', 'live': true, 'usdRates': { 'USDT': 1 } });
+    assert.strictEqual (report['steps'][0]['status'], 'outcome_unknown');
+    assert.strictEqual (report['steps'][0]['errorCode'], 'RequestTimeout');
+    assert.strictEqual (report['openOrders'].length, 1, 'an operator must be told an order may be live');
+    assert.strictEqual (report['openOrders'][0]['reason'], 'placement_unconfirmed');
+    assert.strictEqual (report['openOrders'][0]['orderId'], '');
+    assert.strictEqual (report['openOrders'][0]['exchangeId'], 'stub');
+    assert.strictEqual (report['halted'], true);
+});
+
+test ('a definite rejection stays a plain failure and reports no open order', async () => {
+    //  The counterpart: the venue ANSWERED, so no order exists. Flagging every rejection as
+    //  possibly-live would bury the ones that genuinely are.
+    const plan = router.buildExecutionPlan (oneLegRoute ('buy', 'BTC', 'USDT', 0.1, 100), {});
+    const venue = new StubVenue ('stub', 1, true);
+    const report = await router.execute (plan, { 'stub': venue }, { 'strategy': 'sequential', 'live': true, 'usdRates': { 'USDT': 1 } });
+    assert.strictEqual (report['steps'][0]['status'], 'failed');
+    assert.strictEqual (report['openOrders'].length, 0);
+});
+
+test ('a failure BEFORE dispatch records no open order', async () => {
+    //  A size that rounds to zero never reaches the venue, so there is nothing to reconcile and a
+    //  warning here would be a false alarm.
+    const plan = router.buildExecutionPlan (oneLegRoute ('buy', 'BTC', 'USDT', 0.1, 100), {});
+    const venue = new StubVenue ('stub');
+    venue.amountToPrecision = () => '0';
+    const report = await router.execute (plan, { 'stub': venue }, { 'strategy': 'sequential', 'live': true, 'usdRates': { 'USDT': 1 } });
+    assert.strictEqual (report['steps'][0]['errorCode'], 'rounded_to_zero');
+    assert.strictEqual (report['openOrders'].length, 0);
+    assert.deepStrictEqual (venue.calls, [], 'nothing was dispatched');
 });
