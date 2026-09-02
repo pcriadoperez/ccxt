@@ -884,9 +884,9 @@ public class OrderRouterTest
             this.features = new dict() { { "spot", new dict() { { "createOrder", new dict() { { "timeInForce", new list() { "GTC", "IOC" } } } } } } };
         }
 
-        public override async Task<object> fetchOrder(object id, object symbol = null, object parameters = null)
+        public override async Task<ccxt.Order> FetchOrder(string id, string symbol = null, object parameters = null)
         {
-            this.calls.Add("fetchOrder:" + Convert.ToString(id, CultureInfo.InvariantCulture));
+            this.calls.Add("fetchOrder:" + id);
             await Task.CompletedTask;
             if (this.fetchOrderThrows)
             {
@@ -896,20 +896,20 @@ public class OrderRouterTest
             {
                 var next = this.fetchOrderResults[0];
                 this.fetchOrderResults.RemoveAt(0);
-                return next;
+                return new ccxt.Order(next);
             }
-            return new dict() { { "id", id }, { "status", "closed" }, { "filled", 0.0 }, { "average", 0.0 }, { "cost", 0.0 } };
+            return new ccxt.Order(new dict() { { "id", id }, { "status", "closed" }, { "filled", 0.0 }, { "average", 0.0 }, { "cost", 0.0 } });
         }
 
-        public override async Task<object> cancelOrder(object id, object symbol = null, object parameters = null)
+        public override async Task<ccxt.Order> CancelOrder(string id, string symbol = null, object parameters = null)
         {
-            this.calls.Add("cancelOrder:" + Convert.ToString(id, CultureInfo.InvariantCulture));
+            this.calls.Add("cancelOrder:" + id);
             await Task.CompletedTask;
             if (this.cancelThrows)
             {
                 throw new ExchangeError("stub refuses to cancel");
             }
-            return new dict() { { "id", id }, { "status", "canceled" } };
+            return new ccxt.Order(new dict() { { "id", id }, { "status", "canceled" } });
         }
 
         public override Task<object> loadMarkets(object reload2 = null, object parameters2 = null)
@@ -943,19 +943,19 @@ public class OrderRouterTest
             };
         }
 
-        public override async Task<object> createOrder(object symbol, object type, object side, object amount, object price = null, object parameters = null)
+        public override async Task<ccxt.Order> CreateOrder(string symbol, string type, string side, double amount, double? price = null, object parameters = null)
         {
-            var size = Convert.ToDouble(amount, CultureInfo.InvariantCulture);
-            this.calls.Add("createOrder:" + Convert.ToString(type, CultureInfo.InvariantCulture) + ":" + Convert.ToString(side, CultureInfo.InvariantCulture) + ":" + size.ToString(CultureInfo.InvariantCulture));
+            var size = amount;
+            this.calls.Add("createOrder:" + type + ":" + side + ":" + size.ToString(CultureInfo.InvariantCulture));
             await Task.CompletedTask;
             if (this.failCreate)
             {
                 throw new ExchangeError("stub refuses");
             }
             var filled = size * this.fillRatio;
-            var average = (price == null) ? 100.0 : Convert.ToDouble(price, CultureInfo.InvariantCulture);
+            var average = (price == null) ? 100.0 : (double)price;
             var status = (this.createdStatus == "") ? "closed" : this.createdStatus;
-            return new dict() { { "id", "stub-order" }, { "status", status }, { "filled", filled }, { "average", average }, { "cost", filled * average } };
+            return new ccxt.Order(new dict() { { "id", "stub-order" }, { "status", status }, { "filled", filled }, { "average", average }, { "cost", filled * average } });
         }
     }
 

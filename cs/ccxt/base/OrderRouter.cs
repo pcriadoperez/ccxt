@@ -2089,12 +2089,33 @@ public class OrderRouter
     /// Places an immediate-or-cancel limit order, falling back to a market order
     /// only when the venue cannot do IOC and the caller explicitly allowed it.
     /// </summary>
+    /// <summary>
+    /// Views a typed ccxt.Order as the plain dict the rest of this class reads.
+    /// C# is the only one of the five implementations whose Exchange returns a
+    /// typed order rather than the unified dict; mapping it here keeps every
+    /// call site below identical to its TypeScript, Python, PHP and Go siblings,
+    /// which is what the shared fixture checks. Only the fields the router
+    /// actually reads are carried across — adding more would invent parity that
+    /// is not tested.
+    /// </summary>
+    public dict OrderToDict(ccxt.Order order)
+    {
+        var mapped = new dict();
+        mapped["id"] = order.id;
+        mapped["status"] = order.status;
+        mapped["filled"] = order.filled;
+        mapped["average"] = order.average;
+        mapped["cost"] = order.cost;
+        mapped["price"] = order.price;
+        return mapped;
+    }
+
     public async Task<dict> PlaceImmediateOrder(Exchange venue, string symbol, string side, double amount, double price, dict orderParams, dict options, dict result)
     {
         if (this.VenueSupportsIoc(venue))
         {
             orderParams["timeInForce"] = "IOC";
-            var iocOrder = this.AsDict(await venue.createOrder(symbol, "limit", side, amount, price, orderParams));
+            var iocOrder = this.OrderToDict(await venue.CreateOrder(symbol, "limit", side, amount, price, orderParams));
             result["orderId"] = this.StringAt(iocOrder, "id", "");
             return iocOrder;
         }
@@ -2104,7 +2125,7 @@ public class OrderRouter
             //  caller's behalf is exactly the decision they did not delegate
             throw new NotSupported("OrderRouter: venue cannot do IOC and allowMarketOrders was not set");
         }
-        var marketOrder = this.AsDict(await venue.createOrder(symbol, "market", side, amount, null, orderParams));
+        var marketOrder = this.OrderToDict(await venue.CreateOrder(symbol, "market", side, amount, null, orderParams));
         result["orderId"] = this.StringAt(marketOrder, "id", "");
         return marketOrder;
     }
@@ -2118,7 +2139,7 @@ public class OrderRouter
     {
         var timeoutMs = this.NumberAt(options, "orderTimeoutMs", 20000);
         var pollIntervalMs = this.NumberAt(options, "pollIntervalMs", 1000);
-        var order = this.AsDict(await venue.createOrder(symbol, "limit", side, amount, price, orderParams));
+        var order = this.OrderToDict(await venue.CreateOrder(symbol, "limit", side, amount, price, orderParams));
         var orderId = this.StringAt(order, "id", "");
         //  before the first poll, the first sleep and the first thing that can go
         //  wrong: from here on the caller can always name what is resting
@@ -2132,7 +2153,7 @@ public class OrderRouter
             }
             await this.Sleep(pollIntervalMs);
             waited = waited + pollIntervalMs;
-            order = this.AsDict(await venue.fetchOrder(orderId, symbol));
+            order = this.OrderToDict(await venue.FetchOrder(orderId, symbol));
         }
         var finalStatus = this.StringAt(order, "status", "");
         if (finalStatus == "closed" || finalStatus == "canceled")
@@ -2146,7 +2167,7 @@ public class OrderRouter
         }
         try
         {
-            await venue.cancelOrder(orderId, symbol);
+            await venue.CancelOrder(orderId, symbol);
         }
         catch (Exception)
         {
@@ -2158,7 +2179,7 @@ public class OrderRouter
         }
         //  ALWAYS re-read after a cancel: the cancel and the fill can cross, and
         //  the observed order is the only authority on what actually happened
-        return this.AsDict(await venue.fetchOrder(orderId, symbol));
+        return this.OrderToDict(await venue.FetchOrder(orderId, symbol));
     }
 
     /// <summary>
