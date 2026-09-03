@@ -1,4 +1,4 @@
-import Fastify from 'fastify';
+import Fastify, { type FastifyRequest, type FastifyReply } from 'fastify';
 import websocketPlugin from '@fastify/websocket';
 import rateLimit from '@fastify/rate-limit';
 import fastifyPlugin from 'fastify-plugin';
@@ -407,9 +407,14 @@ export async function buildServer (
     // picks the market, the side, and — when no direct market exists — the bridge. Callers never
     // have to know that USDT->BTC is a *buy* of BTC/USDT while BTC->USDT is a *sell* of the same
     // pair, which is the single most error-prone part of the old symbol+side contract.
-    app.get<{ Querystring: RouteQuery }>(
-        '/route',
-        async (request, reply) => {
+    // The handler is shared by GET /route and POST /route. They differ in exactly one thing: where
+    // the parameters came from.
+    const handleRoute = async (
+        params: RouteQuery,
+        request: FastifyRequest,
+        reply: FastifyReply,
+    ): Promise<unknown> => {
+        {
             // Honour a caller-supplied x-request-id so their trace id and ours match in both
             // logs; otherwise mint one. Echoed as a header too, so a client can correlate even
             // on responses it fails to parse.
@@ -418,7 +423,7 @@ export async function buildServer (
             const requestId = String(request.id);
             reply.header('x-request-id', requestId);
 
-            const parsed = parseRouteQuery(request.query, requestId);
+            const parsed = parseRouteQuery(params, requestId);
             if (!parsed.ok) {
                 reply.code(400);
                 return { error: parsed.error };
@@ -498,8 +503,26 @@ export async function buildServer (
                 reply.code(501);
             }
             return result;
-        },
-    );
+        }
+    };
+
+    app.get<{ Querystring: RouteQuery }>('/route', async (request, reply) =>
+        handleRoute(request.query, request, reply));
+
+    // The same route, the same answer, with the parameters in a JSON body instead of the URL.
+    //
+    // This exists for `balances`. A caller's holdings are scrubbed from both of THIS service's
+    // logs — see redactBalancesInUrl — but a URL does not stay inside this process. The standard
+    // deployment puts a reverse proxy in front, and nginx, an ALB and a CDN all log the full
+    // request line by default; so do browser history and any client-side tracing, and a Referer
+    // header carries it off-origin. None of that is reachable from here, and no amount of
+    // in-process redaction fixes it: the only fix is for the wallet not to be in the URL.
+    //
+    // GET stays exactly as it was. It is the right call for a route request carrying no holdings,
+    // it is what every existing client uses, and it is cacheable and linkable. POST is for the one
+    // parameter that should never have been linkable.
+    app.post<{ Body: RouteQuery }>('/route', async (request, reply) =>
+        handleRoute(request.body ?? ({} as RouteQuery), request, reply));
 
     // The same route, recomputed and pushed whenever any market it depends on moves. Takes the
     // identical query parameters as GET /route and answers with the identical body — a caller

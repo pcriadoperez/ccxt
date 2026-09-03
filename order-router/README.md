@@ -134,12 +134,15 @@ same "write path is async, read path is always local" shape, is a natural extens
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/health` | liveness |
+| GET | `/health` | liveness — is the process alive |
+| GET | `/ready` | readiness — can it actually route yet. 503 until enough books are fresh, using the same staleness cutoff routing uses. Point deploy gates and load balancers here, not at `/health`: `/health` returns 200 from the first millisecond of boot, before any websocket has connected. Unauthenticated, like `/health`; reports counts, never venue names. |
 | GET | `/version` | which commit is deployed — build provenance baked in at build time (authenticated) |
+| GET | `/metrics` | Prometheus exposition (authenticated — it carries the venue list) |
 | GET | `/exchanges/status` | per-exchange WS health: connected, last update age, update/reconnect counts |
 | GET | `/symbols` | symbols currently cached |
 | GET | `/orderbook/:exchange/:symbol` | cached L2 book snapshot (symbol URL-encoded, e.g. `BTC%2FUSDT`) |
 | GET | `/route?from=&to=&amountIn=\|amountOut=` | book-walked, fee-adjusted route between two assets; multi-venue and multi-hop, optionally constrained to `balances` you hold |
+| POST | `/route` | the identical route, with the identical parameters, in a JSON body. **Use this when sending `balances`.** This service scrubs holdings from its own two logs, but a URL does not stay inside this process — nginx, an ALB and a CDN all log the full request line by default, and so do browser history and client-side tracing. None of that is reachable from here. GET stays the right call when you are not sending holdings. |
 | WS | `/stream/route?from=&to=&amountIn=\|amountOut=` | the same route, pushed on book change (event-driven, not polled) |
 
 ### Using `/route`
@@ -502,7 +505,7 @@ against a running router with live exchange data) during development — not jus
 | `ORDER_ROUTER_EXCHANGES` | `kraken,coinbase,kucoin,bitget,gate` | Explicit mode only. |
 | `ORDER_ROUTER_SYMBOLS` | `BTC/USDT,ETH/USDT` | Explicit mode only. |
 | `ORDER_ROUTER_STALE_BOOK_MS` | `5000` | Quotes from books older than this are excluded from ranking. |
-| `ORDER_ROUTER_API_KEY` | `dev-local-key-change-me` | **Set this in any real deployment.** The default grants no security and logs a warning. |
+| `ORDER_ROUTER_API_KEY` | (none) | Legacy single shared key, honoured as `k_legacy` for migration. There is no longer a default: the old `dev-local-key-change-me` fallback is **refused** unless a caller explicitly opts in, because a deployment that forgot to set a key used to start and serve happily. |
 | `ORDER_ROUTER_RATE_LIMIT_MAX` | `600` | Requests per window, per API key. |
 | `ORDER_ROUTER_RATE_LIMIT_WINDOW_MS` | `60000` | Rate limit window. |
 | `ORDER_ROUTER_WS_MAX_CONNECTIONS_PER_KEY` | `50` | Max concurrent `/stream/route` sockets per API key. Overridable per key with `--ws-max`. |
@@ -510,9 +513,29 @@ against a running router with live exchange data) during development — not jus
 | `ORDER_ROUTER_KEYS_FILE` | `./data/keys.json` | API key store. Digests only; mode 0600. |
 | `ORDER_ROUTER_KEYS_RELOAD_POLL_MS` | `10000` | How often to stat the key file for changes. |
 | `ORDER_ROUTER_AUDIT_LOG_LEVEL` | `info` | Level for the per-request audit records, set independently of `LOG_LEVEL`. |
-| `ORDER_ROUTER_API_KEY` | – | Legacy single shared key. Still honoured, as `k_legacy`, for migration. |
 | `ORDER_ROUTER_WS_IDLE_TIMEOUT_MS` | `30000` | Heartbeat interval; a socket that misses two beats is terminated. Must stay below the reverse proxy's `proxy_read_timeout`. |
-| `ORDER_ROUTER_TRUST_PROXY` | `false` | Derive client IP from `X-Forwarded-For`. Enable **only** behind a trusted proxy — see "Deploying behind nginx". |
+| `ORDER_ROUTER_TRUST_PROXY` | `false` | Derive client IP from `X-Forwarded-For`. Enable **only** behind a trusted proxy — see "Deploying behind nginx". Applies to the web console as well as the API: with it on and no proxy in front, a client picks its own rate-limit bucket. |
+| `ORDER_ROUTER_MIN_FRESH_BOOKS_FOR_READY` | `1` | Fresh books `/ready` insists on before reporting the process able to route. `1` rather than `0` because `0` makes it a second liveness probe; raise it if "ready" should mean most of your coverage. |
+| `ORDER_ROUTER_MAX_BOOK_DEPTH` | `500` | Levels kept per side. Also what the connector asks the VENUE for, so on venues with a depth-limited channel the rest is never sent. A venue that refuses the limit is subscribed to without one. |
+| `ORDER_ROUTER_TOP_SYMBOLS` | `50` | Discovery mode only — how many symbols to keep, ranked by the liquidity reference below. |
+| `ORDER_ROUTER_LIQUIDITY_REFERENCE` | `binance,okx` | Discovery mode only — venues whose volume ranks the symbol universe. |
+| `ORDER_ROUTER_STALENESS_PENALTY_BPS` | `1` | Score penalty per unit of book age, in bps. |
+| `ORDER_ROUTER_HOP_PENALTY_BPS` | `5` | Score penalty per extra hop, in bps — what stops a bridge winning on paper by a margin smaller than its own execution risk. |
+| `ORDER_ROUTER_REBALANCE_AFTER_MS` | `0` | One-shot shard rebalance this long after boot. `0` = off, which is the default because on, it stopped every shard two minutes in — including shards whose assignment had not changed — and `/route` answered `all_books_stale` until the cache rewarmed. |
+| `ORDER_ROUTER_REBALANCE_MIN_IMBALANCE` | `1.5` | Ratio between the busiest and quietest shard below which a rebalance is not worth the reconnect. |
+| `ORDER_ROUTER_SHARD_START_CONCURRENCY` | `2` | How many shards boot at once. |
+| `ORDER_ROUTER_SHARD_MAX_OLD_SPACE_MB` | `1024` | `--max-old-space-size` for each shard child process. |
+| `ORDER_ROUTER_AUDIT_LOG_FILE` | (none) | Where the per-request audit stream is written. Required for the Postgres ingester to have anything to ship. Rotate it with `create`, **not** `copytruncate` — see the ingester's warning. |
+| `DATABASE_URL` | (none) | Postgres, for usage records and the key/user tables. The ROUTER never holds this: only the ingester, the key projector and the web console connect. |
+| `ORDER_ROUTER_DB_POOL_MAX` | `10` | Postgres pool size. |
+| `ORDER_ROUTER_INGEST_INTERVAL_MS` | `5000` | How often the audit log is shipped into Postgres. |
+| `ORDER_ROUTER_KEY_PROJECTION_INTERVAL_MS` | `5000` | How often the key file is re-projected from Postgres. |
+| `ORDER_ROUTER_WEB_PORT` | `8090` | Web console port. |
+| `ORDER_ROUTER_WEB_HOST` | `127.0.0.1` | Web console bind address. Loopback by default: put the console behind the same proxy as the API rather than exposing it. |
+| `ORDER_ROUTER_WEB_BASE` | `/router` | Path prefix the console is mounted at. |
+| `ORDER_ROUTER_WEB_SECURE_COOKIES` | `true` | `Secure` on the session cookie. Only set `false` for local HTTP development. |
+| `ORDER_ROUTER_WEB_ORIGINS` | `https://docs.ccxt.com` | Origins accepted on console form POSTs — the second CSRF leg, alongside the token. |
+| `ORDER_ROUTER_CSRF_SECRET` | (random per boot) | Signs console CSRF tokens. Unset means forms in flight across a restart are rejected; set it to keep them valid, and to keep multiple console processes agreeing. |
 | `LOG_LEVEL` | `info` | |
 
 ## Run

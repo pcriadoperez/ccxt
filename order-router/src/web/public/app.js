@@ -24,3 +24,13 @@ document.addEventListener('click', async (event) => {
         button.setAttribute('aria-label', previous);
     }, 1400);
 });
+
+// Confirm-before-submit. This lived in onclick="return confirm(...)" attributes, which the
+// Content-Security-Policy this file exists to make possible does not allow — an inline handler is
+// inline script. The message travels in data-confirm instead, and it also stops the message being
+// spliced into a JavaScript string literal, where HTML-escaping is the wrong escaping.
+document.addEventListener('submit', (event) => {
+    const button = event.submitter;
+    const message = button && button.getAttribute('data-confirm');
+    if (message && !confirm(message)) event.preventDefault();
+});

@@ -1312,3 +1312,63 @@ test('an unroutable answer increments a metric, not just a log line', async () =
         'the reason is counted with its label: ' + after.body.split('\n').filter((l) => l.indexOf('unroutable') !== -1).join(' | '));
     await app.close();
 });
+
+// ---------------------------------------------------------------------------
+// H11: the one parameter that should never be in a URL
+// ---------------------------------------------------------------------------
+
+test('POST /route answers exactly as GET /route does', async () => {
+    // A caller's holdings are scrubbed from both of this service's logs, but a URL does not stay
+    // inside this process: nginx, an ALB and a CDN all log the full request line by default, and
+    // so do browser history and any client-side tracing. None of that is reachable from here, so
+    // the only actual fix is for the wallet not to be in the URL at all. POST exists for that, and
+    // is only useful if it is the SAME route — a second implementation that drifts is worse than
+    // no alternative.
+    const { app } = await buildTestServer();
+    const get = await app.inject({ method: 'GET', url: '/route?from=DOGE&to=SHIB&amountIn=1', headers: AUTH });
+    const post = await app.inject({
+        method: 'POST', url: '/route', headers: AUTH,
+        payload: { from: 'DOGE', to: 'SHIB', amountIn: 1 },
+    });
+    assert.equal(post.statusCode, get.statusCode);
+    const a = get.json();
+    const b = post.json();
+    // calculatedAt/calculatedAtIso are clock readings and requestId is per-request; the rest of
+    // the body is the answer, and the answer must not depend on which verb asked for it.
+    delete a.calculatedAt; delete b.calculatedAt;
+    delete a.calculatedAtIso; delete b.calculatedAtIso;
+    delete a.requestId; delete b.requestId;
+    assert.deepEqual(b, a);
+    await app.close();
+});
+
+test('POST /route validates its body the same way and needs the same key', async () => {
+    const { app } = await buildTestServer();
+
+    const anonymous = await app.inject({ method: 'POST', url: '/route', payload: { from: 'USDT', to: 'BTC', amountIn: 1 } });
+    assert.equal(anonymous.statusCode, 401, 'the body form is not a way around auth');
+
+    // Neither-or-both, exactly as the query form enforces it.
+    const both = await app.inject({
+        method: 'POST', url: '/route', headers: AUTH,
+        payload: { from: 'USDT', to: 'BTC', amountIn: 1, amountOut: 1 },
+    });
+    assert.equal(both.statusCode, 400);
+
+    const empty = await app.inject({ method: 'POST', url: '/route', headers: AUTH, payload: {} });
+    assert.equal(empty.statusCode, 400);
+    await app.close();
+});
+
+test('balances sent in the body appear in no log line, because they are in no URL', async () => {
+    // The GET form relies on redactBalancesInUrl to keep holdings out of this service's own logs.
+    // The body form removes the question: there is nothing in the request line to redact.
+    const { app } = await buildTestServer();
+    const response = await app.inject({
+        method: 'POST', url: '/route', headers: AUTH,
+        payload: { from: 'USDT', to: 'BTC', amountIn: 1, balances: 'USDT:1000' },
+    });
+    assert.notEqual(response.statusCode, 401);
+    assert.equal(response.raw.req.url, '/route', 'the request line carries no parameters at all');
+    await app.close();
+});

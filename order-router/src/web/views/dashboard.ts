@@ -132,7 +132,7 @@ function keyTable (keys: KeyRow[], base: string, csrf: string): string {
         <input type="hidden" name="csrf" value="${esc(csrf)}">
         <input type="hidden" name="displayId" value="${esc(k.displayId)}">
         <button class="btn danger sm" type="submit"
-          onclick="return confirm('Revoke ${esc(k.name)}? Any client using it stops working within 15 seconds.')"
+          data-confirm="Revoke ${esc(k.name)}? Any client using it stops working within 15 seconds."
         >Revoke</button></form>`}</td>
 </tr>`).join('')}</tbody></table>`;
 }
@@ -249,7 +249,7 @@ export function adminPage (opts: {
       <input type="hidden" name="csrf" value="${esc(csrf)}">
       <input type="hidden" name="displayId" value="${esc(k.displayId)}">
       <button class="btn danger sm" type="submit"
-        onclick="return confirm('Revoke ${esc(k.displayId)}?')">Revoke</button></form>`}</td>
+        data-confirm="Revoke ${esc(k.displayId)}?">Revoke</button></form>`}</td>
   </tr>`).join('')}</tbody></table>
 
   <div class="grid" style="margin-top:28px">

@@ -2,7 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import pino from 'pino';
 import { homePage } from './views/home.js';
+import { buildWebServer } from './server.js';
+import type { Pool } from '../db/pool.js';
 
 // The hero animation makes an argument with numbers: that fee-adjusting BEFORE comparing changes
 // which venue wins. If those numbers drift out of agreement the animation quietly teaches the
@@ -76,4 +79,82 @@ test('the page drives to signup and states what the router is not', () => {
     assert.ok((HTML.match(/\/router\/signup/g) ?? []).length >= 3, 'the call to action should recur');
     assert.match(HTML, /never holds funds and never places trades/,
         'a trader asks this first; the homepage must answer it without being asked');
+});
+
+// ---------------------------------------------------------------------------
+// H10: headers, and whose X-Forwarded-For this console believes
+// ---------------------------------------------------------------------------
+
+// The three pages asserted below are the anonymous ones, and loadSession returns early when there
+// is no cookie — so none of them reaches Postgres. The pool therefore throws: if a future change
+// makes a public page query the database, this fails loudly rather than quietly needing a
+// container to run.
+function noDatabase (): Pool {
+    return {
+        query: () => { throw new Error('a public console page must not touch the database'); },
+        connect: () => { throw new Error('a public console page must not touch the database'); },
+    } as unknown as Pool;
+}
+
+async function buildTestConsole (over: { trustProxy?: boolean } = {}): Promise<{
+    app: Awaited<ReturnType<typeof buildWebServer>>; lastIp: () => string | undefined;
+}> {
+    let lastIp: string | undefined;
+    const app = await buildWebServer({
+        pool: noDatabase(),
+        logger: pino({ level: 'silent' }),
+        base: '',
+        keysFile: '/nonexistent/keys.json',
+        csrfSecret: 'test-csrf-secret',
+        secureCookies: false,
+        allowedOrigins: [],
+        ...over,
+    });
+    app.addHook('onRequest', async (request) => { lastIp = request.ip; });
+    return { app, lastIp: () => lastIp };
+}
+
+test('every console response carries the security headers', async () => {
+    // This console renders API keys. A page that can be framed is a clickjacking target, and a
+    // response a browser is free to MIME-sniff is an XSS one. None of these headers were set.
+    const { app } = await buildTestConsole();
+    const response = await app.inject({ method: 'GET', url: '/' });
+    const csp = String(response.headers['content-security-policy']);
+    assert.ok(csp.indexOf("frame-ancestors 'none'") !== -1, csp);
+    assert.ok(csp.indexOf("object-src 'none'") !== -1, csp);
+    assert.ok(csp.indexOf("script-src 'self'") !== -1, csp);
+    // The point of keeping every script in an external file: no 'unsafe-inline' for scripts.
+    assert.equal(csp.indexOf("script-src 'self' 'unsafe-inline'"), -1, csp);
+    assert.equal(response.headers['x-content-type-options'], 'nosniff');
+    assert.equal(response.headers['x-frame-options'], 'DENY');
+    assert.equal(response.headers['referrer-policy'], 'same-origin');
+    await app.close();
+});
+
+test('no page ships an inline event handler the policy would block', async () => {
+    // A CSP without 'unsafe-inline' silently breaks any onclick= that slips back in — the button
+    // simply stops doing what it says. Two of them had already appeared before the policy existed,
+    // so this asserts the rule rather than trusting a comment in app.js to enforce it.
+    const { app } = await buildTestConsole();
+    for (const url of [ '/', '/login', '/signup' ]) {
+        const body = (await app.inject({ method: 'GET', url })).body;
+        assert.equal(/\son[a-z]+\s*=\s*["']/.test(body), false, `inline handler in ${url}`);
+    }
+    await app.close();
+});
+
+test('X-Forwarded-For is only believed when the deployment says to believe it', async () => {
+    // trustProxy was unconditionally true. The console's rate limiter buckets by request.ip, so a
+    // header the client chooses defeated it outright: rotate X-Forwarded-For and get unlimited
+    // password guesses against /login.
+    const untrusting = await buildTestConsole({ trustProxy: false });
+    const a = await untrusting.app.inject({ method: 'GET', url: '/', headers: { 'x-forwarded-for': '9.9.9.9' } });
+    assert.equal(a.statusCode, 200);
+    assert.equal(untrusting.lastIp(), '127.0.0.1', 'the socket address, not the header');
+    await untrusting.app.close();
+
+    const trusting = await buildTestConsole({ trustProxy: true });
+    await trusting.app.inject({ method: 'GET', url: '/', headers: { 'x-forwarded-for': '9.9.9.9' } });
+    assert.equal(trusting.lastIp(), '9.9.9.9', 'behind a real proxy the header is the client');
+    await trusting.app.close();
 });

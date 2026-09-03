@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
 import type { Logger } from 'pino';
 import type { Pool } from '../db/pool.js';
+import { config } from '../config.js';
 import { generateKey, hashKey } from '../api/keyStore.js';
 import { projectKeys } from '../db/keyProjection.js';
 import {
@@ -34,6 +35,8 @@ export interface WebOptions {
     csrfSecret: string;
     secureCookies: boolean;
     allowedOrigins: string[];
+    // Overrides config.trustProxy, for tests. Unset means "whatever the deployment configured".
+    trustProxy?: boolean;
     signupsPerHour?: number;
 }
 
@@ -83,13 +86,47 @@ export async function buildWebServer (opts: WebOptions) {
         for (const [id, entry] of reveals) if (entry.expires < now) reveals.delete(id);
     }, 60_000);
     sweeper.unref();
-    const app = Fastify({ loggerInstance: logger, trustProxy: true });
+    // trustProxy makes request.ip read X-Forwarded-For instead of the socket address, and it is
+    // CONFIGURED, not assumed — the same knob the API server uses, defaulting off. It was
+    // unconditionally true here, which meant this console believed X-Forwarded-For from anyone.
+    // The rate limiter below buckets by request.ip, so the practical effect was that a header the
+    // client chooses defeated it outright: rotate the value and get unlimited password guesses
+    // against /login. Behind a real proxy the operator sets ORDER_ROUTER_TRUST_PROXY=true and the
+    // header is trustworthy again.
+    const app = Fastify({ loggerInstance: logger, trustProxy: opts.trustProxy ?? config.trustProxy });
 
     await app.register(formbody);
     await app.register(rateLimit, {
         max: 300,
         timeWindow: 60_000,
         keyGenerator: (r) => r.ip,
+    });
+
+    // Security headers on every response. This console renders API keys, so a page that can be
+    // framed is a clickjacking target and a response a browser is free to sniff is an XSS one.
+    //
+    // script-src is 'self' with no 'unsafe-inline'. That is only possible because every script
+    // here is an external file — app.js has said so in its own first comment since it was
+    // written, but nothing enforced it and two onclick="return confirm(...)" handlers had already
+    // appeared. They are now data-confirm attributes handled in app.js, so the policy holds.
+    // style-src keeps 'unsafe-inline' for now: the views carry inline style attributes, and a
+    // policy that lies about what the page does is worse than one that admits it.
+    app.addHook('onSend', async (_request, reply, payload) => {
+        void reply.header('content-security-policy', [
+            "default-src 'self'",
+            "script-src 'self'",
+            "style-src 'self' 'unsafe-inline'",
+            "img-src 'self' data:",
+            "form-action 'self'",
+            "frame-ancestors 'none'",
+            "base-uri 'none'",
+            "object-src 'none'",
+        ].join('; '));
+        void reply.header('x-content-type-options', 'nosniff');
+        // Redundant with frame-ancestors on a modern browser, kept for the ones without it.
+        void reply.header('x-frame-options', 'DENY');
+        void reply.header('referrer-policy', 'same-origin');
+        return payload;
     });
     await app.register(fastifyStatic, { root: STATIC_DIR, prefix: `${base}/static/` });
 
