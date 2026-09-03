@@ -404,6 +404,80 @@ function order_router_test_fixture_reconcile_execution_step($router) {
     }
 }
 
+function order_router_refuses_plan($router, $route, $fragment, $message) {
+    try {
+        $router->buildExecutionPlan($route, array());
+    } catch (\Throwable $e) {
+        order_router_assert(strpos($e->getMessage(), $fragment) !== false, $message . ': threw "' . $e->getMessage() . '", expected "' . $fragment . '"');
+        return;
+    }
+    order_router_assert(false, $message . ': nothing was thrown');
+}
+
+function order_router_test_route_produces_mismatch($router) {
+    //  buildExecutionPlan used to copy from, to, pair and side straight out of the server's JSON,
+    //  and the safety checks only tested internal consistency against whatever market that named.
+    //  So a compromised — or simply buggy — router response could steer real orders into any real
+    //  market and every check would pass it, under the 25 USD cap. The client now checks the
+    //  answer against its OWN record of the question.
+    $route = order_router_one_leg_route('buy', 'BTC', 'USDT', 0.1, 100);
+    $route['clientRequestedFrom'] = 'USDT';
+    $route['clientRequestedTo'] = 'ETH';   //  the caller wanted ETH; the route delivers BTC
+    order_router_refuses_plan($router, $route, 'produces BTC, not the requested ETH', 'a produces mismatch');
+}
+
+function order_router_test_route_spends_mismatch($router) {
+    $route = order_router_one_leg_route('buy', 'BTC', 'USDT', 0.1, 100);
+    $route['clientRequestedFrom'] = 'EUR';
+    $route['clientRequestedTo'] = 'BTC';
+    order_router_refuses_plan($router, $route, 'spends USDT, not the requested EUR', 'a spends mismatch');
+}
+
+function order_router_test_route_chain_break($router) {
+    //  Internal coherence, checked with or without a client stamp: hop 2 must spend exactly what
+    //  hop 1 produced, or the plan strands the proceeds of one order and funds the next from a
+    //  wallet nobody checked.
+    $route = order_router_two_hop_route();
+    $route['hops'][1]['base'] = 'DOGE';
+    $route['hops'][1]['quote'] = 'EUR';
+    order_router_refuses_plan($router, $route, 'spends DOGE but the previous hop produced BTC', 'a broken chain');
+}
+
+function order_router_test_route_well_formed_still_plans($router) {
+    $route = order_router_one_leg_route('buy', 'BTC', 'USDT', 0.1, 100);
+    $route['clientRequestedFrom'] = 'USDT';
+    $route['clientRequestedTo'] = 'BTC';
+    $plan = $router->buildExecutionPlan($route, array());
+    order_router_assert(count($plan['steps']) === 1, 'a coherent route still plans');
+}
+
+function order_router_test_fixture_reconcile_sequence($router) {
+    //  reconcileExecutionStep is pure and cannot remember across calls, so a hop's cumulative
+    //  shortfall lives on the steps themselves — written by applyResize. That interaction is only
+    //  visible across a SEQUENCE of calls, which reconcileCases (one call each) cannot express,
+    //  and it is exactly where the five ports could silently disagree.
+    $fixture = order_router_fixture();
+    $cases = $fixture['reconcileSequenceCases'];
+    order_router_assert(count($cases) > 0, 'the fixture has reconcile sequence cases');
+    for ($i = 0; $i < count($cases); $i++) {
+        $testCase = $cases[$i];
+        $steps = json_decode(json_encode($testCase['steps']), true);
+        $calls = $testCase['calls'];
+        for ($c = 0; $c < count($calls); $c++) {
+            //  the plan is rebuilt from the working steps on every call, exactly as execute()
+            //  does — PHP copies arrays on assignment, so a plan built once outside this loop
+            //  would never see what applyResize wrote
+            $plan = array('steps' => $steps, 'reconcileToleranceRatio' => $testCase['reconcileToleranceRatio']);
+            $reconciliation = $router->reconcileExecutionStep($plan, $calls[$c]['stepIndex'], $calls[$c]['realisedOut']);
+            order_router_assert(order_router_numbers_match($reconciliation['scale'], $testCase['expectedScales'][$c]), 'reconcileSequenceCase ' . $testCase['id'] . ' call ' . strval($c) . ': scale ' . strval($reconciliation['scale']));
+            $router->applyResize($steps, $reconciliation);
+        }
+        for ($sIndex = 0; $sIndex < count($steps); $sIndex++) {
+            order_router_assert(order_router_numbers_match($steps[$sIndex]['amount'], $testCase['expectedAmounts'][$sIndex]), 'reconcileSequenceCase ' . $testCase['id'] . ' step ' . strval($sIndex) . ': amount ' . strval($steps[$sIndex]['amount']));
+        }
+    }
+}
+
 function order_router_test_fixture_number_at($router) {
     //  Every port hand-implements JavaScript's parseFloat prefix grammar rather
     //  than calling its own parser, because every language's own parser disagrees
@@ -963,6 +1037,11 @@ function test_order_router() {
         'fixture: buildExecutionPlan is deterministic and does not mutate its input' => 'ccxt\order_router_test_fixture_plan_is_deterministic',
         'fixture: checkExecutionPlanSafety' => 'ccxt\order_router_test_fixture_check_execution_plan_safety',
         'fixture: reconcileExecutionStep' => 'ccxt\order_router_test_fixture_reconcile_execution_step',
+        'fixture: a sequence of reconciliations on one hop' => 'ccxt\order_router_test_fixture_reconcile_sequence',
+        'a route that does not run from the requested asset to the requested asset is refused' => 'ccxt\order_router_test_route_produces_mismatch',
+        'a route that spends an asset the caller never offered is refused' => 'ccxt\order_router_test_route_spends_mismatch',
+        'a bridged route whose hops do not connect is refused' => 'ccxt\order_router_test_route_chain_break',
+        'a well-formed route still plans normally' => 'ccxt\order_router_test_route_well_formed_still_plans',
         'fixture: buildUnwindPlan' => 'ccxt\order_router_test_fixture_build_unwind_plan',
         'fixture: numberAt reads one number grammar in all five languages' => 'ccxt\order_router_test_fixture_number_at',
         'constructor: apiKey is required and the 25 USD cap may be lowered but never raised' => 'ccxt\order_router_test_constructor_cap',

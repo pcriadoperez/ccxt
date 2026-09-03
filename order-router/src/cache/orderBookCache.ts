@@ -97,6 +97,8 @@ export class OrderBookCache extends EventEmitter {
             lastError: undefined,
             crossedCount: 0,
             lastResyncAt: undefined,
+            abandonedSymbols: [],
+            lastAbandonedReason: undefined,
         };
         this.health.set(exchangeId, h);
         this.emit('health', h);
@@ -130,6 +132,20 @@ export class OrderBookCache extends EventEmitter {
         if (!h) return;
         h.connected = false;
         h.lastError = message;
+        this.emit('health', h);
+    }
+
+    // Records a subscription that will never be retried. Abandonment is the one failure mode with
+    // no self-correction: the loop is gone, so the only remaining evidence is the books going
+    // stale, which reads exactly like a quiet market. Surfacing it here puts it in health and in
+    // /metrics, where an operator can see it.
+    recordAbandoned (exchangeId: string, symbols: string[], reason: string): void {
+        const h = this.health.get(exchangeId);
+        if (!h) return;
+        for (const symbol of symbols) {
+            if (h.abandonedSymbols.indexOf(symbol) === -1) h.abandonedSymbols.push(symbol);
+        }
+        h.lastAbandonedReason = reason;
         this.emit('health', h);
     }
 

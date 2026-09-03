@@ -195,7 +195,7 @@ func TestOrderRouterFixtureBuildExecutionPlan(t *testing.T) {
 	fixture := routerFixture(t)
 	for _, testCase := range routerFixtureCases(t, fixture, "planCases") {
 		route := routerDictAt(routerDictAt(fixture, "routes"), routerStringAt(testCase, "route", ""))
-		plan := router.BuildExecutionPlan(route, routerDictAt(testCase, "options"))
+		plan := routerMustPlan(router.BuildExecutionPlan(route, routerDictAt(testCase, "options")))
 		routerAssertMatches(t, routerNormalise(plan), routerNormalise(testCase["expected"]), "planCase "+routerStringAt(testCase, "id", ""))
 	}
 }
@@ -207,8 +207,8 @@ func TestOrderRouterFixtureBuildExecutionPlanIsDeterministic(t *testing.T) {
 		route := routerDictAt(routerDictAt(fixture, "routes"), routerStringAt(testCase, "route", ""))
 		options := routerDictAt(testCase, "options")
 		before, _ := json.Marshal(route)
-		first := router.BuildExecutionPlan(route, options)
-		second := router.BuildExecutionPlan(route, options)
+		first := routerMustPlan(router.BuildExecutionPlan(route, options))
+		second := routerMustPlan(router.BuildExecutionPlan(route, options))
 		routerAssertMatches(t, routerNormalise(second), routerNormalise(first), "planCase "+routerStringAt(testCase, "id", "")+" repeated")
 		after, _ := json.Marshal(route)
 		if string(before) != string(after) {
@@ -223,7 +223,7 @@ func TestOrderRouterFixtureCheckExecutionPlanSafety(t *testing.T) {
 	for _, testCase := range routerFixtureCases(t, fixture, "safetyCases") {
 		route := routerDictAt(routerDictAt(fixture, "routes"), routerStringAt(testCase, "route", ""))
 		markets := routerDictAt(routerDictAt(fixture, "marketSets"), routerStringAt(testCase, "markets", ""))
-		plan := router.BuildExecutionPlan(route, routerDictAt(testCase, "planOptions"))
+		plan := routerMustPlan(router.BuildExecutionPlan(route, routerDictAt(testCase, "planOptions")))
 		violations := router.CheckExecutionPlanSafety(plan, markets, routerDictAt(testCase, "options"))
 		routerAssertMatches(t, routerNormalise(violations), routerNormalise(testCase["expected"]), "safetyCase "+routerStringAt(testCase, "id", ""))
 	}
@@ -241,7 +241,7 @@ func TestOrderRouterFixtureReconcileExecutionStep(t *testing.T) {
 			plan = routerDictAt(routerDictAt(fixture, "plans"), named)
 		} else {
 			route := routerDictAt(routerDictAt(fixture, "routes"), routerStringAt(testCase, "route", ""))
-			plan = router.BuildExecutionPlan(route, routerDictAt(testCase, "planOptions"))
+			plan = routerMustPlan(router.BuildExecutionPlan(route, routerDictAt(testCase, "planOptions")))
 		}
 		stepIndex := int(routerNumberAt(testCase, "stepIndex", 0))
 		verdict, err := router.ReconcileExecutionStep(plan, stepIndex, routerNumberAt(testCase, "realisedOut", 0))
@@ -389,15 +389,15 @@ func TestOrderRouterConstructorCapMayBeLoweredNeverRaised(t *testing.T) {
 
 func TestOrderRouterLimitPriceSitsOnTheSideThatCostsYou(t *testing.T) {
 	router := routerTestRouter(t)
-	buy := router.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 1, 100), map[string]any{"slippageBps": 100.0})
+	buy := routerMustPlan(router.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 1, 100), map[string]any{"slippageBps": 100.0}))
 	if got := routerNumberAt(buy["steps"].([]map[string]any)[0], "limitPrice", 0); got != 101 {
 		t.Fatalf("a buy pays up to 1%% more, got %v", got)
 	}
-	sell := router.BuildExecutionPlan(routerOneLegRoute("sell", "BTC", "USDT", 1, 100), map[string]any{"slippageBps": 100.0})
+	sell := routerMustPlan(router.BuildExecutionPlan(routerOneLegRoute("sell", "BTC", "USDT", 1, 100), map[string]any{"slippageBps": 100.0}))
 	if got := routerNumberAt(sell["steps"].([]map[string]any)[0], "limitPrice", 0); got != 99 {
 		t.Fatalf("a sell accepts down to 1%% less, got %v", got)
 	}
-	none := router.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 1, 100), map[string]any{"slippageBps": 0.0})
+	none := routerMustPlan(router.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 1, 100), map[string]any{"slippageBps": 0.0}))
 	if got := routerNumberAt(none["steps"].([]map[string]any)[0], "limitPrice", 0); got != 100 {
 		t.Fatalf("zero slippage means the expected price, got %v", got)
 	}
@@ -409,21 +409,21 @@ func TestOrderRouterNotionalCapBlocksAt25(t *testing.T) {
 	rates := map[string]any{"usdRates": map[string]any{"USDT": 1.0}}
 	// amount * limitPrice is what is measured, so a 1% slippage on a 24.90 USD
 	// step is what carries it over the line
-	under := router.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 0.24, 100), map[string]any{"slippageBps": 0.0})
+	under := routerMustPlan(router.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 0.24, 100), map[string]any{"slippageBps": 0.0}))
 	if got := router.CheckExecutionPlanSafety(under, markets, rates); len(got) != 0 {
 		t.Fatalf("24 USD passes, got %v", routerCodes(got))
 	}
-	at := router.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 0.25, 100), map[string]any{"slippageBps": 0.0})
+	at := routerMustPlan(router.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 0.25, 100), map[string]any{"slippageBps": 0.0}))
 	if got := router.CheckExecutionPlanSafety(at, markets, rates); len(got) != 0 {
 		t.Fatalf("exactly 25 USD passes, got %v", routerCodes(got))
 	}
-	over := router.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 0.2501, 100), map[string]any{"slippageBps": 0.0})
+	over := routerMustPlan(router.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 0.2501, 100), map[string]any{"slippageBps": 0.0}))
 	overViolations := router.CheckExecutionPlanSafety(over, markets, rates)
 	if len(overViolations) != 1 || routerStringAt(overViolations[0], "code", "") != "notional_exceeds_cap" || !routerBoolAt(overViolations[0], "blocking", false) {
 		t.Fatalf("25.01 USD blocks, got %v", routerCodes(overViolations))
 	}
 	// and the slippage is inside the measurement, not outside it
-	slipped := router.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 0.249, 100), map[string]any{"slippageBps": 100.0})
+	slipped := routerMustPlan(router.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 0.249, 100), map[string]any{"slippageBps": 100.0}))
 	slippedViolations := router.CheckExecutionPlanSafety(slipped, markets, rates)
 	if len(slippedViolations) != 1 || routerStringAt(slippedViolations[0], "code", "") != "notional_exceeds_cap" {
 		t.Fatalf("24.90 USD at 1%% slippage is 25.15 USD of risk, got %v", routerCodes(slippedViolations))
@@ -435,7 +435,7 @@ func TestOrderRouterUnvaluableStepBlocksAndIsNeverSkipped(t *testing.T) {
 	markets := routerPermissiveStubMarkets()
 	// 0.01 USDT of notional: trivially under any cap, and still refused, because
 	// the point is that the cap could not be EVALUATED
-	plan := router.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 0.0001, 100), map[string]any{"slippageBps": 0.0})
+	plan := routerMustPlan(router.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 0.0001, 100), map[string]any{"slippageBps": 0.0}))
 	violations := router.CheckExecutionPlanSafety(plan, markets, map[string]any{"usdRates": map[string]any{}})
 	if len(violations) != 1 || routerStringAt(violations[0], "code", "") != "notional_unvaluable" {
 		t.Fatalf("an unvaluable step must be reported, got %v", routerCodes(violations))
@@ -460,7 +460,7 @@ func TestOrderRouterUnvaluableStepBlocksAndIsNeverSkipped(t *testing.T) {
 func TestOrderRouterUsdtIsNotAssumedToBeOneDollar(t *testing.T) {
 	router := routerTestRouter(t)
 	markets := routerPermissiveStubMarkets()
-	plan := router.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 0.1, 100), map[string]any{"slippageBps": 0.0})
+	plan := routerMustPlan(router.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 0.1, 100), map[string]any{"slippageBps": 0.0}))
 	violations := router.CheckExecutionPlanSafety(plan, markets, map[string]any{"usdRates": map[string]any{"USD": 1.0}})
 	if len(violations) != 1 || routerStringAt(violations[0], "code", "") != "notional_unvaluable" {
 		t.Fatalf("a stablecoin peg is an observation, not a definition, got %v", routerCodes(violations))
@@ -474,7 +474,7 @@ func TestOrderRouterUsdtIsNotAssumedToBeOneDollar(t *testing.T) {
 func TestOrderRouterEmptyPlanIsNotASafePlan(t *testing.T) {
 	router := routerTestRouter(t)
 	fixture := routerFixture(t)
-	plan := router.BuildExecutionPlan(routerDictAt(routerDictAt(fixture, "routes"), "unroutable"), nil)
+	plan := routerMustPlan(router.BuildExecutionPlan(routerDictAt(routerDictAt(fixture, "routes"), "unroutable"), nil))
 	if steps := plan["steps"].([]map[string]any); len(steps) != 0 {
 		t.Fatalf("an unroutable route has no steps, got %d", len(steps))
 	}
@@ -487,7 +487,7 @@ func TestOrderRouterEmptyPlanIsNotASafePlan(t *testing.T) {
 func TestOrderRouterReconcileNeverScalesADownstreamOrderUp(t *testing.T) {
 	router := routerTestRouter(t)
 	fixture := routerFixture(t)
-	plan := router.BuildExecutionPlan(routerDictAt(routerDictAt(fixture, "routes"), "multiHop"), nil)
+	plan := routerMustPlan(router.BuildExecutionPlan(routerDictAt(routerDictAt(fixture, "routes"), "multiHop"), nil))
 	overfilled, err := router.ReconcileExecutionStep(plan, 0, 1000000)
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
@@ -507,7 +507,7 @@ func TestOrderRouterReconcileNeverScalesADownstreamOrderUp(t *testing.T) {
 func TestOrderRouterReconcileHaltsOnATotalMissAndAnOverToleranceShortfall(t *testing.T) {
 	router := routerTestRouter(t)
 	fixture := routerFixture(t)
-	plan := router.BuildExecutionPlan(routerDictAt(routerDictAt(fixture, "routes"), "multiHop"), nil)
+	plan := routerMustPlan(router.BuildExecutionPlan(routerDictAt(routerDictAt(fixture, "routes"), "multiHop"), nil))
 	nothing, _ := router.ReconcileExecutionStep(plan, 0, 0)
 	if routerStringAt(nothing, "verdict", "") != "halt" || routerStringAt(nothing, "reason", "") != "nothing_filled" {
 		t.Fatalf("nothing filled halts, got %v %v", nothing["verdict"], nothing["reason"])
@@ -701,7 +701,7 @@ func routerStubVenues(venues map[string]*orderRouterStubVenue) map[string]IExcha
 
 func TestOrderRouterDryRunIsTheDefault(t *testing.T) {
 	router := routerTestRouter(t)
-	plan := router.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 0.2, 100), nil)
+	plan := routerMustPlan(router.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 0.2, 100), nil))
 	venue := newOrderRouterStubVenue(1, false)
 	// everything a real call would carry, EXCEPT live
 	report, err := router.Execute(plan, routerStubVenues(map[string]*orderRouterStubVenue{"stub": venue}), map[string]any{
@@ -745,7 +745,7 @@ func TestOrderRouterDryRunIsTheDefault(t *testing.T) {
 
 func TestOrderRouterRefusesToGoLiveWithoutAWayToValueTheTrade(t *testing.T) {
 	router := routerTestRouter(t)
-	plan := router.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 0.2, 100), nil)
+	plan := routerMustPlan(router.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 0.2, 100), nil))
 	venue := newOrderRouterStubVenue(1, false)
 	_, err := router.Execute(plan, routerStubVenues(map[string]*orderRouterStubVenue{"stub": venue}), map[string]any{"strategy": "sequential", "live": true})
 	if routerErrorCode(err) != "ExchangeError" {
@@ -760,7 +760,7 @@ func TestOrderRouterRefusesToGoLiveWithoutAWayToValueTheTrade(t *testing.T) {
 
 func TestOrderRouterRefusesToGoLiveAboveTheCap(t *testing.T) {
 	router := routerTestRouter(t)
-	plan := router.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 5, 100), nil)
+	plan := routerMustPlan(router.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 5, 100), nil))
 	venue := newOrderRouterStubVenue(1, false)
 	_, err := router.Execute(plan, routerStubVenues(map[string]*orderRouterStubVenue{"stub": venue}), map[string]any{"strategy": "sequential", "live": true, "usdRates": map[string]any{"USDT": 1.0}})
 	if routerErrorCode(err) != "ExchangeError" {
@@ -775,7 +775,7 @@ func TestOrderRouterRefusesToGoLiveAboveTheCap(t *testing.T) {
 
 func TestOrderRouterSequentialPlacesIocLimitOrdersInPlanOrder(t *testing.T) {
 	router := routerTestRouter(t)
-	plan := router.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 0.2, 100), map[string]any{"slippageBps": 100.0})
+	plan := routerMustPlan(router.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 0.2, 100), map[string]any{"slippageBps": 100.0}))
 	venue := newOrderRouterStubVenue(1, false)
 	report, err := router.Execute(plan, routerStubVenues(map[string]*orderRouterStubVenue{"stub": venue}), map[string]any{"strategy": "sequential", "live": true, "usdRates": map[string]any{"USDT": 1.0}})
 	if err != nil {
@@ -798,7 +798,7 @@ func TestOrderRouterSequentialPlacesIocLimitOrdersInPlanOrder(t *testing.T) {
 
 func TestOrderRouterSequentialObeysTheHaltVerdict(t *testing.T) {
 	router := routerTestRouter(t)
-	plan := router.BuildExecutionPlan(routerTwoHopRoute(), nil)
+	plan := routerMustPlan(router.BuildExecutionPlan(routerTwoHopRoute(), nil))
 	// hop 0 fills half: a 50% shortfall against a 2% tolerance
 	venue := newOrderRouterStubVenue(0.5, false)
 	report, err := router.Execute(plan, routerStubVenues(map[string]*orderRouterStubVenue{"stub": venue}), map[string]any{"strategy": "sequential", "live": true, "usdRates": map[string]any{"USDT": 1.0}})
@@ -830,7 +830,7 @@ func TestOrderRouterSequentialObeysTheHaltVerdict(t *testing.T) {
 
 func TestOrderRouterMarketOrderNeedsBothAMissingIocAndAnExplicitOptIn(t *testing.T) {
 	router := routerTestRouter(t)
-	plan := router.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 0.2, 100), nil)
+	plan := routerMustPlan(router.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 0.2, 100), nil))
 	gtcOnly := map[string]any{"spot": map[string]any{"createOrder": map[string]any{"timeInForce": []any{"GTC"}}}}
 	// a venue that advertises GTC only
 	noIoc := newOrderRouterStubVenue(1, false)
@@ -883,7 +883,7 @@ func TestOrderRouterParallelWithinHopContainsAFailingLeg(t *testing.T) {
 		map[string]any{"exchangeId": "bad", "amount": 0.1, "averagePrice": 100.0, "effectivePrice": 100.0},
 		map[string]any{"exchangeId": "good2", "amount": 0.1, "averagePrice": 100.0, "effectivePrice": 100.0},
 	}
-	plan := router.BuildExecutionPlan(route, nil)
+	plan := routerMustPlan(router.BuildExecutionPlan(route, nil))
 	good := newOrderRouterStubVenue(1, false)
 	bad := newOrderRouterStubVenue(1, true)
 	good2 := newOrderRouterStubVenue(1, false)
@@ -908,12 +908,12 @@ func TestOrderRouterBestEffortRefusesMultiHopAndDemandsItsAcknowledgements(t *te
 	router := routerTestRouter(t)
 	venue := newOrderRouterStubVenue(1, false)
 	venues := routerStubVenues(map[string]*orderRouterStubVenue{"stub": venue})
-	multiHop := router.BuildExecutionPlan(routerTwoHopRoute(), nil)
+	multiHop := routerMustPlan(router.BuildExecutionPlan(routerTwoHopRoute(), nil))
 	_, err := router.Execute(multiHop, venues, map[string]any{"strategy": "best_effort", "live": true, "usdRates": map[string]any{"USDT": 1.0}, "acknowledgeDispersion": true, "maxOrders": 5.0})
 	if routerErrorCode(err) != "NotSupported" {
 		t.Fatalf("best_effort refuses multi-hop, got %v", err)
 	}
-	singleHop := router.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 0.2, 100), nil)
+	singleHop := routerMustPlan(router.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 0.2, 100), nil))
 	_, err = router.Execute(singleHop, venues, map[string]any{"strategy": "best_effort", "live": true, "usdRates": map[string]any{"USDT": 1.0}, "maxOrders": 5.0})
 	if routerErrorCode(err) != "BadRequest" {
 		t.Fatalf("best_effort requires acknowledgeDispersion, got %v", err)
@@ -936,7 +936,7 @@ func TestOrderRouterBestEffortStopsAtMaxOrdersAndNeverHalts(t *testing.T) {
 		map[string]any{"exchangeId": "b", "amount": 0.1, "averagePrice": 100.0, "effectivePrice": 100.0},
 		map[string]any{"exchangeId": "c", "amount": 0.1, "averagePrice": 100.0, "effectivePrice": 100.0},
 	}
-	plan := router.BuildExecutionPlan(route, nil)
+	plan := routerMustPlan(router.BuildExecutionPlan(route, nil))
 	c := newOrderRouterStubVenue(1, false)
 	venues := routerStubVenues(map[string]*orderRouterStubVenue{"a": newOrderRouterStubVenue(1, false), "b": newOrderRouterStubVenue(0.01, false), "c": c})
 	report, err := router.Execute(plan, venues, map[string]any{"strategy": "best_effort", "live": true, "usdRates": map[string]any{"USDT": 1.0}, "acknowledgeDispersion": true, "maxOrders": 2.0})
@@ -966,7 +966,7 @@ func TestOrderRouterCapSurvivesAWritableField(t *testing.T) {
 	tampered := routerTestRouter(t)
 	tampered.MaxNotionalUsd = 1000
 	// 0.005 BTC at 100000 USDT is 500 USD
-	plan := tampered.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 0.005, 100000), map[string]any{"slippageBps": 0.0})
+	plan := routerMustPlan(tampered.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 0.005, 100000), map[string]any{"slippageBps": 0.0}))
 	violations := tampered.CheckExecutionPlanSafety(plan, routerPermissiveStubMarkets(), map[string]any{"usdRates": map[string]any{"USDT": 1.0}, "maxNotionalUsd": 1000.0})
 	if len(violations) != 1 || routerStringAt(violations[0], "code", "") != "notional_exceeds_cap" {
 		t.Fatalf("a 500 USD step must still be refused, got %v", violations)
@@ -985,7 +985,7 @@ func TestOrderRouterCapSurvivesAWritableField(t *testing.T) {
 // tail of a halted route can be missing hopCount entirely.
 func TestOrderRouterBestEffortDerivesTheHopCountFromTheSteps(t *testing.T) {
 	router := routerTestRouter(t)
-	complete := router.BuildExecutionPlan(routerTwoHopRoute(), nil)
+	complete := routerMustPlan(router.BuildExecutionPlan(routerTwoHopRoute(), nil))
 	withoutHopCount := map[string]any{}
 	for key, value := range complete {
 		if key != "hopCount" {
@@ -1038,7 +1038,7 @@ func TestOrderRouterVenueSupportsIocReadsADictionary(t *testing.T) {
 		t.Fatal("silence is still assumed to be yes")
 	}
 	// end to end: the documented market-order fallback is reachable again
-	plan := router.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 0.2, 100), nil)
+	plan := routerMustPlan(router.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 0.2, 100), nil))
 	refused, err := router.Execute(plan, routerStubVenues(map[string]*orderRouterStubVenue{"stub": noIoc}), map[string]any{"strategy": "sequential", "live": true, "usdRates": map[string]any{"USDT": 1.0}})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
@@ -1068,7 +1068,7 @@ func TestOrderRouterVenueSupportsIocReadsADictionary(t *testing.T) {
 // partial fill it carries is real.
 func TestOrderRouterLimitProtectedKeepsAVenueSideCancelFill(t *testing.T) {
 	router := routerTestRouter(t)
-	plan := router.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 0.0002, 100000), map[string]any{"slippageBps": 0.0})
+	plan := routerMustPlan(router.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 0.0002, 100000), map[string]any{"slippageBps": 0.0}))
 	venue := newOrderRouterStubVenue(1, false)
 	venue.createdStatus = "open"
 	venue.fetchOrderResults = []Order{
@@ -1113,7 +1113,7 @@ func TestOrderRouterLimitProtectedKeepsAVenueSideCancelFill(t *testing.T) {
 // and a failure after that must file an open order the caller can act on.
 func TestOrderRouterOrderIdSurvivesAFailureAfterCreate(t *testing.T) {
 	router := routerTestRouter(t)
-	plan := router.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 0.0002, 100000), map[string]any{"slippageBps": 0.0})
+	plan := routerMustPlan(router.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 0.0002, 100000), map[string]any{"slippageBps": 0.0}))
 	venue := newOrderRouterStubVenue(1, false)
 	venue.createdStatus = "open"
 	venue.fetchOrderThrows = true
@@ -1155,7 +1155,7 @@ func TestOrderRouterOrderIdSurvivesAFailureAfterCreate(t *testing.T) {
 
 func TestOrderRouterUnknownStrategyIsRefusedEvenInDryRun(t *testing.T) {
 	router := routerTestRouter(t)
-	plan := router.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 0.2, 100), nil)
+	plan := routerMustPlan(router.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 0.2, 100), nil))
 	if _, err := router.Execute(plan, map[string]IExchange{}, map[string]any{"strategy": "yolo"}); routerErrorCode(err) != "BadRequest" {
 		t.Fatalf("an unknown strategy is refused, got %v", err)
 	}
@@ -1163,7 +1163,7 @@ func TestOrderRouterUnknownStrategyIsRefusedEvenInDryRun(t *testing.T) {
 
 func TestOrderRouterAtomicIshDemandsTheWholeRoutePrefunded(t *testing.T) {
 	router := routerTestRouter(t)
-	plan := router.BuildExecutionPlan(routerTwoHopRoute(), nil)
+	plan := routerMustPlan(router.BuildExecutionPlan(routerTwoHopRoute(), nil))
 	// hop 0 needs 20 USDT and hop 1 needs 0.2 BTC, both already sitting there
 	funded := newOrderRouterStubVenue(1, false)
 	rich, err := router.Execute(plan, routerStubVenues(map[string]*orderRouterStubVenue{"stub": funded}), map[string]any{"strategy": "atomic_ish", "live": true, "usdRates": map[string]any{"USDT": 1.0}})
@@ -1354,5 +1354,116 @@ func TestOrderRouterNeverWithdraws(t *testing.T) {
 	}
 	if strings.Contains(strings.ToLower(string(source)), "withdraw") {
 		t.Fatal("OrderRouter must never call a funds-transfer endpoint, and the token must not appear at all")
+	}
+}
+
+// routerMustPlan unwraps BuildExecutionPlan's (plan, error) pair for the tests that expect the
+// route to be coherent. The tests that expect a refusal read the error directly instead.
+// Go only allows f(g()) when g supplies every argument, so this cannot take *testing.T and must
+// panic instead of calling t.Fatalf; the panic still fails the test, with the offending call in
+// the stack.
+func routerMustPlan(plan map[string]any, err error) map[string]any {
+	if err != nil {
+		panic("BuildExecutionPlan: " + err.Error())
+	}
+	return plan
+}
+
+// ---------------------------------------------------------------------------
+// the plan is checked against the client's OWN record of the question
+// ---------------------------------------------------------------------------
+
+func TestOrderRouterRefusesRouteThatDoesNotProduceTheRequestedAsset(t *testing.T) {
+	// BuildExecutionPlan used to copy from, to, pair and side straight out of the server's JSON,
+	// and the safety checks only tested internal consistency against whatever market that named.
+	// So a compromised — or simply buggy — router response could steer real orders into any real
+	// market and every check would pass it, under the 25 USD cap.
+	router := routerTestRouter(t)
+	route := routerOneLegRoute("buy", "BTC", "USDT", 0.1, 100)
+	route["clientRequestedFrom"] = "USDT"
+	route["clientRequestedTo"] = "ETH" // the caller wanted ETH; the route delivers BTC
+	_, err := router.BuildExecutionPlan(route, nil)
+	if err == nil || !strings.Contains(err.Error(), "produces BTC, not the requested ETH") {
+		t.Fatalf("expected a produces-mismatch refusal, got %v", err)
+	}
+}
+
+func TestOrderRouterRefusesRouteThatSpendsAnAssetTheCallerNeverOffered(t *testing.T) {
+	router := routerTestRouter(t)
+	route := routerOneLegRoute("buy", "BTC", "USDT", 0.1, 100)
+	route["clientRequestedFrom"] = "EUR"
+	route["clientRequestedTo"] = "BTC"
+	_, err := router.BuildExecutionPlan(route, nil)
+	if err == nil || !strings.Contains(err.Error(), "spends USDT, not the requested EUR") {
+		t.Fatalf("expected a spends-mismatch refusal, got %v", err)
+	}
+}
+
+func TestOrderRouterRefusesBridgedRouteWhoseHopsDoNotConnect(t *testing.T) {
+	// Internal coherence, checked with or without a client stamp: hop 2 must spend exactly what
+	// hop 1 produced, or the plan strands the proceeds of one order and funds the next from a
+	// wallet nobody checked.
+	router := routerTestRouter(t)
+	route := routerTwoHopRoute()
+	second := routerListAt(route, "hops")[1].(map[string]any)
+	second["base"] = "DOGE"
+	second["quote"] = "EUR"
+	_, err := router.BuildExecutionPlan(route, nil)
+	if err == nil || !strings.Contains(err.Error(), "spends DOGE but the previous hop produced BTC") {
+		t.Fatalf("expected a chain-break refusal, got %v", err)
+	}
+}
+
+func TestOrderRouterWellFormedRouteStillPlans(t *testing.T) {
+	router := routerTestRouter(t)
+	route := routerOneLegRoute("buy", "BTC", "USDT", 0.1, 100)
+	route["clientRequestedFrom"] = "USDT"
+	route["clientRequestedTo"] = "BTC"
+	plan := routerMustPlan(router.BuildExecutionPlan(route, nil))
+	if steps := routerListAt(plan, "steps"); len(steps) != 1 {
+		t.Fatalf("expected 1 step, got %d", len(steps))
+	}
+}
+
+func TestOrderRouterFixtureReconcileSequence(t *testing.T) {
+	// ReconcileExecutionStep is pure and cannot remember across calls, so a hop's cumulative
+	// shortfall lives on the steps themselves — written by applyResize. That interaction is only
+	// visible across a SEQUENCE of calls, which reconcileCases (one call each) cannot express,
+	// and it is exactly where the five ports could silently disagree.
+	router := routerTestRouter(t)
+	fixture := routerFixture(t)
+	for _, testCase := range routerFixtureCases(t, fixture, "reconcileSequenceCases") {
+		id := routerStringAt(testCase, "id", "")
+		raw := routerListAt(testCase, "steps")
+		steps := make([]map[string]any, 0, len(raw))
+		for i := 0; i < len(raw); i++ {
+			copied := map[string]any{}
+			for key, value := range routerContainer(raw[i]) {
+				copied[key] = value
+			}
+			steps = append(steps, copied)
+		}
+		calls := routerListAt(testCase, "calls")
+		expectedScales := routerListAt(testCase, "expectedScales")
+		for c := 0; c < len(calls); c++ {
+			// the plan is rebuilt from the working steps on every call, exactly as Execute does
+			// — PHP copies arrays on assignment, so a plan built once outside this loop would
+			// mean five ports running five different tests
+			plan := map[string]any{"steps": steps, "reconcileToleranceRatio": routerNumberAt(testCase, "reconcileToleranceRatio", 0)}
+			reconciliation, err := router.ReconcileExecutionStep(plan, int(routerNumberAt(calls[c], "stepIndex", 0)), routerNumberAt(calls[c], "realisedOut", 0))
+			if err != nil {
+				t.Fatalf("reconcileSequenceCase %s call %d: %v", id, c, err)
+			}
+			if !routerNumbersMatch(routerNumberAt(reconciliation, "scale", 0), routerToNumber(expectedScales[c], math.NaN())) {
+				t.Fatalf("reconcileSequenceCase %s call %d: scale %v", id, c, reconciliation["scale"])
+			}
+			router.applyResize(steps, reconciliation)
+		}
+		expectedAmounts := routerListAt(testCase, "expectedAmounts")
+		for s := 0; s < len(steps); s++ {
+			if !routerNumbersMatch(routerNumberAt(steps[s], "amount", 0), routerToNumber(expectedAmounts[s], math.NaN())) {
+				t.Fatalf("reconcileSequenceCase %s step %d: amount %v", id, s, steps[s]["amount"])
+			}
+		}
 	}
 }

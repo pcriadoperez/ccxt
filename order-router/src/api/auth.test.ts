@@ -29,8 +29,9 @@ test('extractApiKey returns undefined for missing/empty/malformed credentials', 
     assert.equal(extractApiKey({ 'x-api-key': 123 }), undefined);
 });
 
-test('isPublicPath allowlists only /health', () => {
+test('isPublicPath allowlists only the two probe paths', () => {
     assert.equal(isPublicPath('/health'), true);
+    assert.equal(isPublicPath('/ready'), true);
     assert.equal(isPublicPath('/symbols'), false);
     assert.equal(isPublicPath('/exchanges/status'), false);
     assert.equal(isPublicPath('/route'), false);

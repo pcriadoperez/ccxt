@@ -630,7 +630,13 @@ public class OrderRouter
             query = query + "&" + key + "=" + EncodeUriComponent(this.QueryText(value));
         }
         var url = this.baseUrl + "/route?" + query;
-        return await this.Request(url);
+        var route = await this.Request(url);
+        //  Stamp the client's OWN record of the question onto the answer, so BuildExecutionPlan
+        //  can check that the route it is about to turn into real orders runs from the asset the
+        //  caller offered to the asset the caller wanted — rather than trusting the server's echo.
+        route["clientRequestedFrom"] = fromAsset.ToUpperInvariant();
+        route["clientRequestedTo"] = toAsset.ToUpperInvariant();
+        return route;
     }
 
     /// <summary>
@@ -873,11 +879,100 @@ public class OrderRouter
     /// exchangeId, symbol, side, amount, expectedPrice, limitPrice and
     /// notionalQuote.
     /// </returns>
+    /// <summary>
+    /// Refuses a route whose hops do not connect, or that does not run from the asset the caller
+    /// offered to the asset the caller wanted. BuildExecutionPlan used to copy from, to, pair and
+    /// side straight out of the server's JSON, and the safety checks only tested internal
+    /// consistency against whatever market that named — so a compromised or simply buggy router
+    /// response could steer real orders into any real market and every check would pass it.
+    /// </summary>
+    public void AssertRouteChainIsCoherent(dict route, list hops)
+    {
+        if (hops.Count == 0)
+        {
+            return;
+        }
+        var carried = "";
+        for (var i = 0; i < hops.Count; i++)
+        {
+            var hop = this.AsDict(hops[i]);
+            var side = this.StringAt(hop, "side", "").ToLower();
+            var baseCode = this.StringAt(hop, "base", "").ToUpper();
+            var quote = this.StringAt(hop, "quote", "").ToUpper();
+            if (baseCode == "" || quote == "" || (side != "buy" && side != "sell"))
+            {
+                throw new ExchangeError("OrderRouter: hop " + i.ToString() + " does not name a market and a side");
+            }
+            //  a buy spends the quote to acquire the base; a sell is the reverse
+            var spends = (side == "buy") ? quote : baseCode;
+            var produces = (side == "buy") ? baseCode : quote;
+            if (i > 0 && spends != carried)
+            {
+                //  hop N+1 must spend exactly what hop N produced, or the plan strands the
+                //  proceeds of one order and funds the next from a wallet nobody checked
+                throw new ExchangeError("OrderRouter: hop " + i.ToString() + " spends " + spends + " but the previous hop produced " + carried);
+            }
+            if (i == 0)
+            {
+                var requestedFrom = this.StringAt(route, "clientRequestedFrom", "");
+                if (requestedFrom != "" && spends != requestedFrom)
+                {
+                    throw new ExchangeError("OrderRouter: the route spends " + spends + ", not the requested " + requestedFrom);
+                }
+            }
+            carried = produces;
+        }
+        var requestedTo = this.StringAt(route, "clientRequestedTo", "");
+        if (requestedTo != "" && carried != requestedTo)
+        {
+            throw new ExchangeError("OrderRouter: the route produces " + carried + ", not the requested " + requestedTo);
+        }
+    }
+
+    /// <summary>
+    /// Sums the fees an order charged in one asset, ignoring any other currency. ccxt sets a
+    /// single `fee` and, since safeOrder, a `fees` list alongside it; reading only one of the two
+    /// would under-count on venues that report per-trade fees.
+    /// </summary>
+    public double OrderFeeInAsset(dict order, string asset)
+    {
+        if (asset == "")
+        {
+            return 0;
+        }
+        double total = 0;
+        var fees = this.ListAt(order, "fees");
+        var sawInList = false;
+        for (var i = 0; i < fees.Count; i++)
+        {
+            var entry = this.AsDict(fees[i]);
+            if (this.StringAt(entry, "currency", "").ToUpper() == asset.ToUpper())
+            {
+                total = total + this.NumberAt(entry, "cost", 0);
+                sawInList = true;
+            }
+        }
+        if (!sawInList)
+        {
+            var single = this.DictAt(order, "fee");
+            if (this.StringAt(single, "currency", "").ToUpper() == asset.ToUpper())
+            {
+                total = total + this.NumberAt(single, "cost", 0);
+            }
+        }
+        if (!this.IsFiniteNumber(total) || total < 0)
+        {
+            return 0;
+        }
+        return total;
+    }
+
     public dict BuildExecutionPlan(dict route, dict options = null)
     {
         var slippageBps = this.NumberAt(options, "slippageBps", DefaultSlippageBps);
         var tolerance = this.NumberAt(options, "reconcileToleranceRatio", DefaultReconcileTolerance);
         var hops = this.ListAt(route, "hops");
+        this.AssertRouteChainIsCoherent(route, hops);
         var steps = new list();
         var stepIndex = 0;
         for (var hopIndex = 0; hopIndex < hops.Count; hopIndex++)
@@ -1268,18 +1363,47 @@ public class OrderRouter
         //  the downstream hops lost `shortfall` out of this hop's whole output,
         //  not out of this leg's, so the scale is measured against the hop
         double hopExpectedOut = 0;
+        //  Shortfall already reported by this hop's OTHER legs. Each leg used to compute a scale
+        //  from the hop total and multiply the downstream amounts by it, so a second leg scaled an
+        //  already-scaled number: 80% and 60% fills produced 0.9 x 0.8 = 0.72 of the next hop
+        //  instead of the true 0.70, sizing it for more than the wallet actually received and
+        //  inviting a spurious insufficient-funds halt on exactly the bridged routes this class
+        //  exists for. Reproduced at 144 against a true 140 before this changed.
+        double priorShortfall = 0;
         for (var i = 0; i < steps.Count; i++)
         {
             if (this.NumberAt(steps[i], "hopIndex", 0) == hopIndex)
             {
                 hopExpectedOut = hopExpectedOut + this.StepExpectedOut(this.AsDict(steps[i]));
+                if (this.NumberAt(steps[i], "stepIndex", -1) != stepIndex && this.HasNumberAt(this.AsDict(steps[i]), "realisedOut"))
+                {
+                    var legShortfall = this.StepExpectedOut(this.AsDict(steps[i])) - this.NumberAt(steps[i], "realisedOut", 0);
+                    if (legShortfall < 0)
+                    {
+                        legShortfall = 0;
+                    }
+                    priorShortfall = priorShortfall + legShortfall;
+                }
             }
         }
-        double scale = 1;
+        //  scaleBefore is what the downstream amounts have ALREADY been multiplied by, so the
+        //  factor applied here is the increment that takes them from that to the hop's true
+        //  cumulative scale. With one leg per hop priorShortfall is 0, scaleBefore is 1, and this
+        //  is arithmetically identical to what it replaced.
+        double scaleBefore = 1;
+        double scaleAfter = 1;
         if (hopExpectedOut > 0)
         {
-            scale = (hopExpectedOut - shortfall) / hopExpectedOut;
+            scaleBefore = (hopExpectedOut - priorShortfall) / hopExpectedOut;
+            scaleAfter = (hopExpectedOut - priorShortfall - shortfall) / hopExpectedOut;
         }
+        if (scaleBefore <= 0)
+        {
+            //  the hop already produced nothing; there is nothing left to scale down
+            scaleBefore = 1;
+            scaleAfter = 0;
+        }
+        double scale = scaleAfter / scaleBefore;
         if (scale > 1)
         {
             //  never scale UP. An overfill is good news, but growing a
@@ -1838,8 +1962,38 @@ public class OrderRouter
             {
                 end = end + 1;
             }
-            var pending = new List<Task<dict>>();
+            //  THE CONTRACT: concurrent ACROSS venues, serialised WITHIN a venue. It is an
+            //  ordering guarantee, not a performance promise, which is what lets five very
+            //  different runtimes honour the same words. Two legs of one hop that land on the
+            //  SAME exchange instance used to run concurrently against that instance's throttle
+            //  and nonce state; grouping by exchangeId means nobody ever has two orders in
+            //  flight on one instance.
+            var venueGroups = new List<string>();
+            var groupedIndices = new List<List<int>>();
             for (var i = cursor; i < end; i++)
+            {
+                var groupExchangeId = this.StringAt(steps[i], "exchangeId", "");
+                var groupIndex = -1;
+                for (var g = 0; g < venueGroups.Count; g++)
+                {
+                    if (venueGroups[g] == groupExchangeId)
+                    {
+                        groupIndex = g;
+                        break;
+                    }
+                }
+                if (groupIndex == -1)
+                {
+                    venueGroups.Add(groupExchangeId);
+                    groupedIndices.Add(new List<int>() { i });
+                }
+                else
+                {
+                    groupedIndices[groupIndex].Add(i);
+                }
+            }
+            var pending = new List<Task>();
+            for (var g = 0; g < groupedIndices.Count; g++)
             {
                 //  PlaceStep contains its own failures and never throws, so
                 //  "wait for all" means the same thing in all five languages.
@@ -1847,11 +2001,11 @@ public class OrderRouter
                 //  sibling orders are still live, and Go's promiseAll waits for
                 //  every one — the same source abandoning in-flight orders
                 //  differently per language.
-                pending.Add(this.PlaceStep(this.AsDict(steps[i]), venues, options, usdRates, "parallel_within_hop", report));
+                pending.Add(this.PlaceVenueGroup(groupedIndices[g], steps, venues, options, usdRates, report, results));
             }
             for (var i = 0; i < pending.Count; i++)
             {
-                results[cursor + i] = await pending[i];
+                await pending[i];
             }
             for (var i = cursor; i < end; i++)
             {
@@ -1879,6 +2033,19 @@ public class OrderRouter
                 }
             }
             cursor = end;
+        }
+    }
+
+    /// <summary>
+    /// Places every step of one venue group, strictly one at a time — the "serialised within a
+    /// venue" half of the concurrency contract.
+    /// </summary>
+    public async Task PlaceVenueGroup(List<int> indices, list steps, Dictionary<string, Exchange> venues, dict options, dict usdRates, dict report, list results)
+    {
+        for (var i = 0; i < indices.Count; i++)
+        {
+            var stepPosition = indices[i];
+            results[stepPosition] = await this.PlaceStep(this.AsDict(steps[stepPosition]), venues, options, usdRates, "parallel_within_hop", report);
         }
     }
 
@@ -2024,6 +2191,25 @@ public class OrderRouter
                 result["inAmount"] = filled;
                 result["outAsset"] = this.StringAt(step, "quote", "");
                 result["outAmount"] = cost;
+            }
+            //  Net the taker fee out of what is actually CARRIED FORWARD, when the venue charged
+            //  it in the asset this step produced. filled and cost are gross of fees — the manual
+            //  says so — so a venue taking its cut in the acquired asset credits less than
+            //  `filled`, and sizing the next hop (or an unwind) on the gross figure orders more
+            //  than the wallet holds. Fees in any OTHER currency are left alone: they do not
+            //  reduce what this hop hands to the next one.
+            var feeCost = this.OrderFeeInAsset(order, this.StringAt(result, "outAsset", ""));
+            result["feeCost"] = feeCost;
+            result["feeCurrency"] = this.StringAt(result, "outAsset", "");
+            if (feeCost > 0)
+            {
+                var net = this.NumberAt(result, "outAmount", 0) - feeCost;
+                if (net < 0)
+                {
+                    net = 0;
+                }
+                result["grossOutAmount"] = this.NumberAt(result, "outAmount", 0);
+                result["outAmount"] = net;
             }
             if (!filledKnown)
             {
@@ -2457,6 +2643,20 @@ public class OrderRouter
     /// </summary>
     public void ApplyResize(list steps, dict reconciliation)
     {
+        //  Record what this leg actually produced BEFORE resizing anything. ReconcileExecutionStep
+        //  is pure and cannot remember across calls, so the hop's cumulative shortfall has to live
+        //  on the steps themselves — this is what stops the next leg of the same hop compounding
+        //  its scale onto an already-scaled amount.
+        var reconciledStep = this.NumberAt(reconciliation, "stepIndex", -1);
+        for (var i = 0; i < steps.Count; i++)
+        {
+            var candidate = this.AsDict(steps[i]);
+            if (this.NumberAt(candidate, "stepIndex", -1) == reconciledStep)
+            {
+                candidate["realisedOut"] = this.NumberAt(reconciliation, "realisedOut", 0);
+                break;
+            }
+        }
         var resized = this.ListAt(reconciliation, "resizedSteps");
         for (var i = 0; i < resized.Count; i++)
         {

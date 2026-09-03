@@ -1,4 +1,4 @@
-import { Registry, Gauge, Histogram, collectDefaultMetrics } from 'prom-client';
+import { Registry, Gauge, Counter, Histogram, collectDefaultMetrics } from 'prom-client';
 import type { OrderBookCache } from './cache/orderBookCache.js';
 import type { LoopRegistry } from './cache/loopRegistry.js';
 
@@ -78,6 +78,22 @@ export function buildMetricsRegistry (deps: MetricsDeps): Registry {
             for (const h of deps.cache.getHealth()) {
                 const age = h.lastResyncAt === undefined ? -1 : (now - h.lastResyncAt) / 1000;
                 this.set({ exchange: h.exchangeId }, age);
+            }
+        },
+    });
+
+    // Abandonment is the one failure mode with no self-correction: the watch loop returned, so
+    // nothing will ever retry it. Everything else here recovers on its own and the metric is a
+    // rate; this one is a latch, and any non-zero value is a venue that has silently lost part of
+    // its coverage until the process restarts. Alert on > 0, not on a rate of change.
+    new Gauge({
+        name: 'order_router_exchange_abandoned_symbols',
+        help: 'Symbols whose watch loop hit a permanent failure and will never be retried in this process.',
+        labelNames: ['exchange'],
+        registers: [registry],
+        collect () {
+            for (const h of deps.cache.getHealth()) {
+                this.set({ exchange: h.exchangeId }, h.abandonedSymbols.length);
             }
         },
     });
@@ -247,6 +263,24 @@ export function buildMetricsRegistry (deps: MetricsDeps): Registry {
     });
 
     return registry;
+}
+
+// The one outcome that is invisible in every other signal. An unroutable answer is a 200 with a
+// well-formed body, so it does not touch the error rate, the status-code labels, or the latency
+// histogram — a shard whose books have all gone stale keeps serving 200s at normal latency while
+// answering "cannot route this" to every caller. The status quo of only LOGGING the reason means
+// noticing that requires someone to be reading logs.
+//
+// Deliberately a real Counter and not a collect()-derived Gauge like everything above it: there is
+// no cache field holding this, it is a property of responses rather than of state, so there is no
+// second source of truth to drift from.
+export function buildUnroutableCounter (registry: Registry): Counter<'reason'> {
+    return new Counter({
+        name: 'order_router_unroutable_total',
+        help: 'Route requests answered with no executable route, by reason. Alert on the ratio to http _count, not the raw rate.',
+        labelNames: ['reason'],
+        registers: [registry],
+    });
 }
 
 // Separate from the registry builder so the server can record into it from an onResponse hook.

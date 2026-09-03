@@ -118,6 +118,11 @@ export const config = {
     symbols: listFromEnv('ORDER_ROUTER_SYMBOLS', ['BTC/USDT', 'ETH/USDT']),
 
     staleBookMs: numberFromEnv('ORDER_ROUTER_STALE_BOOK_MS', 5000),
+    // How many FRESH books /ready insists on before it will report the process able to route.
+    // 1 rather than 0 because 0 makes the endpoint a second liveness probe, and rather than a
+    // large number because the right threshold is deployment-specific: a single-venue shard is
+    // legitimately ready at 1, and anyone who wants "most of my coverage" sets this to it.
+    minFreshBooksForReady: numberFromEnv('ORDER_ROUTER_MIN_FRESH_BOOKS_FOR_READY', 1),
     // Marks a venue's price down by `bps * sqrt(book age in seconds)`, so an older quote has to be
     // genuinely better to win rather than merely look better. ON by default: judging whether a book
     // is too old to trust is the router's job, and shipping the capability switched off meant every

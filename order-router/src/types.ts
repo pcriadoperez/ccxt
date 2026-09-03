@@ -25,6 +25,11 @@ export interface ExchangeHealth {
     // corrupt state, not market conditions. See isCrossedBook in connectors/exchangeConnector.ts.
     crossedCount: number;
     lastResyncAt: number | undefined;
+    // Symbols whose watch loop hit a failure classified permanent and exited for good. Nothing
+    // ever retries these, so without a record they leave routing silently: the books simply stop
+    // updating and go stale, which looks identical to a quiet market until you read the logs.
+    abandonedSymbols: string[];
+    lastAbandonedReason: string | undefined;
 }
 
 export interface RoutingQuote {

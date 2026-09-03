@@ -67,8 +67,13 @@ public class OrderRouterTest
         Run("fixture: buildExecutionPlan is deterministic and does not mutate its input", FixtureBuildExecutionPlanIsPure);
         Run("fixture: checkExecutionPlanSafety", FixtureCheckExecutionPlanSafety);
         Run("fixture: reconcileExecutionStep", FixtureReconcileExecutionStep);
+        Run("fixture: a sequence of reconciliations on one hop", FixtureReconcileSequence);
         Run("fixture: buildUnwindPlan", FixtureBuildUnwindPlan);
         Run("fixture: numberAt reads one number grammar in all five languages", FixtureNumberAt);
+        Run("a route that does not run from the requested asset to the requested asset is refused", RouteProducesMismatch);
+        Run("a route that spends an asset the caller never offered is refused", RouteSpendsMismatch);
+        Run("a bridged route whose hops do not connect is refused", RouteChainBreak);
+        Run("a well-formed route still plans normally", RouteWellFormedStillPlans);
         //  2. invariants, asserted directly rather than through the fixture
         Run("constructor: apiKey is required and the 25 USD cap may be lowered but never raised", ConstructorGuards);
         Run("the limit price sits on the side that costs you, and only there", LimitPriceSide);
@@ -559,6 +564,121 @@ public class OrderRouterTest
             var plan = router.BuildExecutionPlan(route, testCase["planOptions"] as dict);
             var violations = router.CheckExecutionPlanSafety(plan, markets, testCase["options"] as dict);
             AssertMatches(AsPlainList(violations), testCase["expected"], "safetyCase " + (string)testCase["id"]);
+        }
+    }
+
+    private static void RefusesPlan(dict route, string fragment, string message)
+    {
+        var router = NewRouter();
+        try
+        {
+            router.BuildExecutionPlan(route, new dict());
+        }
+        catch (Exception e)
+        {
+            if (e.Message.IndexOf(fragment) == -1)
+            {
+                throw new Exception(message + ": threw \"" + e.Message + "\", expected \"" + fragment + "\"");
+            }
+            return;
+        }
+        throw new Exception(message + ": nothing was thrown");
+    }
+
+    private static void RouteProducesMismatch()
+    {
+        //  BuildExecutionPlan used to copy from, to, pair and side straight out of the server's
+        //  JSON, and the safety checks only tested internal consistency against whatever market
+        //  that named. So a compromised — or simply buggy — router response could steer real
+        //  orders into any real market and every check would pass it, under the 25 USD cap.
+        var route = OneLegRoute("buy", "BTC", "USDT", 0.1, 100);
+        route["clientRequestedFrom"] = "USDT";
+        route["clientRequestedTo"] = "ETH";   //  the caller wanted ETH; the route delivers BTC
+        RefusesPlan(route, "produces BTC, not the requested ETH", "a produces mismatch");
+    }
+
+    private static void RouteSpendsMismatch()
+    {
+        var route = OneLegRoute("buy", "BTC", "USDT", 0.1, 100);
+        route["clientRequestedFrom"] = "EUR";
+        route["clientRequestedTo"] = "BTC";
+        RefusesPlan(route, "spends USDT, not the requested EUR", "a spends mismatch");
+    }
+
+    private static void RouteChainBreak()
+    {
+        //  Internal coherence, checked with or without a client stamp: hop 2 must spend exactly
+        //  what hop 1 produced, or the plan strands the proceeds of one order and funds the next
+        //  from a wallet nobody checked.
+        var route = TwoHopRoute();
+        //  cast, not ToDict: ToDict COPIES, so mutating its result would leave the route untouched
+        //  and the test would silently assert nothing
+        var second = (dict)ToList(route["hops"])[1];
+        second["base"] = "DOGE";
+        second["quote"] = "EUR";
+        RefusesPlan(route, "spends DOGE but the previous hop produced BTC", "a broken chain");
+    }
+
+    private static void RouteWellFormedStillPlans()
+    {
+        var router = NewRouter();
+        var route = OneLegRoute("buy", "BTC", "USDT", 0.1, 100);
+        route["clientRequestedFrom"] = "USDT";
+        route["clientRequestedTo"] = "BTC";
+        var plan = router.BuildExecutionPlan(route, new dict());
+        if (ToList(plan["steps"]).Count != 1)
+        {
+            throw new Exception("a coherent route still plans");
+        }
+    }
+
+    private static void FixtureReconcileSequence()
+    {
+        //  ReconcileExecutionStep is pure and cannot remember across calls, so a hop's cumulative
+        //  shortfall lives on the steps themselves — written by ApplyResize. That interaction is
+        //  only visible across a SEQUENCE of calls, which reconcileCases (one call each) cannot
+        //  express, and it is exactly where the five ports could silently disagree.
+        var router = NewRouter();
+        var cases = FixtureCases("reconcileSequenceCases");
+        for (var i = 0; i < cases.Count; i++)
+        {
+            var testCase = ToDict(cases[i]);
+            var id = (string)testCase["id"];
+            var raw = ToList(testCase["steps"]);
+            var steps = new list();
+            for (var s = 0; s < raw.Count; s++)
+            {
+                var copied = new dict();
+                foreach (var pair in ToDict(raw[s]))
+                {
+                    copied[pair.Key] = pair.Value;
+                }
+                steps.Add(copied);
+            }
+            var calls = ToList(testCase["calls"]);
+            var expectedScales = ToList(testCase["expectedScales"]);
+            for (var c = 0; c < calls.Count; c++)
+            {
+                //  the plan is rebuilt from the working steps on every call, exactly as Execute
+                //  does — PHP copies arrays on assignment, so a plan built once outside this loop
+                //  would mean five ports running five different tests
+                var plan = new dict() { { "steps", steps }, { "reconcileToleranceRatio", testCase["reconcileToleranceRatio"] } };
+                var call = ToDict(calls[c]);
+                var reconciliation = router.ReconcileExecutionStep(plan, ToInt(call["stepIndex"]), ToDouble(call["realisedOut"]));
+                if (!NumbersMatch(ToDouble(reconciliation["scale"]), ToDouble(expectedScales[c])))
+                {
+                    throw new Exception("reconcileSequenceCase " + id + " call " + c.ToString(CultureInfo.InvariantCulture) + ": scale " + Describe(reconciliation["scale"]));
+                }
+                router.ApplyResize(steps, reconciliation);
+            }
+            var expectedAmounts = ToList(testCase["expectedAmounts"]);
+            for (var s = 0; s < steps.Count; s++)
+            {
+                if (!NumbersMatch(ToDouble(ToDict(steps[s])["amount"]), ToDouble(expectedAmounts[s])))
+                {
+                    throw new Exception("reconcileSequenceCase " + id + " step " + s.ToString(CultureInfo.InvariantCulture) + ": amount " + Describe(ToDict(steps[s])["amount"]));
+                }
+            }
         }
     }
 

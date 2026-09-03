@@ -13,7 +13,7 @@ import { parseRouteQuery, type RouteQuery } from './routeQuery.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { extractApiKey, isPublicPath, makeAuthHook, resolveKey } from './auth.js';
 import { ApiKeyStore } from './keyStore.js';
-import { buildHttpHistogram, buildMetricsRegistry } from '../metrics.js';
+import { buildHttpHistogram, buildMetricsRegistry, buildUnroutableCounter } from '../metrics.js';
 import { LoopRegistry } from '../cache/loopRegistry.js';
 import { buildInfo } from '../buildInfo.js';
 
@@ -287,6 +287,7 @@ export async function buildServer (
         loopRegistry,
     });
     const httpDuration = buildHttpHistogram(metricsRegistry);
+    const unroutable = buildUnroutableCounter(metricsRegistry);
 
     app.addHook('onResponse', async (request, reply) => {
         // Label with the ROUTE TEMPLATE, never the raw URL: /orderbook/:exchange/:symbol has tens
@@ -325,6 +326,33 @@ export async function buildServer (
     });
 
     app.get('/health', async () => ({ status: 'ok', uptimeSec: process.uptime() }));
+
+    // LIVENESS answers "is this process alive"; READINESS answers "can it do its job yet". They
+    // are not the same question and /health only ever answered the first one — it returns 200
+    // from the first millisecond of boot, before a single websocket has connected. Point a load
+    // balancer or a deploy gate at it and traffic arrives at a router whose only possible answer
+    // is unroutable/all_books_stale, which reads to the caller as an outage the router itself
+    // reports as a successful 200.
+    //
+    // Ready means: books exist, and enough of them are fresh to rank on. The thresholds are the
+    // same staleness cutoff routing already uses, so readiness cannot disagree with what /route
+    // will actually do.
+    app.get('/ready', async (_request, reply) => {
+        const bookCount = cache.getBookCount();
+        const staleCount = cache.countStaleBooks(config.staleBookMs);
+        const freshCount = bookCount - staleCount;
+        const ready = freshCount >= config.minFreshBooksForReady;
+        if (!ready) reply.code(503);
+        return {
+            status: ready ? 'ready' : 'not_ready',
+            bookCount,
+            freshCount,
+            staleCount,
+            minFreshBooksForReady: config.minFreshBooksForReady,
+            staleBookMs: config.staleBookMs,
+            uptimeSec: process.uptime(),
+        };
+    });
 
     // Which commit is actually serving. Authenticated, like everything except /health: the venue
     // list is protected for reconnaissance reasons and the deployed revision is the same class of
@@ -453,6 +481,10 @@ export async function buildServer (
                 hopPenaltyBps: result.hopPenaltyBps,
                 staleBookMs: result.staleBookMs,
             }, 'route recommendation');
+
+            if (result.unroutableReason !== null && result.unroutableReason !== undefined) {
+                unroutable.inc({ reason: result.unroutableReason });
+            }
 
             if (result.unroutableReason === 'no_market') {
                 // No pair and no bridge path exists at all — that is a request-level problem the

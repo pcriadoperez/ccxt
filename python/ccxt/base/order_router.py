@@ -459,7 +459,12 @@ class OrderRouter:
                 text = str(value)
             query = query + '&' + key + '=' + quote(text, safe=URL_COMPONENT_SAFE)
         url = self.base_url + '/route?' + query
-        return self.request(url)
+        route = self.request(url)
+        # Stamp what THIS CLIENT asked for, client-side, so build_execution_plan can check the
+        # answer against the question. Everything else in the response is the server's word for it.
+        route['clientRequestedFrom'] = from_asset.upper()
+        route['clientRequestedTo'] = to_asset.upper()
+        return route
 
     def request(self, url):
         """
@@ -583,6 +588,39 @@ class OrderRouter:
     # PURE: build_execution_plan
     # -----------------------------------------------------------------------
 
+    def assert_route_chain_is_coherent(self, route, hops):
+        """
+        refuses a route whose hops do not connect, or that does not run from the asset the caller
+        offered to the asset the caller wanted
+
+        :param dict route: the RouteResult
+        :param list hops: its hops
+        :returns None:
+        """
+        if len(hops) == 0:
+            return
+        carried = ''
+        for i in range(len(hops)):
+            hop = hops[i]
+            side = self.string_at(hop, 'side', '').lower()
+            base = self.string_at(hop, 'base', '').upper()
+            quote = self.string_at(hop, 'quote', '').upper()
+            if base == '' or quote == '' or side not in ('buy', 'sell'):
+                raise ExchangeError('OrderRouter: hop ' + str(i) + ' does not name a market and a side')
+            # a buy spends the quote to acquire the base; a sell is the reverse
+            spends = quote if side == 'buy' else base
+            produces = base if side == 'buy' else quote
+            if i > 0 and spends != carried:
+                raise ExchangeError('OrderRouter: hop ' + str(i) + ' spends ' + spends + ' but the previous hop produced ' + carried)
+            if i == 0:
+                requested_from = self.string_at(route, 'clientRequestedFrom', '')
+                if requested_from != '' and spends != requested_from:
+                    raise ExchangeError('OrderRouter: the route spends ' + spends + ', not the requested ' + requested_from)
+            carried = produces
+        requested_to = self.string_at(route, 'clientRequestedTo', '')
+        if requested_to != '' and carried != requested_to:
+            raise ExchangeError('OrderRouter: the route produces ' + carried + ', not the requested ' + requested_to)
+
     def build_execution_plan(self, route, options={}):
         """
         flattens a RouteResult's hops and legs into a flat, ordered list of orders to place. PURE — no I/O, and the same input produces the same output in all five languages
@@ -596,6 +634,7 @@ class OrderRouter:
         slippage_bps = self.number_at(options, 'slippageBps', OrderRouter.DEFAULT_SLIPPAGE_BPS)
         tolerance = self.number_at(options, 'reconcileToleranceRatio', OrderRouter.DEFAULT_RECONCILE_TOLERANCE)
         hops = self.list_at(route, 'hops')
+        self.assert_route_chain_is_coherent(route, hops)
         steps = []
         step_index = 0
         for hop_index in range(len(hops)):
@@ -891,12 +930,31 @@ class OrderRouter:
         # the downstream hops lost `shortfall` out of this hop's whole output,
         # not out of this leg's, so the scale is measured against the hop
         hop_expected_out = 0
+        # Shortfall already reported by this hop's OTHER legs. Each leg used to compute a scale
+        # from the hop total and multiply the downstream amounts by it, so a second leg scaled an
+        # already-scaled number: 80% and 60% fills produced 0.9 * 0.8 = 0.72 of the next hop
+        # instead of the true 0.70. Reproduced at 144 against a true 140 before this changed.
+        prior_shortfall = 0
         for other in steps:
             if self.number_at(other, 'hopIndex', 0) == hop_index:
                 hop_expected_out = hop_expected_out + self.step_expected_out(other)
-        scale = 1
+                if self.number_at(other, 'stepIndex', -1) != step_index and self.has_number_at(other, 'realisedOut'):
+                    leg_shortfall = self.step_expected_out(other) - self.number_at(other, 'realisedOut', 0)
+                    if leg_shortfall < 0:
+                        leg_shortfall = 0
+                    prior_shortfall = prior_shortfall + leg_shortfall
+        # scale_before is what the downstream amounts have ALREADY been multiplied by, so the
+        # factor applied here is the increment to the hop's true cumulative scale. With one leg
+        # per hop prior_shortfall is 0 and this is identical to what it replaced.
+        scale_before = 1
+        scale_after = 1
         if hop_expected_out > 0:
-            scale = (hop_expected_out - shortfall) / hop_expected_out
+            scale_before = (hop_expected_out - prior_shortfall) / hop_expected_out
+            scale_after = (hop_expected_out - prior_shortfall - shortfall) / hop_expected_out
+        if scale_before <= 0:
+            scale_before = 1
+            scale_after = 0
+        scale = scale_after / scale_before
         if scale > 1:
             # never scale UP. An overfill is good news, but growing a downstream
             # order past the size that passed the safety check would place an
@@ -1344,12 +1402,27 @@ class OrderRouter:
             # containment JavaScript rejects fast while sibling orders are still
             # live, and Go's promiseAll waits for every one — the same source
             # abandoning in-flight orders differently per language.
+            # THE CONTRACT: concurrent ACROSS venues, serialised WITHIN a venue. An ordering
+            # guarantee rather than a performance promise, which is what lets five very different
+            # runtimes honour the same words. This fan-out used to be one thread per LEG against
+            # caller-supplied SYNC exchange instances, so two legs on one venue mutated that
+            # instance's throttle and nonce state with no lock — the worst of the three meanings
+            # this strategy had.
+            venue_groups = []
+            grouped_indices = []
+            for i in range(cursor, end):
+                exchange_id = self.string_at(steps[i], 'exchangeId', '')
+                if exchange_id in venue_groups:
+                    grouped_indices[venue_groups.index(exchange_id)].append(i)
+                else:
+                    venue_groups.append(exchange_id)
+                    grouped_indices.append([i])
             pending = []
-            with ThreadPoolExecutor(max_workers=end - cursor) as pool:
-                for i in range(cursor, end):
-                    pending.append(pool.submit(self.place_step, steps[i], venues, options, usd_rates, 'parallel_within_hop', report))
-                for i in range(len(pending)):
-                    results[cursor + i] = pending[i].result()
+            with ThreadPoolExecutor(max_workers=len(grouped_indices)) as pool:
+                for group in grouped_indices:
+                    pending.append(pool.submit(self.place_venue_group, group, steps, venues, options, usd_rates, report, results))
+                for future in pending:
+                    future.result()
             for i in range(cursor, end):
                 result = results[i]
                 status = self.string_at(result, 'status', '')
@@ -1369,6 +1442,17 @@ class OrderRouter:
                     self.mark_remaining_skipped(results, end)
                     return
             cursor = end
+
+    def place_venue_group(self, indices, steps, venues, options, usd_rates, report, results):
+        """
+        places one venue's legs strictly one at a time — the "serialised within a venue" half of
+        the parallel_within_hop contract
+
+        :param list indices: positions in steps that belong to this venue
+        :returns None:
+        """
+        for position in indices:
+            results[position] = self.place_step(steps[position], venues, options, usd_rates, 'parallel_within_hop', report)
 
     def execute_best_effort(self, report, steps, venues, options, usd_rates):
         """
@@ -1493,6 +1577,19 @@ class OrderRouter:
                 result['inAmount'] = filled
                 result['outAsset'] = self.string_at(step, 'quote', '')
                 result['outAmount'] = cost
+            # Net the taker fee out of what is CARRIED FORWARD when the venue charged it in the
+            # asset this step produced: filled and cost are gross of fees, so the next hop was
+            # sized on money that never arrived. Fees in any other currency come out of what was
+            # already spent and are left alone.
+            fee_cost = self.order_fee_in_asset(order, self.string_at(result, 'outAsset', ''))
+            result['feeCost'] = fee_cost
+            result['feeCurrency'] = self.string_at(result, 'outAsset', '')
+            if fee_cost > 0:
+                net = self.number_at(result, 'outAmount', 0) - fee_cost
+                if net < 0:
+                    net = 0
+                result['grossOutAmount'] = self.number_at(result, 'outAmount', 0)
+                result['outAmount'] = net
             if not filled_known:
                 # Refuse to reconcile on a fabricated fill. Halting on an unknown quantity is
                 # recoverable — an operator reads the order back and resumes; sizing the next hop
@@ -1585,6 +1682,32 @@ class OrderRouter:
         except Exception:
             # the caller marks the fill unknown; a raise here must not lose the placement record
             return fallback
+
+    def order_fee_in_asset(self, order, asset):
+        """
+        sums the fees an order charged in one asset, ignoring fees in any other currency
+
+        :param dict order: the order as the venue returned it
+        :param str asset: the asset being carried forward
+        :returns float: the fee cost in that asset, or 0
+        """
+        if asset == '':
+            return 0
+        total = 0
+        # ccxt sets a single `fee` and, since safe_order, a `fees` list alongside it; reading only
+        # one under-counts on venues that report per-trade fees.
+        saw_in_list = False
+        for entry in self.list_at(order, 'fees'):
+            if self.string_at(entry, 'currency', '').upper() == asset.upper():
+                total = total + self.number_at(entry, 'cost', 0)
+                saw_in_list = True
+        if not saw_in_list:
+            single = self.dict_at(order, 'fee')
+            if self.string_at(single, 'currency', '').upper() == asset.upper():
+                total = total + self.number_at(single, 'cost', 0)
+        if not self.is_finite_number(float(total)) or total < 0:
+            return 0
+        return total
 
     def is_outcome_unknown_error(self, error_code):
         """
@@ -1865,6 +1988,13 @@ class OrderRouter:
         :param dict reconciliation: the result of reconcile_execution_step
         :returns None:
         """
+        # Record what this leg produced BEFORE resizing anything: reconcile_execution_step is pure
+        # and cannot remember across calls, so the hop's cumulative shortfall lives on the steps.
+        reconciled_step = self.number_at(reconciliation, 'stepIndex', -1)
+        for step in steps:
+            if self.number_at(step, 'stepIndex', -1) == reconciled_step:
+                step['realisedOut'] = self.number_at(reconciliation, 'realisedOut', 0)
+                break
         for entry in self.list_at(reconciliation, 'resizedSteps'):
             step_index = self.number_at(entry, 'stepIndex', -1)
             for step in steps:

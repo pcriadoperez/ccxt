@@ -524,7 +524,15 @@ func (this *OrderRouter) FetchRoute(fromAsset string, toAsset string, params map
 		query = query + "&" + key + "=" + routerEncodeURIComponent(text)
 	}
 	url := this.BaseUrl + "/route?" + query
-	return this.Transport(url)
+	route, err := this.Transport(url)
+	if err != nil {
+		return nil, err
+	}
+	// Stamp what THIS CLIENT asked for, client-side, so BuildExecutionPlan can check the answer
+	// against the question. Everything else in the response is the server's word for it.
+	route["clientRequestedFrom"] = strings.ToUpper(fromAsset)
+	route["clientRequestedTo"] = strings.ToUpper(toAsset)
+	return route, nil
 }
 
 // routerQueryValue renders one query parameter the way the reference does:
@@ -776,10 +784,17 @@ func routerSortedVenueIds(venues map[string]IExchange) []string {
 // The returned plan's steps carry stepIndex, hopIndex, legIndex, exchangeId,
 // symbol, side, base, quote, amount, expectedPrice, effectivePrice, limitPrice
 // and notionalQuote.
-func (this *OrderRouter) BuildExecutionPlan(route map[string]any, options map[string]any) map[string]any {
+// It returns an error when the route's hops do not connect, or when the route does not run from
+// the asset the caller offered to the asset the caller wanted — the four sibling ports throw on
+// exactly those conditions, and silently planning orders against a route that fails them is how a
+// compromised or buggy router response reaches a real venue.
+func (this *OrderRouter) BuildExecutionPlan(route map[string]any, options map[string]any) (map[string]any, error) {
 	slippageBps := routerNumberAt(options, "slippageBps", OrderRouterDefaultSlippageBps)
 	tolerance := routerNumberAt(options, "reconcileToleranceRatio", OrderRouterDefaultReconcileTolerance)
 	hops := routerListAt(route, "hops")
+	if err := routerAssertChainCoherent(route, hops); err != nil {
+		return nil, err
+	}
 	steps := make([]map[string]any, 0)
 	stepIndex := 0
 	for hopIndex := 0; hopIndex < len(hops); hopIndex++ {
@@ -839,7 +854,7 @@ func (this *OrderRouter) BuildExecutionPlan(route map[string]any, options map[st
 		"slippageBps":             slippageBps,
 		"reconcileToleranceRatio": tolerance,
 		"steps":                   steps,
-	}
+	}, nil
 }
 
 //  ---------------------------------------------------------------------------
@@ -1097,15 +1112,37 @@ func (this *OrderRouter) ReconcileExecutionStep(plan map[string]any, stepIndex i
 	// the downstream hops lost `shortfall` out of this hop's whole output, not
 	// out of this leg's, so the scale is measured against the hop
 	hopExpectedOut := 0.0
+	// Shortfall already reported by this hop's OTHER legs. Each leg used to compute a scale from
+	// the hop total and multiply the downstream amounts by it, so a second leg scaled an
+	// already-scaled number: 80% and 60% fills produced 0.9 * 0.8 = 0.72 of the next hop instead
+	// of the true 0.70. Reproduced at 144 against a true 140 before this changed.
+	priorShortfall := 0.0
 	for i := 0; i < len(steps); i++ {
 		if routerNumberAt(steps[i], "hopIndex", 0) == hopIndex {
 			hopExpectedOut = hopExpectedOut + this.stepExpectedOut(steps[i])
+			if routerNumberAt(steps[i], "stepIndex", -1) != float64(stepIndex) && routerHasNumberAt(steps[i], "realisedOut") {
+				legShortfall := this.stepExpectedOut(steps[i]) - routerNumberAt(steps[i], "realisedOut", 0)
+				if legShortfall < 0 {
+					legShortfall = 0
+				}
+				priorShortfall = priorShortfall + legShortfall
+			}
 		}
 	}
-	scale := 1.0
+	// scaleBefore is what the downstream amounts have ALREADY been multiplied by, so the factor
+	// applied here is the increment to the hop's true cumulative scale. With one leg per hop
+	// priorShortfall is 0 and this is identical to what it replaced.
+	scaleBefore := 1.0
+	scaleAfter := 1.0
 	if hopExpectedOut > 0 {
-		scale = (hopExpectedOut - shortfall) / hopExpectedOut
+		scaleBefore = (hopExpectedOut - priorShortfall) / hopExpectedOut
+		scaleAfter = (hopExpectedOut - priorShortfall - shortfall) / hopExpectedOut
 	}
+	if scaleBefore <= 0 {
+		scaleBefore = 1
+		scaleAfter = 0
+	}
+	scale := scaleAfter / scaleBefore
 	if scale > 1 {
 		// never scale UP. An overfill is good news, but growing a downstream
 		// order past the size that passed the safety check would place an order
@@ -1648,21 +1685,46 @@ func (this *OrderRouter) executeParallelWithinHop(report map[string]any, results
 		for end < len(steps) && routerNumberAt(steps[end], "hopIndex", 0) == hopIndex {
 			end = end + 1
 		}
-		sinks := make([]*orderRouterSink, end-cursor)
-		var waitGroup sync.WaitGroup
+		// THE CONTRACT: concurrent ACROSS venues, serialised WITHIN a venue. An ordering guarantee
+		// rather than a performance promise, which is what lets five very different runtimes
+		// honour the same words. One goroutine per LEG would put two orders in flight on a single
+		// exchange instance, whose concurrency-safety is the instance's business and not
+		// something this class can assume.
+		venueOrder := make([]string, 0)
+		grouped := make([][]int, 0)
 		for i := cursor; i < end; i++ {
-			// placeStep contains its own failures and never returns an error, so
-			// "wait for all" means the same thing in all five languages. Without
-			// that containment JavaScript rejects fast while sibling orders are
-			// still live and Go's WaitGroup waits for every one — the same source
-			// abandoning in-flight orders differently per language.
+			exchangeId := routerStringAt(steps[i], "exchangeId", "")
+			groupIndex := -1
+			for g := 0; g < len(venueOrder); g++ {
+				if venueOrder[g] == exchangeId {
+					groupIndex = g
+					break
+				}
+			}
+			if groupIndex == -1 {
+				venueOrder = append(venueOrder, exchangeId)
+				grouped = append(grouped, []int{i})
+			} else {
+				grouped[groupIndex] = append(grouped[groupIndex], i)
+			}
+		}
+		sinks := make([]*orderRouterSink, len(grouped))
+		var waitGroup sync.WaitGroup
+		for g := 0; g < len(grouped); g++ {
+			// placeStep contains its own failures and never returns an error, so "wait for all"
+			// means the same thing in all five languages. Without that containment JavaScript
+			// rejects fast while sibling orders are still live and Go's WaitGroup waits for every
+			// one — the same source abandoning in-flight orders differently per language.
 			sink := &orderRouterSink{}
-			sinks[i-cursor] = sink
+			sinks[g] = sink
 			waitGroup.Add(1)
-			go func(index int, sink *orderRouterSink) {
+			go func(indices []int, sink *orderRouterSink) {
 				defer waitGroup.Done()
-				results[index] = this.placeStep(steps[index], venues, options, usdRates, "parallel_within_hop", sink)
-			}(i, sink)
+				// strictly one at a time within this venue
+				for _, index := range indices {
+					results[index] = this.placeStep(steps[index], venues, options, usdRates, "parallel_within_hop", sink)
+				}
+			}(grouped[g], sink)
 		}
 		waitGroup.Wait()
 		for i := 0; i < len(sinks); i++ {
@@ -1898,6 +1960,20 @@ func (this *OrderRouter) placeStepInner(result map[string]any, step map[string]a
 		result["outAsset"] = routerStringAt(step, "quote", "")
 		result["outAmount"] = cost
 	}
+	// Net the taker fee out of what is CARRIED FORWARD when the venue charged it in the asset this
+	// step produced: filled and cost are gross of fees, so the next hop was sized on money that
+	// never arrived. Fees in any other currency come out of what was already spent.
+	feeCost := routerOrderFeeInAsset(order, routerStringAt(result, "outAsset", ""))
+	result["feeCost"] = feeCost
+	result["feeCurrency"] = routerStringAt(result, "outAsset", "")
+	if feeCost > 0 {
+		net := routerNumberAt(result, "outAmount", 0) - feeCost
+		if net < 0 {
+			net = 0
+		}
+		result["grossOutAmount"] = routerNumberAt(result, "outAmount", 0)
+		result["outAmount"] = net
+	}
 	if !filledKnown {
 		// Refuse to reconcile on a fabricated fill: halting on an unknown quantity is recoverable,
 		// sizing the next hop from an invented number is not.
@@ -1981,6 +2057,86 @@ func routerErrorRecord(stepIndex float64, exchangeId string, symbol string, code
 // routerHasFloat reports whether an optional number is an ANSWER: present and finite. A nil
 // pointer is the venue saying nothing, and a NaN is worse than nothing — it fails every
 // comparison, so it is neither filtered nor ordered, and it makes json.Marshal of the report fail.
+// routerHasNumberAt reports whether a map carries a usable number at key, mirroring
+// routerNumberAt's coercion so "usable" and "present" cannot disagree.
+func routerHasNumberAt(container any, key string) bool {
+	m, ok := container.(map[string]any)
+	if !ok {
+		return false
+	}
+	value, present := m[key]
+	if !present || value == nil {
+		return false
+	}
+	// Reuse routerToNumber rather than re-deriving the coercion: "the value is usable" and "the
+	// value is present" must never disagree, and two copies of that rule is how they would.
+	return routerIsFiniteNumber(routerToNumber(value, math.NaN()))
+}
+
+// routerAssertChainCoherent refuses a route whose hops do not connect, or that does not run from
+// the asset the caller offered to the asset the caller wanted. BuildExecutionPlan used to copy
+// from, to, pair and side straight out of the server's JSON.
+func routerAssertChainCoherent(route map[string]any, hops []any) error {
+	if len(hops) == 0 {
+		return nil
+	}
+	carried := ""
+	for i := 0; i < len(hops); i++ {
+		hop := hops[i]
+		side := strings.ToLower(routerStringAt(hop, "side", ""))
+		base := strings.ToUpper(routerStringAt(hop, "base", ""))
+		quote := strings.ToUpper(routerStringAt(hop, "quote", ""))
+		if base == "" || quote == "" || (side != "buy" && side != "sell") {
+			return ExchangeError("OrderRouter: hop " + strconv.Itoa(i) + " does not name a market and a side")
+		}
+		// a buy spends the quote to acquire the base; a sell is the reverse
+		spends := base
+		produces := quote
+		if side == "buy" {
+			spends = quote
+			produces = base
+		}
+		if i > 0 && spends != carried {
+			return ExchangeError("OrderRouter: hop " + strconv.Itoa(i) + " spends " + spends + " but the previous hop produced " + carried)
+		}
+		if i == 0 {
+			requestedFrom := routerStringAt(route, "clientRequestedFrom", "")
+			if requestedFrom != "" && spends != requestedFrom {
+				return ExchangeError("OrderRouter: the route spends " + spends + ", not the requested " + requestedFrom)
+			}
+		}
+		carried = produces
+	}
+	requestedTo := routerStringAt(route, "clientRequestedTo", "")
+	if requestedTo != "" && carried != requestedTo {
+		return ExchangeError("OrderRouter: the route produces " + carried + ", not the requested " + requestedTo)
+	}
+	return nil
+}
+
+// routerOrderFeeInAsset sums the fees an order charged in one asset, ignoring any other currency.
+// ccxt sets a single Fee and, since safeOrder, a Fees list alongside it; reading only one
+// under-counts on venues that report per-trade fees.
+func routerOrderFeeInAsset(order Order, asset string) float64 {
+	if asset == "" {
+		return 0
+	}
+	total := 0.0
+	// DIVERGENCE, recorded rather than hidden: the Go typed Order carries a single Fee and no
+	// Fees list, so unlike the other four ports this cannot sum per-trade fees. On a venue that
+	// reports fees only in that list, Go under-counts and carries the gross amount forward — the
+	// same conservative direction as before this change, never an over-count. Fixing it properly
+	// means adding Fees to the typed Order in exchange_types.go, which is outside this file.
+	fee := order.Fee
+	if fee.Currency != nil && strings.EqualFold(*fee.Currency, asset) && fee.Cost != nil {
+		total = total + *fee.Cost
+	}
+	if !routerIsFiniteNumber(total) || total < 0 {
+		return 0
+	}
+	return total
+}
+
 func routerHasFloat(value *float64) bool {
 	return value != nil && routerIsFiniteNumber(*value)
 }
@@ -2206,6 +2362,15 @@ func (this *OrderRouter) assertPrefunded(steps []map[string]any, venues map[stri
 // applyResize writes a reconciliation's downstream resize back into the working
 // steps.
 func (this *OrderRouter) applyResize(steps []map[string]any, reconciliation map[string]any) {
+	// Record what this leg produced BEFORE resizing anything: ReconcileExecutionStep is pure and
+	// cannot remember across calls, so the hop's cumulative shortfall lives on the steps.
+	reconciledStep := routerNumberAt(reconciliation, "stepIndex", -1)
+	for j := 0; j < len(steps); j++ {
+		if routerNumberAt(steps[j], "stepIndex", -1) == reconciledStep {
+			steps[j]["realisedOut"] = routerNumberAt(reconciliation, "realisedOut", 0)
+			break
+		}
+	}
 	resized := routerListAt(reconciliation, "resizedSteps")
 	for i := 0; i < len(resized); i++ {
 		entry := resized[i]

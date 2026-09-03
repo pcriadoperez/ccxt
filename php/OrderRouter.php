@@ -501,7 +501,13 @@ class OrderRouter {
             $query = $query . '&' . $key . '=' . $this->encodeUriComponent($text);
         }
         $url = $this->baseUrl . '/route?' . $query;
-        return $this->request($url);
+        $route = $this->request($url);
+        //  Stamp the client's OWN record of the question onto the answer, so buildExecutionPlan
+        //  can check that the route it is about to turn into real orders runs from the asset the
+        //  caller offered to the asset the caller wanted — rather than trusting the server's echo.
+        $route['clientRequestedFrom'] = strtoupper($fromAsset);
+        $route['clientRequestedTo'] = strtoupper($toAsset);
+        return $route;
     }
 
     /**
@@ -684,10 +690,94 @@ class OrderRouter {
      *     float reconcileToleranceRatio the shortfall ratio reconcileExecutionStep halts on, default 0.02
      * @return array an execution plan whose steps carry stepIndex, hopIndex, legIndex, exchangeId, symbol, side, amount, expectedPrice, limitPrice and notionalQuote
      */
+    /**
+     * @ignore
+     * refuses a route whose hops do not connect, or that does not run from the asset the caller
+     * offered to the asset the caller wanted. buildExecutionPlan used to copy from, to, pair and
+     * side straight out of the server's JSON, and the safety checks only tested internal
+     * consistency against whatever market that named — so a compromised or simply buggy router
+     * response could steer real orders into any real market and every check would pass it
+     * @param array $route the route to check
+     * @param array $hops the route's hops
+     * @return void
+     */
+    /**
+     * @ignore
+     * sums the fees an order charged in one asset, ignoring any other currency
+     * @param array $order the order as the venue returned it
+     * @param string $asset the asset to count fees in
+     * @return float the total charged in that asset, 0 when there is none
+     */
+    public function orderFeeInAsset($order, $asset) {
+        if ($asset === '') {
+            return 0;
+        }
+        $total = 0;
+        //  ccxt sets a single `fee` and, since safeOrder, a `fees` list alongside it. Reading only
+        //  one of the two would under-count on venues that report per-trade fees, so both are
+        //  summed — with `fee` skipped when it is also present in `fees`, which is how safeOrder
+        //  fills them in.
+        $fees = $this->listAt($order, 'fees');
+        $sawInList = false;
+        for ($i = 0; $i < count($fees); $i++) {
+            $entry = $fees[$i];
+            if (strtoupper($this->stringAt($entry, 'currency', '')) === strtoupper($asset)) {
+                $total = $total + $this->numberAt($entry, 'cost', 0);
+                $sawInList = true;
+            }
+        }
+        if (!$sawInList) {
+            $single = $this->dictAt($order, 'fee');
+            if (strtoupper($this->stringAt($single, 'currency', '')) === strtoupper($asset)) {
+                $total = $total + $this->numberAt($single, 'cost', 0);
+            }
+        }
+        if (!$this->isFiniteNumber($total) || $total < 0) {
+            return 0;
+        }
+        return $total;
+    }
+
+    public function assertRouteChainIsCoherent($route, $hops) {
+        if (count($hops) === 0) {
+            return;
+        }
+        $carried = '';
+        for ($i = 0; $i < count($hops); $i++) {
+            $hop = $hops[$i];
+            $side = strtolower($this->stringAt($hop, 'side', ''));
+            $baseCode = strtoupper($this->stringAt($hop, 'base', ''));
+            $quote = strtoupper($this->stringAt($hop, 'quote', ''));
+            if ($baseCode === '' || $quote === '' || ($side !== 'buy' && $side !== 'sell')) {
+                throw new ExchangeError('OrderRouter: hop ' . strval($i) . ' does not name a market and a side');
+            }
+            //  a buy spends the quote to acquire the base; a sell is the reverse
+            $spends = ($side === 'buy') ? $quote : $baseCode;
+            $produces = ($side === 'buy') ? $baseCode : $quote;
+            if ($i > 0 && $spends !== $carried) {
+                //  hop N+1 must spend exactly what hop N produced, or the plan strands the
+                //  proceeds of one order and funds the next from a wallet nobody checked
+                throw new ExchangeError('OrderRouter: hop ' . strval($i) . ' spends ' . $spends . ' but the previous hop produced ' . $carried);
+            }
+            if ($i === 0) {
+                $requestedFrom = $this->stringAt($route, 'clientRequestedFrom', '');
+                if ($requestedFrom !== '' && $spends !== $requestedFrom) {
+                    throw new ExchangeError('OrderRouter: the route spends ' . $spends . ', not the requested ' . $requestedFrom);
+                }
+            }
+            $carried = $produces;
+        }
+        $requestedTo = $this->stringAt($route, 'clientRequestedTo', '');
+        if ($requestedTo !== '' && $carried !== $requestedTo) {
+            throw new ExchangeError('OrderRouter: the route produces ' . $carried . ', not the requested ' . $requestedTo);
+        }
+    }
+
     public function buildExecutionPlan($route, $options = array()) {
         $slippageBps = $this->numberAt($options, 'slippageBps', self::DEFAULT_SLIPPAGE_BPS);
         $tolerance = $this->numberAt($options, 'reconcileToleranceRatio', self::DEFAULT_RECONCILE_TOLERANCE);
         $hops = $this->listAt($route, 'hops');
+        $this->assertRouteChainIsCoherent($route, $hops);
         $steps = array();
         $stepIndex = 0;
         for ($hopIndex = 0; $hopIndex < count($hops); $hopIndex++) {
@@ -1017,6 +1107,13 @@ class OrderRouter {
         //  the downstream hops lost `shortfall` out of this hop's whole output,
         //  not out of this leg's, so the scale is measured against the hop
         $hopExpectedOut = 0;
+        //  Shortfall already reported by this hop's OTHER legs. Each leg used to compute a scale
+        //  from the hop total and multiply the downstream amounts by it, so a second leg scaled an
+        //  already-scaled number: 80% and 60% fills produced 0.9 x 0.8 = 0.72 of the next hop
+        //  instead of the true 0.70, sizing it for more than the wallet actually received and
+        //  inviting a spurious insufficient-funds halt on exactly the bridged routes this class
+        //  exists for. Reproduced at 144 against a true 140 before this changed.
+        $priorShortfall = 0;
         for ($i = 0; $i < count($steps); $i++) {
             //  == and not ===: these are NUMBERS, and PHP's === also compares
             //  their type, so an int 0 and a float 0.0 — which the same JSON
@@ -1024,12 +1121,31 @@ class OrderRouter {
             //  drop out of the hop total, resizing every downstream order wrong
             if ($this->numberAt($steps[$i], 'hopIndex', 0) == $hopIndex) {
                 $hopExpectedOut = $hopExpectedOut + $this->stepExpectedOut($steps[$i]);
+                if ($this->numberAt($steps[$i], 'stepIndex', -1) != $stepIndex && $this->hasNumberAt($steps[$i], 'realisedOut')) {
+                    $legShortfall = $this->stepExpectedOut($steps[$i]) - $this->numberAt($steps[$i], 'realisedOut', 0);
+                    if ($legShortfall < 0) {
+                        $legShortfall = 0;
+                    }
+                    $priorShortfall = $priorShortfall + $legShortfall;
+                }
             }
         }
-        $scale = 1;
+        //  scaleBefore is what the downstream amounts have ALREADY been multiplied by, so the
+        //  factor applied here is the increment that takes them from that to the hop's true
+        //  cumulative scale. With one leg per hop $priorShortfall is 0, $scaleBefore is 1, and
+        //  this is arithmetically identical to what it replaced.
+        $scaleBefore = 1;
+        $scaleAfter = 1;
         if ($hopExpectedOut > 0) {
-            $scale = ($hopExpectedOut - $shortfall) / $hopExpectedOut;
+            $scaleBefore = ($hopExpectedOut - $priorShortfall) / $hopExpectedOut;
+            $scaleAfter = ($hopExpectedOut - $priorShortfall - $shortfall) / $hopExpectedOut;
         }
+        if ($scaleBefore <= 0) {
+            //  the hop already produced nothing; there is nothing left to scale down
+            $scaleBefore = 1;
+            $scaleAfter = 0;
+        }
+        $scale = $scaleAfter / $scaleBefore;
         if ($scale > 1) {
             //  never scale UP. An overfill is good news, but growing a
             //  downstream order past the size that passed the safety check
@@ -1553,7 +1669,7 @@ class OrderRouter {
 
     /**
      * @ignore
-     * runs the legs of one hop as a unit and the hops strictly in order. In this synchronous port the legs of a hop are placed one after another rather than concurrently; placeStep contains its own failures either way, so the report is identical
+     * runs the legs of one hop as a unit and the hops strictly in order. THE CONTRACT is concurrent ACROSS venues, serialised WITHIN a venue — an ordering guarantee, not a performance promise, which is what lets five very different runtimes honour the same words. The other four ports group a hop's legs by exchangeId so no venue ever has two orders in flight; this synchronous port satisfies the same guarantee more strongly by placing every leg one after another, so it needs no grouping. placeStep contains its own failures either way, so the report is identical
      * @param array $report the report being filled in, by reference
      * @param array $steps the working steps, by reference
      * @param array $venues exchangeId to exchange instance
@@ -1739,6 +1855,23 @@ class OrderRouter {
                 $result['inAmount'] = $filled;
                 $result['outAsset'] = $this->stringAt($step, 'quote', '');
                 $result['outAmount'] = $cost;
+            }
+            //  Net the taker fee out of what is actually CARRIED FORWARD, when the venue charged
+            //  it in the asset this step produced. filled and cost are gross of fees — the manual
+            //  says so — so a venue taking its cut in the acquired asset credits less than
+            //  `filled`, and sizing the next hop (or an unwind) on the gross figure orders more
+            //  than the wallet holds. Fees in any OTHER currency are left alone: they do not
+            //  reduce what this hop hands to the next one.
+            $feeCost = $this->orderFeeInAsset($order, $this->stringAt($result, 'outAsset', ''));
+            $result['feeCost'] = $feeCost;
+            $result['feeCurrency'] = $this->stringAt($result, 'outAsset', '');
+            if ($feeCost > 0) {
+                $net = $this->numberAt($result, 'outAmount', 0) - $feeCost;
+                if ($net < 0) {
+                    $net = 0;
+                }
+                $result['grossOutAmount'] = $this->numberAt($result, 'outAmount', 0);
+                $result['outAmount'] = $net;
             }
             if (!$filledKnown) {
                 // Refuse to reconcile on a fabricated fill: halting on an unknown quantity is
@@ -2112,6 +2245,17 @@ class OrderRouter {
      * @return void
      */
     public function applyResize(&$steps, $reconciliation) {
+        //  Record what this leg actually produced BEFORE resizing anything. reconcileExecutionStep
+        //  is pure and cannot remember across calls, so the hop's cumulative shortfall has to live
+        //  on the steps themselves — this is what stops the next leg of the same hop compounding
+        //  its scale onto an already-scaled amount.
+        $reconciledStep = $this->numberAt($reconciliation, 'stepIndex', -1);
+        for ($i = 0; $i < count($steps); $i++) {
+            if ($this->numberAt($steps[$i], 'stepIndex', -1) == $reconciledStep) {
+                $steps[$i]['realisedOut'] = $this->numberAt($reconciliation, 'realisedOut', 0);
+                break;
+            }
+        }
         $resized = $this->listAt($reconciliation, 'resizedSteps');
         for ($i = 0; $i < count($resized); $i++) {
             $entry = $resized[$i];

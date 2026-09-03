@@ -49,6 +49,46 @@ test('GET /health returns ok', async () => {
     await app.close();
 });
 
+// The distinction /health cannot draw. A process that has just booted is ALIVE — it answers
+// /health with 200 from the first millisecond — but it can only answer /route with
+// all_books_stale until websockets connect and books arrive. Sending traffic there because
+// /health said 200 produces an outage the router reports as a successful 200. So readiness is
+// asserted on the actual precondition for routing: fresh books.
+test('GET /ready is 503 before any book has arrived and 200 once one has', async () => {
+    const { app, cache } = await buildTestServer();
+
+    const cold = await app.inject({ method: 'GET', url: '/ready' });
+    assert.equal(cold.statusCode, 503);
+    assert.equal(cold.json().status, 'not_ready');
+    assert.equal(cold.json().freshCount, 0);
+
+    cache.setBook({
+        exchangeId: 'stub',
+        symbol: 'BTC/USDT',
+        bids: [ { price: 100, amount: 1 } ],
+        asks: [ { price: 101, amount: 1 } ],
+        exchangeTimestamp: undefined,
+        receivedAt: Date.now(),
+        sequence: 1,
+    });
+
+    const warm = await app.inject({ method: 'GET', url: '/ready' });
+    assert.equal(warm.statusCode, 200);
+    assert.equal(warm.json().status, 'ready');
+    assert.equal(warm.json().freshCount, 1);
+    await app.close();
+});
+
+// Readiness is only useful to an orchestrator that can reach it without a credential, for the
+// same reason /health is public — probes run before any secret is injectable. It reports counts
+// and never venue names, so it leaks nothing /health does not.
+test('GET /ready needs no credentials, like the liveness probe', async () => {
+    const { app } = await buildTestServer();
+    const response = await app.inject({ method: 'GET', url: '/ready' });
+    assert.notEqual(response.statusCode, 401);
+    await app.close();
+});
+
 // /version is what a deploy asserts against, so the two properties that make it usable for that are
 // worth pinning: it answers at all, and it is NOT public. A public /version would hand an attacker
 // the exact revision to go read for a vulnerability — the same reason /exchanges/status is behind
@@ -1250,4 +1290,25 @@ test('the access log never records the amounts a caller holds', async () => {
         if (previous === undefined) delete process.env['ORDER_ROUTER_API_KEY'];
         else process.env['ORDER_ROUTER_API_KEY'] = previous;
     }
+});
+
+// An unroutable answer is a 200 with a well-formed body: it does not touch the error rate, the
+// status-code labels, or the latency histogram. A shard whose books have all gone stale therefore
+// keeps serving 200s at normal latency while telling every caller it cannot route — and before
+// this counter existed, noticing that meant someone reading logs.
+test('an unroutable answer increments a metric, not just a log line', async () => {
+    const { app } = await buildTestServer();
+    const key = AUTH;
+
+    const before = await app.inject({ method: 'GET', url: '/metrics', headers: key });
+    assert.equal(before.body.indexOf('order_router_unroutable_total{reason="no_market"} 1'), -1);
+
+    // No books at all, so no market exists between these two assets.
+    const route = await app.inject({ method: 'GET', url: '/route?from=DOGE&to=SHIB&amountIn=1', headers: key });
+    assert.equal(route.json().unroutableReason, 'no_market');
+
+    const after = await app.inject({ method: 'GET', url: '/metrics', headers: key });
+    assert.ok(after.body.indexOf('order_router_unroutable_total{reason="no_market"} 1') !== -1,
+        'the reason is counted with its label: ' + after.body.split('\n').filter((l) => l.indexOf('unroutable') !== -1).join(' | '));
+    await app.close();
 });

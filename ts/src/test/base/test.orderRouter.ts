@@ -150,6 +150,32 @@ test ('fixture: reconcileExecutionStep', () => {
     }
 });
 
+test ('fixture: a sequence of reconciliations on one hop', () => {
+    //  reconcileExecutionStep is pure and cannot remember across calls, so a hop's cumulative
+    //  shortfall lives on the steps themselves — written by applyResize. That interaction is only
+    //  visible across a SEQUENCE of calls, which reconcileCases (one call each) cannot express,
+    //  and it is exactly where the five ports could silently disagree.
+    const cases = fixture['reconcileSequenceCases'];
+    assert.ok (cases.length > 0, 'the fixture has reconcile sequence cases');
+    for (let i = 0; i < cases.length; i++) {
+        const testCase = cases[i];
+        const steps = JSON.parse (JSON.stringify (testCase['steps']));
+        const calls = testCase['calls'];
+        for (let c = 0; c < calls.length; c++) {
+            //  the plan is rebuilt from the working steps on every call, exactly as execute()
+            //  does — PHP copies arrays on assignment, so a plan built once outside this loop
+            //  would mean five ports running five different tests
+            const plan = { 'steps': steps, 'reconcileToleranceRatio': testCase['reconcileToleranceRatio'] };
+            const reconciliation = router.reconcileExecutionStep (plan, calls[c]['stepIndex'], calls[c]['realisedOut']);
+            assert.ok (numbersMatch (reconciliation['scale'], testCase['expectedScales'][c]), 'reconcileSequenceCase ' + testCase['id'] + ' call ' + c.toString () + ': scale ' + String (reconciliation['scale']));
+            router.applyResize (steps, reconciliation);
+        }
+        for (let s = 0; s < steps.length; s++) {
+            assert.ok (numbersMatch (steps[s]['amount'], testCase['expectedAmounts'][s]), 'reconcileSequenceCase ' + testCase['id'] + ' step ' + s.toString () + ': amount ' + String (steps[s]['amount']) + ', expected ' + String (testCase['expectedAmounts'][s]));
+        }
+    }
+});
+
 test ('fixture: numberAt reads one number grammar in all five languages', () => {
     //  Every port hand-implements JavaScript's parseFloat prefix grammar rather
     //  than calling its own parser, because every language's own parser

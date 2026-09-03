@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import pino from 'pino';
-import { chunkSymbols, normalizeLevels, isPermanentError, reapOrphanedSockets, isCrossedBook, nextResyncBackoffMs } from './exchangeConnector.js';
+import ccxt from 'ccxt';
+import { chunkSymbols, normalizeLevels, isPermanentError, isLimitRejection, reapOrphanedSockets, isCrossedBook, nextResyncBackoffMs } from './exchangeConnector.js';
 
 const silentLogger = pino({ level: 'silent' });
 
@@ -71,18 +72,37 @@ test('permanent failures are recognised so they are abandoned, not retried forev
     // A venue needing credentials fails instantly and identically on every retry. Treating that
     // as transient produced a busy loop that wrote ~930MB / 22M log lines and starved the CPU
     // that working venues needed.
-    assert.equal(isPermanentError('cex requires "apiKey" credential'), true);
-    assert.equal(isPermanentError('luno requires "apiKey" credential'), true);
-    assert.equal(isPermanentError('someex watchOrderBook() is not supported yet'), true);
-    assert.equal(isPermanentError('authentication failed'), true);
+    assert.equal(isPermanentError(new Error('cex requires "apiKey" credential')), true);
+    assert.equal(isPermanentError(new Error('luno requires "apiKey" credential')), true);
+    assert.equal(isPermanentError(new Error('someex watchOrderBook() is not supported yet')), true);
+    assert.equal(isPermanentError(new ccxt.AuthenticationError('authentication failed')), true);
+    assert.equal(isPermanentError(new ccxt.NotSupported('watchOrderBook')), true);
+    assert.equal(isPermanentError(new ccxt.BadSymbol('no such market')), true);
+    assert.equal(isPermanentError(new ccxt.ArgumentsRequired('symbol is required')), true);
+});
+
+test('a recoverable failure is never mistaken for a permanent one', () => {
+    // Every one of these matched the message patterns as they were, and every one recovers on its
+    // own. Calling one permanent removes the venue from routing for the lifetime of the process:
+    // the loop returns, nothing retries it, and the books just go stale — indistinguishable from a
+    // quiet market. So these are asserted by ccxt's own class, not by their text.
+    assert.equal(isPermanentError(new ccxt.InvalidNonce('binance {"code":-1021,"msg":"Timestamp for this request is invalid."}')), false);
+    assert.equal(isPermanentError(new ccxt.InvalidNonce('kraken EAPI:Invalid nonce')), false);
+    assert.equal(isPermanentError(new ccxt.RequestTimeout('okx watchOrderBook timed out')), false);
+    assert.equal(isPermanentError(new ccxt.ExchangeNotAvailable('bybit authentication in progress, please retry')), false);
+    assert.equal(isPermanentError(new ccxt.RateLimitExceeded('too many requests')), false);
+    assert.equal(isPermanentError(new ccxt.OnMaintenance('scheduled maintenance')), false);
+    // A plain ExchangeError proves nothing permanent, so it retries rather than abandoning.
+    assert.equal(isPermanentError(new ccxt.ExchangeError('okx {"code":"50113","msg":"Invalid Sign"} signature is invalid')), false);
+    assert.equal(isPermanentError(new ccxt.BadRequest('malformed subscribe frame')), false);
 });
 
 test('transient failures stay retryable', () => {
     // These recover on their own; abandoning them would permanently drop a healthy venue.
-    assert.equal(isPermanentError('connection closed by remote'), false);
-    assert.equal(isPermanentError('request timed out (10000 ms)'), false);
-    assert.equal(isPermanentError('socket hang up'), false);
-    assert.equal(isPermanentError('subscribe over limit, max:1000'), false);
+    assert.equal(isPermanentError(new Error('connection closed by remote')), false);
+    assert.equal(isPermanentError(new Error('request timed out (10000 ms)')), false);
+    assert.equal(isPermanentError(new Error('socket hang up')), false);
+    assert.equal(isPermanentError(new Error('subscribe over limit, max:1000')), false);
 });
 
 test('books are truncated before they can cross the IPC boundary', () => {
@@ -210,4 +230,24 @@ test('a venue that stayed clean for a long stretch resets to the base interval',
 
 test('the first resync for a venue never starts escalated', () => {
     assert.equal(nextResyncBackoffMs(60_000, 0, false), 60_000);
+});
+
+test('a venue refusing the depth limit drops the limit instead of the venue', () => {
+    // The connector now asks the venue for maxDepth levels rather than taking every level and
+    // discarding 90% of them. Venues that do not offer a depth-limited channel answer with
+    // NotSupported or a BadRequest naming the limit — and NotSupported is exactly what the
+    // permanent-error rules abandon a venue over. A bandwidth preference must never be able to
+    // remove a venue from routing, so these are separated before that check runs.
+    const limit = 500;
+    assert.equal(isLimitRejection(new ccxt.NotSupported('watchOrderBook() does not accept a limit'), limit), true);
+    assert.equal(isLimitRejection(new ccxt.BadRequest('invalid limit 500, allowed: 5, 10, 20'), limit), true);
+    assert.equal(isLimitRejection(new ccxt.BadRequest('unsupported depth channel'), limit), true);
+    assert.equal(isLimitRejection(new ccxt.ArgumentsRequired('limit is required'), limit), true);
+    // Not a limit problem: these must still reach the permanent/transient classification.
+    assert.equal(isLimitRejection(new ccxt.AuthenticationError('bad key'), limit), false);
+    assert.equal(isLimitRejection(new ccxt.BadRequest('malformed subscribe frame'), limit), false);
+    assert.equal(isLimitRejection(new ccxt.RequestTimeout('timed out'), limit), false);
+    // And once the limit has already been dropped, nothing is a limit rejection any more —
+    // otherwise the loop would retry with no backoff forever.
+    assert.equal(isLimitRejection(new ccxt.NotSupported('watchOrderBook() does not accept a limit'), undefined), false);
 });

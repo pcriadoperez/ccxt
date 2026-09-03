@@ -168,6 +168,80 @@ def test_fixture_reconcile_execution_step():
         assert_matches(verdict, case['expected'], 'reconcileCase ' + case['id'])
 
 
+def refuses_plan(route, fragment, message):
+    try:
+        router.build_execution_plan(route, {})
+    except ExchangeError as e:
+        assert fragment in str(e), message + ': raised "' + str(e) + '", expected "' + fragment + '"'
+        return
+    raise AssertionError(message + ': nothing was raised')
+
+
+@test('a route that does not run from the requested asset to the requested asset is refused')
+def test_route_produces_mismatch():
+    # build_execution_plan used to copy from, to, pair and side straight out of the server's JSON,
+    # and the safety checks only tested internal consistency against whatever market that named.
+    # So a compromised — or simply buggy — router response could steer real orders into any real
+    # market and every check would pass it, under the 25 USD cap. The client now checks the answer
+    # against its OWN record of the question.
+    route = one_leg_route('buy', 'BTC', 'USDT', 0.1, 100)
+    route['clientRequestedFrom'] = 'USDT'
+    route['clientRequestedTo'] = 'ETH'   # the caller wanted ETH; the route delivers BTC
+    refuses_plan(route, 'produces BTC, not the requested ETH', 'a produces mismatch')
+
+
+@test('a route that spends an asset the caller never offered is refused')
+def test_route_spends_mismatch():
+    route = one_leg_route('buy', 'BTC', 'USDT', 0.1, 100)
+    route['clientRequestedFrom'] = 'EUR'
+    route['clientRequestedTo'] = 'BTC'
+    refuses_plan(route, 'spends USDT, not the requested EUR', 'a spends mismatch')
+
+
+@test('a bridged route whose hops do not connect is refused')
+def test_route_chain_break():
+    # Internal coherence, checked with or without a client stamp: hop 2 must spend exactly what
+    # hop 1 produced, or the plan strands the proceeds of one order and funds the next from a
+    # wallet nobody checked.
+    route = two_hop_route()
+    route['hops'][1]['base'] = 'DOGE'
+    route['hops'][1]['quote'] = 'EUR'
+    refuses_plan(route, 'spends DOGE but the previous hop produced BTC', 'a broken chain')
+
+
+@test('a well-formed route still plans normally')
+def test_route_well_formed_still_plans():
+    route = one_leg_route('buy', 'BTC', 'USDT', 0.1, 100)
+    route['clientRequestedFrom'] = 'USDT'
+    route['clientRequestedTo'] = 'BTC'
+    plan = router.build_execution_plan(route, {})
+    assert len(plan['steps']) == 1, 'a coherent route still plans'
+
+
+@test('fixture: a sequence of reconciliations on one hop')
+def test_fixture_reconcile_sequence():
+    # reconcile_execution_step is pure and cannot remember across calls, so a hop's cumulative
+    # shortfall lives on the steps themselves — written by apply_resize. That interaction is only
+    # visible across a SEQUENCE of calls, which reconcileCases (one call each) cannot express,
+    # and it is exactly where the five ports could silently disagree.
+    cases = fixture['reconcileSequenceCases']
+    assert len(cases) > 0, 'the fixture has reconcile sequence cases'
+    for case in cases:
+        steps = json.loads(json.dumps(case['steps']))
+        for index, call in enumerate(case['calls']):
+            # the plan is rebuilt from the working steps on every call, exactly as execute() does
+            # — PHP copies arrays on assignment, so a plan built once outside this loop would mean
+            # five ports running five different tests
+            plan = {'steps': steps, 'reconcileToleranceRatio': case['reconcileToleranceRatio']}
+            reconciliation = router.reconcile_execution_step(plan, call['stepIndex'], call['realisedOut'])
+            assert numbers_match(reconciliation['scale'], case['expectedScales'][index]), \
+                'reconcileSequenceCase ' + case['id'] + ' call ' + str(index) + ': scale ' + str(reconciliation['scale'])
+            router.apply_resize(steps, reconciliation)
+        for index, step in enumerate(steps):
+            assert numbers_match(step['amount'], case['expectedAmounts'][index]), \
+                'reconcileSequenceCase ' + case['id'] + ' step ' + str(index) + ': amount ' + str(step['amount'])
+
+
 @test('fixture: number_at reads one number grammar in all five languages')
 def test_fixture_number_at():
     # Every port hand-implements JavaScript's parseFloat prefix grammar rather

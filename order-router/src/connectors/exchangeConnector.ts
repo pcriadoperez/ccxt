@@ -153,18 +153,68 @@ function jittered (ms: number): number {
 // the venue does not list. Retrying them is not resilience, it is a busy loop — one such exchange
 // generated 22M log lines and ~930MB of disk while burning CPU that working venues needed. These
 // must be detected and abandoned, not backed off.
+//
+// The classification is asymmetric on purpose. Retrying a permanent failure wastes CPU; calling a
+// TRANSIENT failure permanent silently and irreversibly removes a venue from routing for the
+// lifetime of the process. So the default is retry, and only evidence strong enough to be sure
+// buys an abandonment.
+//
+// Message text is not that evidence. These four all matched the old patterns and are all
+// recoverable — measured against the patterns as they were:
+//
+//   binance {"code":-1021,"msg":"Timestamp for this request is invalid."}   (clock drift)
+//   okx {"code":"50113","msg":"Invalid Sign"} signature is invalid          (clock drift)
+//   kraken EAPI:Invalid nonce - the nonce is invalid, retry                 (nonce race)
+//   bybit authentication in progress, please retry                          (handshake)
+//
+// ccxt already answers the question structurally, so ask it that way instead. Everything under
+// NetworkError/OperationFailed — RequestTimeout, ExchangeNotAvailable, OnMaintenance,
+// RateLimitExceeded and, importantly, InvalidNonce — is by definition retryable. The message
+// patterns survive only as a fallback for errors thrown before ccxt wraps them, and no longer
+// carry the two that produced every false positive above (/authentication/ and /is invalid/).
 const PERMANENT_ERROR_PATTERNS = [
     /requires .*credential/i,
     /requires .*apiKey/i,
     /apiKey.*required/i,
-    /authentication/i,
     /not supported/i,
     /does not have/i,
-    /is invalid/i,
 ];
 
-export function isPermanentError (message: string): boolean {
+export function isPermanentError (err: unknown): boolean {
+    // A ccxt error classifies itself. NetworkError is checked FIRST because InvalidNonce lives
+    // under it while reading, in text, exactly like an authentication failure.
+    if (err instanceof ccxt.NetworkError || err instanceof ccxt.OperationFailed) {
+        return false;
+    }
+    if (err instanceof ccxt.NotSupported
+        || err instanceof ccxt.BadSymbol
+        || err instanceof ccxt.ArgumentsRequired
+        || err instanceof ccxt.AuthenticationError) {
+        return true;
+    }
+    if (err instanceof ccxt.BaseError) {
+        // A plain ExchangeError or BadRequest is not proof of anything permanent; retry it.
+        return false;
+    }
+    const message = err instanceof Error ? err.message : String(err);
     return PERMANENT_ERROR_PATTERNS.some((re) => re.test(message));
+}
+
+// A venue that will not serve the requested depth is rejecting the LIMIT, not the subscription.
+// ccxt reports that as NotSupported or a BadRequest naming the limit — both of which the
+// permanent-error rules above would otherwise read as "abandon this venue forever". Dropping the
+// limit and carrying on unlimited costs bandwidth; abandoning costs the venue.
+const LIMIT_REJECTION_PATTERNS = [
+    /limit/i,
+    /depth/i,
+];
+
+export function isLimitRejection (err: unknown, limit: number | undefined): boolean {
+    if (limit === undefined) return false;
+    if (err instanceof ccxt.NotSupported) return true;
+    if (!(err instanceof ccxt.BadRequest) && !(err instanceof ccxt.ArgumentsRequired)) return false;
+    const message = err instanceof Error ? err.message : String(err);
+    return LIMIT_REJECTION_PATTERNS.some((re) => re.test(message));
 }
 
 // One connector owns exactly one exchange's WS connection(s) and one or more
@@ -182,6 +232,19 @@ export class ExchangeConnector {
     private maxSymbolsForExchange: number | undefined;
     // Levels kept per side before a book crosses the IPC boundary. See applyOrderBook.
     private maxDepth: number;
+    // Depth asked of the VENUE, as opposed to maxDepth which is what is kept after the book
+    // arrives. Truncating on arrival fixed the memory blow-up but not the bandwidth: the venue
+    // still streams every level, ccxt still parses and holds them, and 90+% of that work is
+    // discarded a moment later. Where a venue offers a depth-limited channel (binance @depth20,
+    // okx books5) ccxt selects it from this argument, so the levels are never sent at all.
+    //
+    // Undefined once a venue has told us it will not take a limit — see limitRejected.
+    private watchLimit: number | undefined;
+    // Latched when a venue rejects the limit itself rather than the subscription. Retrying the
+    // same rejected limit forever would be a busy loop, and treating it as permanent would
+    // abandon a venue over a bandwidth preference; so the limit is dropped once, for this venue,
+    // and the loop carries on unlimited.
+    private limitRejected = false;
     private lastResyncAt = 0;
     private resyncBackoffMs = RESYNC_MIN_INTERVAL_MS;
     private resyncTimer: NodeJS.Timeout | undefined;
@@ -204,6 +267,7 @@ export class ExchangeConnector {
         this.maxSymbolsPerSubscription = maxSymbolsPerSubscription;
         this.maxSymbolsForExchange = maxSymbolsForExchange;
         this.maxDepth = maxDepth;
+        this.watchLimit = maxDepth;
         if (existingExchange) {
             this.exchange = existingExchange;
         } else {
@@ -287,6 +351,18 @@ export class ExchangeConnector {
                 void sleep(i * LOOP_START_STAGGER_MS).then(() => this.singleSymbolWatchLoop(symbol));
             });
         }
+    }
+
+    // Returns true when the failure was the venue refusing the depth limit rather than the
+    // subscription, in which case the limit is dropped for this venue and the caller retries
+    // immediately — with no backoff, because nothing was actually wrong with the connection.
+    private dropLimitIfRejected (err: unknown, message: string): boolean {
+        if (this.limitRejected || !isLimitRejection(err, this.watchLimit)) return false;
+        this.limitRejected = true;
+        this.watchLimit = undefined;
+        this.logger.warn({ err: message, droppedLimit: this.maxDepth },
+            'venue refused the depth limit, resubscribing without one (books are still truncated on arrival)');
+        return true;
     }
 
     // Books are truncated HERE, before they cross the IPC boundary, and this is the single most
@@ -374,7 +450,7 @@ export class ExchangeConnector {
         while (!this.stopped) {
             try {
                 for (const c of Object.values(this.exchange.clients ?? {})) seen.add(c);
-                const ob = await this.exchange.watchOrderBookForSymbols(symbols);
+                const ob = await this.exchange.watchOrderBookForSymbols(symbols, this.watchLimit);
                 sequence += 1;
                 if (ob.symbol) {
                     this.applyOrderBook(ob.symbol, ob, sequence);
@@ -382,10 +458,12 @@ export class ExchangeConnector {
                 backoff = BACKOFF_START_MS;
             } catch (err) {
                 const message = err instanceof Error ? err.message : String(err);
-                if (isPermanentError(message)) {
-                    this.logger.error({ err: message, symbolCount: symbols.length },
+                if (this.dropLimitIfRejected(err, message)) continue;
+                if (isPermanentError(err)) {
+                    this.logger.error({ err: message, symbolCount: symbols.length, symbols },
                         'permanent failure, abandoning this subscription (will not retry)');
                     this.cache.recordError(this.exchangeId, message);
+                    this.cache.recordAbandoned(this.exchangeId, symbols, message);
                     return;
                 }
                 this.logger.error({ err: message }, 'watchOrderBookForSymbols failed, backing off');
@@ -405,16 +483,18 @@ export class ExchangeConnector {
         while (!this.stopped) {
             try {
                 for (const c of Object.values(this.exchange.clients ?? {})) seenPerSymbol.add(c);
-                const ob = await this.exchange.watchOrderBook(symbol);
+                const ob = await this.exchange.watchOrderBook(symbol, this.watchLimit);
                 sequence += 1;
                 this.applyOrderBook(symbol, ob, sequence);
                 backoff = BACKOFF_START_MS;
             } catch (err) {
                 const message = err instanceof Error ? err.message : String(err);
-                if (isPermanentError(message)) {
+                if (this.dropLimitIfRejected(err, message)) continue;
+                if (isPermanentError(err)) {
                     this.logger.error({ symbol, err: message },
                         'permanent failure, abandoning this subscription (will not retry)');
                     this.cache.recordError(this.exchangeId, message);
+                    this.cache.recordAbandoned(this.exchangeId, [ symbol ], message);
                     return;
                 }
                 this.logger.error({ symbol, err: message }, 'watchOrderBook failed, backing off');

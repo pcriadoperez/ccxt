@@ -7,11 +7,14 @@ import type { ApiKeyRecord, ApiKeyStore } from './keyStore.js';
 // and suppressed the moment a real key file row or ORDER_ROUTER_API_KEY exists.
 export const DEV_API_KEY = 'dev-local-key-change-me';
 
-// Paths served without authentication. Only liveness: orchestrators (k8s, ECS, compose
-// healthchecks) probe this before any credential is injectable, and it exposes nothing but
-// process uptime. Everything else — including /exchanges/status, which leaks the venue list —
-// requires a key.
-const PUBLIC_PATHS = new Set(['/health']);
+// Paths served without authentication. Only liveness and readiness: orchestrators (k8s, ECS,
+// compose healthchecks) probe these before any credential is injectable, and they expose nothing
+// but process uptime and a boolean. Everything else — including /exchanges/status, which leaks
+// the venue list — requires a key.
+//
+// /ready deliberately reports COUNTS and no venue names. "142 books, 3 of them stale" tells an
+// orchestrator everything it needs and an attacker nothing about which venues are carried.
+const PUBLIC_PATHS = new Set(['/health', '/ready']);
 
 export function isPublicPath (url: string): boolean {
     // Strip query string before matching so `/health?x=1` can't be used to smuggle a path, and

@@ -1917,6 +1917,38 @@
             }
         }
     ],
+    "reconcileSequenceCases": [
+        {
+            "id": "two_legs_of_one_hop_combine_their_shortfalls",
+            "about": "Each leg used to compute a scale from the hop total and multiply the downstream amounts by it, so the second leg scaled an already-scaled number: 0.9 x 0.8 = 0.72 of the hop instead of the true 0.70, sizing the next hop at 144 when only 140 had arrived. Over-sizing the next hop is not a rounding nuisance — it is a guaranteed insufficient-funds halt on exactly the bridged routes this class exists for. reconcileExecutionStep is pure and cannot remember across calls, so the hop's cumulative shortfall lives on the steps themselves, written by applyResize; that is why this case can only be expressed as a SEQUENCE. The tolerance is 1 so the shortfalls resize rather than halt.",
+            "reconcileToleranceRatio": 1,
+            "steps": [
+                { "stepIndex": 0, "hopIndex": 0, "legIndex": 0, "amount": 1, "expectedPrice": 100, "side": "sell", "base": "BTC", "quote": "USDT" },
+                { "stepIndex": 1, "hopIndex": 0, "legIndex": 1, "amount": 1, "expectedPrice": 100, "side": "sell", "base": "BTC", "quote": "USDT" },
+                { "stepIndex": 2, "hopIndex": 1, "legIndex": 0, "amount": 200, "expectedPrice": 1, "side": "buy", "base": "ETH", "quote": "USDT" }
+            ],
+            "calls": [
+                { "stepIndex": 0, "realisedOut": 80 },
+                { "stepIndex": 1, "realisedOut": 60 }
+            ],
+            "expectedScales": [ 0.9, 0.7777777777777778 ],
+            "expectedAmounts": [ 1, 1, 140 ]
+        },
+        {
+            "id": "a_single_leg_hop_reconciles_exactly_as_before",
+            "about": "The combined-scale change must be arithmetically inert when there is nothing to combine, which is every case the rest of this fixture covers: with one leg per hop priorShortfall is 0 and scaleBefore is 1.",
+            "reconcileToleranceRatio": 1,
+            "steps": [
+                { "stepIndex": 0, "hopIndex": 0, "legIndex": 0, "amount": 1, "expectedPrice": 100, "side": "sell", "base": "BTC", "quote": "USDT" },
+                { "stepIndex": 1, "hopIndex": 1, "legIndex": 0, "amount": 100, "expectedPrice": 1, "side": "buy", "base": "ETH", "quote": "USDT" }
+            ],
+            "calls": [
+                { "stepIndex": 0, "realisedOut": 50 }
+            ],
+            "expectedScales": [ 0.5 ],
+            "expectedAmounts": [ 1, 50 ]
+        }
+    ],
     "unwindCases": [
         {
             "id": "stranded_bridge_asset_goes_home",
