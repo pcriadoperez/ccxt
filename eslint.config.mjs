@@ -327,6 +327,28 @@ export default [
         },
     },
     {
+        files: ['migrate/ts/**/*.ts'],
+        languageOptions: sharedLanguageOptions,
+        plugins: sharedPlugins,
+        settings: sharedSettings,
+        rules: {
+            ...mainRulesWithoutJsdoc,
+            // migrate/ is a standalone Node package, never fed through the
+            // transpilers, so the formatting rules that exist purely to keep
+            // build/transpile.ts happy don't apply. Same posture as cli/ts.
+            'no-console': 'off',
+            'no-use-before-define': 'off',
+            'lines-between-class-members': 'error',
+            'padding-line-between-statements': ['error',
+                { 'blankLine': 'always', 'prev': 'import', 'next': '*' },
+                { 'blankLine': 'never', 'prev': 'import', 'next': 'import' },
+                { 'blankLine': 'always', 'prev': 'directive', 'next': '*' },
+                { 'blankLine': 'always', 'prev': '*', 'next': 'export' },
+                { 'blankLine': 'any', 'prev': 'export', 'next': 'export' },
+            ],
+        },
+    },
+    {
         files: ['examples/ts/**/*.ts'],
         languageOptions: sharedLanguageOptions,
         plugins: sharedPlugins,

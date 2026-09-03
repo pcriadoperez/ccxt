@@ -1,0 +1,45 @@
+{
+  "name": "ccxt-migrate",
+  "version": "1.0.0",
+  "description": "Codemod and AI-agent handoff for migrating a project from pmxt to CCXT",
+  "main": "./js/migrate.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "test": "node --test test/run.mjs",
+    "publishPackage": "npm run build && npm publish"
+  },
+  "bin": {
+    "ccxt-migrate": "js/migrate.js"
+  },
+  "files": [
+    "js",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "author": "CCXT",
+  "license": "MIT",
+  "keywords": [
+    "ccxt",
+    "pmxt",
+    "codemod",
+    "migration",
+    "crypto",
+    "exchange"
+  ],
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.4.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ccxt/ccxt.git",
+    "directory": "migrate"
+  },
+  "bugs": {
+    "url": "https://github.com/ccxt/ccxt/issues"
+  },
+  "homepage": "https://github.com/ccxt/ccxt/blob/master/wiki/Migrate-From-PMXT.md"
+}

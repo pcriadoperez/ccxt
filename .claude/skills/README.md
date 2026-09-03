@@ -82,6 +82,18 @@ Command-line interface skill covering:
 
 **Invoke with:** `/ccxt-cli`
 
+### 8. ccxt-migrate
+Migration skill covering:
+- Moving a `pmxtjs` / `pmxt` project onto CCXT, in TypeScript/JavaScript or Python
+- The `npx ccxt-migrate` codemod and how to read its report
+- Venue coverage: which pmxt venues CCXT does and does not integrate
+- Method, argument-order and error-class mapping
+- Response-shape differences (order-book arrays, OHLCV rows, balance dicts)
+- Rewriting pmxt subscriptions into the CCXT Pro await-in-a-loop pattern
+- Safe verification — public endpoints first, never a live order
+
+**Invoke with:** `/ccxt-migrate`
+
 ## Common Features Across All Skills
 
 Each skill includes:
@@ -144,6 +156,7 @@ Once installed, you can invoke skills in Claude Code or OpenCode:
 /ccxt-go
 /ccxt-java
 /ccxt-cli
+/ccxt-migrate
 ```
 
 Or simply ask questions:
@@ -151,6 +164,7 @@ Or simply ask questions:
 - "Show me how to fetch a ticker in TypeScript"
 - "How do I create a limit order in PHP?"
 - "How do I watch live orderbook updates in Go?"
+- "Migrate this pmxt bot to CCXT"
 
 ## Example Code Structure
 
