@@ -145,8 +145,12 @@ impl OrderRouter {
     /// Reports whether a double is a real number, i.e. neither NaN nor an
     /// infinity.
     pub fn is_finite_number(value: f64) -> bool {
-        // The one NaN test that needs no library in any of the six.
-        if value != value {
+        // DIVERGENCE, and the only one in this method. The other five ports
+        // write `value !== value`, which their comment calls "the one NaN test
+        // that needs no library" — in Rust that is clippy::eq_op, denied by
+        // default, and CI compiles with it fatal. `is_nan()` is the identical
+        // predicate; only the spelling differs.
+        if value.is_nan() {
             return false;
         }
         if value > 1.7976931348623157e308 || value < -1.7976931348623157e308 {
@@ -1175,5 +1179,183 @@ impl OrderRouter {
         entry.insert("amount".into(), Value::Float(amount));
         entry.insert("reason".into(), Value::Str(reason.to_string()));
         Value::Map(entry)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// I/O: the router HTTP client
+// ---------------------------------------------------------------------------
+
+/// The query keys forwarded to GET /route, in a fixed order so that two ports
+/// build a byte-identical URL.
+const ROUTE_QUERY_KEYS: [&str; 14] = [
+    "amountIn", "amountOut", "strategy", "maxVenues", "bridges", "exchanges", "balances",
+    "balanceMode", "includeQuotes", "includeFees", "certified", "requireFullFill",
+    "hopPenaltyBps", "minLegNotional",
+];
+
+impl OrderRouter {
+    /// Percent-encodes exactly what JavaScript's `encodeURIComponent` leaves
+    /// alone, so six ports produce the same URL byte for byte.
+    ///
+    /// Deliberately not `urlencoding::encode`: that is `application/x-www-form-
+    /// urlencoded`, which escapes `!`, `'`, `(`, `)`, `*` and renders a space as
+    /// `+`. `encodeURIComponent` does neither. A route whose bridge list or
+    /// balances string contains any of those would sign a different URL here
+    /// than in the other five.
+    fn encode_uri_component(text: &str) -> String {
+        let mut out = String::with_capacity(text.len());
+        for byte in text.as_bytes() {
+            let c = *byte;
+            let unreserved = c.is_ascii_alphanumeric()
+                || matches!(c, b'-' | b'_' | b'.' | b'!' | b'~' | b'*' | b'\'' | b'(' | b')');
+            if unreserved {
+                out.push(c as char);
+            } else {
+                out.push_str(&format!("%{:02X}", c));
+            }
+        }
+        out
+    }
+
+    /// Renders one query parameter's value the way the other five ports do.
+    fn query_text(&self, value: &Value) -> RouterResult<String> {
+        Ok(match value {
+            Value::Bool(flag) => (if *flag { "true" } else { "false" }).to_string(),
+            Value::Int(n) => self.format_number(*n as f64)?,
+            Value::Float(n) => self.format_number(*n)?,
+            Value::Arr(items) => items
+                .iter()
+                .map(|item| match item {
+                    Value::Str(s) => s.clone(),
+                    other => format!("{other:?}"),
+                })
+                .collect::<Vec<String>>()
+                .join(","),
+            Value::Str(s) => s.clone(),
+            other => format!("{other:?}"),
+        })
+    }
+
+    /// Builds the fully-formed `/route` url, including the query string.
+    ///
+    /// Split out from `fetch_route` so the URL construction — the part that has
+    /// to be byte-identical across six languages — is testable without a
+    /// network.
+    pub fn build_route_url(
+        &self,
+        from_asset: &str,
+        to_asset: &str,
+        params: &Value,
+    ) -> RouterResult<String> {
+        if from_asset.is_empty() || to_asset.is_empty() {
+            return Err(arguments_required("fetchRoute requires fromAsset and toAsset"));
+        }
+        let has_amount_in = field(params, "amountIn").is_some();
+        let has_amount_out = field(params, "amountOut").is_some();
+        if has_amount_in == has_amount_out {
+            // Refused client-side for the same reason the router refuses it: a
+            // typo must not become a confidently wrong route.
+            return Err(bad_request("fetchRoute requires exactly one of amountIn or amountOut"));
+        }
+        let mut query = format!(
+            "from={}&to={}",
+            Self::encode_uri_component(&from_asset.to_uppercase()),
+            Self::encode_uri_component(&to_asset.to_uppercase())
+        );
+        for key in ROUTE_QUERY_KEYS.iter() {
+            let value = match field(params, key) {
+                Some(found) => found,
+                None => continue,
+            };
+            let text = self.query_text(value)?;
+            query.push('&');
+            query.push_str(key);
+            query.push('=');
+            query.push_str(&Self::encode_uri_component(&text));
+        }
+        Ok(format!("{}/route?{}", self.base_url, query))
+    }
+
+    /// Asks the router how to convert one asset into another, over the venues
+    /// and bridges it has live books for.
+    ///
+    /// An unroutable pair comes back as a RouteResult carrying an
+    /// `unroutableReason`, NOT as an error: refusing to quote is a deliberate
+    /// outcome, not a failure.
+    pub async fn fetch_route(
+        &self,
+        from_asset: &str,
+        to_asset: &str,
+        params: &Value,
+    ) -> RouterResult<Value> {
+        let url = self.build_route_url(from_asset, to_asset, params)?;
+        let mut route = self.request(&url).await?;
+        // Stamp what THIS CLIENT asked for, client-side, so build_execution_plan
+        // can check the answer against the question. Everything else in the
+        // response — from, to, pair, side — is the server's word for it, and the
+        // plan used to trust all of it: a compromised or simply buggy router
+        // could name any real market and the safety checks, which only test
+        // internal consistency against that market, would pass it under the
+        // 25 USD cap.
+        Self::put(&mut route, "clientRequestedFrom", Value::Str(from_asset.to_uppercase()));
+        Self::put(&mut route, "clientRequestedTo", Value::Str(to_asset.to_uppercase()));
+        Ok(route)
+    }
+
+    /// Performs the authenticated GET and maps router status codes onto ccxt
+    /// error kinds.
+    pub async fn request(&self, url: &str) -> RouterResult<Value> {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(self.timeout_ms.max(0.0) as u64))
+            .build()
+            .map_err(|e| ExchangeError::new("ExchangeNotAvailable", format!("OrderRouter could not build an http client: {e}")))?;
+        let response = client
+            .get(url)
+            .header("x-api-key", &self.api_key)
+            .header("Accept", "application/json")
+            .send()
+            .await;
+        let response = match response {
+            Ok(found) => found,
+            Err(e) => {
+                if e.is_timeout() {
+                    return Err(ExchangeError::new(
+                        "RequestTimeout",
+                        format!("OrderRouter request timed out after {}ms", self.timeout_ms),
+                    ));
+                }
+                return Err(ExchangeError::new(
+                    "ExchangeNotAvailable",
+                    format!("OrderRouter request failed: {e}"),
+                ));
+            }
+        };
+        let status = response.status().as_u16();
+        let text = response.text().await.map_err(|e| {
+            ExchangeError::new("ExchangeNotAvailable", format!("OrderRouter request failed: {e}"))
+        })?;
+        let parsed: serde_json::Value = serde_json::from_str(&text)
+            .map_err(|_| exchange_error("OrderRouter returned a non-JSON body"))?;
+        let body = Value::from_json(&parsed);
+        if (200..300).contains(&status) {
+            return Ok(body);
+        }
+        // 404 and 501 carry a complete RouteResult explaining the refusal —
+        // `no_market` and `exact_out_multi_hop_unsupported` are routing
+        // outcomes, and turning them into errors would make the caller parse an
+        // error string to recover a structure it already has.
+        if (status == 404 || status == 501) && !self.string_at(&body, "unroutableReason", "").is_empty() {
+            return Ok(body);
+        }
+        let message = self.string_at(&body, "error", &format!("http status {status}"));
+        let kind = match status {
+            400 => "BadRequest",
+            401 | 403 => "AuthenticationError",
+            429 => "RateLimitExceeded",
+            408 | 504 => "RequestTimeout",
+            _ => "ExchangeError",
+        };
+        Err(ExchangeError::new(kind, format!("OrderRouter: {message}")))
     }
 }

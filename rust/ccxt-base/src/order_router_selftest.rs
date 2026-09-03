@@ -537,6 +537,80 @@ fn format_number_never_uses_exponents(r: &OrderRouter) -> Result<(), String> {
     Ok(())
 }
 
+
+fn route_url_is_deterministic(r: &OrderRouter) -> Result<(), String> {
+    // The URL has to be byte-identical in six languages: the query keys go out
+    // in a fixed order, numbers go through format_number rather than the
+    // language's own float printer, and the escaping is encodeURIComponent's
+    // rather than form-urlencoded's. This is the same assertion the TypeScript
+    // suite makes, against the same expected string.
+    let mut config = HashMap::new();
+    config.insert("apiKey".to_string(), Value::Str("k".to_string()));
+    config.insert("baseUrl".to_string(), Value::Str("https://example.test/api/".to_string()));
+    let client = OrderRouter::new(&Value::Map(config)).map_err(|e| e.to_string())?;
+    let mut params = HashMap::new();
+    params.insert("amountIn".to_string(), Value::Float(0.001));
+    params.insert("strategy".to_string(), Value::Str("split_capped".to_string()));
+    params.insert("maxVenues".to_string(), Value::Int(3));
+    params.insert(
+        "exchanges".to_string(),
+        Value::List(vec![Value::Str("binance".into()), Value::Str("kraken".into())]),
+    );
+    params.insert("certified".to_string(), Value::Bool(true));
+    let url = client
+        .build_route_url("usdt", "btc", &Value::Map(params))
+        .map_err(|e| e.to_string())?;
+    let expected = "https://example.test/api/route?from=USDT&to=BTC&amountIn=0.001&strategy=split_capped&maxVenues=3&exchanges=binance%2Ckraken&certified=true";
+    if url != expected {
+        return Err(format!("expected\n  {expected}\ngot\n  {url}"));
+    }
+    // Exactly one of amountIn / amountOut — neither and both are both refused,
+    // client-side, because a typo must not become a confidently wrong route.
+    let empty = Value::Map(HashMap::new());
+    if r.build_route_url("USDT", "BTC", &empty).is_ok() {
+        return Err("neither amountIn nor amountOut is refused".to_string());
+    }
+    let mut both = HashMap::new();
+    both.insert("amountIn".to_string(), Value::Float(1.0));
+    both.insert("amountOut".to_string(), Value::Float(1.0));
+    if r.build_route_url("USDT", "BTC", &Value::Map(both)).is_ok() {
+        return Err("both amountIn and amountOut is refused".to_string());
+    }
+    let mut one = HashMap::new();
+    one.insert("amountIn".to_string(), Value::Float(1.0));
+    if r.build_route_url("", "BTC", &Value::Map(one)).is_ok() {
+        return Err("an empty fromAsset is refused".to_string());
+    }
+    Ok(())
+}
+
+fn encode_uri_component_matches_javascript(r: &OrderRouter) -> Result<(), String> {
+    // encodeURIComponent leaves !'()* alone and escapes a space as %20;
+    // form-urlencoded escapes the former and renders a space as +. A balances
+    // string or bridge list containing any of them would otherwise produce a
+    // different URL here than in the other five ports.
+    let mut params = HashMap::new();
+    params.insert("amountIn".to_string(), Value::Float(1.0));
+    params.insert("bridges".to_string(), Value::Str("a!b'c(d)e*f g".to_string()));
+    let url = r
+        .build_route_url("USDT", "BTC", &Value::Map(params))
+        .map_err(|e| e.to_string())?;
+    if !url.contains("bridges=a!b'c(d)e*f%20g") {
+        return Err(format!("encodeURIComponent semantics, got {url}"));
+    }
+    // And a colon IS escaped, which is what balances entries depend on.
+    let mut params = HashMap::new();
+    params.insert("amountIn".to_string(), Value::Float(1.0));
+    params.insert("balances".to_string(), Value::Str("stub.USDT:1000".to_string()));
+    let url = r
+        .build_route_url("USDT", "BTC", &Value::Map(params))
+        .map_err(|e| e.to_string())?;
+    if !url.contains("balances=stub.USDT%3A1000") {
+        return Err(format!("a colon is escaped, got {url}"));
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // entry point
 // ---------------------------------------------------------------------------
@@ -560,6 +634,8 @@ pub fn run() -> Result<usize, String> {
         ("USDT is not assumed to be one dollar", Box::new(|| usdt_is_not_a_dollar(&router()?))),
         ("a route that does not match the question asked is refused", Box::new(|| refuses_incoherent_routes(&router()?))),
         ("formatNumber never emits exponent notation", Box::new(|| format_number_never_uses_exponents(&router()?))),
+        ("fetchRoute builds a deterministic query", Box::new(|| route_url_is_deterministic(&router()?))),
+        ("the query escaping is encodeURIComponent's, not form-urlencoded's", Box::new(|| encode_uri_component_matches_javascript(&router()?))),
     ];
     let _ = (&f, &r);
     for (name, check) in checks {
