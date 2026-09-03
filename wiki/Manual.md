@@ -8494,6 +8494,143 @@ ex.Number = "String" // "String" | "Number"
 <!-- tabs:end -->
 
 
+# Order Router
+
+`OrderRouter` is a client for the CCXT order-router service — a separate process that holds live
+order books across many venues and answers one question: *what is the cheapest way to turn asset A
+into asset B right now?* The answer accounts for book depth, fees, and bridges (`SOL -> USDT ->
+BTC` when no `SOL/BTC` market exists).
+
+It is not an exchange. It does not extend `Exchange`, has no unified methods, and is constructed
+directly:
+
+<!-- tabs:start -->
+#### **Javascript**
+```javascript
+const router = new ccxt.OrderRouter ({ 'apiKey': process.env.ORDER_ROUTER_API_KEY });
+const route = await router.fetchRoute ('USDT', 'BTC', { 'amountIn': 1000 });
+console.log (route['effectiveRate'], route['impactBps'], route['fillRatio']);
+```
+#### **Python**
+```python
+router = ccxt.OrderRouter({'apiKey': os.environ['ORDER_ROUTER_API_KEY']})
+route = router.fetch_route('USDT', 'BTC', {'amountIn': 1000})
+print(route['effectiveRate'], route['impactBps'], route['fillRatio'])
+```
+#### **PHP**
+```php
+$router = new \ccxt\OrderRouter(array('apiKey' => getenv('ORDER_ROUTER_API_KEY')));
+$route = $router->fetchRoute('USDT', 'BTC', array('amountIn' => 1000));
+echo $route['effectiveRate'], ' ', $route['impactBps'], ' ', $route['fillRatio'];
+```
+#### **C#**
+```csharp
+var router = new ccxt.OrderRouter(new dict() { { "apiKey", apiKey } });
+var route = await router.FetchRoute("USDT", "BTC", new dict() { { "amountIn", 1000 } });
+```
+#### **Go**
+```go
+router, err := ccxt.NewOrderRouter(map[string]any{"apiKey": apiKey})
+route, err := router.FetchRoute("USDT", "BTC", map[string]any{"amountIn": 1000.0})
+```
+<!-- tabs:end -->
+
+## The pipeline
+
+Routing and executing are separate steps on purpose. Every step between the route and the orders
+is **pure** — no I/O, and the same input produces the same output in all five languages — so a
+plan can be inspected, logged, diffed and tested before anything is placed.
+
+| Method | I/O | What it does |
+|---|---|---|
+| `fetchRoute (from, to, params)` | HTTP | asks the router for a route. Exactly one of `params.amountIn` / `params.amountOut`. |
+| `fetchRouteWithBalances (from, to, venues, params)` | HTTP + venues | reads live balances from the supplied exchange instances first, so the route is one you can actually fund |
+| `buildExecutionPlan (route, options)` | none | flattens hops and legs into an ordered list of concrete orders |
+| `checkExecutionPlanSafety (plan, markets, options)` | none | checks each step against per-venue market rules and the hard per-trade USD notional cap |
+| `execute (plan, venues, options)` | **places orders** | the only impure method |
+| `reconcileExecutionStep (plan, i, realisedOut)` | none | compares what a step produced against what the route predicted; resizes downstream hops, or halts |
+| `buildUnwindPlan (report)` | none | for a halted run, the reverse orders that sell each stranded residual back toward the from-asset |
+
+## Executing
+
+`execute` defaults to `dry_run`, and **`options.live !== true` forces `dry_run` regardless of the
+strategy requested** — a call that looks live but forgot the flag places nothing.
+
+```javascript
+const plan = router.buildExecutionPlan (route, {});
+const violations = router.checkExecutionPlanSafety (plan, markets, {});
+if (violations.length === 0) {
+    const report = await router.execute (plan, { 'binance': binance, 'kraken': kraken }, {
+        'strategy': 'sequential',
+        'live': true,
+        'usdRates': { 'USDT': 1 },
+    });
+}
+```
+
+### Strategies
+
+| Strategy | Behaviour |
+|---|---|
+| `dry_run` | the default; places nothing and returns the report it would have produced |
+| `sequential` | one order at a time in plan order, reconciling after each and obeying the halt verdict |
+| `parallel_within_hop` | the legs of a hop concurrently, the hops strictly in order |
+| `atomic_ish` | sequential, but requires the whole route pre-funded so a hop's shortfall does not resize the next |
+| `best_effort` | places what it can and never halts; single-hop only, and demands explicit acknowledgements |
+
+`parallel_within_hop` guarantees **concurrent across venues, serialised within a venue**. That is
+an ordering guarantee, not a performance promise — it is what lets five very different runtimes
+honour the same words. Two legs of one hop that land on the same exchange instance never have two
+orders in flight against that instance's throttle and nonce state.
+
+### The 25 USD cap
+
+`checkExecutionPlanSafety` and `execute` both enforce a hard per-trade notional cap, and the
+notional is recomputed immediately before **every** `createOrder` — the plan-level check already
+ran, but a reconciliation may have resized the plan since, and the snapped price is not the one
+that was checked.
+
+A step that cannot be valued in USD **blocks**. It is never skipped: a cap that silently
+disappears when a rate is missing is not a cap. Supply `options.usdRates` for every quote asset in
+the plan.
+
+`maxNotionalUsd` may be lowered in the constructor, never raised.
+
+## Reading the report
+
+`execute` returns a report whose `steps[]` mirrors the plan. Three fields deserve attention:
+
+- **`status: 'outcome_unknown'`** — the request may or may not have reached the venue (a timeout,
+  or the venue being unavailable), so whether an order exists is genuinely unknown. Execution halts
+  with `haltReason: 'outcome_unknown'` rather than reconciling, because reconciling would read
+  `outAmount` as 0 and report `nothing_filled` — asserting the one thing nobody knows. Check
+  `openOrders` and the venue before retrying.
+- **`placementAttempted`** — false until an order was actually dispatched. A failure before
+  dispatch cannot have left anything resting.
+- **`outAmount` vs `grossOutAmount`** — `filled` and `cost` are gross of fees. When the venue took
+  its cut in the asset the step *produced*, `outAmount` is net of it and `grossOutAmount` carries
+  the original; the next hop is sized on the net figure, because that is what actually arrived.
+
+## What the client refuses
+
+The router's answer is checked against the client's own record of the question. `fetchRoute` stamps
+what you asked for onto the route, and `buildExecutionPlan` throws when:
+
+- the route does not run from the asset you offered to the asset you wanted, or
+- a hop does not spend exactly what the previous hop produced.
+
+Without that check, a compromised — or simply buggy — router response could steer real orders into
+any real market, and every safety check would pass it.
+
+## Unwinding
+
+When a run halts partway through a bridged route, capital is stranded in the bridge asset.
+`buildUnwindPlan (report)` computes the reverse orders that sell each residual back toward the
+original from-asset, on the venue that actually holds it.
+
+It is **never automatic**. The result carries `requiresConfirmation`, and nothing in this class
+executes it — unwinding is a second set of real trades, and that decision belongs to a human.
+
 # Resource clean-up
 
 When your script finishes its work with any exchange, you are advised to clean-up the resources:

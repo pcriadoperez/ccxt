@@ -956,6 +956,58 @@ Async\await($exchange->cancel_order($order['id'], $handle));
 - Price/trade methods (`fetch_ticker`, `fetch_order_book`, `fetch_ohlcv`, `fetch_trades`, `create_order`, `cancel_order`, …) take an **outcome handle or outcomeId** (the `outcome` / `outcomes` parameter), not `symbol`.
 - Check support with `$exchange->has['prediction']`; discover markets via `fetch_events` / `fetch_event` (or `load_markets`).
 
+## Order Router
+
+A client for the CCXT order-router service — a separate process holding live books across many
+venues, which answers "what is the cheapest way to turn asset A into asset B right now?", including
+bridges (`SOL -> USDT -> BTC` when no `SOL/BTC` market exists). It is **not** an exchange: it does
+not extend `Exchange`, has no unified methods, and is constructed directly.
+
+```php
+$router = new \ccxt\OrderRouter(array('apiKey' => getenv('ORDER_ROUTER_API_KEY')));
+
+// exactly one of amountIn / amountOut
+$route = $router->fetchRoute('USDT', 'BTC', array('amountIn' => 1000));
+echo $route['effectiveRate'], ' ', $route['impactBps'], ' ', $route['fillRatio'], "\n";
+
+// routing and executing are separate steps; everything between is PURE (no I/O)
+$plan = $router->buildExecutionPlan($route, array());
+$violations = $router->checkExecutionPlanSafety($plan, $markets, array());
+if (count($violations) === 0) {
+    $report = $router->execute($plan, array('binance' => $binance, 'kraken' => $kraken), array(
+        'strategy' => 'sequential',
+        'live' => true,
+        'usdRates' => array('USDT' => 1),
+    ));
+}
+```
+
+**This client is synchronous.** It refuses `ccxt\async\` and `ccxt\pro\` exchange instances
+rather than silently mis-reading a promise as an order — pass plain `ccxt\<id>` instances.
+
+`execute` defaults to `dry_run`, and **anything other than an explicit live flag forces `dry_run`
+regardless of the strategy requested** — a call that looks live but forgot the flag places nothing.
+
+Strategies: `dry_run` (default), `sequential`, `parallel_within_hop` (concurrent across venues,
+serialised within a venue), `atomic_ish` (requires the route pre-funded), `best_effort`
+(single-hop, never halts).
+
+A hard per-trade USD notional cap is enforced immediately before **every** order — not just at
+plan time, because a reconciliation may have resized the plan since. A step that cannot be valued
+in USD **blocks**; supply a USD rate for every quote asset in the plan. The cap may be lowered in
+the constructor, never raised.
+
+In the report, `status: 'outcome_unknown'` means the request may or may not have reached the venue
+— execution halts rather than reconciling, because reconciling would read the fill as 0 and report
+"nothing filled", asserting the one thing nobody knows. Check the open orders and the venue before
+retrying. `placementAttempted` is false until an order was actually dispatched.
+
+`buildExecutionPlan` refuses a route that does not run from the asset you offered to the asset you
+wanted, or whose hops do not connect — the answer is checked against the client's own record of
+the question, so a compromised or buggy router response cannot steer orders into another market.
+
+Full reference: [Order Router in the CCXT Manual](https://docs.ccxt.com/#/?id=order-router).
+
 ## Learn More
 
 - [CCXT Manual](https://docs.ccxt.com/)

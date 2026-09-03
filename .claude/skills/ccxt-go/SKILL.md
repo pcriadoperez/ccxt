@@ -966,6 +966,62 @@ if err == nil {
 - Price/trade methods (`FetchTicker`, `FetchOrderBook`, `FetchOHLCV`, `FetchTrades`, `CreateOrder`, `CancelOrder`, …) take an **outcome handle or outcomeId** — passed positionally or via the `With…Outcome` / `With…Outcomes` option, not a market symbol.
 - Discover markets via `FetchEvents` / `FetchEvent` (or `LoadMarkets`).
 
+## Order Router
+
+A client for the CCXT order-router service — a separate process holding live books across many
+venues, which answers "what is the cheapest way to turn asset A into asset B right now?", including
+bridges (`SOL -> USDT -> BTC` when no `SOL/BTC` market exists). It is **not** an exchange: it does
+not embed `Exchange`, has no unified methods, and is constructed directly.
+
+```go
+router, err := ccxt.NewOrderRouter(map[string]any{"apiKey": apiKey})
+if err != nil {
+    log.Fatal(err)
+}
+
+// exactly one of amountIn / amountOut
+route, err := router.FetchRoute("USDT", "BTC", map[string]any{"amountIn": 1000.0})
+
+// routing and executing are separate steps; everything between is PURE (no I/O)
+plan, err := router.BuildExecutionPlan(route, nil)   // errors when the route is incoherent
+violations := router.CheckExecutionPlanSafety(plan, markets, nil)
+if len(violations) == 0 {
+    venues := map[string]ccxt.IExchange{"binance": binance, "kraken": kraken}
+    report, err := router.Execute(plan, venues, map[string]any{
+        "strategy":  "sequential",
+        "live":      true,
+        "usdRates":  map[string]any{"USDT": 1.0},
+    })
+}
+```
+
+Go note: the typed `Order` carries a single `Fee` and no `Fees` list, so on a venue that reports
+only per-trade fees this port under-counts the fee netted out of what is carried forward — the
+conservative direction, never an over-count.
+
+`execute` defaults to `dry_run`, and **anything other than an explicit live flag forces `dry_run`
+regardless of the strategy requested** — a call that looks live but forgot the flag places nothing.
+
+Strategies: `dry_run` (default), `sequential`, `parallel_within_hop` (concurrent across venues,
+serialised within a venue), `atomic_ish` (requires the route pre-funded), `best_effort`
+(single-hop, never halts).
+
+A hard per-trade USD notional cap is enforced immediately before **every** order — not just at
+plan time, because a reconciliation may have resized the plan since. A step that cannot be valued
+in USD **blocks**; supply a USD rate for every quote asset in the plan. The cap may be lowered in
+the constructor, never raised.
+
+In the report, `status: 'outcome_unknown'` means the request may or may not have reached the venue
+— execution halts rather than reconciling, because reconciling would read the fill as 0 and report
+"nothing filled", asserting the one thing nobody knows. Check the open orders and the venue before
+retrying. `placementAttempted` is false until an order was actually dispatched.
+
+`buildExecutionPlan` refuses a route that does not run from the asset you offered to the asset you
+wanted, or whose hops do not connect — the answer is checked against the client's own record of
+the question, so a compromised or buggy router response cannot steer orders into another market.
+
+Full reference: [Order Router in the CCXT Manual](https://docs.ccxt.com/#/?id=order-router).
+
 ## Learn More
 
 - [CCXT Manual](https://docs.ccxt.com/)

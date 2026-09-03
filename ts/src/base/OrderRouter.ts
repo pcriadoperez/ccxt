@@ -662,14 +662,13 @@ class OrderRouter {
     //  -----------------------------------------------------------------------
 
     /**
+     * @ignore
      * @method
-     * @name OrderRouter#buildExecutionPlan
-     * @description flattens a RouteResult's hops and legs into a flat, ordered list of orders to place. PURE — no I/O, and the same input produces the same output in all five languages
-     * @param {object} route a RouteResult as returned by fetchRoute
-     * @param {object} [options] plan options
-     * @param {float} [options.slippageBps] how far the limit price is set past the expected price, default 25
-     * @param {float} [options.reconcileToleranceRatio] the shortfall ratio reconcileExecutionStep halts on, default 0.02
-     * @returns {object} an execution plan whose steps[] carries stepIndex, hopIndex, legIndex, exchangeId, symbol, side, amount, expectedPrice, limitPrice and notionalQuote
+     * @name OrderRouter#assertRouteChainIsCoherent
+     * @description refuses a route whose hops do not connect, or that does not run from the asset the caller offered to the asset the caller wanted
+     * @param {object} route the RouteResult being planned, carrying the client's own clientRequestedFrom/clientRequestedTo stamp
+     * @param {object[]} hops the route's hops, in order
+     * @returns {undefined} nothing; it throws ExchangeError when the chain does not hold
      */
     assertRouteChainIsCoherent (route: Dict, hops: Dict[]) {
         if (hops.length === 0) {

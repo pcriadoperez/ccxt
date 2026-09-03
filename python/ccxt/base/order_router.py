@@ -590,6 +590,16 @@ class OrderRouter:
 
     def assert_route_chain_is_coherent(self, route, hops):
         """
+        @ignore
+        refuses a route whose hops do not connect, or that does not run from the asset the caller
+        offered to the asset the caller wanted
+
+        :param dict route: the RouteResult being planned, carrying the client's own
+                           clientRequestedFrom/clientRequestedTo stamp
+        :param dict[] hops: the route's hops, in order
+        :returns None: nothing; it raises ExchangeError when the chain does not hold
+        """
+        """
         refuses a route whose hops do not connect, or that does not run from the asset the caller
         offered to the asset the caller wanted
 
