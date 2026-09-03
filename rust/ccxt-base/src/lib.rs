@@ -41,6 +41,10 @@ pub mod runtime;
 
 pub mod exchange_errors;
 pub mod exchange_stubs;
+// Hand-written client for the CCXT order-router service. The sixth port of a
+// class whose TypeScript reference is ts/src/base/OrderRouter.ts; all six are
+// held together by ts/src/test/base/fixtures/orderRouter.json.
+pub mod order_router;
 
 // The transpiled base method surface (now the `ExchangeBase` trait, review #1)
 // compiles and typechecks against the hand-written base; the per-exchange REST
@@ -95,6 +99,7 @@ pub use error::ExchangeError;
 pub use params::{Config, Params};
 pub use value::{Value, get_value, set_value, safe_string, safe_number, safe_integer, safe_bool};
 pub use exchange::Exchange;
+pub use order_router::{OrderRouter, RouterVenue, RouterResult};
 
 /// Convenience Result alias used throughout the crate.
 pub type Result<T> = std::result::Result<T, ExchangeError>;
