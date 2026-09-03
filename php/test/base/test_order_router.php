@@ -26,6 +26,22 @@
 
 namespace ccxt;
 
+namespace ccxt\async;
+
+// Declared here rather than in a fixture file so the suite stays one file, as its four siblings do.
+class OrderRouterFakeAsyncVenue {
+    public $id = 'stub';
+    public function amountToPrecision($symbol, $amount) { return (string) $amount; }
+    public function priceToPrecision($symbol, $price) { return (string) $price; }
+    public function loadMarkets($reload = false, $params = array()) { return array(); }
+    public function createOrder($symbol, $type, $side, $amount, $price = null, $params = array()) {
+        throw new \Exception('the guard must fire before any order is dispatched');
+    }
+}
+
+namespace ccxt;
+
+
 if (!defined('PATH_TO_CCXT')) {
     define('PATH_TO_CCXT', __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR);
 }
@@ -920,6 +936,26 @@ function order_router_test_order_id_survives_a_failure_after_create($router) {
     order_router_assert($okReport['openOrders'][0]['reason'] === 'still_open', 'and says it is still open');
 }
 
+
+// A venue whose class sits in the async namespace, which is the discriminator the guard uses.
+// ccxt\async\Exchange extends BaseExchange rather than ccxt\Exchange, so it is a SIBLING of the
+// sync class and no positive instanceof against it is possible.
+function order_router_test_refuses_async_venues($router) {
+    $venue = new \ccxt\async\OrderRouterFakeAsyncVenue();
+    $plan = $router->buildExecutionPlan(order_router_one_leg_route('buy', 'BTC', 'USDT', 0.1, 100), array());
+    $threw = false;
+    try {
+        $router->execute($plan, array('stub' => $venue), array('strategy' => 'sequential', 'live' => true, 'usdRates' => array('USDT' => 1)));
+    } catch (\ccxt\NotSupported $e) {
+        $threw = true;
+    }
+    if (!$threw) {
+        // Handed an async instance this used to return a clean report with every step unfilled and
+        // NO errors, while the fiber had already dispatched the real orders.
+        throw new \Exception('an async venue must be refused, not silently mis-read');
+    }
+}
+
 function test_order_router() {
     $router = new OrderRouter(array('apiKey' => 'test-key'));
     $tests = array(
@@ -960,6 +996,7 @@ function test_order_router() {
         'fetchRouteWithBalances refuses a route computed against balances the router ignored' => 'ccxt\order_router_test_fetch_route_with_balances_requires_echo',
         'fetchRouteWithBalances trims to the router 64-entry cap, dropping the smallest' => 'ccxt\order_router_test_fetch_route_with_balances_entry_cap',
         'formatNumber never emits exponent notation' => 'ccxt\order_router_test_format_number',
+        'an async venue is refused instead of silently mis-read' => 'ccxt\order_router_test_refuses_async_venues',
     );
     $passed = 0;
     $failures = array();

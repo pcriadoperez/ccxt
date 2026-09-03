@@ -352,6 +352,11 @@ class StubVenue {
     timeoutCreate: boolean;
     //  answers createOrder WITHOUT filled/average/cost, as several real venues do
     omitFillFields: boolean;
+    //  {cost, currency} attached to the created order, as real venues do
+    feeToCharge: any;
+    //  concurrency witness: how many createOrder calls were in flight at their peak
+    inFlight: number;
+    peakInFlight: number;
 
     constructor (id: string, fillRatio: number = 1, failCreate: boolean = false) {
         this.id = id;
@@ -366,6 +371,9 @@ class StubVenue {
         this.createdStatus = '';
         this.timeoutCreate = false;
         this.omitFillFields = false;
+        this.feeToCharge = undefined;
+        this.inFlight = 0;
+        this.peakInFlight = 0;
     }
 
     async fetchOrder (id: string, symbol: string) {
@@ -407,6 +415,13 @@ class StubVenue {
 
     async createOrder (symbol: string, type: string, side: string, amount: number, price: any = undefined, params: any = {}) {
         this.calls.push ('createOrder:' + type + ':' + side + ':' + amount.toString ());
+        this.inFlight = this.inFlight + 1;
+        if (this.inFlight > this.peakInFlight) {
+            this.peakInFlight = this.inFlight;
+        }
+        //  yield, so a caller that really does run legs concurrently overlaps here
+        await new Promise ((resolve) => setTimeout (resolve, 1));
+        this.inFlight = this.inFlight - 1;
         if (this.timeoutCreate) {
             throw new RequestTimeout ('stub timed out');
         }
@@ -419,7 +434,11 @@ class StubVenue {
         if (this.omitFillFields) {
             return { 'id': 'stub-order', 'status': status };
         }
-        return { 'id': 'stub-order', 'status': status, 'filled': filled, 'average': average, 'cost': filled * average };
+        const body: any = { 'id': 'stub-order', 'status': status, 'filled': filled, 'average': average, 'cost': filled * average };
+        if (this.feeToCharge !== undefined) {
+            body['fee'] = this.feeToCharge;
+        }
+        return body;
     }
 }
 
@@ -892,4 +911,157 @@ test ('a venue that reports a genuine zero fill is still nothing_filled', async 
     assert.strictEqual (report['steps'][0]['filledKnown'], true);
     assert.strictEqual (report['steps'][0]['status'], 'unfilled');
     assert.strictEqual (report['haltReason'], 'nothing_filled');
+});
+
+test ('two legs of one hop combine their shortfalls instead of compounding them', async () => {
+    //  Each leg used to compute a scale from the hop total and multiply the downstream amounts by
+    //  it, so the second leg scaled an already-scaled number. Measured before the fix: 80% and 60%
+    //  fills sized the next hop at 144 when only 140 had arrived — 0.9 x 0.8 = 0.72 of the hop
+    //  rather than the true 0.70. Over-sizing the next hop is not a rounding nuisance: it is a
+    //  guaranteed insufficient-funds halt on exactly the bridged routes this class exists for.
+    const steps = [
+        { 'stepIndex': 0, 'hopIndex': 0, 'legIndex': 0, 'amount': 1, 'expectedPrice': 100, 'side': 'sell', 'base': 'BTC', 'quote': 'USDT' },
+        { 'stepIndex': 1, 'hopIndex': 0, 'legIndex': 1, 'amount': 1, 'expectedPrice': 100, 'side': 'sell', 'base': 'BTC', 'quote': 'USDT' },
+        { 'stepIndex': 2, 'hopIndex': 1, 'legIndex': 0, 'amount': 200, 'expectedPrice': 1, 'side': 'buy', 'base': 'ETH', 'quote': 'USDT' },
+    ];
+    //  tolerance 1 so the shortfalls resize rather than halt
+    const plan = { 'steps': steps, 'reconcileToleranceRatio': 1 };
+    const expectedPerLeg = router.stepExpectedOut (steps[0]);
+    const first = router.reconcileExecutionStep (plan, 0, expectedPerLeg * 0.8);
+    router.applyResize (steps, first);
+    const second = router.reconcileExecutionStep (plan, 1, expectedPerLeg * 0.6);
+    router.applyResize (steps, second);
+    const realised = expectedPerLeg * 0.8 + expectedPerLeg * 0.6;
+    const truth = 200 * (realised / (expectedPerLeg * 2));
+    assert.ok (Math.abs (steps[2]['amount'] - truth) < 1e-9, 'next hop sized to ' + steps[2]['amount'].toString () + ', should be ' + truth.toString ());
+});
+
+test ('a single-leg hop reconciles exactly as it did before', async () => {
+    //  The combined-scale change must be arithmetically inert when there is nothing to combine,
+    //  which is every case the shared fixture covers.
+    const steps = [
+        { 'stepIndex': 0, 'hopIndex': 0, 'legIndex': 0, 'amount': 1, 'expectedPrice': 100, 'side': 'sell', 'base': 'BTC', 'quote': 'USDT' },
+        { 'stepIndex': 1, 'hopIndex': 1, 'legIndex': 0, 'amount': 100, 'expectedPrice': 1, 'side': 'buy', 'base': 'ETH', 'quote': 'USDT' },
+    ];
+    const plan = { 'steps': steps, 'reconcileToleranceRatio': 1 };
+    const reconciliation = router.reconcileExecutionStep (plan, 0, router.stepExpectedOut (steps[0]) * 0.5);
+    assert.strictEqual (reconciliation['scale'], 0.5);
+    router.applyResize (steps, reconciliation);
+    assert.strictEqual (steps[1]['amount'], 50);
+});
+
+test ('a route that does not run from the requested asset to the requested asset is refused', async () => {
+    //  buildExecutionPlan used to copy from, to, pair and side straight out of the server's JSON,
+    //  and the safety checks only tested internal consistency against whatever market that named.
+    //  So a compromised — or simply buggy — router response could steer real orders into any real
+    //  market and every check would pass it, under the 25 USD cap. The client now checks the
+    //  answer against its OWN record of the question.
+    const route = oneLegRoute ('buy', 'BTC', 'USDT', 0.1, 100);
+    route['clientRequestedFrom'] = 'USDT';
+    route['clientRequestedTo'] = 'ETH';   //  the caller wanted ETH; the route delivers BTC
+    assert.throws (() => router.buildExecutionPlan (route, {}), /produces BTC, not the requested ETH/);
+});
+
+test ('a route that spends an asset the caller never offered is refused', async () => {
+    const route = oneLegRoute ('buy', 'BTC', 'USDT', 0.1, 100);
+    route['clientRequestedFrom'] = 'EUR';
+    route['clientRequestedTo'] = 'BTC';
+    assert.throws (() => router.buildExecutionPlan (route, {}), /spends USDT, not the requested EUR/);
+});
+
+test ('a bridged route whose hops do not connect is refused', async () => {
+    //  Internal coherence, checked with or without a client stamp: hop 2 must spend exactly what
+    //  hop 1 produced, or the plan strands the proceeds of one order and funds the next from a
+    //  wallet nobody checked.
+    const route = twoHopRoute ();
+    route['hops'][1]['base'] = 'DOGE';
+    route['hops'][1]['quote'] = 'EUR';
+    assert.throws (() => router.buildExecutionPlan (route, {}), /spends DOGE but the previous hop produced BTC/);
+});
+
+test ('a well-formed route still plans normally', async () => {
+    const route = oneLegRoute ('buy', 'BTC', 'USDT', 0.1, 100);
+    route['clientRequestedFrom'] = 'USDT';
+    route['clientRequestedTo'] = 'BTC';
+    const plan = router.buildExecutionPlan (route, {});
+    assert.strictEqual (plan['steps'].length, 1);
+});
+
+test ('a fee charged in the acquired asset is netted out of what the next hop is sized on', async () => {
+    //  filled and cost are GROSS of fees — the manual says so — so a venue taking its cut in the
+    //  asset this hop produced credits less than `filled`. Carrying the gross figure forward sizes
+    //  the next hop for money that never arrived.
+    const plan = router.buildExecutionPlan (oneLegRoute ('buy', 'BTC', 'USDT', 0.1, 100), {});
+    const venue = new StubVenue ('stub');
+    venue.feeToCharge = { 'cost': 0.001, 'currency': 'BTC' };   //  fee in the ACQUIRED asset
+    const report = await router.execute (plan, { 'stub': venue }, { 'strategy': 'sequential', 'live': true, 'usdRates': { 'USDT': 1 } });
+    const step = report['steps'][0];
+    assert.strictEqual (step['filledAmount'], 0.1, 'the fill itself is still reported gross');
+    assert.strictEqual (step['grossOutAmount'], 0.1);
+    assert.ok (Math.abs (step['outAmount'] - 0.099) < 1e-12, 'carried forward net of the fee');
+    assert.strictEqual (step['feeCost'], 0.001);
+});
+
+test ('a fee charged in the asset spent does not reduce what is carried forward', async () => {
+    //  The counterpart: a USDT fee on a USDT->BTC buy comes out of the money already spent, not
+    //  out of the BTC received. Netting it here would under-size the next hop.
+    const plan = router.buildExecutionPlan (oneLegRoute ('buy', 'BTC', 'USDT', 0.1, 100), {});
+    const venue = new StubVenue ('stub');
+    venue.feeToCharge = { 'cost': 0.01, 'currency': 'USDT' };
+    const report = await router.execute (plan, { 'stub': venue }, { 'strategy': 'sequential', 'live': true, 'usdRates': { 'USDT': 1 } });
+    assert.strictEqual (report['steps'][0]['outAmount'], 0.1);
+    assert.strictEqual (report['steps'][0]['feeCost'], 0);
+});
+
+test ('parallel_within_hop never has two orders in flight on one venue', async () => {
+    //  The contract is an ORDERING guarantee — concurrent across venues, serialised within a
+    //  venue — not a performance promise, which is what lets five very different runtimes honour
+    //  the same words. Python previously fanned out one thread per LEG against caller-supplied
+    //  sync exchange instances, so two legs on one venue mutated its throttle and nonce state
+    //  with no lock; this asserts the property that made that a bug.
+    const route = oneLegRoute ('buy', 'BTC', 'USDT', 0.1, 100);
+    route['hops'][0]['legs'] = [
+        { 'exchangeId': 'same', 'amount': 0.1, 'averagePrice': 100, 'effectivePrice': 100 },
+        { 'exchangeId': 'same', 'amount': 0.1, 'averagePrice': 100, 'effectivePrice': 100 },
+        { 'exchangeId': 'other', 'amount': 0.1, 'averagePrice': 100, 'effectivePrice': 100 },
+    ];
+    const plan = router.buildExecutionPlan (route, {});
+    const same = new StubVenue ('same');
+    const other = new StubVenue ('other');
+    await router.execute (plan, { 'same': same, 'other': other }, { 'strategy': 'parallel_within_hop', 'live': true, 'usdRates': { 'USDT': 1 } });
+    assert.strictEqual (same.peakInFlight, 1, 'two legs on ONE venue must never overlap');
+    const ordersOnSame = same.calls.filter ((c: string) => c.indexOf ('createOrder') === 0).length;
+    const ordersOnOther = other.calls.filter ((c: string) => c.indexOf ('createOrder') === 0).length;
+    assert.strictEqual (ordersOnSame, 2, 'both legs on that venue still ran, one after the other');
+    assert.strictEqual (ordersOnOther, 1);
+});
+
+test ('parallel_within_hop still runs different venues at the same time', async () => {
+    //  The other half: serialising within a venue must not collapse into serialising everything,
+    //  or the strategy is just `sequential` under a different name.
+    const route = oneLegRoute ('buy', 'BTC', 'USDT', 0.1, 100);
+    route['hops'][0]['legs'] = [
+        { 'exchangeId': 'a', 'amount': 0.1, 'averagePrice': 100, 'effectivePrice': 100 },
+        { 'exchangeId': 'b', 'amount': 0.1, 'averagePrice': 100, 'effectivePrice': 100 },
+    ];
+    const plan = router.buildExecutionPlan (route, {});
+    const a = new StubVenue ('a');
+    const b = new StubVenue ('b');
+    //  one shared counter across both venues shows the two overlapped
+    let live = 0;
+    let peak = 0;
+    for (const venue of [ a, b ]) {
+        const inner = venue.createOrder.bind (venue);
+        venue.createOrder = async (...args: any[]) => {
+            live = live + 1;
+            if (live > peak) {
+                peak = live;
+            }
+            const out = await (inner as any) (...args);
+            live = live - 1;
+            return out;
+        };
+    }
+    await router.execute (plan, { 'a': a, 'b': b }, { 'strategy': 'parallel_within_hop', 'live': true, 'usdRates': { 'USDT': 1 } });
+    assert.strictEqual (peak, 2, 'different venues must still overlap');
 });

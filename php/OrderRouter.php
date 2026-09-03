@@ -573,6 +573,7 @@ class OrderRouter {
      * @return array the RouteResult, with the client-side keys balancesUsed and balancesDropped added
      */
     public function fetchRouteWithBalances($fromAsset, $toAsset, $venues, $params = array()) {
+        $this->assertSyncVenues($venues);
         $requireApplied = $this->boolAt($params, 'requireBalancesApplied', true);
         $exchangeIds = array_keys($venues);
         sort($exchangeIds, SORT_STRING);
@@ -1266,7 +1267,45 @@ class OrderRouter {
      *     array  orderParams            extra params merged into every createOrder call
      * @return array an execution report with per-step results, openOrders, errors and the halt verdict
      */
+    public function assertSyncVenues($venues) {
+        // OrderRouter lives in the SYNC ccxt namespace and reads results directly off the return
+        // value. Handed a ccxt\async\* instance, createOrder returns a ReactPHP promise: reading
+        // id or filled off it yields null, every accessor falls back to its default, and execute()
+        // returns a clean-looking report with every step unfilled and NO errors — while the fiber
+        // has already dispatched the real order. A silent wrong answer about money that has moved
+        // is the worst outcome this class can produce, so it refuses up front.
+        //
+        // ccxt\async\Exchange extends BaseExchange rather than ccxt\Exchange, so it is a sibling
+        // and no instanceof against the sync class can be used positively; the namespace is the
+        // discriminator. Test stubs live outside both namespaces and are unaffected.
+        if (!is_array($venues)) {
+            return;
+        }
+        foreach ($venues as $exchangeId => $venue) {
+            if (!is_object($venue)) {
+                continue;
+            }
+            $class = get_class($venue);
+            if (strpos($class, 'ccxt\\async\\') === 0 || strpos($class, 'ccxt\\pro\\') === 0) {
+                throw new NotSupported('OrderRouter is synchronous: ' . $exchangeId . ' is ' . $class
+                    . '. Pass a ccxt\\<id> instance, not an async or pro one.');
+            }
+        }
+    }
+
+    public function assertNotPromise($value, $what) {
+        if (is_object($value) && (
+            $value instanceof \React\Promise\PromiseInterface
+            || method_exists($value, 'then')
+        )) {
+            throw new NotSupported('OrderRouter: ' . $what . ' returned a promise, so this venue is '
+                . 'asynchronous. OrderRouter is synchronous and cannot read a result off a promise.');
+        }
+        return $value;
+    }
+
     public function execute($plan, $venues, $options = array()) {
+        $this->assertSyncVenues($venues);
         $requestedStrategy = $this->stringAt($options, 'strategy', 'dry_run');
         if (!in_array($requestedStrategy, self::KNOWN_STRATEGIES, true)) {
             throw new BadRequest('OrderRouter: unknown execution strategy ' . $requestedStrategy);
@@ -1868,7 +1907,7 @@ class OrderRouter {
             // never reset. Anything that fails before this point — a missing venue, a size that
             // rounds to zero, the notional cap, a venue that cannot do IOC — dispatched nothing.
             $result['placementAttempted'] = true;
-            $iocOrder = $venue->createOrder($symbol, 'limit', $side, $amount, $price, $orderParams);
+            $iocOrder = $this->assertNotPromise($venue->createOrder($symbol, 'limit', $side, $amount, $price, $orderParams), 'createOrder');
             $result['orderId'] = $this->stringAt($iocOrder, 'id', '');
             return $iocOrder;
         }
@@ -1878,7 +1917,7 @@ class OrderRouter {
             throw new NotSupported('OrderRouter: venue cannot do IOC and allowMarketOrders was not set');
         }
         $result['placementAttempted'] = true;
-        $marketOrder = $venue->createOrder($symbol, 'market', $side, $amount, null, $orderParams);
+        $marketOrder = $this->assertNotPromise($venue->createOrder($symbol, 'market', $side, $amount, null, $orderParams), 'createOrder');
         $result['orderId'] = $this->stringAt($marketOrder, 'id', '');
         return $marketOrder;
     }
@@ -1902,7 +1941,7 @@ class OrderRouter {
         $timeoutMs = $this->numberAt($options, 'orderTimeoutMs', 20000);
         $pollIntervalMs = $this->numberAt($options, 'pollIntervalMs', 1000);
         $result['placementAttempted'] = true;
-        $order = $venue->createOrder($symbol, 'limit', $side, $amount, $price, $orderParams);
+        $order = $this->assertNotPromise($venue->createOrder($symbol, 'limit', $side, $amount, $price, $orderParams), 'createOrder');
         $orderId = $this->stringAt($order, 'id', '');
         //  before the first poll, the first sleep and the first thing that can go
         //  wrong: from here on the caller can always name what is resting
@@ -2018,6 +2057,7 @@ class OrderRouter {
      * @return void
      */
     public function assertPrefunded($steps, $venues) {
+        $this->assertSyncVenues($venues);
         //  built as an array, not a map, so the first shortfall reported is the
         //  same one in all five languages
         $required = array();

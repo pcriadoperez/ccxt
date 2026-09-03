@@ -471,7 +471,15 @@ class OrderRouter {
             query = query + '&' + key + '=' + encodeURIComponent (text);
         }
         const url = this.baseUrl + '/route?' + query;
-        return await this.request (url);
+        const route = await this.request (url);
+        //  Stamp what THIS CLIENT asked for, client-side, so buildExecutionPlan can check the
+        //  answer against the question. Everything else in the response — from, to, pair, side —
+        //  is the server's word for it, and the plan used to trust all of it: a compromised or
+        //  simply buggy router could name any real market and the safety checks, which only test
+        //  internal consistency against that market, would pass it under the 25 USD cap.
+        route['clientRequestedFrom'] = fromAsset.toUpperCase ();
+        route['clientRequestedTo'] = toAsset.toUpperCase ();
+        return route;
     }
 
     /**
@@ -663,10 +671,57 @@ class OrderRouter {
      * @param {float} [options.reconcileToleranceRatio] the shortfall ratio reconcileExecutionStep halts on, default 0.02
      * @returns {object} an execution plan whose steps[] carries stepIndex, hopIndex, legIndex, exchangeId, symbol, side, amount, expectedPrice, limitPrice and notionalQuote
      */
+    assertRouteChainIsCoherent (route: Dict, hops: Dict[]) {
+        if (hops.length === 0) {
+            return;
+        }
+        let carried = '';
+        for (let i = 0; i < hops.length; i++) {
+            const hop = hops[i];
+            const side = this.stringAt (hop, 'side', '').toLowerCase ();
+            const base = this.stringAt (hop, 'base', '').toUpperCase ();
+            const quote = this.stringAt (hop, 'quote', '').toUpperCase ();
+            if (base === '' || quote === '' || (side !== 'buy' && side !== 'sell')) {
+                throw new ExchangeError ('OrderRouter: hop ' + i.toString () + ' does not name a market and a side');
+            }
+            //  a buy spends the quote to acquire the base; a sell is the reverse
+            const spends = (side === 'buy') ? quote : base;
+            const produces = (side === 'buy') ? base : quote;
+            if (i > 0 && spends !== carried) {
+                //  hop N+1 must spend exactly what hop N produced, or the plan strands the
+                //  proceeds of one order and funds the next from a wallet nobody checked
+                throw new ExchangeError ('OrderRouter: hop ' + i.toString () + ' spends ' + spends + ' but the previous hop produced ' + carried);
+            }
+            if (i === 0) {
+                carried = spends;
+                const requestedFrom = this.stringAt (route, 'clientRequestedFrom', '');
+                if (requestedFrom !== '' && spends !== requestedFrom) {
+                    throw new ExchangeError ('OrderRouter: the route spends ' + spends + ', not the requested ' + requestedFrom);
+                }
+            }
+            carried = produces;
+        }
+        const requestedTo = this.stringAt (route, 'clientRequestedTo', '');
+        if (requestedTo !== '' && carried !== requestedTo) {
+            throw new ExchangeError ('OrderRouter: the route produces ' + carried + ', not the requested ' + requestedTo);
+        }
+    }
+
+    /**
+     * @method
+     * @name OrderRouter#buildExecutionPlan
+     * @description turns a RouteResult into an ordered list of concrete orders. PURE — no I/O
+     * @param {object} route a RouteResult, ideally one fetchRoute returned so the request can be checked against the answer
+     * @param {object} [options] plan options
+     * @param {float} [options.slippageBps] how far the limit sits from the expected price, default 25
+     * @param {float} [options.reconcileToleranceRatio] the shortfall ratio reconcileExecutionStep halts on, default 0.02
+     * @returns {object} an execution plan
+     */
     buildExecutionPlan (route: Dict, options: Dict = {}): Dict {
         const slippageBps = this.numberAt (options, 'slippageBps', OrderRouter.DEFAULT_SLIPPAGE_BPS);
         const tolerance = this.numberAt (options, 'reconcileToleranceRatio', OrderRouter.DEFAULT_RECONCILE_TOLERANCE);
         const hops = this.listAt (route, 'hops');
+        this.assertRouteChainIsCoherent (route, hops);
         const steps = [];
         let stepIndex = 0;
         for (let hopIndex = 0; hopIndex < hops.length; hopIndex++) {
@@ -1008,15 +1063,41 @@ class OrderRouter {
         //  the downstream hops lost `shortfall` out of this hop's whole output,
         //  not out of this leg's, so the scale is measured against the hop
         let hopExpectedOut = 0;
+        //  Shortfall already reported by this hop's OTHER legs. Each leg used to compute a scale
+        //  from the hop total and multiply the downstream amounts by it, so a second leg scaled an
+        //  already-scaled number: 80% and 60% fills produced 0.9 x 0.8 = 0.72 of the next hop
+        //  instead of the true 0.70, sizing it for more than the wallet actually received and
+        //  inviting a spurious insufficient-funds halt on exactly the bridged routes this class
+        //  exists for. Reproduced at 144 against a true 140 before this changed.
+        let priorShortfall = 0;
         for (let i = 0; i < steps.length; i++) {
             if (this.numberAt (steps[i], 'hopIndex', 0) === hopIndex) {
                 hopExpectedOut = hopExpectedOut + this.stepExpectedOut (steps[i]);
+                if (this.numberAt (steps[i], 'stepIndex', -1) !== stepIndex && this.hasNumberAt (steps[i], 'realisedOut')) {
+                    let legShortfall = this.stepExpectedOut (steps[i]) - this.numberAt (steps[i], 'realisedOut', 0);
+                    if (legShortfall < 0) {
+                        legShortfall = 0;
+                    }
+                    priorShortfall = priorShortfall + legShortfall;
+                }
             }
         }
-        let scale = 1;
+        //  scaleBefore is what the downstream amounts have ALREADY been multiplied by, so the
+        //  factor applied here is the increment that takes them from that to the hop's true
+        //  cumulative scale. With one leg per hop priorShortfall is 0, scaleBefore is 1, and this
+        //  is arithmetically identical to what it replaced.
+        let scaleBefore = 1;
+        let scaleAfter = 1;
         if (hopExpectedOut > 0) {
-            scale = (hopExpectedOut - shortfall) / hopExpectedOut;
+            scaleBefore = (hopExpectedOut - priorShortfall) / hopExpectedOut;
+            scaleAfter = (hopExpectedOut - priorShortfall - shortfall) / hopExpectedOut;
         }
+        if (scaleBefore <= 0) {
+            //  the hop already produced nothing; there is nothing left to scale down
+            scaleBefore = 1;
+            scaleAfter = 0;
+        }
+        let scale = scaleAfter / scaleBefore;
         if (scale > 1) {
             //  never scale UP. An overfill is good news, but growing a
             //  downstream order past the size that passed the safety check
@@ -1541,17 +1622,45 @@ class OrderRouter {
                 end = end + 1;
             }
             const pending = [];
+            //  THE CONTRACT: concurrent ACROSS venues, serialised WITHIN a venue. It is an
+            //  ordering guarantee, not a performance promise, which is what lets five very
+            //  different runtimes honour the same words. It used to mean three different things:
+            //  TypeScript overlapped every leg on one event loop, PHP ran them in a plain
+            //  sequential loop with a comment rationalising it, and Python fanned out one thread
+            //  per LEG against caller-supplied sync exchange instances — so two legs on the same
+            //  venue mutated that instance's throttle and nonce state with no lock.
+            //
+            //  Grouping by exchangeId fixes all three at once: nobody ever has two orders in
+            //  flight on one instance, and a language with no concurrency (PHP) satisfies the
+            //  contract by running the groups one after another.
+            const venueGroups: string[] = [];
+            const groupedIndices: number[][] = [];
             for (let i = cursor; i < end; i++) {
-                //  placeStep contains its own failures and never rejects, so
-                //  "wait for all" means the same thing in all five languages.
-                //  Without that containment JavaScript rejects fast while
-                //  sibling orders are still live, and Go's promiseAll waits for
-                //  every one — the same source abandoning in-flight orders
-                //  differently per language.
-                pending.push (this.placeStep (steps[i], venues, options, usdRates, 'parallel_within_hop', report));
+                const exchangeId = this.stringAt (steps[i], 'exchangeId', '');
+                let groupIndex = -1;
+                for (let g = 0; g < venueGroups.length; g++) {
+                    if (venueGroups[g] === exchangeId) {
+                        groupIndex = g;
+                        break;
+                    }
+                }
+                if (groupIndex === -1) {
+                    venueGroups.push (exchangeId);
+                    groupedIndices.push ([ i ]);
+                } else {
+                    groupedIndices[groupIndex].push (i);
+                }
             }
-            for (let i = 0; i < pending.length; i++) {
-                results[cursor + i] = await pending[i];
+            for (let g = 0; g < groupedIndices.length; g++) {
+                //  placeStep contains its own failures and never rejects, so "wait for all" means
+                //  the same thing in all five languages. Without that containment JavaScript
+                //  rejects fast while sibling orders are still live, and Go's promiseAll waits for
+                //  every one — the same source abandoning in-flight orders differently per
+                //  language.
+                pending.push (this.placeVenueGroup (groupedIndices[g], steps, venues, options, usdRates, report, results));
+            }
+            for (let g = 0; g < pending.length; g++) {
+                await pending[g];
             }
             for (let i = cursor; i < end; i++) {
                 const result = results[i];
@@ -1575,6 +1684,26 @@ class OrderRouter {
                 }
             }
             cursor = end;
+        }
+    }
+
+    /**
+     * @ignore
+     * @method
+     * @name OrderRouter#executeBestEffort
+     * @description places what it can and never halts, on a single hop only, up to maxOrders
+     * @param {object} report the report being filled in
+     * @param {object[]} steps the working steps
+     * @param {object} venues exchangeId to exchange instance
+     * @param {object} options the execute options
+     * @param {object} usdRates currency code to USD price
+     * @returns {undefined}
+     */
+    async placeVenueGroup (indices: number[], steps: Dict[], venues: Dict, options: Dict, usdRates: Dict, report: Dict, results: Dict[]) {
+        //  strictly one at a time: this is the "serialised within a venue" half of the contract
+        for (let i = 0; i < indices.length; i++) {
+            const stepPosition = indices[i];
+            results[stepPosition] = await this.placeStep (steps[stepPosition], venues, options, usdRates, 'parallel_within_hop', report);
         }
     }
 
@@ -1732,6 +1861,23 @@ class OrderRouter {
                 result['outAsset'] = this.stringAt (step, 'quote', '');
                 result['outAmount'] = cost;
             }
+            //  Net the taker fee out of what is actually CARRIED FORWARD, when the venue charged
+            //  it in the asset this step produced. filled and cost are gross of fees — the manual
+            //  says so — so a venue taking its cut in the acquired asset credits less than
+            //  `filled`, and sizing the next hop (or an unwind) on the gross figure orders more
+            //  than the wallet holds. Fees in any OTHER currency are left alone: they do not
+            //  reduce what this hop hands to the next one.
+            const feeCost = this.orderFeeInAsset (order, this.stringAt (result, 'outAsset', ''));
+            result['feeCost'] = feeCost;
+            result['feeCurrency'] = this.stringAt (result, 'outAsset', '');
+            if (feeCost > 0) {
+                let net = this.numberAt (result, 'outAmount', 0) - feeCost;
+                if (net < 0) {
+                    net = 0;
+                }
+                result['grossOutAmount'] = this.numberAt (result, 'outAmount', 0);
+                result['outAmount'] = net;
+            }
             if (filled <= 0) {
                 result['status'] = 'unfilled';
             } else if (filled >= amount * (1 - OrderRouter.TOLERANCE)) {
@@ -1882,6 +2028,44 @@ class OrderRouter {
             //  the caller marks the fill unknown; a throw here must not lose the placement record
             return fallback;
         }
+    }
+
+    /**
+     * @ignore
+     * @method
+     * @name OrderRouter#isOutcomeUnknownError
+     * @description reports whether a thrown error leaves a placement's outcome genuinely unknown
+     * @param {string} errorCode the error class name
+     * @returns {bool} true when the request may or may not have reached the venue
+     */
+    orderFeeInAsset (order: Dict, asset: string): number {
+        if (asset === '') {
+            return 0;
+        }
+        let total = 0;
+        //  ccxt sets a single `fee` and, since safeOrder, a `fees` list alongside it. Reading only
+        //  one of the two would under-count on venues that report per-trade fees, so both are
+        //  summed — with `fee` skipped when it is also present in `fees`, which is how safeOrder
+        //  fills them in.
+        const fees = this.listAt (order, 'fees');
+        let sawInList = false;
+        for (let i = 0; i < fees.length; i++) {
+            const entry = fees[i];
+            if (this.stringAt (entry, 'currency', '').toUpperCase () === asset.toUpperCase ()) {
+                total = total + this.numberAt (entry, 'cost', 0);
+                sawInList = true;
+            }
+        }
+        if (!sawInList) {
+            const single = this.dictAt (order, 'fee');
+            if (this.stringAt (single, 'currency', '').toUpperCase () === asset.toUpperCase ()) {
+                total = total + this.numberAt (single, 'cost', 0);
+            }
+        }
+        if (!this.isFiniteNumber (total) || total < 0) {
+            return 0;
+        }
+        return total;
     }
 
     /**
@@ -2157,6 +2341,17 @@ class OrderRouter {
      * @returns {undefined}
      */
     applyResize (steps: Dict[], reconciliation: Dict) {
+        //  Record what this leg actually produced BEFORE resizing anything. reconcileExecutionStep
+        //  is pure and cannot remember across calls, so the hop's cumulative shortfall has to live
+        //  on the steps themselves — this is what stops the next leg of the same hop compounding
+        //  its scale onto an already-scaled amount.
+        const reconciledStep = this.numberAt (reconciliation, 'stepIndex', -1);
+        for (let i = 0; i < steps.length; i++) {
+            if (this.numberAt (steps[i], 'stepIndex', -1) === reconciledStep) {
+                steps[i]['realisedOut'] = this.numberAt (reconciliation, 'realisedOut', 0);
+                break;
+            }
+        }
         const resized = this.listAt (reconciliation, 'resizedSteps');
         for (let i = 0; i < resized.length; i++) {
             const entry = resized[i];
