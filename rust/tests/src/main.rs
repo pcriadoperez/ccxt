@@ -16,6 +16,7 @@ use futures::FutureExt;
 mod generated_cores;      // GENERATED: every dispatchable Core + the for_each_* macros
 mod assertions;
 mod base_tests;
+mod order_router_tests;
 mod fixtures;
 mod language_specific;
 mod registry;
@@ -67,6 +68,24 @@ async fn main() -> ExitCode {
     // (kalshi/…) resolve unambiguously and need no flag.
     live_dispatch::set_prediction_mode(is_true(&getCliArgValue(Value::Str("--prediction".to_string()))));
     let run_base_tests = is_true(&getCliArgValue(Value::Str("--baseTests".to_string())));
+    // The OrderRouter suite runs on its own flag rather than inside --baseTests,
+    // so `npm run test-order-router-rust` can drive just it — the same split the
+    // C# runner uses for the same reason.
+    let run_order_router_tests =
+        is_true(&getCliArgValue(Value::Str("--orderRouterTests".to_string())));
+    if run_order_router_tests {
+        match order_router_tests::run() {
+            Ok(passed) => {
+                println!("[rust] OrderRouter: {passed} passed, 0 failed");
+                println!("OrderRouter tests passed!");
+                return ExitCode::SUCCESS;
+            }
+            Err(message) => {
+                eprintln!("[rust] OrderRouter FAILED — {message}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
     let ws_tests       = is_true(&getCliArgValue(Value::Str("--ws".to_string())));
     let verbose        = is_true(&getCliArgValue(Value::Str("--verbose".to_string())))
                       || is_true(&getCliArgValue(Value::Str("-v".to_string())));

@@ -946,6 +946,15 @@ impl OrderRouter {
 
     /// Sets a key on a `Value::Dict` in place, through `Arc::make_mut` so the
     /// copy-on-write only deep-copies when the map is actually shared.
+    ///
+    /// Public because callers building a route by hand need it too — stamping
+    /// `clientRequestedFrom`/`clientRequestedTo` onto a route obtained by some
+    /// route other than `fetch_route`, for one. The other five ports get this
+    /// for free from assignment into a dictionary.
+    pub fn set_key(container: &mut Value, key: &str, value: Value) {
+        Self::put(container, key, value)
+    }
+
     fn put(container: &mut Value, key: &str, value: Value) {
         if let Value::Dict(map) = container {
             Arc::make_mut(map).insert(key.to_string(), value);
