@@ -60,28 +60,120 @@ const NIL_UUID = '00000000-0000-0000-0000-000000000000';
 
 const READ_CHUNK = 1 << 20;
 
+// A line longer than this is not a record, it is a runaway field. Reading further to find its
+// newline would mean allocating without limit on data an attacker can influence (user-agent and
+// origin are caller-controlled and go into the audit line verbatim), so past this point the line
+// is SKIPPED rather than read — loudly, and having advanced, which is the only outcome that does
+// not stop everything behind it.
+const MAX_LINE_BYTES = 8 << 20;
+
+// How long a routing record may sit unpaired at the tail before the ingester stops waiting for
+// its access line and writes what it has. Generously longer than any request this service serves
+// (p99 is single-digit milliseconds) and short enough that a crashed request costs one pass.
+const UNPAIRED_GRACE_MS = 60_000;
+
+export interface ReadLine {
+    text: string;
+    // Byte offset of the FIRST byte of this line. The batch planner needs it to hold the cursor
+    // back to a specific line rather than to the start of the whole batch.
+    offset: number;
+}
+
+export interface ReadResult {
+    lines: ReadLine[];
+    nextOffset: number;
+    size: number;
+    // True when a line over MAX_LINE_BYTES was skipped. The caller logs it; nothing else can,
+    // because the line itself is what would have been logged.
+    skippedOversizedLine: boolean;
+}
+
 // Reads whole lines from `offset`, leaving any trailing partial line unread — a tailer that
 // consumed a half-written line would corrupt a row and then advance past it forever.
-function readLines (path: string, offset: number): { lines: string[]; nextOffset: number; size: number } {
+//
+// It reads in READ_CHUNK steps but does NOT stop at one. A chunk containing no newline at all
+// used to return zero lines and the same offset, which broke the caller's loop and left the
+// cursor exactly where it was — so a single line longer than 1 MiB stopped audit ingestion
+// permanently and silently: no error, no rows, and requestsInserted at 0 suppressing even the
+// info log. Reproduced: one 1 MiB line followed by a hundred ordinary ones ingested none of them,
+// on every pass, forever. Now the read grows until a newline is found or MAX_LINE_BYTES says the
+// line is not worth finding.
+export function readLines (path: string, offset: number): ReadResult {
     const size = statSync(path).size;
-    if (size <= offset) return { lines: [], nextOffset: offset, size };
+    if (size <= offset) return { lines: [], nextOffset: offset, size, skippedOversizedLine: false };
     const fd = openSync(path, 'r');
     try {
-        const want = Math.min(READ_CHUNK, size - offset);
-        const buf = Buffer.allocUnsafe(want);
-        const read = readSync(fd, buf, 0, want, offset);
-        const text = buf.subarray(0, read).toString('utf8');
-        const lastNewline = text.lastIndexOf('\n');
-        if (lastNewline === -1) return { lines: [], nextOffset: offset, size };
-        const complete = text.slice(0, lastNewline);
-        return {
-            lines: complete.split('\n').filter((l) => l.length > 0),
-            nextOffset: offset + Buffer.byteLength(complete, 'utf8') + 1,
-            size,
-        };
+        let want = Math.min(READ_CHUNK, size - offset);
+        for (;;) {
+            const buf = Buffer.allocUnsafe(want);
+            const read = readSync(fd, buf, 0, want, offset);
+            const text = buf.subarray(0, read).toString('utf8');
+            const lastNewline = text.lastIndexOf('\n');
+            if (lastNewline !== -1) {
+                const complete = text.slice(0, lastNewline);
+                const lines: ReadLine[] = [];
+                let cursor = offset;
+                for (const piece of complete.split('\n')) {
+                    if (piece.length > 0) lines.push({ text: piece, offset: cursor });
+                    cursor += Buffer.byteLength(piece, 'utf8') + 1;
+                }
+                return {
+                    lines,
+                    nextOffset: offset + Buffer.byteLength(complete, 'utf8') + 1,
+                    size,
+                    skippedOversizedLine: false,
+                };
+            }
+            // No newline anywhere in what we read. Either the line continues past what we asked
+            // for, or the file simply ends mid-line — the latter is a partial write and correctly
+            // waits for the writer to finish it.
+            if (offset + want >= size) {
+                return { lines: [], nextOffset: offset, size, skippedOversizedLine: false };
+            }
+            if (want >= MAX_LINE_BYTES) {
+                // Give up on THIS line, not on the file. Scan forward for the next newline and
+                // resume there; everything behind it is still ingestable.
+                const resumeAt = findNextNewline(fd, offset + want, size);
+                return {
+                    lines: [],
+                    nextOffset: resumeAt === -1 ? size : resumeAt + 1,
+                    size,
+                    skippedOversizedLine: true,
+                };
+            }
+            want = Math.min(want * 2, MAX_LINE_BYTES, size - offset);
+        }
     } finally {
         closeSync(fd);
     }
+}
+
+// Scans forward from `from` for the next newline, without holding the skipped bytes in memory.
+function findNextNewline (fd: number, from: number, size: number): number {
+    const buf = Buffer.allocUnsafe(READ_CHUNK);
+    let at = from;
+    while (at < size) {
+        const read = readSync(fd, buf, 0, Math.min(READ_CHUNK, size - at), at);
+        if (read <= 0) return -1;
+        const index = buf.subarray(0, read).indexOf(0x0a);
+        if (index !== -1) return at + index;
+        at += read;
+    }
+    return -1;
+}
+
+// The cursor advance for the one case that has no rows to carry it: an oversized line that was
+// skipped. Everywhere else the cursor rides the same transaction as its rows, which is what makes
+// replay idempotent — this is the exception, and it advances past data that was deliberately not
+// read, so there is nothing to be atomic with.
+async function commitCursor (pool: Pool, stream: string, nextOffset: number, inode: number): Promise<void> {
+    await pool.query(
+        `INSERT INTO ingest_cursor (stream, byte_offset, inode, updated_at)
+         VALUES ($1, $2, $3, now())
+         ON CONFLICT (stream) DO UPDATE
+           SET byte_offset = EXCLUDED.byte_offset, inode = EXCLUDED.inode, updated_at = now()`,
+        [stream, nextOffset, inode],
+    );
 }
 
 export async function ingestOnce (
@@ -119,31 +211,95 @@ export async function ingestOnce (
     }
 
     for (;;) {
-        const { lines, nextOffset } = readLines(path, offset);
-        if (lines.length === 0) break;
+        const read = readLines(path, offset);
+        const { lines, size } = read;
+        let { nextOffset } = read;
+        if (read.skippedOversizedLine) {
+            logger.error({ stream, offset, resumedAt: nextOffset, maxLineBytes: MAX_LINE_BYTES },
+                'audit line exceeded the maximum readable length and was skipped; '
+                + 'ingestion resumed after it rather than stalling on it');
+        }
+        if (lines.length === 0) {
+            if (nextOffset > offset) {
+                // A line was skipped and nothing else was read. Commit the advance on its own,
+                // or the next pass repeats the skip and never makes progress.
+                await commitCursor(pool, stream, nextOffset, inode);
+                offset = nextOffset;
+                continue;
+            }
+            break;
+        }
         stats.linesRead += lines.length;
 
         // Two events describe one request: the access line (always) and the routing record (only
         // for /route). Pair them by reqId within the batch so the row is written once, complete.
         const byReq = new Map<string, AuditLine>();
+        // Where each reqId was first seen. An incomplete pair at the tail of a batch holds the
+        // cursor back to here so the next pass re-reads it.
+        const firstOffset = new Map<string, number>();
         for (const line of lines) {
             let parsed: AuditLine;
             try {
-                parsed = JSON.parse(line) as AuditLine;
+                parsed = JSON.parse(line.text) as AuditLine;
             } catch {
                 continue;   // a non-JSON line is not ours; skipping is correct, not a failure
             }
             if (parsed.event !== 'request' && parsed.event !== 'route_recommendation') continue;
             const id = parsed.reqId;
             if (id === undefined) continue;
+            if (!firstOffset.has(id)) firstOffset.set(id, line.offset);
             byReq.set(id, { ...(byReq.get(id) ?? {}), ...parsed });
+        }
+
+        // The routing record is written before the access line, so a chunk boundary can fall
+        // between them. The old code skipped the unpaired half with the comment "it will pair next
+        // pass" — but the cursor was committed at nextOffset regardless, past the very line it
+        // meant to revisit. The record was never re-read: what landed in Postgres was a requests
+        // row with route and status set and every routing column NULL, in the table that exists to
+        // answer "why did you route it there?".
+        //
+        // Holding the cursor at the unpaired line makes the next pass see both halves. It is only
+        // done AT THE TAIL: if the batch did not reach the end of the file, more lines already
+        // exist past it and the partner was not merely in the next chunk — it never arrived (a
+        // request whose response never logged, e.g. a SIGKILL mid-flight), and waiting for it
+        // forever would wedge ingestion exactly the way the oversized line did.
+        const atTail = nextOffset >= size;
+        if (atTail) {
+            let holdAt = nextOffset;
+            const now = Date.now();
+            for (const [id, r] of byReq) {
+                if (r.statusCode !== undefined) continue;
+                // Only wait for a partner that could still be coming. Without this bound a
+                // request whose response never logged — a SIGKILL mid-flight — holds the cursor
+                // at its offset forever and blocks every record behind it, which is the same
+                // total, silent stall the oversized line caused. An unpaired record with no
+                // timestamp at all is not held either: we cannot tell how old it is, and
+                // advancing is the failure mode that recovers.
+                if (r.time === undefined || (now - r.time) >= UNPAIRED_GRACE_MS) continue;
+                const at = firstOffset.get(id);
+                if (at !== undefined && at < holdAt) holdAt = at;
+            }
+            if (holdAt < nextOffset) {
+                logger.debug({ stream, holdAt, nextOffset },
+                    'holding the ingest cursor at an unpaired record so its access line can pair next pass');
+                nextOffset = holdAt;
+                for (const [id, r] of byReq) {
+                    const at = firstOffset.get(id);
+                    if (r.statusCode === undefined || (at !== undefined && at >= holdAt)) byReq.delete(id);
+                // (records before holdAt keep their rows; the cursor still covers them)
+                }
+                if (byReq.size === 0) break;   // nothing to write and no advance to make
+            }
         }
 
         const client = await pool.connect();
         try {
             await client.query('BEGIN');
             for (const [reqId, r] of byReq) {
-                if (r.statusCode === undefined) continue;   // no access line yet; it will pair next pass
+                // Only reachable away from the tail, where the partner genuinely never arrived —
+                // at the tail the cursor was held back above instead. Writing the row with NULL
+                // routing columns is the honest outcome: the request happened, its detail did not.
+                if (r.statusCode === undefined) continue;
                 const id = randomUUID();
                 const ts = new Date(r.time ?? Date.now());
                 await client.query(
