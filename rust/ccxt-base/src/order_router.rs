@@ -747,3 +747,388 @@ impl OrderRouter {
         violations
     }
 }
+
+// ---------------------------------------------------------------------------
+// PURE: reconcile_execution_step
+// ---------------------------------------------------------------------------
+
+impl OrderRouter {
+    /// How much of its output asset a step is expected to produce, gross of
+    /// fees: base units for a buy, quote units for a sell.
+    pub fn step_expected_out(&self, step: &Value) -> f64 {
+        let amount = self.number_at(step, "amount", 0.0);
+        if self.string_at(step, "side", "") == "buy" {
+            return amount;
+        }
+        amount * self.number_at(step, "expectedPrice", 0.0)
+    }
+
+    /// Reports whether a field holds a usable number, as opposed to holding
+    /// zero or nothing at all.
+    ///
+    /// "The venue said zero" and "the venue said nothing" are different facts
+    /// and used to produce the same number. Reuses `number_of` rather than
+    /// re-deriving the coercion: "the value is usable" and "the value is
+    /// present" must never disagree, and two copies of that rule is how they
+    /// would.
+    pub fn has_number_at(&self, container: &Value, key: &str) -> bool {
+        let probe = Self::number_of(field(container, key), f64::NAN);
+        Self::is_finite_number(probe)
+    }
+
+    /// Compares what a step actually produced against what the route predicted,
+    /// resizes every downstream hop, and returns the proceed-or-halt verdict.
+    /// PURE — no I/O.
+    ///
+    /// The halt decision lives here rather than in the execution loop because it
+    /// is a money decision, and six separate loops is six chances to omit it.
+    pub fn reconcile_execution_step(
+        &self,
+        plan: &Value,
+        step_index: i64,
+        realised_out: f64,
+    ) -> RouterResult<Value> {
+        let steps = self.list_at(plan, "steps");
+        if step_index < 0 || step_index as usize >= steps.len() {
+            return Err(bad_request("reconcileExecutionStep: stepIndex is out of range"));
+        }
+        let step = &steps[step_index as usize];
+        let hop_index = self.number_at(step, "hopIndex", 0.0);
+        let tolerance =
+            self.number_at(plan, "reconcileToleranceRatio", DEFAULT_RECONCILE_TOLERANCE);
+        let expected_out = self.step_expected_out(step);
+        let mut resized: Vec<Value> = Vec::new();
+        if expected_out <= 0.0 {
+            let mut verdict = HashMap::new();
+            verdict.insert("stepIndex".into(), Value::Float(step_index as f64));
+            verdict.insert("hopIndex".into(), Value::Float(hop_index));
+            verdict.insert("expectedOut".into(), Value::Float(0.0));
+            verdict.insert("realisedOut".into(), Value::Float(realised_out));
+            verdict.insert("shortfall".into(), Value::Float(0.0));
+            verdict.insert("shortfallRatio".into(), Value::Float(0.0));
+            verdict.insert("scale".into(), Value::Float(0.0));
+            verdict.insert("verdict".into(), Value::Str("halt".into()));
+            verdict.insert("reason".into(), Value::Str("zero_expected_output".into()));
+            verdict.insert("resizedSteps".into(), Value::List(resized));
+            return Ok(Value::Map(verdict));
+        }
+        let mut shortfall = expected_out - realised_out;
+        if shortfall < 0.0 {
+            shortfall = 0.0;
+        }
+        let shortfall_ratio = shortfall / expected_out;
+        // The downstream hops lost `shortfall` out of this hop's whole output,
+        // not out of this leg's, so the scale is measured against the hop.
+        let mut hop_expected_out = 0.0f64;
+        // Shortfall already reported by this hop's OTHER legs. Each leg used to
+        // compute a scale from the hop total and multiply the downstream amounts
+        // by it, so a second leg scaled an already-scaled number: 80% and 60%
+        // fills produced 0.9 x 0.8 = 0.72 of the next hop instead of the true
+        // 0.70, sizing it for more than the wallet actually received and
+        // inviting a spurious insufficient-funds halt on exactly the bridged
+        // routes this class exists for. Reproduced at 144 against a true 140
+        // before this changed.
+        let mut prior_shortfall = 0.0f64;
+        for other in steps.iter() {
+            if self.number_at(other, "hopIndex", 0.0) == hop_index {
+                hop_expected_out += self.step_expected_out(other);
+                if self.number_at(other, "stepIndex", -1.0) != step_index as f64
+                    && self.has_number_at(other, "realisedOut")
+                {
+                    let mut leg_shortfall =
+                        self.step_expected_out(other) - self.number_at(other, "realisedOut", 0.0);
+                    if leg_shortfall < 0.0 {
+                        leg_shortfall = 0.0;
+                    }
+                    prior_shortfall += leg_shortfall;
+                }
+            }
+        }
+        // scale_before is what the downstream amounts have ALREADY been
+        // multiplied by, so the factor applied here is the increment that takes
+        // them from that to the hop's true cumulative scale. With one leg per
+        // hop prior_shortfall is 0, scale_before is 1, and this is
+        // arithmetically identical to what it replaced.
+        let mut scale_before = 1.0f64;
+        let mut scale_after = 1.0f64;
+        if hop_expected_out > 0.0 {
+            scale_before = (hop_expected_out - prior_shortfall) / hop_expected_out;
+            scale_after = (hop_expected_out - prior_shortfall - shortfall) / hop_expected_out;
+        }
+        if scale_before <= 0.0 {
+            // The hop already produced nothing; there is nothing left to scale
+            // down.
+            scale_before = 1.0;
+            scale_after = 0.0;
+        }
+        let mut scale = scale_after / scale_before;
+        if scale > 1.0 {
+            // Never scale UP. An overfill is good news, but growing a downstream
+            // order past the size that passed the safety check would place an
+            // order nobody ever approved.
+            scale = 1.0;
+        }
+        if scale < 0.0 {
+            scale = 0.0;
+        }
+        for (i, other) in steps.iter().enumerate() {
+            if self.number_at(other, "hopIndex", 0.0) <= hop_index {
+                continue;
+            }
+            let previous_amount = self.number_at(other, "amount", 0.0);
+            let amount = previous_amount * scale;
+            let mut entry = HashMap::new();
+            entry.insert(
+                "stepIndex".into(),
+                Value::Float(self.number_at(other, "stepIndex", i as f64)),
+            );
+            entry.insert("previousAmount".into(), Value::Float(previous_amount));
+            entry.insert("amount".into(), Value::Float(amount));
+            entry.insert(
+                "notionalQuote".into(),
+                Value::Float(amount * self.number_at(other, "expectedPrice", 0.0)),
+            );
+            resized.push(Value::Map(entry));
+        }
+        let mut verdict_text = "proceed";
+        let mut reason = "within_tolerance";
+        if realised_out <= 0.0 {
+            verdict_text = "halt";
+            reason = "nothing_filled";
+        } else if shortfall_ratio > tolerance * (1.0 + TOLERANCE) {
+            verdict_text = "halt";
+            reason = "shortfall_exceeds_tolerance";
+        }
+        let mut verdict = HashMap::new();
+        verdict.insert("stepIndex".into(), Value::Float(step_index as f64));
+        verdict.insert("hopIndex".into(), Value::Float(hop_index));
+        verdict.insert("expectedOut".into(), Value::Float(expected_out));
+        verdict.insert("realisedOut".into(), Value::Float(realised_out));
+        verdict.insert("shortfall".into(), Value::Float(shortfall));
+        verdict.insert("shortfallRatio".into(), Value::Float(shortfall_ratio));
+        verdict.insert("scale".into(), Value::Float(scale));
+        verdict.insert("verdict".into(), Value::Str(verdict_text.into()));
+        verdict.insert("reason".into(), Value::Str(reason.into()));
+        verdict.insert("resizedSteps".into(), Value::List(resized));
+        Ok(Value::Map(verdict))
+    }
+
+    /// Writes a reconciliation's downstream resize back into the working steps.
+    ///
+    /// Records what this leg actually produced BEFORE resizing anything.
+    /// `reconcile_execution_step` is pure and cannot remember across calls, so
+    /// the hop's cumulative shortfall has to live on the steps themselves —
+    /// this is what stops the next leg of the same hop compounding its scale
+    /// onto an already-scaled amount.
+    pub fn apply_resize(&self, steps: &mut [Value], reconciliation: &Value) {
+        let reconciled_step = self.number_at(reconciliation, "stepIndex", -1.0);
+        let realised_out = self.number_at(reconciliation, "realisedOut", 0.0);
+        for step in steps.iter_mut() {
+            if self.number_at(step, "stepIndex", -1.0) == reconciled_step {
+                Self::put(step, "realisedOut", Value::Float(realised_out));
+                break;
+            }
+        }
+        let resized = self.list_at(reconciliation, "resizedSteps");
+        for entry in &resized {
+            let target = self.number_at(entry, "stepIndex", -1.0);
+            let amount = self.number_at(entry, "amount", 0.0);
+            let notional = self.number_at(entry, "notionalQuote", 0.0);
+            for step in steps.iter_mut() {
+                if self.number_at(step, "stepIndex", -1.0) == target {
+                    Self::put(step, "amount", Value::Float(amount));
+                    Self::put(step, "notionalQuote", Value::Float(notional));
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Sets a key on a `Value::Dict` in place, through `Arc::make_mut` so the
+    /// copy-on-write only deep-copies when the map is actually shared.
+    fn put(container: &mut Value, key: &str, value: Value) {
+        if let Value::Dict(map) = container {
+            Arc::make_mut(map).insert(key.to_string(), value);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PURE: build_unwind_plan
+// ---------------------------------------------------------------------------
+
+impl OrderRouter {
+    /// Accumulates a signed amount into the (exchangeId, asset) position list,
+    /// appending in first-seen order.
+    ///
+    /// `produced` is true when this step PRODUCED the asset, which is the only
+    /// kind of step an unwind can reverse.
+    fn add_position(
+        &self,
+        positions: &mut Vec<Value>,
+        exchange_id: &str,
+        asset: &str,
+        amount: f64,
+        source: &Value,
+        produced: bool,
+    ) {
+        for position in positions.iter_mut() {
+            let same_venue = self.string_at(position, "exchangeId", "") == exchange_id;
+            let same_asset = self.string_at(position, "asset", "") == asset;
+            if same_venue && same_asset {
+                let running = self.number_at(position, "amount", 0.0) + amount;
+                Self::put(position, "amount", Value::Float(running));
+                let existing = self.dict_at(position, "source");
+                let empty = existing.as_map().map(|m| m.is_empty()).unwrap_or(true);
+                if produced && empty {
+                    Self::put(position, "source", source.clone());
+                }
+                return;
+            }
+        }
+        // The source must be the step that PRODUCED the asset, never one that
+        // consumed it: reversing a step that spent your USDT would sell the
+        // wrong side of the wrong market. Walking the results backwards, the
+        // first producing step seen is the last one that ran, which is exactly
+        // the order an unwind undoes first.
+        let initial_source =
+            if produced { source.clone() } else { Value::Map(HashMap::new()) };
+        let mut entry = HashMap::new();
+        entry.insert("exchangeId".into(), Value::Str(exchange_id.to_string()));
+        entry.insert("asset".into(), Value::Str(asset.to_string()));
+        entry.insert("amount".into(), Value::Float(amount));
+        entry.insert("source".into(), initial_source);
+        positions.push(Value::Map(entry));
+    }
+
+    /// Given a halted execution report, computes the reverse orders that sell
+    /// each stranded residual back toward the original from-asset, on the venue
+    /// that actually holds it. PURE — no I/O.
+    ///
+    /// NEVER automatic: the result carries `requiresConfirmation` and nothing in
+    /// this class executes it.
+    pub fn build_unwind_plan(&self, report: &Value) -> Value {
+        let from_asset = self.string_at(report, "from", "");
+        let to_asset = self.string_at(report, "to", "");
+        let slippage_bps = self.number_at(report, "slippageBps", DEFAULT_SLIPPAGE_BPS);
+        let results = self.list_at(report, "steps");
+        // Net position per (exchangeId, asset). Held in a VECTOR rather than a
+        // map because the output order must be identical in six languages and
+        // map iteration order is not.
+        let mut positions: Vec<Value> = Vec::new();
+        for result in results.iter().rev() {
+            let exchange_id = self.string_at(result, "exchangeId", "");
+            let out_asset = self.string_at(result, "outAsset", "");
+            let out_amount = self.number_at(result, "outAmount", 0.0);
+            if !out_asset.is_empty() && out_amount > 0.0 {
+                self.add_position(&mut positions, &exchange_id, &out_asset, out_amount, result, true);
+            }
+            let in_asset = self.string_at(result, "inAsset", "");
+            let in_amount = self.number_at(result, "inAmount", 0.0);
+            if !in_asset.is_empty() && in_amount > 0.0 {
+                // What a later hop consumed on this venue is not a residual.
+                // Netting is per venue: assets sitting on a venue the route
+                // never spent them on stay stranded, because this class never
+                // moves funds between venues.
+                self.add_position(&mut positions, &exchange_id, &in_asset, -in_amount, result, false);
+            }
+        }
+        let mut steps: Vec<Value> = Vec::new();
+        let mut unresolved: Vec<Value> = Vec::new();
+        let mut residual_count = 0i64;
+        for position in &positions {
+            let asset = self.string_at(position, "asset", "");
+            let amount = self.number_at(position, "amount", 0.0);
+            let exchange_id = self.string_at(position, "exchangeId", "");
+            if amount <= 0.0 {
+                continue;
+            }
+            if asset == from_asset {
+                // Already home.
+                continue;
+            }
+            residual_count += 1;
+            let source = self.dict_at(position, "source");
+            let symbol = self.string_at(&source, "symbol", "");
+            let source_side = self.string_at(&source, "side", "");
+            let mut price = self.number_at(&source, "averagePrice", 0.0);
+            if price <= 0.0 {
+                price = self.number_at(&source, "expectedPrice", 0.0);
+            }
+            if symbol.is_empty() || (source_side != "buy" && source_side != "sell") {
+                unresolved.push(Self::unresolved_entry(&exchange_id, &asset, amount, "no_source_market"));
+                continue;
+            }
+            if price <= 0.0 {
+                unresolved.push(Self::unresolved_entry(&exchange_id, &asset, amount, "no_price"));
+                continue;
+            }
+            // Reverse the order that created the residual: a buy left you
+            // holding base, so sell it back; a sell left you holding quote, so
+            // buy the base back with it.
+            //
+            // The counter asset is whatever the reversed order gives back, which
+            // is exactly what the original order spent.
+            let counter_asset = self.string_at(&source, "inAsset", "");
+            let side;
+            let unwind_amount;
+            let market_base;
+            let market_quote;
+            if source_side == "buy" {
+                side = "sell";
+                unwind_amount = amount;
+                market_base = self.string_at(&source, "outAsset", "");
+                market_quote = self.string_at(&source, "inAsset", "");
+            } else {
+                side = "buy";
+                unwind_amount = amount / price;
+                market_base = self.string_at(&source, "inAsset", "");
+                market_quote = self.string_at(&source, "outAsset", "");
+            }
+            let limit_price = if side == "buy" {
+                price * (1.0 + slippage_bps / 10000.0)
+            } else {
+                price * (1.0 - slippage_bps / 10000.0)
+            };
+            let mut step = HashMap::new();
+            step.insert("stepIndex".into(), Value::Float(steps.len() as f64));
+            step.insert("exchangeId".into(), Value::Str(exchange_id.clone()));
+            step.insert("symbol".into(), Value::Str(symbol));
+            step.insert("side".into(), Value::Str(side.to_string()));
+            // base and quote are carried so that an unwind plan can be fed
+            // straight back into check_execution_plan_safety: unwinding is
+            // trading, and it is subject to the same 25 USD cap.
+            step.insert("base".into(), Value::Str(market_base));
+            step.insert("quote".into(), Value::Str(market_quote));
+            step.insert("asset".into(), Value::Str(asset.clone()));
+            step.insert("counterAsset".into(), Value::Str(counter_asset.clone()));
+            step.insert("amount".into(), Value::Float(unwind_amount));
+            step.insert("expectedPrice".into(), Value::Float(price));
+            step.insert("limitPrice".into(), Value::Float(limit_price));
+            step.insert("notionalQuote".into(), Value::Float(unwind_amount * price));
+            step.insert("reachesFrom".into(), Value::Bool(counter_asset == from_asset));
+            step.insert("isDestination".into(), Value::Bool(asset == to_asset));
+            steps.push(Value::Map(step));
+        }
+        let mut plan = HashMap::new();
+        plan.insert("from".into(), Value::Str(from_asset));
+        plan.insert("to".into(), Value::Str(to_asset));
+        plan.insert("halted".into(), Value::Bool(self.bool_at(report, "halted", false)));
+        plan.insert("haltReason".into(), Value::Str(self.string_at(report, "haltReason", "")));
+        plan.insert("residualCount".into(), Value::Float(residual_count as f64));
+        plan.insert("requiresConfirmation".into(), Value::Bool(true));
+        plan.insert("automatic".into(), Value::Bool(false));
+        plan.insert("steps".into(), Value::List(steps));
+        plan.insert("unresolved".into(), Value::List(unresolved));
+        Value::Map(plan)
+    }
+
+    fn unresolved_entry(exchange_id: &str, asset: &str, amount: f64, reason: &str) -> Value {
+        let mut entry = HashMap::new();
+        entry.insert("exchangeId".into(), Value::Str(exchange_id.to_string()));
+        entry.insert("asset".into(), Value::Str(asset.to_string()));
+        entry.insert("amount".into(), Value::Float(amount));
+        entry.insert("reason".into(), Value::Str(reason.to_string()));
+        Value::Map(entry)
+    }
+}
