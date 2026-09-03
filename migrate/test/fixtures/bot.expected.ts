@@ -1,13 +1,12 @@
 import ccxt, { BadSymbol, InsufficientFunds } from 'ccxt';
-// TODO(ccxt-migrate): CCXT has no integration for these pmxt venues — kept on pmxtjs for now.
-import { Polymarket } from 'pmxtjs';
 
-// TODO(ccxt-migrate): CCXT `hyperliquid` is a different product surface than pmxt `Hyperliquid`. CCXT covers Hyperliquid spot + perpetuals. pmxt covers its prediction markets — re-point symbols at the perp/spot market you actually want.
+// TODO(ccxt-migrate): mapped to `ccxt.prediction.hyperliquid`. Same events/markets/outcomes model and 0..1 pricing as pmxt, but verify the outcome handles: pmxt addresses Hyperliquid prediction markets, so ccxt.prediction.hyperliquid is the like-for-like target. Use the top-level ccxt.hyperliquid only if you actually want its spot/perp markets.
 // TODO(ccxt-migrate): dropped constructor option `pmxtApiKey`. CCXT talks to the venue directly — there is no CCXT-hosted API to authenticate against, so this key has no counterpart.
-const venue = new ccxt.hyperliquid ({ 'walletAddress': process.env.WALLET_ADDRESS, 'privateKey': process.env.PRIVATE_KEY });
+const venue = new ccxt.prediction.hyperliquid ({ 'walletAddress': process.env.WALLET_ADDRESS, 'privateKey': process.env.PRIVATE_KEY });
 
-// TODO(ccxt-migrate): pmxt venue `Polymarket` has no CCXT exchange. Prediction market. No CCXT integration. Pick a CCXT exchange for this workload or keep pmxt for this venue.
-const poly = new Polymarket({ pmxtApiKey: process.env.PMXT_API_KEY });
+// TODO(ccxt-migrate): mapped to `ccxt.prediction.polymarket`. Same events/markets/outcomes model and 0..1 pricing as pmxt, but verify the outcome handles: Direct match: ccxt.prediction.polymarket, same events/markets/outcomes model.
+// TODO(ccxt-migrate): dropped constructor option `pmxtApiKey`. CCXT talks to the venue directly — there is no CCXT-hosted API to authenticate against, so this key has no counterpart.
+const poly = new ccxt.prediction.polymarket ();
 
 async function main () {
     // TODO(ccxt-migrate): signature changed: fetchMarkets(params) -> loadMarkets(). pmxt returns a filtered array; CCXT returns a dict keyed by symbol and takes no query/sort/limit filters. Filter the loaded `exchange.markets` map yourself.
@@ -15,11 +14,11 @@ async function main () {
     const markets = await venue.loadMarkets();
     const outcomeId = markets[0].outcomes[0].outcomeId;
 
-    // TODO(ccxt-migrate): signature changed: fetchOrderBook(outcomeId, limit, params) -> fetchOrderBook(symbol, limit, params). First argument becomes a unified symbol. CCXT levels are [price, amount] arrays, not {price, size} objects.
+    // TODO(ccxt-migrate): signature changed: fetchOrderBook(outcomeId, limit, params) -> fetchOrderBook(symbol, limit, params). First argument becomes the CCXT outcome handle (an outcome id is also accepted). CCXT levels are [price, amount] arrays, not {price, size} objects.
     const book = await venue.fetchOrderBook(outcomeId);
     console.log("best bid", book.bids[0].price, "best ask", book.asks[0].price);
 
-    // TODO(ccxt-migrate): signature changed: fetchOHLCV(outcomeId, resolution, limit, start, end) -> fetchOHLCV(symbol, timeframe, since, limit, params). Argument order changes (since comes before limit) and CCXT returns [timestamp, open, high, low, close, volume] arrays, not PriceCandle objects.
+    // TODO(ccxt-migrate): signature changed: fetchOHLCV(outcomeId, resolution, limit, start, end) -> fetchOHLCV(outcome, timeframe, since, limit, params). Argument order changes (since comes before limit) and CCXT returns [timestamp, open, high, low, close, volume] arrays, not PriceCandle objects.
     const candles = await venue.fetchOHLCV(outcomeId, "1h", undefined, 100);
     console.log("last close", candles[candles.length - 1].close);
 
@@ -28,7 +27,7 @@ async function main () {
     console.log(balances);
 
     try {
-        // TODO(ccxt-migrate): signature changed: createOrder({marketId, outcomeId, side, type, amount, price}) -> createOrder(symbol, type, side, amount, price, params). Object argument becomes positional arguments, and the order of type/side is swapped relative to how pmxt reads.
+        // TODO(ccxt-migrate): signature changed: createOrder({marketId, outcomeId, side, type, amount, price}) -> createOrder(outcome, type, side, amount, price, params). Object argument becomes positional arguments and type/side swap order. On prediction venues `amount` is a number of shares and `price` stays a 0..1 probability, so the numbers carry over unchanged.
         // TODO(ccxt-migrate): createOrder now takes positional arguments. The first one must be a unified CCXT symbol (e.g. 'BTC/USDT') — outcomeId is a pmxt id.
         const order = await venue.createOrder(outcomeId, "limit", "buy", 5, 0.42);
         // TODO(ccxt-migrate): signature changed: cancelOrder(orderId) -> cancelOrder(id, symbol, params). Most CCXT exchanges require the symbol as the second argument.

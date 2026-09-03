@@ -71,10 +71,31 @@ export function transformPython (source: string): PyResult {
 
     const needsPro = /\.(watch_[\w]+|unwatch_[\w]+|firehose)\s*\(/.test (source);
     const isAsync = /\bawait\s|\basync\s+def\s/.test (source);
+    // Prediction venues live in ccxt.prediction, which is async-only and is not
+    // part of ccxt.pro / ccxt.async_support — the module choice below is
+    // therefore decided by the venue first and by sync-vs-async second.
+    // Venues reach the file two ways: imported by name (`from pmxt import Kalshi`)
+    // and through the namespace (`pmxt.Kalshi()`), so both are checked here —
+    // the constructor pass resolves them the same way.
+    let usesPrediction = [ ...venueLocals.values () ].some ((v) => VENUES[v].namespace === 'prediction');
+    if (!usesPrediction && (namespaceLocal !== null)) {
+        for (const [ venueName, venueRule ] of Object.entries (VENUES)) {
+            if (venueRule.namespace !== 'prediction') {
+                continue;
+            }
+            const used = new RegExp ('\\b' + namespaceLocal + '\\s*\\.\\s*' + venueName + '\\s*\\(').test (source);
+            if (used) {
+                usesPrediction = true;
+                break;
+            }
+        }
+    }
 
     // --- 1. imports -------------------------------------------------------
     let ccxtModule = 'ccxt';
-    if (needsPro) {
+    if (usesPrediction) {
+        ccxtModule = 'ccxt.prediction';
+    } else if (needsPro) {
         ccxtModule = 'ccxt.pro';
     } else if (isAsync) {
         ccxtModule = 'ccxt.async_support';
@@ -82,6 +103,11 @@ export function transformPython (source: string): PyResult {
     const importLine = (indent: string) => {
         if (ccxtModule === 'ccxt') {
             return indent + 'import ccxt';
+        }
+        if (ccxtModule === 'ccxt.prediction') {
+            // `ccxt.prediction.<id>` IS the async class, so it is imported as
+            // itself rather than aliased to `ccxt`.
+            return indent + 'import ccxt.prediction';
         }
         return indent + 'import ' + ccxtModule + ' as ccxt';
     };
@@ -175,9 +201,14 @@ export function transformPython (source: string): PyResult {
             }
         }
         const config = kept.length ? ('{\n    ' + kept.join (',\n    ') + ',\n}') : '';
-        patch.edit (m.index!, closeParen + 1, 'ccxt.' + rule.ccxtId + ' (' + config + ')');
-        patch.note (m.index!, 'constructor', venue + ' -> ccxt.' + rule.ccxtId + ' (kwargs -> config dict)');
-        patch.todo (m.index!, 'CCXT `' + rule.ccxtId + '` is a different product surface than pmxt `' + venue + '`. ' + rule.note);
+        const target = (rule.namespace === 'prediction') ? ('ccxt.prediction.' + rule.ccxtId) : ('ccxt.' + rule.ccxtId);
+        patch.edit (m.index!, closeParen + 1, target + ' (' + config + ')');
+        patch.note (m.index!, 'constructor', venue + ' -> ' + target + ' (kwargs -> config dict)');
+        if (rule.namespace === 'prediction') {
+            patch.todo (m.index!, 'mapped to `' + target + '`, which is async-only — every call needs await and the surrounding function needs to be async. ' + rule.note);
+        } else {
+            patch.todo (m.index!, 'CCXT `' + rule.ccxtId + '` is a different product surface than pmxt `' + venue + '`. ' + rule.note);
+        }
     }
 
     // --- 3. create_order kwargs -> positional -----------------------------

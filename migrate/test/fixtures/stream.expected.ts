@@ -1,12 +1,10 @@
 import ccxt from 'ccxt';
-// TODO(ccxt-migrate): CCXT has no integration for some pmxt venues used here — kept the pmxtjs import for them.
-import * as pmxt from 'pmxtjs';
 
-// TODO(ccxt-migrate): CCXT `hyperliquid` is a different product surface than pmxt `Hyperliquid`. CCXT covers Hyperliquid spot + perpetuals. pmxt covers its prediction markets — re-point symbols at the perp/spot market you actually want.
+// TODO(ccxt-migrate): mapped to `ccxt.prediction.hyperliquid`. Same events/markets/outcomes model and 0..1 pricing as pmxt, but verify the outcome handles: pmxt addresses Hyperliquid prediction markets, so ccxt.prediction.hyperliquid is the like-for-like target. Use the top-level ccxt.hyperliquid only if you actually want its spot/perp markets.
 // TODO(ccxt-migrate): dropped constructor option `pmxtApiKey`. CCXT talks to the venue directly — there is no CCXT-hosted API to authenticate against, so this key has no counterpart.
-const venue = new ccxt.pro.hyperliquid ();
-// TODO(ccxt-migrate): pmxt venue `Polymarket` has no CCXT exchange. Prediction market. No CCXT integration. Pick a CCXT exchange for this workload or keep pmxt for this venue.
-const poly = new pmxt.Polymarket({});
+const venue = new ccxt.prediction.hyperliquid ();
+// TODO(ccxt-migrate): mapped to `ccxt.prediction.polymarket`. Same events/markets/outcomes model and 0..1 pricing as pmxt, but verify the outcome handles: Direct match: ccxt.prediction.polymarket, same events/markets/outcomes model.
+const poly = new ccxt.prediction.polymarket ();
 
 async function stream (outcomeId: string) {
     while (true) {

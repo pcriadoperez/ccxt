@@ -7,24 +7,28 @@ an AI-agent prompt for the second.
 
 ## Before you start: check your venues
 
-**pmxt is a prediction-market aggregator. CCXT is a spot and derivatives exchange
-library.** They overlap in API design, not in market coverage.
+Since **ccxt 4.5.77** there is a dedicated [`ccxt.prediction`](Prediction-Markets.md)
+namespace, built on the same events → markets → outcomes model pmxt uses and the same
+`0.0`–`1.0` pricing. For the venues it covers this is close to a drop-in move.
 
 | pmxt venue | CCXT |
 |---|---|
-| `Hyperliquid` | [`hyperliquid`](exchanges/hyperliquid.md) — spot + perpetuals |
-| `GeminiTitan` | [`gemini`](exchanges/gemini.md) — spot |
-| `Polymarket`, `PolymarketUS`, `Kalshi`, `Limitless`, `Probable`, `Baozi`, `Myriad`, `Opinion`, `Metaculus`, `Smarkets`, `SuiBets`, `Rain`, `Hunch` | no CCXT integration |
+| `Polymarket`, `PolymarketUS` | `ccxt.prediction.polymarket` |
+| `Kalshi`, `KalshiDemo` | `ccxt.prediction.kalshi` (demo via `setSandboxMode(true)`) |
+| `Limitless` | `ccxt.prediction.limitless` |
+| `Myriad` | `ccxt.prediction.myriad` |
+| `Opinion` | `ccxt.prediction.opinion` |
+| `Hyperliquid` | `ccxt.prediction.hyperliquid` — or [`hyperliquid`](exchanges/hyperliquid.md) for its spot/perp markets |
+| `GeminiTitan` | [`gemini`](exchanges/gemini.md) — **spot only**, so this one is a product-surface change |
+| `Probable`, `Baozi`, `Metaculus`, `Smarkets`, `SuiBets`, `Rain`, `Hunch` | no CCXT integration |
+| `Router`, `Mock` | no cross-venue router in CCXT; use `setSandboxMode(true)` instead of the test double |
 
-Even for the two that do map, the product surface differs: pmxt addresses those venues'
-prediction markets, CCXT addresses their spot and perpetual markets.
+`ccxt.prediction` does not exist before 4.5.77 — check `ccxt.version` before relying on it.
 
-So this migration makes sense when you are moving crypto trading off pmxt's hosted API
-onto CCXT's direct-to-venue model — 100+ exchanges, no middleman API key, no hosted
-custody. If your project trades prediction markets, CCXT has nothing to point those calls
-at, and the tooling below will tell you exactly which call sites are affected rather than
-producing code that cannot work. A project can use both libraries side by side; the
-codemod is built to leave that door open.
+If your project uses one of the venues in the last two rows, CCXT has nothing to point
+those calls at, and the tooling below tells you exactly which call sites are affected
+rather than producing code that cannot work. A project can use both libraries side by
+side; the codemod is built to leave that door open.
 
 ---
 
@@ -49,17 +53,25 @@ Start by running the codemod for the mechanical half:
 
     npx ccxt-migrate@latest --report MIGRATION-REPORT.md
 
-Read MIGRATION-REPORT.md before you touch anything else. Its "Not migrated"
-section is the part that matters: pmxt is a prediction-market aggregator and
-CCXT is a spot/derivatives library, so any Polymarket, Kalshi, Limitless or
-similar venue in this codebase has no CCXT equivalent at all. Do not invent
-one, do not silently swap in an unrelated exchange, and do not delete the
-feature. Tell me which call sites are affected and stop for a decision on them.
+Read MIGRATION-REPORT.md before you touch anything else. Since ccxt 4.5.77 a
+`ccxt.prediction` namespace covers Polymarket, Kalshi, Limitless, Myriad,
+Opinion and Hyperliquid's prediction markets, with the same events/markets/
+outcomes model and the same 0..1 pricing as pmxt — those are near drop-in.
+Check `ccxt.version` first, since the namespace does not exist before 4.5.77.
+The report's "Not migrated" section is what matters: Probable, Baozi,
+Metaculus, Smarkets, SuiBets, Rain, Hunch and pmxt's Router have no CCXT
+equivalent at all. Do not invent one, do not silently swap in an unrelated
+exchange, and do not delete the feature. Tell me which call sites are affected
+and stop for a decision on them.
 
 Then work through every `TODO(ccxt-migrate)` marker the codemod left:
 
-- Replace pmxt `outcomeId` / `market_id` values with unified CCXT symbols.
-  Call `loadMarkets()` once and look at the real keys — never guess a symbol.
+- Identifiers: on prediction venues CCXT accepts the raw `outcomeId` you
+  already have, so leave those values alone; `fetchEvents({query})` returns
+  outcomes carrying both a readable handle (`outcome`) and that raw id. Note
+  `fetchEvents` must be scoped by query/queries/tags/eventId/slug. Only on a
+  crypto venue do you need a unified symbol — call `loadMarkets()` and read the
+  real keys, never guess one.
 - Rewrite response handling for CCXT's shapes: order-book levels are
   `[price, amount]` arrays, OHLCV rows are `[timestamp, open, high, low, close, volume]`
   arrays, and `fetchBalance()` returns a dict keyed by currency code with
@@ -69,7 +81,8 @@ Then work through every `TODO(ccxt-migrate)` marker the codemod left:
 - Remove the pmxt hosted-session plumbing (`pmxtApiKey`, `getAuthNonce`,
   `loginWithSignature`, `logout`). CCXT talks to the venue directly and signs
   every request from the credentials on the exchange instance.
-- Swap the dependency: remove `pmxtjs`/`pmxt`, add `ccxt`.
+- Swap the dependency: remove `pmxtjs`/`pmxt`, add `ccxt` (>= 4.5.77 if
+  you need the prediction namespace).
 
 Explain the plan in plain language before making broad changes. Follow the
 documented mapping and keep moving unless a change is destructive, credentials
@@ -81,8 +94,8 @@ called its hosted API and CCXT calls the venue directly, so the literal requests
 will differ — what must match is the intent of each call: same instrument, same
 time window, same limit, same order side/amount/price, same account. Check
 specifically for: `fetchOHLCV`'s `since`/`limit` swap and a dropped `end`;
-price scale (pmxt prices are 0–1 probabilities, so every threshold, spread check
-and position-size calculation downstream is suspect); array-vs-object response
+price scale (only when the target is a crypto venue — prediction venues keep the
+0–1 scale, so thresholds carry over untouched); array-vs-object response
 shapes failing silently; `createOrder` positional slots and amount units;
 options the codemod reported as dropped; error classes whose hierarchy changed;
 and `fetchBalance`/`fetchPositions` call sites that used to take a per-address
@@ -137,8 +150,9 @@ npx ccxt-migrate@latest rules              # print the full mapping tables
 
 One command covers both languages: `.ts`, `.tsx`, `.js`, `.mjs`, `.cjs` files are
 migrated to CCXT for TypeScript/JavaScript, `.py` files to CCXT for Python. It picks the
-right flavour per file — plain `ccxt`, `ccxt.pro` when the file subscribes to a stream,
-`ccxt.async_support` for async Python.
+right flavour per file — `ccxt.prediction` for prediction venues, plain `ccxt`,
+`ccxt.pro` when the file subscribes to a stream, or `ccxt.async_support` for async
+Python.
 
 ### What the codemod does
 
@@ -155,7 +169,8 @@ right flavour per file — plain `ccxt`, `ccxt.pro` when the file subscribes to 
 
 It leaves a `TODO(ccxt-migrate)` comment instead of guessing, for:
 
-- **unified symbols** — it cannot know that a CLOB token id should become `'BTC/USDC:USDC'`
+- **crypto-venue symbols** — moving to a crypto exchange, it cannot know which unified
+  symbol a CLOB token id should become (prediction venues keep the id, so nothing to guess)
 - **response shapes** — rewriting field access blindly would silently corrupt working code
 - **venues CCXT does not cover** — it keeps the `pmxtjs` import for those, so your project
   still compiles and you can decide per call site
@@ -213,9 +228,24 @@ from the credentials on the instance, so `getAuthNonce()`, `loginWithSignature()
 
 ### Identifiers
 
-The single biggest change. pmxt addresses an instrument by `outcomeId`; CCXT uses a
-**unified symbol**: `'BTC/USDT'` for spot, `'BTC/USDC:USDC'` for a linear swap,
-`'BTC/USD:BTC-241227'` for a dated future. Load the real ones rather than guessing:
+**On prediction venues, your `outcomeId` values keep working.** CCXT addresses an outcome
+by a readable handle like `TRUMP_ACQUIRE_GREENLAND_2027:YES`, and also accepts the raw
+outcome id — the same CLOB token id pmxt gave you. Both return the identical book:
+
+```javascript
+const exchange = new ccxt.prediction.polymarket ();
+const events = await exchange.fetchEvents ({ 'query': 'Trump' });   // must be scoped
+const outcome = events[0]['markets'][0]['outcomes'][0];
+await exchange.fetchOrderBook (outcome['outcome']);     // the handle
+await exchange.fetchOrderBook (outcome['outcomeId']);   // the raw id — also accepted
+```
+
+`fetchEvents` must be scoped by at least one of `query`, `queries`, `tags`, `eventId` or
+`slug`, otherwise it throws `ArgumentsRequired`. For an unscoped browse use `fetchMarkets()`.
+
+**On crypto venues** — the `GeminiTitan` → `gemini` case — there is no outcome id, and you
+need a **unified symbol**: `'BTC/USDT'` for spot, `'BTC/USDC:USDC'` for a linear swap.
+Load the real ones rather than guessing:
 
 ```javascript
 const markets = await exchange.loadMarkets ();
@@ -234,11 +264,12 @@ pmxt returns typed objects with attribute access. CCXT returns plain dicts and a
 | Balance | `Balance[]` — `.currency`, `.available` | `balance['USDT']['free']` / `['used']` / `['total']` |
 | Order | `.marketId` + `.outcomeId`, status `canceled`/`rejected` | `['symbol']`, `['id']`, `['status']` in `open`/`closed`/`canceled` |
 | Position | `.size`, `.unrealizedPnL` | `['contracts']`, `['unrealizedPnl']`, `['side']` |
-| Prices | `0.0`–`1.0` probability | quote-currency price, unbounded |
+| Prices | `0.0`–`1.0` probability | prediction venues: **also `0.0`–`1.0` per share**. Crypto venues: quote-currency, unbounded |
 
-That last row is the one that bites. Anything assuming a 0–1 range — percentage
-formatting, implied probability, spread thresholds, position sizing — is wrong after the
-migration and will not raise an error.
+That last row only bites when you move to a *crypto* venue: there, anything assuming a
+0–1 range — percentage formatting, implied probability, spread thresholds, position
+sizing — is wrong after the migration and will not raise an error. Prediction-to-
+prediction keeps the scale, so that code is untouched.
 
 ### Methods
 
@@ -301,9 +332,12 @@ Always `close()` on shutdown — CCXT Pro and `ccxt.async_support` hold open soc
 
 ### Features with no CCXT equivalent
 
-`fetchEvents`, `fetchSeries` and the rest of the event/series model; `Router`,
-`fetchArbitrage`, `fetchMatches`, `compareMarketPrices`, `fetchHedges`; `firehose`;
-`getExecutionPrice`; the escrow and SQL helpers.
+`Router`, `fetchArbitrage`, `fetchMatches`, `compareMarketPrices`, `fetchHedges`;
+`firehose`; the escrow and SQL helpers.
+
+The event model is **no longer** on this list: `fetchEvents` and `fetchEvent` are real
+CCXT methods, `fetchEvents({ tags })` stands in for `fetchSeries`, and `fetchTradeQuote`
+covers `getExecutionPrice` on AMM venues (on CLOB venues, walk the order book yourself).
 
 Some are a few lines of your own code on top of CCXT — walking an order book to compute
 an execution price, comparing tickers from two exchanges. The codemod lists every one it
@@ -342,9 +376,9 @@ These are the ones that compile:
 | Regression | How to catch it |
 |---|---|
 | **Wrong time window** — `fetchOHLCV`'s `limit` and start time swap position, and pmxt's `end` has no slot | Is `since` a millisecond integer, not a `Date`? Did `end` become `params['until']` or vanish? |
-| **Price scale** — pmxt prices are `0.0`–`1.0` probabilities, CCXT prices are quote-currency | Every threshold, spread check, percentage format and position-size calculation downstream of a price is suspect |
+| **Price scale** — *crypto targets only.* `ccxt.prediction.*` keeps the `0.0`–`1.0` scale; a crypto venue changes it to quote-currency | Only when the target is a crypto exchange: every threshold, spread check, percentage format and position-size calculation downstream of a price is suspect |
 | **Response shape** — `book.bids[0].price` → `book['bids'][0][0]` | Arithmetic on an array throws, but truthiness checks and string interpolation fail silently |
-| **Order semantics** — `createOrder({...})` → positional `(symbol, type, side, amount, price)` | Did `type` and `side` swap? Does `amount` mean the same unit (check `market['contractSize']`)? |
+| **Order semantics** — `createOrder({...})` → positional `(outcome, type, side, amount, price)` | Did `type` and `side` swap? On prediction venues `amount` is shares and `price` stays 0..1; on crypto venues check `market['contractSize']` |
 | **Dropped arguments** — `loadMarkets()` takes no filters | Every drop is listed in `MIGRATION-REPORT.md`; re-implement client-side if the code needed it |
 | **Error hierarchy** — `MarketNotFound` → `BadSymbol`, `PmxtError` → `ExchangeError` | A broad catch that used to swallow everything may now let a different error through |
 | **Account identity** — `fetchBalance(address)` → credentials on the instance | Code that queried several addresses now returns the same account from all of those call sites |

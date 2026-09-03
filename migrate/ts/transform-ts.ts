@@ -212,10 +212,21 @@ export function transformTypeScript (source: string): TsResult {
                 newArgs = kept.length ? ('{ ' + kept.join (', ') + ' }') : '';
             }
         }
-        const target = needsPro ? ('ccxt.pro.' + rule.ccxtId) : ('ccxt.' + rule.ccxtId);
+        // Prediction venues live in their own namespace and are not part of
+        // ccxt.pro — the pro classes cover the crypto exchanges only.
+        let target = 'ccxt.' + rule.ccxtId;
+        if (rule.namespace === 'prediction') {
+            target = 'ccxt.prediction.' + rule.ccxtId;
+        } else if (needsPro) {
+            target = 'ccxt.pro.' + rule.ccxtId;
+        }
         patch.edit (m.index!, closeParen + 1, 'new ' + target + ' (' + newArgs + ')');
         patch.note (m.index!, 'constructor', venue + ' -> ' + target);
-        patch.todo (m.index!, 'CCXT `' + rule.ccxtId + '` is a different product surface than pmxt `' + venue + '`. ' + rule.note);
+        if (rule.namespace === 'prediction') {
+            patch.todo (m.index!, 'mapped to `' + target + '`. Same events/markets/outcomes model and 0..1 pricing as pmxt, but verify the outcome handles: ' + rule.note);
+        } else {
+            patch.todo (m.index!, 'CCXT `' + rule.ccxtId + '` is a different product surface than pmxt `' + venue + '`. ' + rule.note);
+        }
     }
 
     // --- 4. createOrder object argument -> positional arguments ----------
