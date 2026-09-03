@@ -1790,10 +1790,14 @@ public class OrderRouter
             var step = this.AsDict(steps[i]);
             var result = await this.PlaceStep(step, venues, options, usdRates, strategy, report);
             results[i] = result;
-            if (this.StringAt(result, "status", "") == "failed")
+            var stepStatus = this.StringAt(result, "status", "");
+            if (stepStatus == "failed" || stepStatus == "outcome_unknown")
             {
                 report["halted"] = true;
-                report["haltReason"] = "order_failed";
+                //  An unknown outcome must NOT fall through to reconciliation: reconciling reads
+                //  outAmount, which is 0 because nothing was observed, and reports the halt as
+                //  "nothing_filled" — asserting the one thing we do not know.
+                report["haltReason"] = (stepStatus == "failed") ? "order_failed" : "outcome_unknown";
                 report["haltStepIndex"] = i;
                 this.MarkRemainingSkipped(results, i + 1);
                 return;
@@ -1852,10 +1856,11 @@ public class OrderRouter
             for (var i = cursor; i < end; i++)
             {
                 var result = this.AsDict(results[i]);
-                if (this.StringAt(result, "status", "") == "failed")
+                var legStatus = this.StringAt(result, "status", "");
+                if (legStatus == "failed" || legStatus == "outcome_unknown")
                 {
                     report["halted"] = true;
-                    report["haltReason"] = "order_failed";
+                    report["haltReason"] = (legStatus == "failed") ? "order_failed" : "outcome_unknown";
                     report["haltStepIndex"] = i;
                     this.MarkRemainingSkipped(results, end);
                     return;
@@ -1973,7 +1978,18 @@ public class OrderRouter
                 order = await this.PlaceImmediateOrder(venue, symbol, side, amount, price, orderParams, options, result);
             }
             result["orderId"] = this.StringAt(order, "id", "");
+            //  "the venue said zero" and "the venue said nothing" are different facts that used to
+            //  produce the same number: a venue omitting filled yielded 0, reconciliation read that
+            //  as nothing_filled and halted the route while a real position existed.
+            if (!this.HasNumberAt(order, "filled") && this.StringAt(result, "orderId", "") != "")
+            {
+                //  One re-read, exactly as PlaceProtectedLimit already does after its poll. The
+                //  immediate path never did, so it could only ever fabricate.
+                order = await this.RefetchOrder(venue, this.StringAt(result, "orderId", ""), symbol, order);
+            }
+            var filledKnown = this.HasNumberAt(order, "filled");
             var filled = this.NumberAt(order, "filled", 0);
+            var averageKnown = this.HasNumberAt(order, "average") || this.HasNumberAt(order, "price");
             var average = this.NumberAt(order, "average", 0);
             if (average <= 0)
             {
@@ -1983,11 +1999,15 @@ public class OrderRouter
             {
                 average = price;
             }
+            var costKnown = this.HasNumberAt(order, "cost");
             var cost = this.NumberAt(order, "cost", 0);
             if (cost <= 0)
             {
                 cost = filled * average;
             }
+            result["filledKnown"] = filledKnown;
+            result["averageKnown"] = averageKnown;
+            result["costKnown"] = costKnown;
             result["filledAmount"] = filled;
             result["averagePrice"] = average;
             result["cost"] = cost;
@@ -2004,6 +2024,15 @@ public class OrderRouter
                 result["inAmount"] = filled;
                 result["outAsset"] = this.StringAt(step, "quote", "");
                 result["outAmount"] = cost;
+            }
+            if (!filledKnown)
+            {
+                //  Refuse to reconcile on a fabricated fill: halting on an unknown quantity is
+                //  recoverable, sizing the next hop from an invented number is not.
+                result["status"] = "outcome_unknown";
+                this.RecordOpenOrder(report, exchangeId, symbol, this.StringAt(result, "orderId", ""), "fill_unconfirmed");
+                report["ordersPlaced"] = this.NumberAt(report, "ordersPlaced", 0) + 1;
+                return result;
             }
             if (filled <= 0)
             {
@@ -2072,6 +2101,56 @@ public class OrderRouter
     /// it; everything else is the venue ANSWERING. Matched by class name so the five ports agree
     /// without depending on each language's type-test mechanics.
     /// </summary>
+    /// <summary>
+    /// Reports whether a container carries a usable number at key, as opposed to nothing.
+    /// Deliberately the same coercion NumberAt does, so "usable" and "present" cannot disagree.
+    /// </summary>
+    public bool HasNumberAt(dict container, string key)
+    {
+        if (container == null || !container.ContainsKey(key))
+        {
+            return false;
+        }
+        var value = container[key];
+        if (value == null || value is bool)
+        {
+            return false;
+        }
+        if (value is string text)
+        {
+            return this.IsFiniteNumber(this.ParseNumber(text, double.NaN));
+        }
+        try
+        {
+            return this.IsFiniteNumber(Convert.ToDouble(value, CultureInfo.InvariantCulture));
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Re-reads one order, keeping the previous body when the venue cannot be asked.
+    /// </summary>
+    public async Task<dict> RefetchOrder(Exchange venue, string orderId, string symbol, dict fallback)
+    {
+        try
+        {
+            var reread = this.OrderToDict(await venue.FetchOrder(orderId, symbol));
+            if (reread == null)
+            {
+                return fallback;
+            }
+            return reread;
+        }
+        catch (Exception)
+        {
+            //  the caller marks the fill unknown; a throw here must not lose the placement record
+            return fallback;
+        }
+    }
+
     public bool IsOutcomeUnknownError(string errorCode)
     {
         return errorCode == "RequestTimeout" || errorCode == "ExchangeNotAvailable"

@@ -1489,9 +1489,14 @@ class OrderRouter {
             const step = steps[i];
             const result = await this.placeStep (step, venues, options, usdRates, strategy, report);
             results[i] = result;
-            if (this.stringAt (result, 'status', '') === 'failed') {
+            const status = this.stringAt (result, 'status', '');
+            if (status === 'failed' || status === 'outcome_unknown') {
                 report['halted'] = true;
-                report['haltReason'] = 'order_failed';
+                //  An unknown outcome must NOT fall through to reconciliation. Reconciling reads
+                //  outAmount, which is 0 because nothing was observed, and reports the halt as
+                //  'nothing_filled' — asserting the one thing we do not know. The route stops
+                //  either way; the difference is whether the operator is told a position may exist.
+                report['haltReason'] = (status === 'failed') ? 'order_failed' : 'outcome_unknown';
                 report['haltStepIndex'] = i;
                 this.markRemainingSkipped (results, i + 1);
                 return;
@@ -1550,9 +1555,10 @@ class OrderRouter {
             }
             for (let i = cursor; i < end; i++) {
                 const result = results[i];
-                if (this.stringAt (result, 'status', '') === 'failed') {
+                const status = this.stringAt (result, 'status', '');
+                if (status === 'failed' || status === 'outcome_unknown') {
                     report['halted'] = true;
-                    report['haltReason'] = 'order_failed';
+                    report['haltReason'] = (status === 'failed') ? 'order_failed' : 'outcome_unknown';
                     report['haltStepIndex'] = i;
                     this.markRemainingSkipped (results, end);
                     return;
@@ -1673,7 +1679,19 @@ class OrderRouter {
                 order = await this.placeImmediateOrder (venue, symbol, side, amount, price, orderParams, options, result);
             }
             result['orderId'] = this.stringAt (order, 'id', '');
+            //  "the venue said zero" and "the venue said nothing" are different facts and used to
+            //  produce the same number. A venue that omits `filled` yielded 0, reconciliation read
+            //  that as nothing_filled and halted the route — while a real position sat on a real
+            //  venue. So presence is tested, not the value.
+            if (!this.hasNumberAt (order, 'filled') && result['orderId'] !== '') {
+                //  One re-read, exactly as placeProtectedLimit already does after its poll. The
+                //  immediate path never did, so it could only ever fabricate. Costs one call and
+                //  only on venues that answered incompletely.
+                order = await this.refetchOrder (venue, this.stringAt (result, 'orderId', ''), symbol, order);
+            }
+            const filledKnown = this.hasNumberAt (order, 'filled');
             const filled = this.numberAt (order, 'filled', 0);
+            const averageKnown = this.hasNumberAt (order, 'average') || this.hasNumberAt (order, 'price');
             let average = this.numberAt (order, 'average', 0);
             if (average <= 0) {
                 average = this.numberAt (order, 'price', 0);
@@ -1681,6 +1699,7 @@ class OrderRouter {
             if (average <= 0) {
                 average = price;
             }
+            const costKnown = this.hasNumberAt (order, 'cost');
             let cost = this.numberAt (order, 'cost', 0);
             if (cost <= 0) {
                 cost = filled * average;
@@ -1688,6 +1707,20 @@ class OrderRouter {
             result['filledAmount'] = filled;
             result['averagePrice'] = average;
             result['cost'] = cost;
+            //  Companion flags, per the file's own "was it known" rule. A false here means the
+            //  number beside it is this class's best guess, not the venue's answer.
+            result['filledKnown'] = filledKnown;
+            result['averageKnown'] = averageKnown;
+            result['costKnown'] = costKnown;
+            if (!filledKnown) {
+                //  Refuse to reconcile on a fabricated fill. Halting on an unknown quantity is
+                //  recoverable — an operator reads the order back and resumes; sizing the next hop
+                //  from an invented number is not.
+                result['status'] = 'outcome_unknown';
+                this.recordOpenOrder (report, exchangeId, symbol, this.stringAt (result, 'orderId', ''), 'fill_unconfirmed');
+                report['ordersPlaced'] = this.numberAt (report, 'ordersPlaced', 0) + 1;
+                return result;
+            }
             if (side === 'buy') {
                 result['inAsset'] = this.stringAt (step, 'quote', '');
                 result['inAmount'] = cost;
@@ -1806,6 +1839,58 @@ class OrderRouter {
      * @description names a caught exception by its class, which is the one label all five languages agree on
      * @param {object} e the caught exception
      * @returns {string} the exception class name, or unknown_error
+     */
+    hasNumberAt (container: Dict, key: string): boolean {
+        if (container === undefined || container === null) {
+            return false;
+        }
+        const value = container[key];
+        if (value === undefined || value === null) {
+            return false;
+        }
+        //  Deliberately the same coercion numberAt does, so "the value is usable" and "the value
+        //  is present" can never disagree: a venue reporting filled as the string "0.5" has
+        //  answered, and one reporting NaN or a word has not.
+        if (typeof value === 'number') {
+            return this.isFiniteNumber (value);
+        }
+        if (typeof value === 'string') {
+            return this.isFiniteNumber (this.parseNumber (value, Number.NaN));
+        }
+        return false;
+    }
+
+    /**
+     * @ignore
+     * @method
+     * @name OrderRouter#refetchOrder
+     * @description re-reads one order, returning the previous body unchanged when the venue cannot be asked
+     * @param {object} venue the exchange instance
+     * @param {string} orderId the venue's order id
+     * @param {string} symbol the market
+     * @param {object} fallback the order body to keep when the re-read is impossible or fails
+     * @returns {object} the re-read order, or the fallback
+     */
+    async refetchOrder (venue: any, orderId: string, symbol: string, fallback: Dict): Promise<Dict> {
+        try {
+            const reread = await venue.fetchOrder (orderId, symbol);
+            if (reread === undefined || reread === null) {
+                return fallback;
+            }
+            return reread;
+        } catch (e) {
+            //  the caller marks the fill unknown; a throw here must not lose the placement record
+            return fallback;
+        }
+    }
+
+    /**
+     * @ignore
+     * @method
+     * @name OrderRouter#isOutcomeUnknownError
+     * @description reports whether a thrown error leaves a placement's outcome genuinely unknown
+     * @param {string} errorCode the error class name
+     * @returns {bool} true when the request may or may not have reached the venue
      */
     isOutcomeUnknownError (errorCode: string): boolean {
         //  ccxt's NetworkError family: the request failed in a way that does not tell us whether

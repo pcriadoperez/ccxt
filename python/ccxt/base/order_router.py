@@ -1297,9 +1297,13 @@ class OrderRouter:
             step = steps[i]
             result = self.place_step(step, venues, options, usd_rates, strategy, report)
             results[i] = result
-            if self.string_at(result, 'status', '') == 'failed':
+            status = self.string_at(result, 'status', '')
+            if status in ('failed', 'outcome_unknown'):
                 report['halted'] = True
-                report['haltReason'] = 'order_failed'
+                # An unknown outcome must NOT fall through to reconciliation. Reconciling reads
+                # outAmount, which is 0 because nothing was observed, and reports the halt as
+                # 'nothing_filled' — asserting the one thing we do not know.
+                report['haltReason'] = 'order_failed' if status == 'failed' else 'outcome_unknown'
                 report['haltStepIndex'] = i
                 self.mark_remaining_skipped(results, i + 1)
                 return
@@ -1348,9 +1352,10 @@ class OrderRouter:
                     results[cursor + i] = pending[i].result()
             for i in range(cursor, end):
                 result = results[i]
-                if self.string_at(result, 'status', '') == 'failed':
+                status = self.string_at(result, 'status', '')
+                if status in ('failed', 'outcome_unknown'):
                     report['halted'] = True
-                    report['haltReason'] = 'order_failed'
+                    report['haltReason'] = 'order_failed' if status == 'failed' else 'outcome_unknown'
                     report['haltStepIndex'] = i
                     self.mark_remaining_skipped(results, end)
                     return
@@ -1453,15 +1458,28 @@ class OrderRouter:
             else:
                 order = self.place_immediate_order(venue, symbol, side, amount, price, order_params, options, result)
             result['orderId'] = self.string_at(order, 'id', '')
+            # "the venue said zero" and "the venue said nothing" are different facts and used to
+            # produce the same number. A venue omitting `filled` yielded 0, reconciliation read
+            # that as nothing_filled and halted while a real position existed. Test presence.
+            if not self.has_number_at(order, 'filled') and result['orderId'] != '':
+                # One re-read, exactly as place_protected_limit already does after its poll. The
+                # immediate path never did, so it could only ever fabricate.
+                order = self.refetch_order(venue, self.string_at(result, 'orderId', ''), symbol, order)
+            filled_known = self.has_number_at(order, 'filled')
             filled = self.number_at(order, 'filled', 0)
+            average_known = self.has_number_at(order, 'average') or self.has_number_at(order, 'price')
             average = self.number_at(order, 'average', 0)
             if average <= 0:
                 average = self.number_at(order, 'price', 0)
             if average <= 0:
                 average = price
+            cost_known = self.has_number_at(order, 'cost')
             cost = self.number_at(order, 'cost', 0)
             if cost <= 0:
                 cost = filled * average
+            result['filledKnown'] = filled_known
+            result['averageKnown'] = average_known
+            result['costKnown'] = cost_known
             result['filledAmount'] = filled
             result['averagePrice'] = average
             result['cost'] = cost
@@ -1475,6 +1493,15 @@ class OrderRouter:
                 result['inAmount'] = filled
                 result['outAsset'] = self.string_at(step, 'quote', '')
                 result['outAmount'] = cost
+            if not filled_known:
+                # Refuse to reconcile on a fabricated fill. Halting on an unknown quantity is
+                # recoverable — an operator reads the order back and resumes; sizing the next hop
+                # from an invented number is not.
+                result['status'] = 'outcome_unknown'
+                self.record_open_order(report, exchange_id, symbol, self.string_at(result, 'orderId', ''), 'fill_unconfirmed')
+                with self.lock:
+                    report['ordersPlaced'] = self.number_at(report, 'ordersPlaced', 0) + 1
+                return result
             if filled <= 0:
                 result['status'] = 'unfilled'
             elif filled >= amount * (1 - OrderRouter.TOLERANCE):
@@ -1517,6 +1544,47 @@ class OrderRouter:
                 result['status'] = 'outcome_unknown'
                 self.record_unconfirmed_placement(report, exchange_id, symbol, 'placement_unconfirmed')
             return result
+
+    def has_number_at(self, container, key):
+        """
+        reports whether a container carries a usable number at key, as opposed to nothing
+
+        :param dict container: the container
+        :param str key: the field
+        :returns bool: True when the venue actually answered with a finite number
+        """
+        if container is None:
+            return False
+        value = container.get(key) if isinstance(container, dict) else None
+        if value is None:
+            return False
+        # Deliberately the same coercion number_at does, so "usable" and "present" cannot disagree.
+        if isinstance(value, bool):
+            return False
+        if isinstance(value, (int, float)):
+            return self.is_finite_number(float(value))
+        if isinstance(value, str):
+            return self.is_finite_number(self.parse_number(value, float('nan')))
+        return False
+
+    def refetch_order(self, venue, order_id, symbol, fallback):
+        """
+        re-reads one order, returning the previous body unchanged when the venue cannot be asked
+
+        :param venue: the exchange instance
+        :param str order_id: the venue's order id
+        :param str symbol: the market
+        :param dict fallback: the order body to keep when the re-read is impossible or fails
+        :returns dict: the re-read order, or the fallback
+        """
+        try:
+            reread = venue.fetch_order(order_id, symbol)
+            if reread is None:
+                return fallback
+            return reread
+        except Exception:
+            # the caller marks the fill unknown; a raise here must not lose the placement record
+            return fallback
 
     def is_outcome_unknown_error(self, error_code):
         """

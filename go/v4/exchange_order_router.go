@@ -1603,9 +1603,15 @@ func (this *OrderRouter) executeSequential(report map[string]any, results []map[
 		result := this.placeStep(steps[i], venues, options, usdRates, strategy, sink)
 		results[i] = result
 		this.mergeSink(report, sink)
-		if routerStringAt(result, "status", "") == "failed" {
+		if status := routerStringAt(result, "status", ""); status == "failed" || status == "outcome_unknown" {
 			report["halted"] = true
+			// An unknown outcome must NOT fall through to reconciliation: reconciling reads
+			// outAmount, which is 0 because nothing was observed, and reports the halt as
+			// "nothing_filled" — asserting the one thing we do not know.
 			report["haltReason"] = "order_failed"
+			if status == "outcome_unknown" {
+				report["haltReason"] = "outcome_unknown"
+			}
 			report["haltStepIndex"] = float64(i)
 			this.markRemainingSkipped(results, i+1)
 			return nil
@@ -1664,9 +1670,12 @@ func (this *OrderRouter) executeParallelWithinHop(report map[string]any, results
 		}
 		for i := cursor; i < end; i++ {
 			result := results[i]
-			if routerStringAt(result, "status", "") == "failed" {
+			if status := routerStringAt(result, "status", ""); status == "failed" || status == "outcome_unknown" {
 				report["halted"] = true
 				report["haltReason"] = "order_failed"
+				if status == "outcome_unknown" {
+					report["haltReason"] = "outcome_unknown"
+				}
 				report["haltStepIndex"] = float64(i)
 				this.markRemainingSkipped(results, end)
 				return nil
@@ -1848,7 +1857,18 @@ func (this *OrderRouter) placeStepInner(result map[string]any, step map[string]a
 		return err
 	}
 	result["orderId"] = routerDerefString(order.Id)
+	// "the venue said zero" and "the venue said nothing" are different facts that used to produce
+	// the same number: a nil Filled read as 0, reconciliation called that nothing_filled and
+	// halted the route while a real position existed. Test presence — and finiteness too, since a
+	// NaN reaching the report makes json.Marshal of the whole thing fail.
+	if !routerHasFloat(order.Filled) && routerStringAt(result, "orderId", "") != "" {
+		// One re-read, exactly as placeProtectedLimit already does after its poll. The immediate
+		// path never did, so it could only ever fabricate.
+		order = routerRefetchOrder(venue, routerStringAt(result, "orderId", ""), symbol, order)
+	}
+	filledKnown := routerHasFloat(order.Filled)
 	filled := routerDerefFloat(order.Filled)
+	averageKnown := routerHasFloat(order.Average) || routerHasFloat(order.Price)
 	average := routerDerefFloat(order.Average)
 	if average <= 0 {
 		average = routerDerefFloat(order.Price)
@@ -1856,10 +1876,14 @@ func (this *OrderRouter) placeStepInner(result map[string]any, step map[string]a
 	if average <= 0 {
 		average = price
 	}
+	costKnown := routerHasFloat(order.Cost)
 	cost := routerDerefFloat(order.Cost)
 	if cost <= 0 {
 		cost = filled * average
 	}
+	result["filledKnown"] = filledKnown
+	result["averageKnown"] = averageKnown
+	result["costKnown"] = costKnown
 	result["filledAmount"] = filled
 	result["averagePrice"] = average
 	result["cost"] = cost
@@ -1873,6 +1897,14 @@ func (this *OrderRouter) placeStepInner(result map[string]any, step map[string]a
 		result["inAmount"] = filled
 		result["outAsset"] = routerStringAt(step, "quote", "")
 		result["outAmount"] = cost
+	}
+	if !filledKnown {
+		// Refuse to reconcile on a fabricated fill: halting on an unknown quantity is recoverable,
+		// sizing the next hop from an invented number is not.
+		result["status"] = "outcome_unknown"
+		routerRecordOpenOrder(sink, exchangeId, symbol, routerStringAt(result, "orderId", ""), "fill_unconfirmed")
+		sink.placed++
+		return nil
 	}
 	if filled <= 0 {
 		result["status"] = "unfilled"
@@ -1946,6 +1978,23 @@ func routerErrorRecord(stepIndex float64, exchangeId string, symbol string, code
 
 // routerDerefFloat reads an optional float64 as 0 when absent — the class emits
 // no nulls, and 0 is its "unknown number".
+// routerHasFloat reports whether an optional number is an ANSWER: present and finite. A nil
+// pointer is the venue saying nothing, and a NaN is worse than nothing — it fails every
+// comparison, so it is neither filtered nor ordered, and it makes json.Marshal of the report fail.
+func routerHasFloat(value *float64) bool {
+	return value != nil && routerIsFiniteNumber(*value)
+}
+
+// routerRefetchOrder re-reads one order, keeping the previous body when the venue cannot be asked.
+func routerRefetchOrder(venue IExchange, orderId string, symbol string, fallback Order) Order {
+	reread, err := venue.FetchOrder(orderId, WithFetchOrderSymbol(symbol))
+	if err != nil {
+		// the caller marks the fill unknown; an error here must not lose the placement record
+		return fallback
+	}
+	return reread
+}
+
 func routerDerefFloat(value *float64) float64 {
 	if value == nil {
 		return 0

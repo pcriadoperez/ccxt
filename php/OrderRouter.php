@@ -1483,9 +1483,13 @@ class OrderRouter {
             $step = $steps[$i];
             $result = $this->placeStep($step, $venues, $options, $usdRates, $strategy, $report);
             $report['steps'][$i] = $result;
-            if ($this->stringAt($result, 'status', '') === 'failed') {
+            $status = $this->stringAt($result, 'status', '');
+            if ($status === 'failed' || $status === 'outcome_unknown') {
                 $report['halted'] = true;
-                $report['haltReason'] = 'order_failed';
+                // An unknown outcome must NOT fall through to reconciliation: reconciling reads
+                // outAmount, which is 0 because nothing was observed, and reports the halt as
+                // 'nothing_filled' — asserting the one thing we do not know.
+                $report['haltReason'] = ($status === 'failed') ? 'order_failed' : 'outcome_unknown';
                 $report['haltStepIndex'] = $i;
                 $this->markRemainingSkipped($report['steps'], $i + 1);
                 return;
@@ -1538,9 +1542,10 @@ class OrderRouter {
             }
             for ($i = $cursor; $i < $end; $i++) {
                 $result = $report['steps'][$i];
-                if ($this->stringAt($result, 'status', '') === 'failed') {
+                $status = $this->stringAt($result, 'status', '');
+                if ($status === 'failed' || $status === 'outcome_unknown') {
                     $report['halted'] = true;
-                    $report['haltReason'] = 'order_failed';
+                    $report['haltReason'] = ($status === 'failed') ? 'order_failed' : 'outcome_unknown';
                     $report['haltStepIndex'] = $i;
                     $this->markRemainingSkipped($report['steps'], $end);
                     return;
@@ -1657,7 +1662,16 @@ class OrderRouter {
                 $order = $this->placeImmediateOrder($venue, $symbol, $side, $amount, $price, $orderParams, $options, $result);
             }
             $result['orderId'] = $this->stringAt($order, 'id', '');
+            // "the venue said zero" and "the venue said nothing" are different facts that used to
+            // produce the same number: a venue omitting filled yielded 0, reconciliation read that
+            // as nothing_filled and halted while a real position existed. Test presence.
+            if (!$this->hasNumberAt($order, 'filled') && $result['orderId'] !== '') {
+                // One re-read, exactly as placeProtectedLimit already does after its poll.
+                $order = $this->refetchOrder($venue, $this->stringAt($result, 'orderId', ''), $symbol, $order);
+            }
+            $filledKnown = $this->hasNumberAt($order, 'filled');
             $filled = $this->numberAt($order, 'filled', 0);
+            $averageKnown = $this->hasNumberAt($order, 'average') || $this->hasNumberAt($order, 'price');
             $average = $this->numberAt($order, 'average', 0);
             if ($average <= 0) {
                 $average = $this->numberAt($order, 'price', 0);
@@ -1665,10 +1679,14 @@ class OrderRouter {
             if ($average <= 0) {
                 $average = $price;
             }
+            $costKnown = $this->hasNumberAt($order, 'cost');
             $cost = $this->numberAt($order, 'cost', 0);
             if ($cost <= 0) {
                 $cost = $filled * $average;
             }
+            $result['filledKnown'] = $filledKnown;
+            $result['averageKnown'] = $averageKnown;
+            $result['costKnown'] = $costKnown;
             $result['filledAmount'] = $filled;
             $result['averagePrice'] = $average;
             $result['cost'] = $cost;
@@ -1682,6 +1700,14 @@ class OrderRouter {
                 $result['inAmount'] = $filled;
                 $result['outAsset'] = $this->stringAt($step, 'quote', '');
                 $result['outAmount'] = $cost;
+            }
+            if (!$filledKnown) {
+                // Refuse to reconcile on a fabricated fill: halting on an unknown quantity is
+                // recoverable, sizing the next hop from an invented number is not.
+                $result['status'] = 'outcome_unknown';
+                $this->recordOpenOrder($report, $exchangeId, $symbol, $this->stringAt($result, 'orderId', ''), 'fill_unconfirmed');
+                $report['ordersPlaced'] = $this->numberAt($report, 'ordersPlaced', 0) + 1;
+                return $result;
             }
             if ($filled <= 0) {
                 $result['status'] = 'unfilled';
@@ -1737,6 +1763,37 @@ class OrderRouter {
      * @param string $reason why the order may still be open
      * @return void
      */
+    public function hasNumberAt($container, $key) {
+        if ($container === null || !is_array($container) || !array_key_exists($key, $container)) {
+            return false;
+        }
+        $value = $container[$key];
+        if ($value === null || is_bool($value)) {
+            return false;
+        }
+        // deliberately the same coercion numberAt does, so "usable" and "present" cannot disagree
+        if (is_int($value) || is_float($value)) {
+            return $this->isFiniteNumber((float) $value);
+        }
+        if (is_string($value)) {
+            return $this->isFiniteNumber($this->parseNumber($value, NAN));
+        }
+        return false;
+    }
+
+    public function refetchOrder($venue, $orderId, $symbol, $fallback) {
+        try {
+            $reread = $venue->fetchOrder($orderId, $symbol);
+            if ($reread === null) {
+                return $fallback;
+            }
+            return $reread;
+        } catch (\Throwable $e) {
+            // the caller marks the fill unknown; a throw here must not lose the placement record
+            return $fallback;
+        }
+    }
+
     public function isOutcomeUnknownError($errorCode) {
         // ccxt's NetworkError family: the request failed in a way that does not tell us whether
         // the venue processed it. Everything else in the hierarchy is the venue ANSWERING.

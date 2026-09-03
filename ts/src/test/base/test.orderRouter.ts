@@ -350,6 +350,8 @@ class StubVenue {
     createdStatus: string;
     //  createOrder throws a NETWORK error: the order may or may not have reached the venue
     timeoutCreate: boolean;
+    //  answers createOrder WITHOUT filled/average/cost, as several real venues do
+    omitFillFields: boolean;
 
     constructor (id: string, fillRatio: number = 1, failCreate: boolean = false) {
         this.id = id;
@@ -363,6 +365,7 @@ class StubVenue {
         this.cancelThrows = false;
         this.createdStatus = '';
         this.timeoutCreate = false;
+        this.omitFillFields = false;
     }
 
     async fetchOrder (id: string, symbol: string) {
@@ -413,6 +416,9 @@ class StubVenue {
         const filled = amount * this.fillRatio;
         const average = (price === undefined) ? 100 : price;
         const status = (this.createdStatus === '') ? 'closed' : this.createdStatus;
+        if (this.omitFillFields) {
+            return { 'id': 'stub-order', 'status': status };
+        }
         return { 'id': 'stub-order', 'status': status, 'filled': filled, 'average': average, 'cost': filled * average };
     }
 }
@@ -846,4 +852,44 @@ test ('a failure BEFORE dispatch records no open order', async () => {
     assert.strictEqual (report['steps'][0]['errorCode'], 'rounded_to_zero');
     assert.strictEqual (report['openOrders'].length, 0);
     assert.deepStrictEqual (venue.calls, [], 'nothing was dispatched');
+});
+
+test ('a venue that omits filled is re-read, not guessed at', async () => {
+    //  "the venue said zero" and "the venue said nothing" used to produce the same 0, which
+    //  reconciliation read as nothing_filled — halting the route while a real position existed.
+    const plan = router.buildExecutionPlan (oneLegRoute ('buy', 'BTC', 'USDT', 0.1, 100), {});
+    const venue = new StubVenue ('stub');
+    venue.omitFillFields = true;
+    //  the re-read DOES know the fill
+    venue.fetchOrderResults = [ { 'id': 'stub-order', 'status': 'closed', 'filled': 0.1, 'average': 100, 'cost': 10 } ];
+    const report = await router.execute (plan, { 'stub': venue }, { 'strategy': 'sequential', 'live': true, 'usdRates': { 'USDT': 1 } });
+    assert.ok (venue.calls.indexOf ('fetchOrder:stub-order') !== -1, 'the immediate path must confirm the fill');
+    assert.strictEqual (report['steps'][0]['status'], 'filled');
+    assert.strictEqual (report['steps'][0]['filledAmount'], 0.1);
+    assert.strictEqual (report['steps'][0]['filledKnown'], true);
+});
+
+test ('a fill that stays unknown after the re-read halts instead of reconciling on a guess', async () => {
+    //  Halting on an unknown quantity is recoverable: an operator reads the order back and
+    //  resumes. Sizing the next hop from an invented number is not.
+    const plan = router.buildExecutionPlan (oneLegRoute ('buy', 'BTC', 'USDT', 0.1, 100), {});
+    const venue = new StubVenue ('stub');
+    venue.omitFillFields = true;
+    venue.fetchOrderResults = [ { 'id': 'stub-order', 'status': 'closed' } ];
+    const report = await router.execute (plan, { 'stub': venue }, { 'strategy': 'sequential', 'live': true, 'usdRates': { 'USDT': 1 } });
+    assert.strictEqual (report['steps'][0]['status'], 'outcome_unknown');
+    assert.strictEqual (report['steps'][0]['filledKnown'], false);
+    assert.strictEqual (report['halted'], true);
+    assert.strictEqual (report['haltReason'], 'outcome_unknown', 'never nothing_filled: that is the one thing we do not know');
+    assert.strictEqual (report['openOrders'][0]['reason'], 'fill_unconfirmed');
+});
+
+test ('a venue that reports a genuine zero fill is still nothing_filled', async () => {
+    //  The counterpart: zero IS an answer, and must not be relabelled as unknown.
+    const plan = router.buildExecutionPlan (oneLegRoute ('buy', 'BTC', 'USDT', 0.1, 100), {});
+    const venue = new StubVenue ('stub', 0);
+    const report = await router.execute (plan, { 'stub': venue }, { 'strategy': 'sequential', 'live': true, 'usdRates': { 'USDT': 1 } });
+    assert.strictEqual (report['steps'][0]['filledKnown'], true);
+    assert.strictEqual (report['steps'][0]['status'], 'unfilled');
+    assert.strictEqual (report['haltReason'], 'nothing_filled');
 });
