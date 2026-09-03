@@ -110,6 +110,33 @@ paths:
                 properties:
                   status: { type: string, example: ok }
                   uptimeSec: { type: number, example: 1183.4 }
+  /ready:
+    get:
+      tags: [Operations]
+      summary: Readiness probe
+      description: |
+        Whether the process can actually route yet, which is a different question from whether it
+        is alive. `/health` answers 200 from the first millisecond of boot, before a single
+        websocket has connected — point a deploy gate or a load balancer at it and traffic arrives
+        at a router whose only possible answer is `all_books_stale`, an outage the router itself
+        reports as a successful 200.
+
+        Ready means books exist and enough of them are fresh to rank on, measured with the same
+        staleness cutoff `/route` uses, so readiness cannot disagree with what routing will do.
+        `503` until then. Unauthenticated like `/health`, and reports counts only — never venue
+        names, which is why `/exchanges/status` stays behind the key.
+      security: []
+      responses:
+        '200':
+          description: Enough fresh books to route
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Readiness' }
+        '503':
+          description: Alive, but not yet able to route
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Readiness' }
   /version:
     get:
       tags: [Operations]
@@ -200,6 +227,45 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/RouteResult' }
+    post:
+      tags: [Routing]
+      summary: The same route, with the parameters in a body instead of the URL
+      description: |
+        Identical parameters, identical answer, same handler — the only difference is where the
+        parameters came from.
+
+        **Use this whenever you send `balances`.** This service scrubs holdings out of both of its
+        own logs, but a URL does not stay inside this process: the standard deployment puts a
+        reverse proxy in front, and nginx, an ALB and a CDN all log the full request line by
+        default. So do browser history and any client-side tracing, and a `Referer` carries it
+        off-origin. None of that is reachable from here, and no amount of in-process redaction
+        fixes it — the fix is for the wallet not to be in the URL.
+
+        `GET` is unchanged and remains the right call for a route request carrying no holdings: it
+        is cacheable, linkable, and what every existing client already uses.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: The same fields as the GET query parameters, by the same names.
+              properties:
+                from: { type: string, example: USDT }
+                to: { type: string, example: BTC }
+                amountIn: { type: number, example: 1000 }
+                amountOut: { type: number }
+                balances: { type: string, example: 'USDT:1000,BTC:0.05' }
+              required: [from, to]
+      responses:
+        '200':
+          description: The fill plan, exactly as `GET /route` returns it.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RouteResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
   /stream/route:
     get:
       tags: [Routing]
@@ -567,6 +633,19 @@ components:
       type: object
       properties:
         error: { type: string }
+    Readiness:
+      type: object
+      description: |
+        The same body on 200 and 503, so a probe that only reads the status code and one that
+        reads the body agree. `freshCount` is what the decision is actually made on.
+      properties:
+        status: { type: string, enum: [ready, not_ready] }
+        bookCount: { type: integer, example: 142 }
+        freshCount: { type: integer, example: 139 }
+        staleCount: { type: integer, example: 3 }
+        minFreshBooksForReady: { type: integer, example: 1 }
+        staleBookMs: { type: integer, example: 5000 }
+        uptimeSec: { type: number, example: 12.4 }
     BookLevel:
       type: object
       properties:

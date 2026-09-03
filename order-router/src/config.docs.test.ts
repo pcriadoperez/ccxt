@@ -62,3 +62,37 @@ test('the endpoints table lists every route the API server registers', () => {
     }).sort();
     assert.deepEqual(missing, [], 'routes missing from the README endpoints table');
 });
+
+test('the OpenAPI spec documents every route the API server registers', () => {
+    // The spec is what an SDK generator and a caller's client are built from, so a route missing
+    // here is a route that effectively does not exist for anyone who did not read the source.
+    // /ready and POST /route were both live before they were in it.
+    //
+    // Matched textually rather than through a YAML parser: this package has none, and the
+    // property — "the path appears, under the right verb" — does not need one.
+    const spec = readFileSync(fileURLToPath(new URL('../openapi/openapi.yaml', import.meta.url)), 'utf8');
+    const server = readFileSync(fileURLToPath(new URL('./api/server.ts', import.meta.url)), 'utf8');
+
+    // Section the spec by top-level path key so a verb is checked under ITS OWN path, not
+    // anywhere in the file — otherwise a stray `post:` under /symbols would satisfy /route.
+    const sections = new Map<string, string>();
+    const keys = [...spec.matchAll(/^ {2}(\/[^\s:]*):$/gm)];
+    for (let i = 0; i < keys.length; i++) {
+        const start = keys[i]!.index! + keys[i]![0].length;
+        const end = i + 1 < keys.length ? keys[i + 1]!.index! : spec.length;
+        sections.set(keys[i]![1]!, spec.slice(start, end));
+    }
+
+    const missing: string[] = [];
+    for (const m of server.matchAll(/app\.(get|post)(?:<[^>]*>)?\(\s*(?:`|')([^`']+)(?:`|')/g)) {
+        const verb = m[1]!;
+        const path = m[2]!.split('?')[0]!;
+        // /metrics and /health are documented; a path parameter is spelled {name} in the spec.
+        const documented = path.replace(/:([a-zA-Z]+)/g, '{$1}');
+        const section = sections.get(documented);
+        if (section === undefined || section.indexOf(`\n    ${verb}:`) === -1) {
+            missing.push(`${verb.toUpperCase()} ${documented}`);
+        }
+    }
+    assert.deepEqual(missing.sort(), [], 'routes missing from openapi/openapi.yaml');
+});
