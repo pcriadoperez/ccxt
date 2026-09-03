@@ -1,3 +1,17 @@
+// The OrderRouter suite, living in ccxt-base rather than in the ti-rust test crate.
+//
+// It is here for one practical reason: ti-rust links the whole generated surface
+// (104 typed REST wrappers, 76 WS ones), and building that needs more memory
+// than some development machines have — it OOM-kills at link time on a 16 GB
+// box, the same way the Go test binary does. The suite exercises nothing but
+// `Value` and `OrderRouter`, both of which live in THIS crate, so putting it
+// here makes it runnable with `cargo test -p ccxt-base` in about a minute
+// without the generated venues.
+//
+// `run()` is public so `ti-rust --orderRouterTests` drives exactly the same
+// checks in CI, alongside the other five ports. One harness, two entry points —
+// a second copy is how the two would drift.
+
 // OrderRouter — the sixth port's half of the cross-language contract.
 //
 // The class is hand-written in six languages; `ts/src/test/base/fixtures/
@@ -6,11 +20,11 @@
 // means THIS port is wrong — that is the whole reason for running the same table
 // six times rather than trusting six readings of the same spec.
 
-use ccxt::order_router::{OrderRouter, TOLERANCE};
-use ccxt::value::{HashMap, Value};
+use crate::order_router::{OrderRouter, TOLERANCE};
+use crate::value::{HashMap, Value};
 
 fn fixture() -> Result<Value, String> {
-    // From the test binary's manifest dir: rust/tests -> repo root.
+    // From this crate's manifest dir: rust/ccxt-base -> repo root.
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../ts/src/test/base/fixtures/orderRouter.json"
@@ -558,4 +572,18 @@ pub fn run() -> Result<usize, String> {
         }
     }
     Ok(passed)
+}
+
+
+#[cfg(test)]
+mod tests {
+    /// The whole cross-language contract, runnable without the generated
+    /// exchange surface. `cargo test -p ccxt-base`.
+    #[test]
+    fn order_router_matches_the_shared_fixture() {
+        match super::run() {
+            Ok(passed) => assert!(passed > 0, "the suite ran no checks"),
+            Err(message) => panic!("{message}"),
+        }
+    }
 }

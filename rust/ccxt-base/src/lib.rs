@@ -45,6 +45,9 @@ pub mod exchange_stubs;
 // class whose TypeScript reference is ts/src/base/OrderRouter.ts; all six are
 // held together by ts/src/test/base/fixtures/orderRouter.json.
 pub mod order_router;
+// The shared-fixture suite for the above. Public so ti-rust can drive it in CI
+// and `cargo test -p ccxt-base` can drive it locally, from one source.
+pub mod order_router_selftest;
 
 // The transpiled base method surface (now the `ExchangeBase` trait, review #1)
 // compiles and typechecks against the hand-written base; the per-exchange REST

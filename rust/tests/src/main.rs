@@ -16,7 +16,6 @@ use futures::FutureExt;
 mod generated_cores;      // GENERATED: every dispatchable Core + the for_each_* macros
 mod assertions;
 mod base_tests;
-mod order_router_tests;
 mod fixtures;
 mod language_specific;
 mod registry;
@@ -74,7 +73,7 @@ async fn main() -> ExitCode {
     let run_order_router_tests =
         is_true(&getCliArgValue(Value::Str("--orderRouterTests".to_string())));
     if run_order_router_tests {
-        match order_router_tests::run() {
+        match ccxt::order_router_selftest::run() {
             Ok(passed) => {
                 println!("[rust] OrderRouter: {passed} passed, 0 failed");
                 println!("OrderRouter tests passed!");

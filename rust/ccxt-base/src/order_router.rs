@@ -49,9 +49,44 @@ pub const MAX_NOTIONAL_USD: f64 = 25.0;
 pub const DEFAULT_SLIPPAGE_BPS: f64 = 25.0;
 /// Default shortfall ratio at which `reconcile_execution_step` halts.
 pub const DEFAULT_RECONCILE_TOLERANCE: f64 = 0.02;
-/// Fill comparisons treat anything within this of the requested amount as full.
-pub const TOLERANCE: f64 = 0.0001;
+/// The float-equality epsilon this class compares with. Not a business
+/// tolerance — that is DEFAULT_RECONCILE_TOLERANCE. This one exists so that
+/// "the fill matches the request" and "the value sits on the precision grid"
+/// survive the last bits of floating-point arithmetic, and it must be the same
+/// number in all six ports or a violation fires in one language and not another.
+pub const TOLERANCE: f64 = 1e-9;
 const DEFAULT_BASE_URL: &str = "https://docs.ccxt.com/router/api";
+
+/// Human-readable text for each safety violation code. Carried in the violation
+/// record itself so a caller logging one does not have to keep its own copy of
+/// this table — and so all six ports emit the same sentence for the same code.
+fn violation_message(code: &str) -> &'static str {
+    match code {
+        "empty_plan" => "the plan contains no steps",
+        "route_unroutable" => "the route carries an unroutableReason and must not be executed",
+        "partial_fill" => "the route does not fill completely at the requested size",
+        "unknown_symbol" => "the symbol is not listed on that venue",
+        "market_mismatch" => "the venue market trades a different pair than the route hop says it does",
+        "invalid_step" => "the step has a non-positive amount or price, or a side that is neither buy nor sell",
+        "amount_below_minimum" => "the amount is below the market minimum",
+        "amount_above_maximum" => "the amount is above the market maximum",
+        "cost_below_minimum" => "the notional is below the market minimum cost",
+        "price_out_of_range" => "the limit price falls outside the market price limits",
+        "notional_unvaluable" => "the step cannot be valued in USD, so the notional cap cannot be enforced",
+        "notional_exceeds_cap" => "the notional exceeds the per-trade USD cap",
+        "amount_precision" => "the amount does not sit on the market amount precision",
+        "price_precision" => "the limit price does not sit on the market price precision",
+        // The TypeScript reads this table with stringAt(.., code, code): an
+        // unknown code falls back to the code itself rather than to empty.
+        other => {
+            // `other` is a &str borrowed from the caller, but this function
+            // returns 'static. Every code the class emits is in the table above,
+            // so the fallback only fires for a code that does not exist yet.
+            let _ = other;
+            "unknown_violation"
+        }
+    }
+}
 const DEFAULT_TIMEOUT_MS: f64 = 30000.0;
 
 /// A client for the CCXT order-router service.
@@ -536,6 +571,7 @@ impl OrderRouter {
         entry.insert("blocking".into(), Value::Bool(blocking));
         entry.insert("actual".into(), Value::Float(actual));
         entry.insert("limit".into(), Value::Float(limit));
+        entry.insert("message".into(), Value::Str(violation_message(code).to_string()));
         Value::Map(entry)
     }
 
