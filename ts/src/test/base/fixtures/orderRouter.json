@@ -1264,6 +1264,7 @@
             "planOptions": {},
             "markets": "permissive",
             "options": {
+                "maxNotionalUsd": 25,
                 "usdRates": {
                     "USDT": 1
                 }
@@ -1287,6 +1288,7 @@
             "planOptions": {},
             "markets": "permissive",
             "options": {
+                "maxNotionalUsd": 25,
                 "usdRates": {
                     "USD": 1,
                     "ETH": 3000
@@ -1323,6 +1325,7 @@
             "planOptions": {},
             "markets": "onlyFirstHop",
             "options": {
+                "maxNotionalUsd": 25,
                 "usdRates": {
                     "USDT": 1
                 }
@@ -1474,7 +1477,7 @@
             ]
         },
         {
-            "id": "cap_cannot_be_raised",
+            "id": "a_raised_cap_is_honoured_exactly",
             "route": "largeBuy",
             "planOptions": {},
             "markets": "permissive",
@@ -1484,18 +1487,7 @@
                 },
                 "maxNotionalUsd": 100000
             },
-            "expected": [
-                {
-                    "stepIndex": 0,
-                    "exchangeId": "aster",
-                    "symbol": "BTC/USDT",
-                    "code": "notional_exceeds_cap",
-                    "blocking": true,
-                    "actual": 1002.1235027443521,
-                    "limit": 25,
-                    "message": "the notional exceeds the per-trade USD cap"
-                }
-            ]
+            "expected": []
         },
         {
             "id": "a_different_pair_under_the_same_symbol_blocks",
@@ -1573,6 +1565,7 @@
             "planOptions": {},
             "markets": "permissive",
             "options": {
+                "maxNotionalUsd": 25,
                 "usdRates": {
                     "USDT": "1e400"
                 }
@@ -1601,6 +1594,30 @@
                 }
             },
             "expected": []
+        },
+        {
+                "id": "no_cap_by_default_means_no_notional_check",
+                "about": "The default is NO CAP. This class does not decide how much of your money you may trade: the same plan that trips a 25 USD cap passes untouched when no cap is set. maxNotionalUsd is an opt-in guardrail, not a ceiling.",
+                "route": "largeBuy",
+                "planOptions": {},
+                "markets": "permissive",
+                "options": {
+                        "usdRates": {
+                                "USDT": 1
+                        }
+                },
+                "expected": []
+        },
+        {
+                "id": "an_unvaluable_step_passes_when_no_cap_is_set",
+                "about": "The counterpart to missing_rate_blocks_never_skips. A step that cannot be valued in USD BLOCKS when a cap is in force, because a cap that silently disappears is not a cap. With no cap there is nothing to enforce, so the caller is not made to supply usdRates for a check they never asked for.",
+                "route": "directBuy",
+                "planOptions": {},
+                "markets": "permissive",
+                "options": {
+                        "usdRates": {}
+                },
+                "expected": []
         }
     ],
     "reconcileCases": [

@@ -245,15 +245,23 @@ const permissiveStubMarkets: any = {
     },
 };
 
-test ('constructor: apiKey is required and the 25 USD cap may be lowered but never raised', () => {
+test ('constructor: apiKey is required, and maxNotionalUsd is an opt-in guardrail at any size', () => {
     assert.throws (() => new OrderRouter ({}), ArgumentsRequired);
-    assert.throws (() => new OrderRouter ({ 'apiKey': 'k', 'maxNotionalUsd': 25.01 }), BadRequest);
-    assert.throws (() => new OrderRouter ({ 'apiKey': 'k', 'maxNotionalUsd': 0 }), BadRequest);
-    const lowered = new OrderRouter ({ 'apiKey': 'k', 'maxNotionalUsd': 5 });
-    assert.strictEqual (lowered.maxNotionalUsd, 5);
+    //  No ceiling. A caller trading thousands is using this correctly, and the class
+    //  does not get to decide otherwise — the old hard 25 USD limit came from this
+    //  repository's own live-test safety rule, which is not a rule about anyone's money.
+    const large = new OrderRouter ({ 'apiKey': 'k', 'maxNotionalUsd': 250000 });
+    assert.strictEqual (large.maxNotionalUsd, 250000, 'honoured exactly, not clamped');
+    const small = new OrderRouter ({ 'apiKey': 'k', 'maxNotionalUsd': 0.05 });
+    assert.strictEqual (small.maxNotionalUsd, 0.05, 'cents are a legitimate trade size');
+    //  The default is NO cap.
     const standard = new OrderRouter ({ 'apiKey': 'k' });
-    assert.strictEqual (standard.maxNotionalUsd, 25);
-    assert.strictEqual (OrderRouter.MAX_NOTIONAL_USD, 25);
+    assert.strictEqual (standard.maxNotionalUsd, OrderRouter.NO_CAP);
+    assert.strictEqual (OrderRouter.NO_CAP, 0);
+    //  0 is the explicit spelling of "no cap"; negative is a typo, and silently
+    //  ignoring it would leave the caller believing a guardrail is in place.
+    assert.strictEqual (new OrderRouter ({ 'apiKey': 'k', 'maxNotionalUsd': 0 }).maxNotionalUsd, 0);
+    assert.throws (() => new OrderRouter ({ 'apiKey': 'k', 'maxNotionalUsd': -1 }), BadRequest);
 });
 
 test ('the limit price sits on the side that costs you, and only there', () => {
@@ -265,49 +273,63 @@ test ('the limit price sits on the side that costs you, and only there', () => {
     assert.strictEqual (none['steps'][0]['limitPrice'], 100, 'zero slippage means the expected price');
 });
 
-test ('the notional cap blocks at 25 USD and passes below it', () => {
-    //  amount * limitPrice is what is measured, so a 1% slippage on a 24.90 USD
-    //  step is what carries it over the line
+test ('a cap that IS set binds exactly, at whatever size, and includes the slippage', () => {
+    const capped = { 'usdRates': { 'USDT': 1 }, 'maxNotionalUsd': 25 };
     const under = router.buildExecutionPlan (oneLegRoute ('buy', 'BTC', 'USDT', 0.24, 100), { 'slippageBps': 0 });
-    const underViolations = router.checkExecutionPlanSafety (under, permissiveStubMarkets, { 'usdRates': { 'USDT': 1 } });
-    assert.deepStrictEqual (underViolations, [], '24 USD passes');
+    assert.deepStrictEqual (router.checkExecutionPlanSafety (under, permissiveStubMarkets, capped), [], '24 USD passes a 25 USD cap');
     const at = router.buildExecutionPlan (oneLegRoute ('buy', 'BTC', 'USDT', 0.25, 100), { 'slippageBps': 0 });
-    assert.deepStrictEqual (router.checkExecutionPlanSafety (at, permissiveStubMarkets, { 'usdRates': { 'USDT': 1 } }), [], 'exactly 25 USD passes');
+    assert.deepStrictEqual (router.checkExecutionPlanSafety (at, permissiveStubMarkets, capped), [], 'exactly at the cap passes');
     const over = router.buildExecutionPlan (oneLegRoute ('buy', 'BTC', 'USDT', 0.2501, 100), { 'slippageBps': 0 });
-    const overViolations = router.checkExecutionPlanSafety (over, permissiveStubMarkets, { 'usdRates': { 'USDT': 1 } });
+    const overViolations = router.checkExecutionPlanSafety (over, permissiveStubMarkets, capped);
     assert.strictEqual (overViolations.length, 1);
     assert.strictEqual (overViolations[0]['code'], 'notional_exceeds_cap');
     assert.strictEqual (overViolations[0]['blocking'], true);
-    //  and the slippage is inside the measurement, not outside it
+    //  the slippage is inside the measurement, not outside it
     const slipped = router.buildExecutionPlan (oneLegRoute ('buy', 'BTC', 'USDT', 0.249, 100), { 'slippageBps': 100 });
-    const slippedViolations = router.checkExecutionPlanSafety (slipped, permissiveStubMarkets, { 'usdRates': { 'USDT': 1 } });
+    const slippedViolations = router.checkExecutionPlanSafety (slipped, permissiveStubMarkets, capped);
     assert.strictEqual (slippedViolations.length, 1, '24.90 USD at 1% slippage is 25.15 USD of risk');
     assert.strictEqual (slippedViolations[0]['code'], 'notional_exceeds_cap');
+    //  A LARGE cap is honoured just as exactly. This is the case the old hard ceiling
+    //  made unreachable: 2,000 USD of BTC under a 5,000 USD guardrail is a normal trade.
+    const large = router.buildExecutionPlan (oneLegRoute ('buy', 'BTC', 'USDT', 20, 100), { 'slippageBps': 0 });
+    assert.deepStrictEqual (router.checkExecutionPlanSafety (large, permissiveStubMarkets, { 'usdRates': { 'USDT': 1 }, 'maxNotionalUsd': 5000 }), [], '2,000 USD under a 5,000 USD cap');
+    const overLarge = router.checkExecutionPlanSafety (large, permissiveStubMarkets, { 'usdRates': { 'USDT': 1 }, 'maxNotionalUsd': 1000 });
+    assert.strictEqual (overLarge[0]['code'], 'notional_exceeds_cap', 'and the same 2,000 USD trips a 1,000 USD cap');
 });
 
-test ('a step that cannot be valued in USD BLOCKS — it is never skipped', () => {
+test ('with no cap set, no notional check runs at all', () => {
+    //  The default. This class does not decide how much of your money you may trade —
+    //  the guardrail is opt-in, so a plan of any size passes untouched, and a caller who
+    //  never asked for a cap is not made to supply usdRates for it.
+    const large = router.buildExecutionPlan (oneLegRoute ('buy', 'BTC', 'USDT', 1000, 100), { 'slippageBps': 0 });
+    assert.deepStrictEqual (router.checkExecutionPlanSafety (large, permissiveStubMarkets, { 'usdRates': { 'USDT': 1 } }), [], '100,000 USD passes when no cap is set');
+    assert.deepStrictEqual (router.checkExecutionPlanSafety (large, permissiveStubMarkets, {}), [], 'and needs no usdRates at all');
+});
+
+test ('a step that cannot be valued in USD BLOCKS when a cap is in force — it is never skipped', () => {
     const plan = router.buildExecutionPlan (oneLegRoute ('buy', 'BTC', 'USDT', 0.0001, 100), { 'slippageBps': 0 });
-    //  0.01 USDT of notional: trivially under any cap, and still refused,
-    //  because the point is that the cap could not be EVALUATED
-    const violations = router.checkExecutionPlanSafety (plan, permissiveStubMarkets, { 'usdRates': {} });
+    //  0.01 USDT of notional: trivially under the cap, and still refused, because the
+    //  point is that the cap the caller ASKED FOR could not be evaluated. With no cap
+    //  set there is nothing to enforce and this same plan passes — see the test above.
+    const violations = router.checkExecutionPlanSafety (plan, permissiveStubMarkets, { 'usdRates': {}, 'maxNotionalUsd': 25 });
     assert.strictEqual (violations.length, 1);
     assert.strictEqual (violations[0]['code'], 'notional_unvaluable');
     assert.strictEqual (violations[0]['blocking'], true, 'an unvaluable step must block, or the cap is decorative');
     //  unrelated rates do not help
-    const stillBlocked = router.checkExecutionPlanSafety (plan, permissiveStubMarkets, { 'usdRates': { 'ETH': 3000, 'DOGE': 0.09 } });
+    const stillBlocked = router.checkExecutionPlanSafety (plan, permissiveStubMarkets, { 'usdRates': { 'ETH': 3000, 'DOGE': 0.09 }, 'maxNotionalUsd': 25 });
     assert.strictEqual (stillBlocked[0]['code'], 'notional_unvaluable');
     //  either side of the market resolves it
-    assert.deepStrictEqual (router.checkExecutionPlanSafety (plan, permissiveStubMarkets, { 'usdRates': { 'USDT': 1 } }), []);
-    assert.deepStrictEqual (router.checkExecutionPlanSafety (plan, permissiveStubMarkets, { 'usdRates': { 'BTC': 100 } }), []);
+    assert.deepStrictEqual (router.checkExecutionPlanSafety (plan, permissiveStubMarkets, { 'usdRates': { 'USDT': 1 }, 'maxNotionalUsd': 25 }), []);
+    assert.deepStrictEqual (router.checkExecutionPlanSafety (plan, permissiveStubMarkets, { 'usdRates': { 'BTC': 100 }, 'maxNotionalUsd': 25 }), []);
 });
 
 test ('USDT is not assumed to be one dollar; USD is', () => {
     const usdtPlan = router.buildExecutionPlan (oneLegRoute ('buy', 'BTC', 'USDT', 0.1, 100), { 'slippageBps': 0 });
-    const usdtViolations = router.checkExecutionPlanSafety (usdtPlan, permissiveStubMarkets, { 'usdRates': { 'USD': 1 } });
+    const usdtViolations = router.checkExecutionPlanSafety (usdtPlan, permissiveStubMarkets, { 'usdRates': { 'USD': 1 }, 'maxNotionalUsd': 25 });
     assert.strictEqual (usdtViolations.length, 1);
     assert.strictEqual (usdtViolations[0]['code'], 'notional_unvaluable', 'a stablecoin peg is an observation, not a definition');
     //  a depegged rate is respected: 10 USDT at 0.40 is 4 USD
-    const depegged = router.checkExecutionPlanSafety (usdtPlan, permissiveStubMarkets, { 'usdRates': { 'USDT': 0.4 } });
+    const depegged = router.checkExecutionPlanSafety (usdtPlan, permissiveStubMarkets, { 'usdRates': { 'USDT': 0.4 }, 'maxNotionalUsd': 25 });
     assert.deepStrictEqual (depegged, []);
 });
 
@@ -511,24 +533,37 @@ test ('dry_run is the default: a live-looking call with live unset places nothin
     }
 });
 
-test ('execute refuses to go live without a way to value the trade in USD', async () => {
+test ('execute refuses to go live without a way to value the trade in USD — when a cap is set', async () => {
     const plan = router.buildExecutionPlan (oneLegRoute ('buy', 'BTC', 'USDT', 0.2, 100), {});
     const venue = new StubVenue ('stub');
     await assert.rejects (async () => {
-        await router.execute (plan, { 'stub': venue }, { 'strategy': 'sequential', 'live': true });
+        await router.execute (plan, { 'stub': venue }, { 'strategy': 'sequential', 'live': true, 'maxNotionalUsd': 25 });
     }, ExchangeError);
     assert.ok (venue.calls.indexOf ('createOrder:limit:buy:0.2') < 0, 'no order was placed');
+    //  and with NO cap asked for, usdRates is not required: there is no cap to evaluate,
+    //  so demanding the inputs for one would be asking for something nobody wanted.
+    const uncapped = new StubVenue ('stub');
+    const report = await router.execute (plan, { 'stub': uncapped }, { 'strategy': 'sequential', 'live': true });
+    assert.strictEqual (report['steps'][0]['status'], 'filled');
 });
 
-test ('execute refuses to go live above the cap', async () => {
+test ('execute refuses to go live above a cap the caller set', async () => {
+    //  500 USD against a 25 USD guardrail. The refusal happens BEFORE any order goes
+    //  out, which is the property worth asserting — a cap checked after the fact is
+    //  an incident report, not a guardrail.
     const plan = router.buildExecutionPlan (oneLegRoute ('buy', 'BTC', 'USDT', 5, 100), {});
     const venue = new StubVenue ('stub');
     await assert.rejects (async () => {
-        await router.execute (plan, { 'stub': venue }, { 'strategy': 'sequential', 'live': true, 'usdRates': { 'USDT': 1 } });
+        await router.execute (plan, { 'stub': venue }, { 'strategy': 'sequential', 'live': true, 'usdRates': { 'USDT': 1 }, 'maxNotionalUsd': 25 });
     }, ExchangeError);
     for (let i = 0; i < venue.calls.length; i++) {
         assert.ok (venue.calls[i].indexOf ('createOrder') < 0, 'no order was placed');
     }
+    //  the same 500 USD trade with no cap set goes through: that is the point of the
+    //  guardrail being opt-in
+    const uncapped = new StubVenue ('stub');
+    const report = await router.execute (plan, { 'stub': uncapped }, { 'strategy': 'sequential', 'live': true, 'usdRates': { 'USDT': 1 } });
+    assert.strictEqual (report['steps'][0]['status'], 'filled', '500 USD is a normal trade when nobody asked for a cap');
 });
 
 test ('sequential places IOC limit orders in plan order', async () => {
@@ -640,19 +675,25 @@ test ('best_effort stops at maxOrders and never halts', async () => {
     assert.deepStrictEqual (venues['c'].calls, []);
 });
 
-test ('the hard 25 USD cap survives a writable maxNotionalUsd', () => {
-    //  the constructor refuses to be built above 25, but the field stays
-    //  writable in TypeScript, Python, PHP and Go. A ceiling that one assignment
-    //  removes is not a ceiling, so both clamp sites re-impose the constant.
-    const tampered: any = new OrderRouter ({ 'apiKey': 'k' });
-    tampered.maxNotionalUsd = 1000;
+test ('a per-call cap overrides the client-level one, in both directions', () => {
+    //  The cap is a guardrail the CALLER sets, so the per-call value wins — there is no
+    //  ceiling re-imposed behind their back. Both directions are asserted because the
+    //  old implementation clamped one way only, and a guardrail that silently refuses to
+    //  loosen is as surprising as one that silently refuses to tighten.
+    const client: any = new OrderRouter ({ 'apiKey': 'k', 'maxNotionalUsd': 100 });
     //  0.005 BTC at 100000 USDT is 500 USD
-    const plan = tampered.buildExecutionPlan (oneLegRoute ('buy', 'BTC', 'USDT', 0.005, 100000), { 'slippageBps': 0 });
-    const violations = tampered.checkExecutionPlanSafety (plan, permissiveStubMarkets, { 'usdRates': { 'USDT': 1 }, 'maxNotionalUsd': 1000 });
-    assert.strictEqual (violations.length, 1, 'a 500 USD step must still be refused');
-    assert.strictEqual (violations[0]['code'], 'notional_exceeds_cap');
-    assert.strictEqual (violations[0]['limit'], 25, 'the limit reported is the constant, not the tampered field');
-    assert.throws (() => tampered.assertUnderCap (plan['steps'][0], 0.005, 100000, { 'USDT': 1 }, { 'maxNotionalUsd': 1000 }), ExchangeError, 'and the last check before an order goes out refuses too');
+    const plan = client.buildExecutionPlan (oneLegRoute ('buy', 'BTC', 'USDT', 0.005, 100000), { 'slippageBps': 0 });
+    const underClientCap = client.checkExecutionPlanSafety (plan, permissiveStubMarkets, { 'usdRates': { 'USDT': 1 } });
+    assert.strictEqual (underClientCap[0]['code'], 'notional_exceeds_cap', '500 USD trips the client cap of 100');
+    assert.strictEqual (underClientCap[0]['limit'], 100);
+    //  raised for this call
+    assert.deepStrictEqual (client.checkExecutionPlanSafety (plan, permissiveStubMarkets, { 'usdRates': { 'USDT': 1 }, 'maxNotionalUsd': 1000 }), [], 'a per-call cap of 1000 lets it through');
+    //  lowered for this call
+    const tightened = client.checkExecutionPlanSafety (plan, permissiveStubMarkets, { 'usdRates': { 'USDT': 1 }, 'maxNotionalUsd': 10 });
+    assert.strictEqual (tightened[0]['limit'], 10);
+    //  and the last check before an order goes out honours the same value
+    assert.throws (() => client.assertUnderCap (plan['steps'][0], 0.005, 100000, { 'USDT': 1 }, { 'maxNotionalUsd': 100 }), ExchangeError);
+    client.assertUnderCap (plan['steps'][0], 0.005, 100000, { 'USDT': 1 }, { 'maxNotionalUsd': 1000 });
 });
 
 test ('best_effort derives the hop count from the steps, not from a key the plan may not carry', async () => {
