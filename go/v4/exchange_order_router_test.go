@@ -743,6 +743,68 @@ func routerStubVenues(venues map[string]*orderRouterStubVenue) map[string]IExcha
 	return widened
 }
 
+func TestOrderRouterPlanAgeIsReportedAndRefusedOnlyWhenAsked(t *testing.T) {
+	// A plan is a snapshot of a book. calculatedAt was carried on every plan and read by nothing,
+	// so Execute would happily trade an hour-old plan at hour-old prices — and the notional cap,
+	// computed from those same prices, was just as stale.
+	router := routerTestRouter(t)
+	route := routerOneLegRoute("buy", "BTC", "USDT", 0.2, 100)
+	route["calculatedAt"] = 1000000.0
+	plan := routerMustPlan(router.BuildExecutionPlan(route, nil))
+	pinned := routerTestRouter(t)
+	pinned.NowMs = func() float64 { return 1060000 } // the plan is exactly 60s old
+	opts := func() map[string]any {
+		return map[string]any{"strategy": "sequential", "live": true, "usdRates": map[string]any{"USDT": 1.0}}
+	}
+
+	// Always reported, even with nothing enforced, and nothing is refused by default.
+	report, err := pinned.Execute(plan, routerStubVenues(map[string]*orderRouterStubVenue{"stub": newOrderRouterStubVenue(1, false)}), opts())
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if routerNumberAt(report, "planAgeMs", 0) != 60000 {
+		t.Fatalf("the age is on the report whether or not it is checked, got %v", report["planAgeMs"])
+	}
+	if routerStringAt(report["steps"].([]map[string]any)[0], "status", "") != "filled" {
+		t.Fatal("nothing is refused by default")
+	}
+
+	// Enforced exactly, at whatever value is asked for.
+	strict := newOrderRouterStubVenue(1, false)
+	strictOpts := opts()
+	strictOpts["maxPlanAgeMs"] = 30000.0
+	if _, err := pinned.Execute(plan, routerStubVenues(map[string]*orderRouterStubVenue{"stub": strict}), strictOpts); err == nil {
+		t.Fatal("a stale plan must be refused under a limit")
+	}
+	if got := strict.callLog(); len(got) != 0 {
+		t.Fatalf("refused before anything reached the venue, got %v", got)
+	}
+	wideOpts := opts()
+	wideOpts["maxPlanAgeMs"] = 120000.0
+	passed, err := pinned.Execute(plan, routerStubVenues(map[string]*orderRouterStubVenue{"stub": newOrderRouterStubVenue(1, false)}), wideOpts)
+	if err != nil {
+		t.Fatalf("a limit the plan is inside of lets it through: %v", err)
+	}
+	if routerStringAt(passed["steps"].([]map[string]any)[0], "status", "") != "filled" {
+		t.Fatal("a fresh-enough plan executes")
+	}
+
+	// An age that cannot be determined BLOCKS under an active limit.
+	undated := routerMustPlan(router.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 0.2, 100), nil))
+	undatedReport, err := pinned.Execute(undated, routerStubVenues(map[string]*orderRouterStubVenue{"stub": newOrderRouterStubVenue(1, false)}), opts())
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if routerNumberAt(undatedReport, "planAgeMs", 0) != -1 {
+		t.Fatalf("unknown is -1, never 0: 0 would read as fresh, got %v", undatedReport["planAgeMs"])
+	}
+	undatedOpts := opts()
+	undatedOpts["maxPlanAgeMs"] = 30000.0
+	if _, err := pinned.Execute(undated, routerStubVenues(map[string]*orderRouterStubVenue{"stub": newOrderRouterStubVenue(1, false)}), undatedOpts); err == nil {
+		t.Fatal("an undatable plan must be refused under a limit")
+	}
+}
+
 func TestOrderRouterDryRunIsTheDefault(t *testing.T) {
 	router := routerTestRouter(t)
 	plan := routerMustPlan(router.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 0.2, 100), nil))

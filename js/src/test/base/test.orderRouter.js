@@ -746,6 +746,38 @@ test('a failure after createOrder still reports the order id and an open order',
     assert.strictEqual(okReport['openOrders'][0]['orderId'], 'stub-order');
     assert.strictEqual(okReport['openOrders'][0]['reason'], 'still_open');
 });
+test('a plan carries its age, and a stale one is refused only when asked', async () => {
+    //  A plan is a snapshot of a book. `calculatedAt` was carried on every plan and read by
+    //  nothing, so execute() would happily trade an hour-old plan at hour-old prices — and the
+    //  notional cap, computed from those same prices, was just as stale.
+    const route = oneLegRoute('buy', 'BTC', 'USDT', 0.2, 100);
+    route['calculatedAt'] = 1000000;
+    const plan = router.buildExecutionPlan(route, {});
+    //  pin the clock: the plan is exactly 60s old
+    const pinned = new OrderRouter({ 'apiKey': 'k' });
+    pinned.nowMs = () => 1060000;
+    const opts = { 'strategy': 'sequential', 'live': true, 'usdRates': { 'USDT': 1 } };
+    //  Always reported, even with nothing enforced. The default must not be a refusal — this
+    //  class does not decide how stale a plan the caller may trade on.
+    const venue = new StubVenue('stub');
+    const report = await pinned.execute(plan, { 'stub': venue }, opts);
+    assert.strictEqual(report['planAgeMs'], 60000, 'the age is on the report whether or not it is checked');
+    assert.strictEqual(report['steps'][0]['status'], 'filled', 'and nothing is refused by default');
+    //  Enforced exactly, at whatever value is asked for.
+    const strict = new StubVenue('stub');
+    await assert.rejects(async () => await pinned.execute(plan, { 'stub': strict }, { ...opts, 'maxPlanAgeMs': 30000 }), /older than maxPlanAgeMs/);
+    assert.deepStrictEqual(strict.calls, [], 'refused before anything reached the venue');
+    //  ...and a limit the plan is inside of lets it through.
+    const ok = new StubVenue('stub');
+    const passed = await pinned.execute(plan, { 'stub': ok }, { ...opts, 'maxPlanAgeMs': 120000 });
+    assert.strictEqual(passed['steps'][0]['status'], 'filled');
+    //  An age that cannot be determined BLOCKS under an active limit: a freshness check that
+    //  silently passes when the timestamp is missing is not a freshness check.
+    const undated = router.buildExecutionPlan(oneLegRoute('buy', 'BTC', 'USDT', 0.2, 100), {});
+    const undatedReport = await pinned.execute(undated, { 'stub': new StubVenue('stub') }, opts);
+    assert.strictEqual(undatedReport['planAgeMs'], -1, 'unknown is -1, never 0: 0 would read as fresh');
+    await assert.rejects(async () => await pinned.execute(undated, { 'stub': new StubVenue('stub') }, { ...opts, 'maxPlanAgeMs': 30000 }), /carries no calculatedAt/);
+});
 test('an unknown strategy is refused even in dry run', async () => {
     const plan = router.buildExecutionPlan(oneLegRoute('buy', 'BTC', 'USDT', 0.2, 100), {});
     await assert.rejects(async () => {

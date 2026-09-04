@@ -848,11 +848,53 @@ function order_router_test_best_effort_stops_at_max_orders($router) {
     order_router_assert(count($venues['c']->calls) === 0, 'the third venue was never called');
 }
 
+class OrderRouterPinnedClock extends OrderRouter {
+    //  The only clock the class reads, pinned so a plan's age is deterministic.
+    public $pinnedNowMs = 0;
+    public function nowMs() {
+        return $this->pinnedNowMs;
+    }
+}
+
 function order_router_test_unknown_strategy_is_refused($router) {
     $plan = $router->buildExecutionPlan(order_router_one_leg_route('buy', 'BTC', 'USDT', 0.2, 100), array());
     order_router_assert_throws(function () use ($router, $plan) {
         $router->execute($plan, array(), array('strategy' => 'yolo'));
     }, BadRequest::class, 'an unknown strategy is refused even in dry run');
+}
+
+function order_router_test_plan_age_is_reported_and_refused_only_when_asked($router) {
+    //  A plan is a snapshot of a book. `calculatedAt` was carried on every plan and read by
+    //  nothing, so execute() would happily trade an hour-old plan at hour-old prices — and the
+    //  notional cap, computed from those same prices, was just as stale.
+    $route = order_router_one_leg_route('buy', 'BTC', 'USDT', 0.2, 100);
+    $route['calculatedAt'] = 1000000;
+    $plan = $router->buildExecutionPlan($route, array());
+    $pinned = new OrderRouterPinnedClock(array('apiKey' => 'k'));
+    $pinned->pinnedNowMs = 1060000;   //  the plan is exactly 60s old
+    $opts = array('strategy' => 'sequential', 'live' => true, 'usdRates' => array('USDT' => 1));
+
+    //  Always reported, even with nothing enforced, and nothing is refused by default.
+    $report = $pinned->execute($plan, array('stub' => new OrderRouterStubVenue('stub')), $opts);
+    order_router_assert($report['planAgeMs'] === 60000.0 || $report['planAgeMs'] === 60000, 'the age is on the report whether or not it is checked');
+    order_router_assert($report['steps'][0]['status'] === 'filled', 'and nothing is refused by default');
+
+    //  Enforced exactly, at whatever value is asked for.
+    $strict = new OrderRouterStubVenue('stub');
+    order_router_assert_throws(function () use ($pinned, $plan, $strict, $opts) {
+        $pinned->execute($plan, array('stub' => $strict), array_merge($opts, array('maxPlanAgeMs' => 30000)));
+    }, ExchangeError::class, 'a stale plan is refused under a limit');
+    order_router_assert(count($strict->calls) === 0, 'refused before anything reached the venue');
+    $passed = $pinned->execute($plan, array('stub' => new OrderRouterStubVenue('stub')), array_merge($opts, array('maxPlanAgeMs' => 120000)));
+    order_router_assert($passed['steps'][0]['status'] === 'filled', 'a limit the plan is inside of lets it through');
+
+    //  An age that cannot be determined BLOCKS under an active limit.
+    $undated = $router->buildExecutionPlan(order_router_one_leg_route('buy', 'BTC', 'USDT', 0.2, 100), array());
+    $undatedReport = $pinned->execute($undated, array('stub' => new OrderRouterStubVenue('stub')), $opts);
+    order_router_assert($undatedReport['planAgeMs'] === -1 || $undatedReport['planAgeMs'] === -1.0, 'unknown is -1, never 0: 0 would read as fresh');
+    order_router_assert_throws(function () use ($pinned, $undated, $opts) {
+        $pinned->execute($undated, array('stub' => new OrderRouterStubVenue('stub')), array_merge($opts, array('maxPlanAgeMs' => 30000)));
+    }, ExchangeError::class, 'an undatable plan is refused under a limit');
 }
 
 function order_router_test_atomic_ish_demands_prefunding($router) {
@@ -1128,6 +1170,7 @@ function test_order_router() {
         'limit_protected keeps the fill from an order the venue canceled on the last poll' => 'ccxt\order_router_test_limit_protected_keeps_a_venue_side_cancel_fill',
         'a failure after createOrder still reports the order id and an open order' => 'ccxt\order_router_test_order_id_survives_a_failure_after_create',
         'an unknown strategy is refused even in dry run' => 'ccxt\order_router_test_unknown_strategy_is_refused',
+        'a plan carries its age, and a stale one is refused only when asked' => 'ccxt\order_router_test_plan_age_is_reported_and_refused_only_when_asked',
         'atomic_ish demands the whole route pre-funded' => 'ccxt\order_router_test_atomic_ish_demands_prefunding',
         'fetchRoute refuses neither-or-both amounts before touching the network' => 'ccxt\order_router_test_fetch_route_refuses_ambiguous_amounts',
         'fetchRoute builds a deterministic query' => 'ccxt\order_router_test_fetch_route_query',

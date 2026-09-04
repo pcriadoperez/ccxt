@@ -8605,6 +8605,20 @@ an ordering guarantee, not a performance promise — it is what lets five very d
 honour the same words. Two legs of one hop that land on the same exchange instance never have two
 orders in flight against that instance's throttle and nonce state.
 
+### Plan freshness
+
+A plan is a snapshot of an order book, and `calculatedAt` records when that snapshot was taken.
+Every report carries `planAgeMs`, the plan's age in milliseconds at the moment `execute` was
+called — always, whether or not anything is being enforced, because how stale the snapshot is
+decides whether any number in the plan means anything. `planAgeMs` is `-1` when the route carried
+no `calculatedAt`; that is *unknown*, not *fresh*, and never `0`.
+
+Enforcement is opt-in, exactly like the cap: pass `options.maxPlanAgeMs` and a live execution of an
+older plan is refused before anything reaches a venue. There is no default limit — recomputing the
+route is the fix, and only the caller knows how long their own confirmation step takes. Under an
+active limit a plan whose age *cannot be determined* is also refused, on the same reasoning as the
+cap: a freshness check that silently passes when the timestamp is missing is not a freshness check.
+
 ### The notional cap is opt-in
 
 There is **no cap by default**. This class does not decide how much of your money you may trade:

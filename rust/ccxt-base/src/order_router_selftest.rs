@@ -932,6 +932,7 @@ pub fn run() -> Result<usize, String> {
         ("execute: a throw after createOrder still reports the id and an open order", Box::new(|| a_known_order_id_survives_a_throw_after_create(&router()?))),
         ("execute: a spend the venue DID report survives an unknown fill", Box::new(|| a_reported_spend_survives_an_unknown_fill(&router()?))),
         ("execute: a report is summarised in the assets it names, not across currencies", Box::new(|| a_report_is_summarised_in_the_assets_it_names(&router()?))),
+        ("execute: a plan carries its age, and a stale one is refused only when asked", Box::new(|| plan_age_is_reported_and_refused_only_when_asked(&router()?))),
         ("execute: a market order and a notional cap are refused together", Box::new(|| a_market_order_and_a_cap_are_refused_together(&router()?))),
         ("execute: atomic_ish demands the whole route pre-funded", Box::new(|| atomic_ish_demands_the_whole_route_prefunded(&router()?))),
         ("execute: best_effort demands both of its acknowledgements", Box::new(|| best_effort_demands_its_acknowledgements(&router()?))),
@@ -1516,6 +1517,71 @@ fn a_market_order_and_a_cap_are_refused_together(r: &OrderRouter) -> Result<(), 
         return Err(format!("with no cap the market order goes out, got {open_report:?}"));
     }
     Ok(())
+}
+
+fn plan_age_is_reported_and_refused_only_when_asked(r: &OrderRouter) -> Result<(), String> {
+    // A plan is a snapshot of a book. `calculatedAt` was carried on every plan
+    // and read by nothing, so execute() would happily trade an hour-old plan at
+    // hour-old prices — and the notional cap, computed from those same prices,
+    // was just as stale.
+    let mut route = one_leg_route("buy", "BTC", "USDT", 0.2, 100.0);
+    OrderRouter::set_key(&mut route, "calculatedAt", Value::Float(1_000_000.0));
+    let plan = r.build_execution_plan(&route, &Value::Map(HashMap::new())).map_err(|e| e.to_string())?;
+    let mut pinned = router()?;
+    pinned.set_now_ms(1_060_000.0); // the plan is exactly 60s old
+    let venues = |v: StubVenue| {
+        let mut m: BTreeMap<String, Box<dyn RouterVenue>> = BTreeMap::new();
+        m.insert("stub".to_string(), Box::new(v));
+        m
+    };
+
+    // Always reported, even with nothing enforced, and nothing is refused by
+    // default: this class does not decide how stale a plan the caller may trade.
+    let report = block_on(pinned.execute(&plan, &venues(StubVenue::new("stub")), &execute_options(true, "sequential")))
+        .map_err(|e| e.to_string())?;
+    if pinned.number_at(&report, "planAgeMs", 0.0) != 60_000.0 {
+        return Err(format!("the age belongs on the report whether or not it is checked, got {:?}", report));
+    }
+    let results = pinned.list_at(&report, "steps");
+    if pinned.string_at(&results[0], "status", "") != "filled" {
+        return Err("nothing is refused by default".to_string());
+    }
+
+    // Enforced exactly, at whatever value is asked for.
+    let strict = StubVenue::new("stub");
+    let strict_counter = StdArc::clone(&strict.orders_placed);
+    let mut strict_options = execute_options(true, "sequential");
+    OrderRouter::set_key(&mut strict_options, "maxPlanAgeMs", Value::Float(30_000.0));
+    match block_on(pinned.execute(&plan, &venues(strict), &strict_options)) {
+        Err(e) if e.message.contains("older than maxPlanAgeMs") => {}
+        other => return Err(format!("a stale plan must be refused under a limit, got {other:?}")),
+    }
+    if strict_counter.load(Ordering::SeqCst) != 0 {
+        return Err("refused before anything reached the venue".to_string());
+    }
+    let mut wide_options = execute_options(true, "sequential");
+    OrderRouter::set_key(&mut wide_options, "maxPlanAgeMs", Value::Float(120_000.0));
+    let passed = block_on(pinned.execute(&plan, &venues(StubVenue::new("stub")), &wide_options))
+        .map_err(|e| e.to_string())?;
+    let passed_results = pinned.list_at(&passed, "steps");
+    if pinned.string_at(&passed_results[0], "status", "") != "filled" {
+        return Err("a limit the plan is inside of lets it through".to_string());
+    }
+
+    // An age that cannot be determined BLOCKS under an active limit: a freshness
+    // check that silently passes when the timestamp is missing is not one.
+    let undated = one_leg_plan(r)?;
+    let undated_report = block_on(pinned.execute(&undated, &venues(StubVenue::new("stub")), &execute_options(true, "sequential")))
+        .map_err(|e| e.to_string())?;
+    if pinned.number_at(&undated_report, "planAgeMs", 0.0) != -1.0 {
+        return Err("unknown is -1, never 0: 0 would read as fresh".to_string());
+    }
+    let mut undated_options = execute_options(true, "sequential");
+    OrderRouter::set_key(&mut undated_options, "maxPlanAgeMs", Value::Float(30_000.0));
+    match block_on(pinned.execute(&undated, &venues(StubVenue::new("stub")), &undated_options)) {
+        Err(e) if e.message.contains("carries no calculatedAt") => Ok(()),
+        other => Err(format!("an undatable plan must be refused under a limit, got {other:?}")),
+    }
 }
 
 fn best_effort_demands_its_acknowledgements(r: &OrderRouter) -> Result<(), String> {

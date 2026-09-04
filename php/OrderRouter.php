@@ -1437,6 +1437,25 @@ class OrderRouter {
         $strategy = $live ? $requestedStrategy : 'dry_run';
         $steps = $this->cloneSteps($plan);
         $report = $this->emptyReport($plan, $strategy, $requestedStrategy, $live, $steps);
+        // How old the prices in this plan are. ALWAYS reported, even when nothing is enforced: a plan
+        // is a snapshot of a book, and how stale that snapshot is decides whether any number in it
+        // means anything. -1 when the route carried no calculatedAt, which is not the same as "fresh"
+        // and must not read like it. Enforced only if asked for, at whatever value is asked for — the
+        // same shape as maxNotionalUsd, and for the same reason. But an age that cannot be determined
+        // BLOCKS under an active limit: a freshness check that silently passes when the timestamp is
+        // missing is not a freshness check.
+        $calculatedAt = $this->numberAt($plan, 'calculatedAt', 0);
+        $planAgeMs = ($calculatedAt > 0) ? ($this->nowMs() - $calculatedAt) : -1;
+        $report['planAgeMs'] = $planAgeMs;
+        $maxPlanAgeMs = $this->numberAt($options, 'maxPlanAgeMs', 0);
+        if ($live && $maxPlanAgeMs > 0) {
+            if ($planAgeMs < 0) {
+                throw new ExchangeError('OrderRouter: refusing to execute, the plan carries no calculatedAt and maxPlanAgeMs was set');
+            }
+            if ($planAgeMs > $maxPlanAgeMs) {
+                throw new ExchangeError('OrderRouter: refusing to execute a plan older than maxPlanAgeMs, recompute the route');
+            }
+        }
         if ($strategy === 'dry_run') {
             //  not one call is made against a venue on this path, not even a read
             $report['wouldPlaceOrders'] = count($steps);
@@ -2352,6 +2371,16 @@ class OrderRouter {
      * @param int $milliseconds how long to wait
      * @return void
      */
+    /**
+     * Reads the wall clock, in milliseconds since the epoch. The only clock this class reads,
+     * isolated in one overridable method so a test can pin time.
+     *
+     * @return float
+     */
+    public function nowMs() {
+        return floor(microtime(true) * 1000);
+    }
+
     public function sleep($milliseconds) {
         usleep(intval($milliseconds * 1000));
     }

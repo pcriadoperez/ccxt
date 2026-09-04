@@ -112,6 +112,10 @@ pub struct OrderRouter {
     base_url: String,
     timeout_ms: f64,
     max_notional_usd: f64,
+    /// The only clock this class reads. `None` means the real wall clock; a
+    /// test pins time by setting it. A field rather than an overridable method
+    /// because `OrderRouter` is a concrete struct, not a trait.
+    now_ms_override: Option<f64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -349,6 +353,7 @@ impl OrderRouter {
             base_url: String::new(),
             timeout_ms: DEFAULT_TIMEOUT_MS,
             max_notional_usd: NO_CAP,
+            now_ms_override: None,
         };
         let api_key = reader.string_at(config, "apiKey", "");
         if api_key.is_empty() {
@@ -370,7 +375,23 @@ impl OrderRouter {
         // 0 means NO CAP. Any positive value is honoured exactly — it is not
         // clamped, because the caller is the one who knows the size of their own
         // trade.
-        Ok(OrderRouter { api_key, base_url, timeout_ms, max_notional_usd })
+        Ok(OrderRouter { api_key, base_url, timeout_ms, max_notional_usd, now_ms_override: None })
+    }
+
+    /// Pins the clock, for tests. Production never calls this.
+    pub fn set_now_ms(&mut self, now_ms: f64) {
+        self.now_ms_override = Some(now_ms);
+    }
+
+    /// The only clock this class reads.
+    fn now_ms(&self) -> f64 {
+        match self.now_ms_override {
+            Some(pinned) => pinned,
+            None => std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as f64)
+                .unwrap_or(0.0),
+        }
     }
 
     /// The per-trade USD notional cap this client will enforce, or `NO_CAP` when
@@ -2217,6 +2238,25 @@ impl OrderRouter {
         let strategy = if live { requested_strategy.clone() } else { "dry_run".to_string() };
         let mut steps = self.clone_steps(plan);
         let mut report = self.empty_report(plan, &strategy, &requested_strategy, live, &steps);
+        // How old the prices in this plan are. ALWAYS reported, even when nothing is enforced: a plan
+        // is a snapshot of a book, and how stale that snapshot is decides whether any number in it
+        // means anything. -1 when the route carried no calculatedAt, which is not the same as "fresh"
+        // and must not read like it. Enforced only if asked for, at whatever value is asked for — the
+        // same shape as maxNotionalUsd, and for the same reason. But an age that cannot be determined
+        // BLOCKS under an active limit: a freshness check that silently passes when the timestamp is
+        // missing is not a freshness check.
+        let calculated_at = self.number_at(plan, "calculatedAt", 0.0);
+        let plan_age_ms = if calculated_at > 0.0 { self.now_ms() - calculated_at } else { -1.0 };
+        Self::put(&mut report, "planAgeMs", Value::Float(plan_age_ms));
+        let max_plan_age_ms = self.number_at(options, "maxPlanAgeMs", 0.0);
+        if live && max_plan_age_ms > 0.0 {
+            if plan_age_ms < 0.0 {
+                return Err(exchange_error("OrderRouter: refusing to execute, the plan carries no calculatedAt and maxPlanAgeMs was set"));
+            }
+            if plan_age_ms > max_plan_age_ms {
+                return Err(exchange_error("OrderRouter: refusing to execute a plan older than maxPlanAgeMs, recompute the route"));
+            }
+        }
         if strategy == "dry_run" {
             // Not one call is made against a venue on this path, not even a read.
             Self::put(&mut report, "wouldPlaceOrders", Value::Float(steps.len() as f64));

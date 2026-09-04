@@ -862,6 +862,47 @@ def test_order_id_survives_a_failure_after_create():
     assert ok_report['openOrders'][0]['reason'] == 'still_open'
 
 
+@test('a plan carries its age, and a stale one is refused only when asked')
+def _():
+    # A plan is a snapshot of a book. `calculatedAt` was carried on every plan and read by nothing,
+    # so execute() would happily trade an hour-old plan at hour-old prices — and the notional cap,
+    # computed from those same prices, was just as stale.
+    route = one_leg_route('buy', 'BTC', 'USDT', 0.2, 100)
+    route['calculatedAt'] = 1000000
+    plan = router.build_execution_plan(route, {})
+    pinned = OrderRouter({'apiKey': 'k'})
+    pinned.now_ms = lambda: 1060000   # the plan is exactly 60s old
+    opts = {'strategy': 'sequential', 'live': True, 'usdRates': {'USDT': 1}}
+
+    # Always reported, even with nothing enforced, and nothing is refused by default: this class
+    # does not decide how stale a plan the caller may trade on.
+    report = pinned.execute(plan, {'stub': StubVenue('stub')}, opts)
+    assert report['planAgeMs'] == 60000, 'the age is on the report whether or not it is checked'
+    assert report['steps'][0]['status'] == 'filled'
+
+    # Enforced exactly, at whatever value is asked for.
+    strict = StubVenue('stub')
+    try:
+        pinned.execute(plan, {'stub': strict}, dict(opts, maxPlanAgeMs=30000))
+        raise AssertionError('a stale plan must be refused under a limit')
+    except ExchangeError as e:
+        assert 'older than maxPlanAgeMs' in str(e)
+    assert strict.calls == [], 'refused before anything reached the venue'
+    passed = pinned.execute(plan, {'stub': StubVenue('stub')}, dict(opts, maxPlanAgeMs=120000))
+    assert passed['steps'][0]['status'] == 'filled'
+
+    # An age that cannot be determined BLOCKS under an active limit: a freshness check that
+    # silently passes when the timestamp is missing is not a freshness check.
+    undated = router.build_execution_plan(one_leg_route('buy', 'BTC', 'USDT', 0.2, 100), {})
+    undated_report = pinned.execute(undated, {'stub': StubVenue('stub')}, opts)
+    assert undated_report['planAgeMs'] == -1, 'unknown is -1, never 0: 0 would read as fresh'
+    try:
+        pinned.execute(undated, {'stub': StubVenue('stub')}, dict(opts, maxPlanAgeMs=30000))
+        raise AssertionError('an undatable plan must be refused under a limit')
+    except ExchangeError as e:
+        assert 'carries no calculatedAt' in str(e)
+
+
 @test('an unknown strategy is refused even in dry run')
 def test_unknown_strategy():
     plan = router.build_execution_plan(one_leg_route('buy', 'BTC', 'USDT', 0.2, 100), {})

@@ -592,6 +592,14 @@ declare class OrderRouter {
     /**
      * @ignore
      * @method
+     * @name OrderRouter#nowMs
+     * @description reads the wall clock, in milliseconds since the epoch
+     * @returns {int} the current time
+     */
+    nowMs(): number;
+    /**
+     * @ignore
+     * @method
      * @name OrderRouter#sleep
      * @description waits for a number of milliseconds
      * @param {int} milliseconds how long to wait

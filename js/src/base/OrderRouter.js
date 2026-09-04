@@ -1325,6 +1325,27 @@ class OrderRouter {
         const strategy = live ? requestedStrategy : 'dry_run';
         const steps = this.cloneSteps(plan);
         const report = this.emptyReport(plan, strategy, requestedStrategy, live, steps);
+        //  How old the prices in this plan are. ALWAYS reported, even when nothing is enforced:
+        //  a plan is a snapshot of a book, and how stale that snapshot is decides whether any
+        //  number in it means anything. -1 when the route carried no calculatedAt, which is not
+        //  the same as "fresh" and must not read like it.
+        const calculatedAt = this.numberAt(plan, 'calculatedAt', 0);
+        const planAgeMs = (calculatedAt > 0) ? (this.nowMs() - calculatedAt) : -1;
+        report['planAgeMs'] = planAgeMs;
+        //  Enforced only if asked for, at whatever value is asked for — the same shape as
+        //  maxNotionalUsd, and for the same reason: this class does not decide how stale a plan
+        //  the caller may trade on. But an age that cannot be determined BLOCKS under an active
+        //  limit, because a freshness check that silently passes when the timestamp is missing is
+        //  not a freshness check.
+        const maxPlanAgeMs = this.numberAt(options, 'maxPlanAgeMs', 0);
+        if (live && maxPlanAgeMs > 0) {
+            if (planAgeMs < 0) {
+                throw new ExchangeError('OrderRouter: refusing to execute, the plan carries no calculatedAt and maxPlanAgeMs was set');
+            }
+            if (planAgeMs > maxPlanAgeMs) {
+                throw new ExchangeError('OrderRouter: refusing to execute a plan older than maxPlanAgeMs, recompute the route');
+            }
+        }
         if (strategy === 'dry_run') {
             //  not one call is made against a venue on this path, not even a read
             report['wouldPlaceOrders'] = steps.length;
@@ -2410,6 +2431,18 @@ class OrderRouter {
         }
         report['filledIn'] = filledIn;
         report['filledOut'] = filledOut;
+    }
+    /**
+     * @ignore
+     * @method
+     * @name OrderRouter#nowMs
+     * @description reads the wall clock, in milliseconds since the epoch
+     * @returns {int} the current time
+     */
+    nowMs() {
+        //  The only clock this class reads. Isolated in one overridable method so a test can pin
+        //  time, and so the six ports have exactly one place each where "now" is defined.
+        return Date.now();
     }
     /**
      * @ignore

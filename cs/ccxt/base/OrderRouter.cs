@@ -1697,6 +1697,28 @@ public class OrderRouter
         var strategy = live ? requestedStrategy : "dry_run";
         var steps = this.CloneSteps(plan);
         var report = this.EmptyReport(plan, strategy, requestedStrategy, live, steps);
+        // How old the prices in this plan are. ALWAYS reported, even when nothing is enforced: a plan
+        // is a snapshot of a book, and how stale that snapshot is decides whether any number in it
+        // means anything. -1 when the route carried no calculatedAt, which is not the same as "fresh"
+        // and must not read like it. Enforced only if asked for, at whatever value is asked for — the
+        // same shape as maxNotionalUsd, and for the same reason. But an age that cannot be determined
+        // BLOCKS under an active limit: a freshness check that silently passes when the timestamp is
+        // missing is not a freshness check.
+        var calculatedAt = this.NumberAt(plan, "calculatedAt", 0);
+        var planAgeMs = (calculatedAt > 0) ? (this.NowMs() - calculatedAt) : -1;
+        report["planAgeMs"] = planAgeMs;
+        var maxPlanAgeMs = this.NumberAt(options, "maxPlanAgeMs", 0);
+        if (live && maxPlanAgeMs > 0)
+        {
+            if (planAgeMs < 0)
+            {
+                throw new ExchangeError("OrderRouter: refusing to execute, the plan carries no calculatedAt and maxPlanAgeMs was set");
+            }
+            if (planAgeMs > maxPlanAgeMs)
+            {
+                throw new ExchangeError("OrderRouter: refusing to execute a plan older than maxPlanAgeMs, recompute the route");
+            }
+        }
         if (strategy == "dry_run")
         {
             //  not one call is made against a venue on this path, not even a read
@@ -2800,6 +2822,15 @@ public class OrderRouter
         }
         report["filledIn"] = filledIn;
         report["filledOut"] = filledOut;
+    }
+
+    /// <summary>
+    /// Reads the wall clock, in milliseconds since the epoch. The only clock this class reads,
+    /// isolated in one overridable method so a test can pin time.
+    /// </summary>
+    public virtual double NowMs()
+    {
+        return (double)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
     }
 
     /// <summary>Waits for a number of milliseconds.</summary>

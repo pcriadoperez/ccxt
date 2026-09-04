@@ -101,6 +101,7 @@ public class OrderRouterTest
         RunAsync("limit_protected keeps the fill from an order the venue canceled on the last poll", LimitProtectedKeepsAVenueSideCancelFill);
         RunAsync("a failure after createOrder still reports the order id and an open order", OrderIdSurvivesAFailureAfterCreate);
         RunAsync("an unknown strategy is refused even in dry run", UnknownStrategyRefused);
+        RunAsync("a plan carries its age, and a stale one is refused only when asked", PlanAgeIsReportedAndRefusedOnlyWhenAsked);
         RunAsync("atomic_ish demands the whole route pre-funded", AtomicIshDemandsPrefunding);
         RunAsync("a fee charged in the acquired asset is netted out of what the hop carries forward", FeeInAcquiredAssetIsNetted);
         //  4. fetchRoute request shaping, with the HTTP layer stubbed out
@@ -519,6 +520,16 @@ public class OrderRouterTest
     private static OrderRouter NewRouter()
     {
         return new OrderRouter(new dict() { { "apiKey", "test-key" } });
+    }
+
+    /// <summary>
+    /// The only clock the class reads, pinned so a plan's age is deterministic.
+    /// </summary>
+    private class PinnedClockRouter : OrderRouter
+    {
+        public double pinned;
+        public PinnedClockRouter(dict config) : base(config) { }
+        public override double NowMs() { return this.pinned; }
     }
 
     //  -----------------------------------------------------------------------
@@ -1535,6 +1546,45 @@ public class OrderRouterTest
         var quoteFeeReport = await router.Execute(plan, Venues(other), new dict() { { "strategy", "sequential" }, { "live", true }, { "usdRates", new dict() { { "USDT", 1.0 } } } });
         var quoteFeeStep = ToDict(ToList(quoteFeeReport["steps"])[0]);
         EqualNumber(ToDouble(quoteFeeStep["outAmount"]), 0.2, "a fee in the spent asset leaves the acquired amount alone");
+    }
+
+    private static async Task PlanAgeIsReportedAndRefusedOnlyWhenAsked()
+    {
+        //  A plan is a snapshot of a book. `calculatedAt` was carried on every plan and read by
+        //  nothing, so Execute() would happily trade an hour-old plan at hour-old prices — and the
+        //  notional cap, computed from those same prices, was just as stale.
+        var router = NewRouter();
+        var route = OneLegRoute("buy", "BTC", "USDT", 0.2, 100);
+        route["calculatedAt"] = 1000000.0;
+        var plan = router.BuildExecutionPlan(route, new dict());
+        var pinned = new PinnedClockRouter(new dict() { { "apiKey", "test-key" } });
+        pinned.pinned = 1060000.0;   //  the plan is exactly 60s old
+        var rates = new dict() { { "USDT", 1.0 } };
+        Func<dict> opts = () => new dict() { { "strategy", "sequential" }, { "live", true }, { "usdRates", rates } };
+
+        //  Always reported, even with nothing enforced, and nothing is refused by default.
+        var report = await pinned.Execute(plan, Venues(new StubVenue("stub")), opts());
+        EqualNumber(ToDouble(report["planAgeMs"]), 60000, "the age is on the report whether or not it is checked");
+        EqualString((string)ToDict(ToList(report["steps"])[0])["status"], "filled", "and nothing is refused by default");
+
+        //  Enforced exactly, at whatever value is asked for.
+        var strict = new StubVenue("stub");
+        var strictOpts = opts();
+        strictOpts["maxPlanAgeMs"] = 30000.0;
+        await Rejects<ExchangeError>(async () => await pinned.Execute(plan, Venues(strict), strictOpts), "a stale plan is refused under a limit");
+        EqualCalls(strict.calls, new List<string>(), "refused before anything reached the venue");
+        var wideOpts = opts();
+        wideOpts["maxPlanAgeMs"] = 120000.0;
+        var passed = await pinned.Execute(plan, Venues(new StubVenue("stub")), wideOpts);
+        EqualString((string)ToDict(ToList(passed["steps"])[0])["status"], "filled", "a limit the plan is inside of lets it through");
+
+        //  An age that cannot be determined BLOCKS under an active limit.
+        var undated = router.BuildExecutionPlan(OneLegRoute("buy", "BTC", "USDT", 0.2, 100), new dict());
+        var undatedReport = await pinned.Execute(undated, Venues(new StubVenue("stub")), opts());
+        EqualNumber(ToDouble(undatedReport["planAgeMs"]), -1, "unknown is -1, never 0: 0 would read as fresh");
+        var undatedOpts = opts();
+        undatedOpts["maxPlanAgeMs"] = 30000.0;
+        await Rejects<ExchangeError>(async () => await pinned.Execute(undated, Venues(new StubVenue("stub")), undatedOpts), "an undatable plan is refused under a limit");
     }
 
     private static async Task AtomicIshDemandsPrefunding()

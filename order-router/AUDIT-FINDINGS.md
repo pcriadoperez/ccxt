@@ -1199,26 +1199,6 @@ Either delete the per-file coverage table and print the count from the suite, or
 
 ## Started, not finished
 
-### 36. The 25 USD cap is computed entirely from route-supplied prices with no freshness check, and on the allowMarketOrders path the order is sent with no price at all
-
-**Severity:** high &nbsp;·&nbsp; **estimated effort:** hours
-
-**Claimed evidence**
-
-```
-assertUnderCap values the order from the plan's own numbers, ts/src/base/OrderRouter.ts:2270-2281:
-```
-        const usdValue = this.notionalUsd (probe, amount * price, usdRates);
-        if (usdValue <= 0) { throw ... }
-        if (usdValue > cap * (1 + OrderRouter.TOLERANCE)) { throw ... }
-```
-whe
-```
-
-**Suggested fix** — a suggestion, not a verdict; verify before following it.
-
-Refuse to execute a plan whose `calculatedAt` is older than a small explicit maxPlanAgeMs (e.g. 30s) — the field is already carried, just unread. For the market-order path, compute the cap against a freshly fetched ticker rather than the plan's expectedPrice, or drop the market fallback entirely and
-
 ### 41. Deployment docs and the deploy workflow cover only the router process; the web console, ingester and key projector are undocumented and never started, so a box built from the README can never authenticate a request
 
 **Severity:** high &nbsp;·&nbsp; **estimated effort:** hours
@@ -1259,4 +1239,5 @@ Kept so the same ground is not re-covered, and so a `wontfix` is not silently re
 | 32 | high | Rust place_step never records a known orderId into openOrders when a post-createOrder call fails, so a resting order can vanish from the operator-facing list | **fixed** — 3f795f91 known-id branch added to the Rust catch path |
 | 33 | high | C# mutates the shared execution report from concurrent tasks without the lock it defines for exactly that purpose | **fixed** — a6f995a9 RecordUnconfirmedPlacement and the fill_unconfirmed increment now take reportLock |
 | 34 | high | TypeScript alone returns from placeStep before setting inAsset/outAsset/amounts and fee netting on the outcome_unknown path — the other five ports set them first, so the same execution yields a different unwind plan per language | **fixed** — TS block moved after the asset/amount assignment to match the other five; pinned in TS and Rust, still unpinned in Python/PHP/C#/Go (they already behave correctly) |
+| 36 | high | The 25 USD cap is computed entirely from route-supplied prices with no freshness check, and on the allowMarketOrders path the order is sent with no price at all | **fixed** — both halves fixed in all six ports: allowMarketOrders + a cap in force is refused before dispatch, and every report now carries planAgeMs with an opt-in maxPlanAgeMs honoured exactly (an age that cannot be determined blocks under an active limit) |
 | 37 | high | README "Known gaps" claims there is no /metrics endpoint; the endpoint exists, is documented 200 lines earlier, and is the primary alerting surface | **fixed** — af4ac591 Known gaps rewritten; the three completed entries kept as a 'done since' note |

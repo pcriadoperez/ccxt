@@ -144,6 +144,11 @@ type OrderRouter struct {
 	// how the offline test suite keeps itself off the network.
 	Transport func(url string) (map[string]any, error)
 
+	// NowMs is the only clock this class reads. A field for the same reason
+	// Transport is one — Go has no method overriding — so a test can pin time.
+	// nil means time.Now().
+	NowMs func() float64
+
 	httpClient *http.Client
 }
 
@@ -181,6 +186,7 @@ func NewOrderRouter(config map[string]any) (*OrderRouter, error) {
 		httpClient:     &http.Client{},
 	}
 	router.Transport = router.Request
+	router.NowMs = func() float64 { return float64(time.Now().UnixMilli()) }
 	return router, nil
 }
 
@@ -1420,6 +1426,28 @@ func (this *OrderRouter) Execute(plan map[string]any, venues map[string]IExchang
 	}
 	steps := this.cloneSteps(plan)
 	report, results := this.emptyReport(plan, strategy, requestedStrategy, live, steps)
+	// How old the prices in this plan are. ALWAYS reported, even when nothing is enforced: a plan
+	// is a snapshot of a book, and how stale that snapshot is decides whether any number in it
+	// means anything. -1 when the route carried no calculatedAt, which is not the same as "fresh"
+	// and must not read like it. Enforced only if asked for, at whatever value is asked for — the
+	// same shape as maxNotionalUsd, and for the same reason. But an age that cannot be determined
+	// BLOCKS under an active limit: a freshness check that silently passes when the timestamp is
+	// missing is not a freshness check.
+	calculatedAt := routerNumberAt(plan, "calculatedAt", 0)
+	planAgeMs := float64(-1)
+	if calculatedAt > 0 {
+		planAgeMs = this.NowMs() - calculatedAt
+	}
+	report["planAgeMs"] = planAgeMs
+	maxPlanAgeMs := routerNumberAt(options, "maxPlanAgeMs", 0)
+	if live && maxPlanAgeMs > 0 {
+		if planAgeMs < 0 {
+			return nil, ExchangeError("OrderRouter: refusing to execute, the plan carries no calculatedAt and maxPlanAgeMs was set")
+		}
+		if planAgeMs > maxPlanAgeMs {
+			return nil, ExchangeError("OrderRouter: refusing to execute a plan older than maxPlanAgeMs, recompute the route")
+		}
+	}
 	if strategy == "dry_run" {
 		// not one call is made against a venue on this path, not even a read
 		report["wouldPlaceOrders"] = float64(len(steps))

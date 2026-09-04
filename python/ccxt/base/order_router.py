@@ -1192,6 +1192,22 @@ class OrderRouter:
         strategy = requested_strategy if live else 'dry_run'
         steps = self.clone_steps(plan)
         report = self.empty_report(plan, strategy, requested_strategy, live, steps)
+        # How old the prices in this plan are. ALWAYS reported, even when nothing is enforced: a plan
+        # is a snapshot of a book, and how stale that snapshot is decides whether any number in it
+        # means anything. -1 when the route carried no calculatedAt, which is not the same as "fresh"
+        # and must not read like it. Enforced only if asked for, at whatever value is asked for — the
+        # same shape as maxNotionalUsd, and for the same reason. But an age that cannot be determined
+        # BLOCKS under an active limit: a freshness check that silently passes when the timestamp is
+        # missing is not a freshness check.
+        calculated_at = self.number_at(plan, 'calculatedAt', 0)
+        plan_age_ms = (self.now_ms() - calculated_at) if calculated_at > 0 else -1
+        report['planAgeMs'] = plan_age_ms
+        max_plan_age_ms = self.number_at(options, 'maxPlanAgeMs', 0)
+        if live and max_plan_age_ms > 0:
+            if plan_age_ms < 0:
+                raise ExchangeError('OrderRouter: refusing to execute, the plan carries no calculatedAt and maxPlanAgeMs was set')
+            if plan_age_ms > max_plan_age_ms:
+                raise ExchangeError('OrderRouter: refusing to execute a plan older than maxPlanAgeMs, recompute the route')
         if strategy == 'dry_run':
             # not one call is made against a venue on this path, not even a read
             report['wouldPlaceOrders'] = len(steps)
@@ -2081,6 +2097,17 @@ class OrderRouter:
                 filled_out = filled_out + self.number_at(result, 'outAmount', 0)
         report['filledIn'] = filled_in
         report['filledOut'] = filled_out
+
+    def now_ms(self):
+        """
+        reads the wall clock, in milliseconds since the epoch
+
+        The only clock this class reads. Isolated in one overridable method so a test can pin
+        time, and so the six ports have exactly one definition of "now" each.
+
+        :returns int: the current time
+        """
+        return int(time.time() * 1000)
 
     def sleep(self, milliseconds):
         """

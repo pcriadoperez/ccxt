@@ -989,6 +989,11 @@ Strategies: `dry_run` (default), `sequential`, `parallel_within_hop` (concurrent
 serialised within a venue), `atomic_ish` (requires the route pre-funded), `best_effort`
 (single-hop, never halts).
 
+Every report carries `planAgeMs` — how old the plan's prices were when `execute` was called (`-1`
+when the route carried no `calculatedAt`, which means unknown, not fresh). Pass
+`options.maxPlanAgeMs` to refuse a live execution of a plan older than that; there is no default
+limit, and under an active limit a plan whose age cannot be determined is refused too.
+
 There is **no notional cap by default** — trade cents or trade thousands. `maxNotionalUsd` is an
 opt-in guardrail: pass it to the constructor, or per call in the options, and it is honoured
 exactly at whatever value you choose, in either direction; omit it (or pass 0) and no notional
