@@ -8825,8 +8825,18 @@ impl std::ops::DerefMut for ${coreName} {
             // `continue` inside a transpiled `for`→`while` must still run
             // the manual loop increment — labelled-block rewrite.
             content = this.fixForLoopContinue(content);
-            // Methods that assign to `self.<field>` need `&mut self`.
-            content = this.promoteSelfMutMethods(content);
+            // Methods that assign to `self.<field>` need `&mut self`. Also seed
+            // on `&mut self.<field>` writes (the third arg): the harness pushes
+            // onto `this.onlySpecificTests` from a method with no direct
+            // assignment, which otherwise stays `&self` and appends to a
+            // throwaway `.clone()` — so `ti-rust <id> <symbol> <method>` ran
+            // every test instead of the one requested.
+            content = this.promoteSelfMutMethods(content, undefined, true);
+            // Re-run the clone strip: the promotion above turned `&self` methods
+            // into `&mut self`, so their `&mut self.<field>.clone()` writes can
+            // now target the real field (same two-pass order as the exchange
+            // pipeline).
+            content = this.stripMutSelfFieldClones(content);
             // `init` is a thin wrapper around `init_inner` — drop the
             // statement-block wrapper so it returns `init_inner`'s value.
             content = content.replace(

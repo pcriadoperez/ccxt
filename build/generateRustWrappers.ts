@@ -35,10 +35,10 @@ import * as path from 'path';
 const TS_BASE_FILE = './ts/src/base/Exchange.ts';
 // The base REST/prediction Cores are READ from here (parents, method surface).
 const EXCHANGES_FOLDER = './rust/ccxt-base/src/exchanges/';
-// The typed wrappers are WRITTEN into the sibling `ccxt-typed` crate — split out
-// of `ccxt` so the base crate's single `rustc` invocation stays under the CI
+// The typed wrappers are WRITTEN into the sibling `ccxt` crate — split out of
+// `ccxt-base` so the base crate's single `rustc` invocation stays under the CI
 // runner's memory ceiling. `crate::exchanges::*` inside the wrappers resolves
-// via `ccxt-typed/src/exchanges/mod.rs`'s `pub use ccxt::exchanges::*;`.
+// via `ccxt/src/exchanges/mod.rs`.
 const TYPED_FOLDER = './rust/ccxt/src/exchanges/';
 const TYPED_AGGREGATOR = './rust/ccxt/src/typed.rs';
 

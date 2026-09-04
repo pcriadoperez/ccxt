@@ -213,8 +213,20 @@ pub fn getExchangeProp(exchange: Value, prop: Value, optional_args: &[Value]) ->
     optional_args.get(0).cloned().unwrap_or(Value::Null)
 }
 
-pub fn setExchangeProp(_exchange: Value, _prop: Value, _value: Value) {
-    // Filled in by the dynamic-dispatch step.
+pub fn setExchangeProp(exchange: Value, prop: Value, value: Value) {
+    // The TS harness mutates the one exchange object in place; here `exchange`
+    // is a snapshot `Value`, so route the write to the cached live Core. This is
+    // what carries keys.json / keys.local.json settings (`expand_settings`) and
+    // `<ID>_APIKEY`-style env credentials (`load_credentials_from_env`) to the
+    // venue that actually signs requests — without it every private live test
+    // ran unauthenticated. Fields `write_field` does not know are dropped, as
+    // before.
+    let id = match ccxt::get_value(&exchange, &Value::Str("id".to_string())) {
+        Value::Str(s) => s,
+        _ => return,
+    };
+    let key = match &prop { Value::Str(s) => s.clone(), other => ccxt::runtime::stringify_param(other) };
+    crate::live_dispatch::write_field_for_id(&id, &key, value);
 }
 
 /// `setFetchResponse(exchange, response)` — stashes a canned HTTP
