@@ -363,47 +363,6 @@ Ship a logrotate config (with `create`, not `copytruncate`, per src/logger.ts:27
 
 Issue a pre-session cookie on GET /signup and GET /login and derive the anonymous token from it, so the value differs per visitor. Separately, treat a state-changing POST with no Origin as a failure (or fall back to `Sec-Fetch-Site: same-origin`) rather than as allowed.
 
-### 48. The non-prefixed `router_session` cookie is accepted in the secure deployment, defeating the __Host- prefix
-
-**Severity:** medium &nbsp;·&nbsp; **estimated effort:** minutes
-
-**Claimed evidence**
-
-```
-`src/web/server.ts:138-139` reads both names unconditionally:
-
-    const token = readCookie(request as never, SESSION_COOKIE)
-        ?? readCookie(request as never, 'router_session');
-
-while `src/web/auth.ts:87-91` only ever *sets* the fallback name in the insecure case:
-
-    const name = secure ?
-```
-
-**Suggested fix** — a suggestion, not a verdict; verify before following it.
-
-Make the accepted cookie name depend on `secureCookies` exactly as the setter does: read only `SESSION_COOKIE` when secure, only `router_session` when not.
-
-### 49. Caller-controlled unbounded `bridges` / `exchanges` on POST /route are written verbatim into the audit log and re-walked on every stream push
-
-**Severity:** medium &nbsp;·&nbsp; **estimated effort:** minutes
-
-**Claimed evidence**
-
-```
-`src/api/routeQuery.ts:141-143` splits the parameter with no length or count bound:
-
-    const bridges = query.bridges === undefined
-        ? DEFAULT_BRIDGES
-        : query.bridges.split(',').map((b) => b.trim().toUpperCase()).filter((b) => b.length > 0);
-
-(`exchanges` at `:136-138` is the same sh
-```
-
-**Suggested fix** — a suggestion, not a verdict; verify before following it.
-
-Bound both parameters the way `balances` already is — a character cap and an entry cap, rejecting rather than truncating — in `parseRouteQuery`, and cap what the audit record echoes.
-
 ### 50. Signup discloses whether an email already has an account, re-opening the enumeration oracle login deliberately closes
 
 **Severity:** medium &nbsp;·&nbsp; **estimated effort:** hours
@@ -479,47 +438,6 @@ With `volume` empty, the sort at liquidity.ts:66 `return [...ca
 **Suggested fix** — a suggestion, not a verdict; verify before following it.
 
 Treat a failed liquidity ranking as fatal at boot (exit non-zero and let the supervisor retry) rather than continuing with an unranked list, or retry the reference fetch with backoff before falling through. Do the same for `assignments.length === 0`. If long-lived processes are expected, add a perio
-
-### 54. `AuthenticationError` is classified as permanent and irreversibly removes a venue, including the okx clock-drift failure the file's own comment lists as recoverable
-
-**Severity:** medium &nbsp;·&nbsp; **estimated effort:** minutes
-
-**Claimed evidence**
-
-```
-order-router/src/connectors/exchangeConnector.ts:189-194:
-```
-    if (err instanceof ccxt.NotSupported
-        || err instanceof ccxt.BadSymbol
-        || err instanceof ccxt.ArgumentsRequired
-        || err instanceof ccxt.AuthenticationError) {
-        return true;
-    }
-```
-The comment above it,
-```
-
-**Suggested fix** — a suggestion, not a verdict; verify before following it.
-
-Drop `AuthenticationError` from the permanent set and rely on the credential-shaped `PERMANENT_ERROR_PATTERNS` (:175-181) for the genuinely unrecoverable "requires apiKey" case, or make abandonment recoverable — retry an abandoned subscription once on the hourly periodic-resync tick instead of never
-
-### 55. A shard orphaned during startup never exits: the `disconnect` handler is installed only after every connector has started
-
-**Severity:** medium &nbsp;·&nbsp; **estimated effort:** minutes
-
-**Claimed evidence**
-
-```
-order-router/src/sharding/shardWorker.ts:105-121 — the handler is the last statement of `runShard`, after the bounded-concurrency start loop completes:
-```
-    await Promise.all(Array.from({ length: Math.min(limit, queue.length) }, async () => {
-        for (;;) {
-            const next = queue.shif
-```
-
-**Suggested fix** — a suggestion, not a verdict; verify before following it.
-
-Register `process.on('disconnect', () => process.exit(0))` at module load, next to `installCrashHandlers` at shardWorker.ts:10, rather than at the end of `runShard`.
 
 ### 56. The crash strategy explicitly depends on a supervisor restart, but the documented systemd unit has no `Restart=` directive
 
@@ -644,29 +562,6 @@ But when `ORDER_ROUTER_AUDIT_LOG_FILE` is set — which README.md:528 says i
 
 Update README.md:437-444 to read from `$ORDER_ROUTER_AUDIT_LOG_FILE*`, and correct the event table at 431-436 to state which stream each event lands in (`request`/`route_recommendation` → audit file; `stream_open`/`stream_close` → diagnostic log, until finding #2 is fixed).
 
-### 63. Respawned shard processes are never added to the handle, so stop() cannot kill them
-
-**Severity:** medium &nbsp;·&nbsp; **estimated effort:** minutes
-
-**Claimed evidence**
-
-```
-`src/sharding/orchestrator.ts:125-136` — the replacement is created but never tracked:
-```ts
-setTimeout(() => {
-    if (shuttingDown) return;
-    const replacement = spawn();
-    replacement.send({ type: 'init', assignments });
-}, delay);
-...
-const child = spawn();
-children.push(child);            /
-```
-
-**Suggested fix** — a suggestion, not a verdict; verify before following it.
-
-Track children in a mutable per-shard slot: replace `children.push(child)` with an index assignment that `spawn()` updates on every respawn, so `stop()` always kills the live pid. Separately, register `process.on('disconnect', () => process.exit(0))` at the top of `shardWorker.ts` (before `runShard`
-
 ### 65. Go cannot read per-trade fees and carries the gross amount forward; the code comment claims this is conservative, and it is the opposite
 
 **Severity:** medium &nbsp;·&nbsp; **estimated effort:** hours
@@ -786,29 +681,6 @@ app.post<{ Body: RouteQuery }>('/route', async (request, reply) => handleRoute(r
 **Suggested fix** — a suggestion, not a verdict; verify before following it.
 
 Copy the `'404'` and `'501'` response blocks from openapi/openapi.yaml:210-229 into the `post:` responses at openapi.yaml:265-268.
-
-### 73. rust.yml is the one language workflow with no order-router paths-ignore, so every order-router change spins the 120-minute Rust job and can push spurious [Automated changes] commits to master
-
-**Severity:** medium &nbsp;·&nbsp; **estimated effort:** minutes
-
-**Claimed evidence**
-
-```
-.github/workflows/rust.yml:10-15 — the entire trigger block, with no `paths` or `paths-ignore`:
-```yaml
-on:
-  workflow_dispatch:
-  push:
-    branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
-```
-Every other language workflow has the filter (js.yml:16-19, python.yml:17-19, php
-```
-
-**Suggested fix** — a suggestion, not a verdict; verify before following it.
-
-Add the same `paths-ignore: ['order-router/**', '.github/workflows/order-router.yml']` block to both the `push` and `pull_request` triggers in rust.yml, matching the other six workflows.
 
 ### 74. The artifact CI tested is not the artifact deployed: the shipped arm64 tree is rebuilt in the deploy job and never runs a single test before it reaches production
 
@@ -1057,6 +929,12 @@ Kept so the same ground is not re-covered, and so a `wontfix` is not silently re
 | 64 | medium | Rust classifies the entire NetworkError subtree as outcome-unknown, so every rate-limit rejection is reported as a possibly-live order | **fixed** — `error.is("NetworkError")` walked the hierarchy, where DDoSProtection, RateLimitExceeded and InvalidNonce are children of NetworkError. Replaced with the same exact four-name match the other five ports use, with a selftest that pins both directions: those three are plain failures, and the four ambiguous ones stay outcome-unknown. |
 | 67 | medium | Rust adds a price_unconfirmed halt branch that no other port has, halting routes the other five complete | **refuted on current source** — the branch is gone; what remains at rust/ccxt-base/src/order_router.rs:2019 is a comment recording that it was removed and why (the reference halts on an unknown FILL, and reports an estimated price as an estimate). Nothing to change. |
 | 81 | low | C# assigns inAsset/outAsset and the fee fields before the outcome-unknown early return, so an unknown-fill result carries assets the other ports leave blank | **refuted** — written against the pre-item-34 reference. Closing 34 moved the TypeScript early return to sit AFTER the asset/amount assignment, precisely because inAmount is what buildUnwindPlan subtracts. C# at :2203-2242 already matches that reference; "fixing" it would reintroduce the divergence 34 closed. |
+| 48 | medium | The non-prefixed `router_session` cookie is accepted in the secure deployment, defeating the __Host- prefix | **fixed** — the accepted name now follows `secureCookies` exactly as the setter does: `__Host-` only when secure, the plain name only when not. The prefix is what a browser enforces, so accepting both let a sibling subdomain hand this app a session name it honoured. |
+| 49 | medium | Caller-controlled unbounded `bridges` / `exchanges` on POST /route are written verbatim into the audit log and re-walked on every stream push | **fixed** — both bounded the way `balances` already is (1024 chars, 128 entries), rejecting rather than truncating, since routing against a quietly different list is this parser's whole failure mode. The empty forms keep their meanings. |
+| 54 | medium | `AuthenticationError` is classified as permanent and irreversibly removes a venue, including the okx clock-drift failure the file's own comment lists as recoverable | **fixed** — AuthenticationError is no longer permanent by class; it is permanent only when the message is credential-shaped (`requires apiKey`), the one case no retry can fix. Classifying the whole class reinstated exactly the false positive that dropping /authentication/ from the message patterns had removed — okx answers clock drift with an invalid-signature error. |
+| 55 | medium | A shard orphaned during startup never exits: the `disconnect` handler is installed only after every connector has started | **fixed** — registered at module load, beside installCrashHandlers. Startup is the longest window in the process's life and was the only one with no handler. |
+| 63 | medium | Respawned shard processes are never added to the handle, so stop() cannot kill them | **refuted — already closed as blocker 3** (6f88bfb3). `children.push` sits inside `spawn()`, so every process it creates is tracked, and the exit handler splices the corpse out. Duplicate filing. |
+| 73 | medium | rust.yml is the one language workflow with no order-router paths-ignore, so every order-router change spins the 120-minute Rust job and can push spurious [Automated changes] commits to master | **fixed** — the same paths-ignore block the other five workflows carry, on both push and pull_request. Confirmed by the audit trail on this PR: order-router-only pushes were spinning the Rust job and failing its live-tests step. |
 | 14 | high | Attacker-controlled request.ip is inserted into an `inet` column inside the ingest transaction; one crafted header wedges audit ingestion permanently | **fixed** — 6f88bfb3 same fix as blocker 4 |
 | 15 | high | The published dev API key `dev-local-key-change-me` is enabled in production whenever NODE_ENV is unset, and the documented systemd unit never sets it | **fixed** — 6f88bfb3 same fix as blocker 0 |
 | 25 | high | /stream/route produces zero audit records and zero HTTP metrics — streaming usage is invisible to billing and to Prometheus | **fixed** — cc1501bf audit emission shared by GET/POST /route and every pushed frame; unroutable counter with it |
