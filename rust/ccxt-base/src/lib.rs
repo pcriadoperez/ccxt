@@ -83,9 +83,10 @@ pub mod exchanges {
 
 // The per-exchange typed unified-method wrappers (`Binance`, `Kraken`, … with
 // `fetch_ticker(..) -> Result<Ticker>`) plus the `TypedExchange` /
-// `TypedExchangeExt` traits now live in the sibling `ccxt-typed` crate (import
-// as `ccxt_typed::Binance`). They were split out so the base `ccxt` crate's
-// single `rustc` invocation stays under the CI runner's memory ceiling.
+// `TypedExchangeExt` traits live in the sibling `ccxt` crate (import as
+// `ccxt::Binance`); the WS wrappers in `ccxt-pro`, the prediction ones in
+// `ccxt-prediction`. They were split out so this base crate's single `rustc`
+// invocation stays under the CI runner's memory ceiling.
 
 pub mod pro;
 

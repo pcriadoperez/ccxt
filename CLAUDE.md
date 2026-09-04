@@ -66,7 +66,7 @@ These are overwritten by the build:
 - `cs/ccxt/exchanges/**`, `cs/ccxt/ws/**`, `cs/ccxt/api/**`, `cs/ccxt/wrappers/**`
 - `cs/ccxt/base/Exchange.BaseMethods.cs` (generated portion only)
 - `go/v4/*.go` and `go/v4/pro/*.go` (every per-exchange Go file)
-- `rust/**` — the whole generated tree is gitignored and rebuilt by `rust.yml` on every run (only `binance` is kept in git as the reference venue)
+- `rust/ccxt-base/src/{exchanges,prediction}/*.rs`, `rust/ccxt-base/src/{exchange_generated,prediction_exchange_generated,exchange_errors}.rs`, `rust/ccxt/src/{exchanges/*,typed.rs,lib.rs}`, `rust/ccxt-pro/src/{pro/*,pro_typed/*,typed.rs,lib.rs}`, `rust/ccxt-prediction/src/{prediction/*,typed.rs,lib.rs}`, `rust/tests/src/{tests.rs,generated_cores.rs}`, `rust/tests/{base,base_ws,exchange,exchange_ws}/*.rs` (committed like the other languages' output; `rust.yml` regenerates and auto-commits them on `master`)
 - `ts/src/abstract/*.ts` (emitted from each exchange's `api` block)
 - `dist/**`, `build/ccxt.wiki`, `index.d.cts`
 - `README.md` exchange tables, `wiki/Exchange-Markets*.md`
@@ -578,7 +578,7 @@ php/                    GENERATED + hand-written Exchange.php top + errors
 php/async/, php/pro/    GENERATED + hand-written ReactPHP plumbing
 cs/ccxt/                GENERATED + hand-written base/ (except BaseMethods.cs)
 go/v4/                  GENERATED Go (every file is transpiled)
-rust/                   GENERATED Rust cargo workspace (gitignored except the binance reference venue)
+rust/                   Rust cargo workspace: hand-written runtime in ccxt-base/src/{exchange,value,runtime,precise,types,params,error,exchange_stubs}.rs + pro/{ws_client,cache,order_book}.rs and rust/tests/src (harness); everything else GENERATED
 wiki/                   docs (Manual.md = authoritative API spec)
 examples/               per-language end-user examples
 .claude/skills/         per-language usage skills (/ccxt-python, /ccxt-typescript, …)

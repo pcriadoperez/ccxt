@@ -6,17 +6,22 @@ from the TypeScript source of truth** (`ts/src`); the hand-written parts are the
 runtime (`Value`, HTTP, crypto, rate limiter) and the typed wrapper layer.
 
 > **Status: work in progress.** The offline conformance suites pass (base,
-> static request/response, id, prediction), but not every exchange method is
-> exercised end-to-end and some signing primitives are intentionally
+> static request/response, id, static WS, prediction), but not every exchange
+> method is exercised end-to-end and some signing primitives are intentionally
 > unimplemented (see [Known limitations](#known-limitations)). Treat this as a
-> preview, not a stable release. The crate is still `0.1.0`.
+> preview, not a stable release. The crates are versioned in lockstep with the
+> other CCXT bindings and are not published to crates.io yet — depend on them by
+> path or git.
 
 ## Installation
 
 ```toml
 [dependencies]
-# The generated REST exchanges are behind a feature flag (see below).
-ccxt = { git = "https://github.com/ccxt/ccxt", package = "ccxt", features = ["transpiled-base"] }
+# `ccxt` is the typed REST API crate; it enables `ccxt-base`'s `transpiled-base`
+# feature (the generated exchange Cores) for you and re-exports the engine.
+ccxt = { git = "https://github.com/ccxt/ccxt", package = "ccxt" }
+# Only if you stream: the WebSocket (`watch*`) venues.
+ccxt-pro = { git = "https://github.com/ccxt/ccxt", package = "ccxt-pro" }
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -51,10 +56,11 @@ The base `Exchange` methods are always compiled; `transpiled-base` gates only th
 per-exchange venue modules. The crate builds with `--no-default-features` and
 with `--all-features`.
 
-The transpiled WebSocket (`pro`) venues live in the sibling **`ccxt-pro`** crate
-and the typed unified-method wrappers (`ccxt_typed::Binance`, …) in **`ccxt-typed`**.
-They were split out of `ccxt` so no single `rustc` invocation compiles the whole
-generated surface at once. Add those crates as dependencies to use them.
+The typed unified-method wrappers (`ccxt::Binance`, …) live in the sibling
+**`ccxt`** crate, the transpiled WebSocket (`pro`) venues in **`ccxt-pro`**, and
+the prediction-market wrappers in **`ccxt-prediction`**. They were split out of
+this base crate so no single `rustc` invocation compiles the whole generated
+surface at once. Add those crates as dependencies to use them.
 
 ## Error handling
 
