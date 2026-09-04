@@ -822,6 +822,7 @@ pub fn run() -> Result<usize, String> {
         ("execute: a fill that stays unknown after the re-read halts instead of guessing", Box::new(|| a_fill_that_stays_unknown_halts_instead_of_guessing(&router()?))),
         ("execute: refuses to go live above a cap the caller set", Box::new(|| execute_refuses_to_go_live_above_the_cap(&router()?))),
         ("execute: the same trade goes through when nobody asked for a cap", Box::new(|| execute_places_the_same_trade_with_no_cap(&router()?))),
+        ("execute: a throw after createOrder still reports the id and an open order", Box::new(|| a_known_order_id_survives_a_throw_after_create(&router()?))),
         ("execute: best_effort demands both of its acknowledgements", Box::new(|| best_effort_demands_its_acknowledgements(&router()?))),
     ];
     let _ = (&f, &r);
@@ -879,6 +880,9 @@ struct StubVenue {
     /// When true the order comes back with no `filled` at all — the case that
     /// used to be read as a zero fill.
     omit_filled: bool,
+    /// When true createOrder returns a RESTING order, so limit_protected enters
+    /// its poll loop and the fetch_order failure below is reached.
+    created_open: bool,
 }
 
 impl StubVenue {
@@ -889,6 +893,7 @@ impl StubVenue {
             orders_placed: StdArc::new(AtomicUsize::new(0)),
             fail_with: None,
             omit_filled: false,
+            created_open: false,
         }
     }
 }
@@ -922,6 +927,10 @@ impl RouterVenue for StubVenue {
         }
         let mut order = HashMap::new();
         order.insert("id".to_string(), Value::Str("stub-1".to_string()));
+        if self.created_open {
+            order.insert("status".to_string(), Value::Str("open".to_string()));
+            return Ok(Value::Map(order));
+        }
         order.insert("status".to_string(), Value::Str("closed".to_string()));
         if !self.omit_filled {
             order.insert("filled".to_string(), Value::Float(amount));
@@ -1197,6 +1206,46 @@ fn execute_places_the_same_trade_with_no_cap(r: &OrderRouter) -> Result<(), Stri
     let bare_results = r.list_at(&bare_report, "steps");
     if r.string_at(&bare_results[0], "status", "") != "filled" {
         return Err("the order fills without usdRates when no cap is set".to_string());
+    }
+    Ok(())
+}
+
+fn a_known_order_id_survives_a_throw_after_create(r: &OrderRouter) -> Result<(), String> {
+    // createOrder RETURNED — the venue accepted something and named it — and the
+    // first poll then died. This branch was missing from the Rust port entirely:
+    // the step was reported as a plain failure and the id appeared nowhere in
+    // the report, so an operator had a live order on a real venue and no way to
+    // learn it existed. Two things must hold: the id reaches openOrders, and the
+    // step is outcome_unknown rather than "failed", because "failed" reads as
+    // "nothing happened" while openOrders says the opposite.
+    let plan = one_leg_plan(r)?;
+    let mut venue = StubVenue::new("stub");
+    venue.created_open = true;
+    let mut venues: BTreeMap<String, Box<dyn RouterVenue>> = BTreeMap::new();
+    venues.insert("stub".to_string(), Box::new(venue));
+    let mut options = execute_options(true, "limit_protected");
+    OrderRouter::set_key(&mut options, "orderTimeoutMs", Value::Float(4.0));
+    OrderRouter::set_key(&mut options, "pollIntervalMs", Value::Float(1.0));
+    let report = block_on(r.execute(&plan, &venues, &options)).map_err(|e| e.to_string())?;
+    let results = r.list_at(&report, "steps");
+    let status = r.string_at(&results[0], "status", "");
+    if status != "outcome_unknown" {
+        return Err(format!("a known id means an order exists, so the step is outcome_unknown, got {status}"));
+    }
+    if r.string_at(&results[0], "orderId", "") != "stub-1" {
+        return Err("the id is captured the instant create_order returns, not after the read".to_string());
+    }
+    let open_orders = r.list_at(&report, "openOrders");
+    if open_orders.len() != 1 {
+        return Err(format!("a live order the caller cannot see is the worst outcome there is, got {open_orders:?}"));
+    }
+    if r.string_at(&open_orders[0], "orderId", "") != "stub-1"
+        || r.string_at(&open_orders[0], "exchangeId", "") != "stub"
+        || r.string_at(&open_orders[0], "reason", "") != "outcome_unknown" {
+        return Err(format!("the open order must name the venue, the id and why, got {open_orders:?}"));
+    }
+    if r.string_at(&report, "haltReason", "") != "outcome_unknown" {
+        return Err("the halt must name the ambiguity rather than claim an outright failure".to_string());
     }
     Ok(())
 }

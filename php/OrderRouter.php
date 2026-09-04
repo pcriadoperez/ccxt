@@ -1917,6 +1917,12 @@ class OrderRouter {
             //  who never learns it exists.
             $knownId = $this->stringAt($result, 'orderId', '');
             if ($knownId !== '') {
+                //  'failed' would read as "nothing happened" while openOrders says
+                //  the opposite, and one report must not carry both readings.
+                //  Having an id means createOrder RETURNED — the venue accepted
+                //  something — so whatever threw afterwards left a real order
+                //  behind whose fill is simply unknown to us.
+                $result['status'] = 'outcome_unknown';
                 $this->recordOpenOrder($report, $exchangeId, $symbol, $knownId, 'outcome_unknown');
             } elseif ($this->boolAt($result, 'placementAttempted', false) && $this->isOutcomeUnknownError($result['errorCode'])) {
                 // The order was dispatched and the venue's answer never arrived. It may well have

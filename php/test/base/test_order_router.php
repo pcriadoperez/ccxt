@@ -1038,7 +1038,11 @@ function order_router_test_order_id_survives_a_failure_after_create($router) {
     //  createOrder succeeded; the first poll never comes back
     $venue->fetchOrderThrows = true;
     $report = $router->execute($plan, array('stub' => $venue), array('strategy' => 'limit_protected', 'live' => true, 'usdRates' => array('USDT' => 1), 'orderTimeoutMs' => 4, 'pollIntervalMs' => 1));
-    order_router_assert($report['steps'][0]['status'] === 'failed', 'the step failed');
+    //  NOT 'failed'. A step whose id is known had createOrder RETURN, so an order exists;
+    //  calling that "failed" reads as "nothing happened" while openOrders, three lines down, says
+    //  the opposite. One report must not carry both readings.
+    order_router_assert($report['steps'][0]['status'] === 'outcome_unknown', 'a known id means an order exists, so the outcome is unknown rather than failed');
+    order_router_assert($report['haltReason'] === 'outcome_unknown', 'and the halt names the ambiguity rather than claiming an outright failure');
     order_router_assert($report['steps'][0]['orderId'] === 'stub-order', 'the id is captured the instant createOrder returns, not after the read');
     order_router_assert(count($report['openOrders']) === 1, 'a live order the caller cannot see is the worst outcome there is');
     order_router_assert($report['openOrders'][0]['orderId'] === 'stub-order', 'and it names the order');

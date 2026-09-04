@@ -2268,6 +2268,11 @@ public class OrderRouter
             var knownId = this.StringAt(result, "orderId", "");
             if (knownId != "")
             {
+                //  "failed" would read as "nothing happened" while openOrders says the opposite,
+                //  and one report must not carry both readings. Having an id means CreateOrder
+                //  RETURNED — the venue accepted something — so whatever threw afterwards left a
+                //  real order behind whose fill is simply unknown to us.
+                result["status"] = "outcome_unknown";
                 this.RecordOpenOrder(report, exchangeId, symbol, knownId, "outcome_unknown");
             }
             else if (this.BoolAt(result, "placementAttempted", false) && this.IsOutcomeUnknownError(this.StringAt(result, "errorCode", "")))

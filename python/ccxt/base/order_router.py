@@ -1646,6 +1646,12 @@ class OrderRouter:
             # never learns it exists.
             known_id = self.string_at(result, 'orderId', '')
             if known_id != '':
+                #  'failed' would read as "nothing happened" while openOrders says
+                #  the opposite, and one report must not carry both readings.
+                #  Having an id means createOrder RETURNED — the venue accepted
+                #  something — so whatever threw afterwards left a real order
+                #  behind whose fill is simply unknown to us.
+                result['status'] = 'outcome_unknown'
                 self.record_open_order(report, exchange_id, symbol, known_id, 'outcome_unknown')
             elif self.bool_at(result, 'placementAttempted', False) and self.is_outcome_unknown_error(result['errorCode']):
                 # The order was dispatched and the venue's answer never arrived. It may well have

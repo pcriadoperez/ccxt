@@ -778,7 +778,11 @@ test ('a failure after createOrder still reports the order id and an open order'
     //  createOrder succeeded; the first poll never comes back
     venue.fetchOrderThrows = true;
     const report = await router.execute (plan, { 'stub': venue }, { 'strategy': 'limit_protected', 'live': true, 'usdRates': { 'USDT': 1 }, 'orderTimeoutMs': 4, 'pollIntervalMs': 1 });
-    assert.strictEqual (report['steps'][0]['status'], 'failed');
+    //  NOT 'failed'. A step whose id is known had createOrder RETURN, so an order exists; calling
+    //  that "failed" reads as "nothing happened" while openOrders, three lines down, says the
+    //  opposite. One report must not carry both readings, and the halt logic keys off this status.
+    assert.strictEqual (report['steps'][0]['status'], 'outcome_unknown');
+    assert.strictEqual (report['haltReason'], 'outcome_unknown', 'and the halt names the ambiguity rather than claiming an outright failure');
     assert.strictEqual (report['steps'][0]['orderId'], 'stub-order', 'the id is captured the instant createOrder returns, not after the read');
     assert.strictEqual (report['openOrders'].length, 1, 'a live order the caller cannot see is the worst outcome there is');
     assert.strictEqual (report['openOrders'][0]['orderId'], 'stub-order');

@@ -1725,6 +1725,22 @@ impl OrderRouter {
             Err(e) => {
                 Self::put(&mut result, "errorCode", Value::Str(e.kind.clone()));
                 self.record_error(report, step_index, &exchange_id, &symbol, &e.kind);
+                // createOrder may already have succeeded: every path between it and the final
+                // read — a poll that times out, a network drop, a cap re-check — leaves a real
+                // order on a real venue. Reporting the id is the difference between an operator
+                // who can go cancel it and one who never learns it exists. (This branch was
+                // missing from the Rust port: a limit_protected order whose poll threw was
+                // reported as a plain failure with no id anywhere in the report.)
+                let known_id = self.string_at(&result, "orderId", "");
+                if !known_id.is_empty() {
+                    // "failed" would read as "nothing happened" while openOrders says the
+                    // opposite, and one report must not carry both readings. Having an id means
+                    // create_order RETURNED — the venue accepted something — so whatever threw
+                    // afterwards left a real order behind whose fill is simply unknown to us.
+                    Self::put(&mut result, "status", Value::Str("outcome_unknown".into()));
+                    self.record_open_order(report, &exchange_id, &symbol, &known_id, "outcome_unknown");
+                    return result;
+                }
                 if self.bool_at(&result, "placementAttempted", false) && self.is_outcome_unknown_error(&e) {
                     // The request may or may not have reached the venue. Halting
                     // on an unknown quantity is recoverable; concluding that

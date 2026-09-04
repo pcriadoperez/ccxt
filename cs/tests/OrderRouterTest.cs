@@ -1366,7 +1366,11 @@ public class OrderRouterTest
         venue.fetchOrderThrows = true;
         var report = await router.Execute(plan, Venues(venue), new dict() { { "strategy", "limit_protected" }, { "live", true }, { "usdRates", new dict() { { "USDT", 1.0 } } }, { "orderTimeoutMs", 4.0 }, { "pollIntervalMs", 1.0 } });
         var step = ToDict(ToList(report["steps"])[0]);
-        EqualString((string)step["status"], "failed", "the step failed");
+        //  NOT "failed". A step whose id is known had CreateOrder RETURN, so an order exists;
+        //  calling that "failed" reads as "nothing happened" while openOrders, a few lines down,
+        //  says the opposite. One report must not carry both readings.
+        EqualString((string)step["status"], "outcome_unknown", "a known id means an order exists, so the outcome is unknown rather than failed");
+        EqualString((string)report["haltReason"], "outcome_unknown", "and the halt names the ambiguity rather than claiming an outright failure");
         EqualString((string)step["orderId"], "stub-order", "the id is captured the instant createOrder returns, not after the read");
         var openOrders = ToList(report["openOrders"]);
         EqualNumber(openOrders.Count, 1, "a live order the caller cannot see is the worst outcome there is");

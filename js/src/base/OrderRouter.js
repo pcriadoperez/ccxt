@@ -78,9 +78,16 @@ class OrderRouter {
     static { this.DEFAULT_TIMEOUT_MS = 30000; }
     static { this.DEFAULT_SLIPPAGE_BPS = 25; }
     static { this.DEFAULT_RECONCILE_TOLERANCE = 0.02; }
-    //  CLAUDE.md: never risk more than 25 USD equivalent per trade. This is a
-    //  ceiling, not a default — the constructor refuses to raise it.
-    static { this.MAX_NOTIONAL_USD = 25; }
+    //  NO_CAP is the default: this class does not decide how much of your money you
+    //  may trade. `maxNotionalUsd` is an OPT-IN guardrail — set it and it is honoured
+    //  exactly, at whatever value you choose; leave it unset and no notional check runs
+    //  at all.
+    //
+    //  It used to be a hard 25 USD ceiling that could be lowered but never raised. That
+    //  number came from CLAUDE.md §5.5, which governs THIS REPOSITORY'S live tests
+    //  against real exchanges — not the people using the library. A client that refuses
+    //  a 30 USD order because its own test suite is cautious is broken as a product.
+    static { this.NO_CAP = 0; }
     //  router-side caps on the `balances` query parameter; both REJECT rather
     //  than truncate server-side, so the client trims before sending
     static { this.MAX_BALANCE_ENTRIES = 64; }
@@ -96,7 +103,7 @@ class OrderRouter {
      * @param {string} config.apiKey the router API key, sent as the x-api-key header (required)
      * @param {string} [config.baseUrl] router base url, defaults to https://docs.ccxt.com/router/api
      * @param {int} [config.timeoutMs] request timeout in milliseconds, defaults to 30000
-     * @param {float} [config.maxNotionalUsd] per-trade USD notional cap, defaults to 25 and may only be LOWERED
+     * @param {float} [config.maxNotionalUsd] optional per-trade USD notional guardrail. Omitted or 0 means NO cap and no notional check at all; any positive value is honoured exactly, never clamped
      * @returns {OrderRouter} a router client
      */
     constructor(config = {}) {
@@ -111,14 +118,14 @@ class OrderRouter {
         }
         this.baseUrl = baseUrl;
         this.timeoutMs = this.numberAt(config, 'timeoutMs', OrderRouter.DEFAULT_TIMEOUT_MS);
-        const maxNotionalUsd = this.numberAt(config, 'maxNotionalUsd', OrderRouter.MAX_NOTIONAL_USD);
-        if (maxNotionalUsd > OrderRouter.MAX_NOTIONAL_USD) {
-            //  the cap is a hard rule, not a preference; raising it is refused
-            throw new BadRequest('OrderRouter maxNotionalUsd may not exceed the hard 25 USD per-trade cap');
+        const maxNotionalUsd = this.numberAt(config, 'maxNotionalUsd', OrderRouter.NO_CAP);
+        if (maxNotionalUsd < 0) {
+            //  a negative cap is a typo, not a policy, and silently ignoring it would
+            //  leave the caller believing a guardrail is in place
+            throw new BadRequest('OrderRouter maxNotionalUsd must not be negative; omit it, or pass 0, for no cap');
         }
-        if (maxNotionalUsd <= 0) {
-            throw new BadRequest('OrderRouter maxNotionalUsd must be positive');
-        }
+        //  0 means NO CAP. Any positive value is honoured exactly — it is not clamped,
+        //  because the caller is the one who knows the size of their own trade.
         this.maxNotionalUsd = maxNotionalUsd;
     }
     //  -----------------------------------------------------------------------
@@ -768,22 +775,16 @@ class OrderRouter {
      * @param {object} markets a dictionary of exchangeId to that exchange's markets dictionary, i.e. markets[exchangeId][symbol]
      * @param {object} [options] check options
      * @param {object} [options.usdRates] a dictionary of currency code to its USD price. USD itself is 1 implicitly; nothing else is assumed
-     * @param {float} [options.maxNotionalUsd] per-trade cap, clamped to the client's own cap, which is clamped to 25
+     * @param {float} [options.maxNotionalUsd] per-trade cap for this call, overriding the client's own in either direction. Omitted falls back to the client's; 0 or absent on both means no cap and no notional check
      * @param {string} [options.precisionMode] tick_size (default) or decimal_places, matching the venue's precisionMode
      * @returns {object[]} the violations, each with stepIndex, code, blocking, actual, limit and a constant message. An empty array means the plan passed
      */
     checkExecutionPlanSafety(plan, markets, options = {}) {
         const violations = [];
-        let maxNotionalUsd = this.numberAt(options, 'maxNotionalUsd', this.maxNotionalUsd);
-        if (maxNotionalUsd > this.maxNotionalUsd) {
-            maxNotionalUsd = this.maxNotionalUsd;
-        }
-        if (maxNotionalUsd > OrderRouter.MAX_NOTIONAL_USD) {
-            //  the instance field stays writable in four of the five languages,
-            //  so the constructor's refusal is not the last word on it. The hard
-            //  25 USD ceiling is re-imposed HERE, where the number is used.
-            maxNotionalUsd = OrderRouter.MAX_NOTIONAL_USD;
-        }
+        //  Honoured exactly as given, per call or per client. No clamping: a caller
+        //  trading thousands and a caller trading cents are both using this correctly.
+        const maxNotionalUsd = this.numberAt(options, 'maxNotionalUsd', this.maxNotionalUsd);
+        const capInForce = maxNotionalUsd > 0;
         const usdRates = this.dictAt(options, 'usdRates');
         const precisionMode = this.stringAt(options, 'precisionMode', 'tick_size');
         const steps = this.listAt(plan, 'steps');
@@ -869,15 +870,20 @@ class OrderRouter {
             if (limitPrice > worstPrice) {
                 worstPrice = limitPrice;
             }
-            const worstNotional = amount * worstPrice;
-            const usdValue = this.notionalUsd(step, worstNotional, usdRates);
-            if (usdValue <= 0) {
-                //  BLOCKING, and deliberately so. Skipping the cap for a step
-                //  whose USD value is unknown defeats the entire safety layer.
-                violations.push(this.violation(stepIndex, exchangeId, symbol, 'notional_unvaluable', true, worstNotional, maxNotionalUsd));
-            }
-            else if (usdValue > maxNotionalUsd * (1 + OrderRouter.TOLERANCE)) {
-                violations.push(this.violation(stepIndex, exchangeId, symbol, 'notional_exceeds_cap', true, usdValue, maxNotionalUsd));
+            if (capInForce) {
+                //  Only when a cap is actually set. With no cap there is nothing to
+                //  enforce, so a missing USD rate is not an error and the caller is not
+                //  made to supply usdRates for a check they did not ask for.
+                const worstNotional = amount * worstPrice;
+                const usdValue = this.notionalUsd(step, worstNotional, usdRates);
+                if (usdValue <= 0) {
+                    //  BLOCKING, and deliberately so. Skipping the cap for a step whose
+                    //  USD value is unknown defeats the cap the caller DID ask for.
+                    violations.push(this.violation(stepIndex, exchangeId, symbol, 'notional_unvaluable', true, worstNotional, maxNotionalUsd));
+                }
+                else if (usdValue > maxNotionalUsd * (1 + OrderRouter.TOLERANCE)) {
+                    violations.push(this.violation(stepIndex, exchangeId, symbol, 'notional_exceeds_cap', true, usdValue, maxNotionalUsd));
+                }
             }
         }
         return violations;
@@ -1231,7 +1237,7 @@ class OrderRouter {
                 'side': side,
                 //  base and quote are carried so that an unwind plan can be fed
                 //  straight back into checkExecutionPlanSafety: unwinding is
-                //  trading, and it is subject to the same 25 USD cap
+                //  trading, and it is subject to whatever cap the caller set
                 'base': marketBase,
                 'quote': marketQuote,
                 'asset': asset,
@@ -1873,6 +1879,12 @@ class OrderRouter {
             //  one who never learns it exists.
             const knownId = this.stringAt(result, 'orderId', '');
             if (knownId !== '') {
+                //  'failed' would read as "nothing happened" while openOrders says
+                //  the opposite, and one report must not carry both readings.
+                //  Having an id means createOrder RETURNED — the venue accepted
+                //  something — so whatever threw afterwards left a real order
+                //  behind whose fill is simply unknown to us.
+                result['status'] = 'outcome_unknown';
                 this.recordOpenOrder(report, exchangeId, symbol, knownId, 'outcome_unknown');
             }
             else if (this.boolAt(result, 'placementAttempted', false)
@@ -2205,18 +2217,14 @@ class OrderRouter {
      * @param {float} amount the snapped amount actually being sent
      * @param {float} price the snapped price actually being sent
      * @param {object} usdRates currency code to USD price
-     * @param {object} options the execute options, read for a lowered maxNotionalUsd
+     * @param {object} options the execute options, read for maxNotionalUsd; returns without checking anything when no cap is set
      * @returns {undefined}
      */
     assertUnderCap(step, amount, price, usdRates, options) {
-        let cap = this.numberAt(options, 'maxNotionalUsd', this.maxNotionalUsd);
-        if (cap > this.maxNotionalUsd) {
-            cap = this.maxNotionalUsd;
-        }
-        if (cap > OrderRouter.MAX_NOTIONAL_USD) {
-            //  same ceiling as checkExecutionPlanSafety, re-imposed at the last
-            //  moment before an order goes out
-            cap = OrderRouter.MAX_NOTIONAL_USD;
+        const cap = this.numberAt(options, 'maxNotionalUsd', this.maxNotionalUsd);
+        if (cap <= 0) {
+            //  no cap set, so there is nothing to enforce here
+            return;
         }
         const probe = {
             'base': this.stringAt(step, 'base', ''),

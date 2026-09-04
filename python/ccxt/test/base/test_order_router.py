@@ -831,7 +831,11 @@ def test_order_id_survives_a_failure_after_create():
     # create_order succeeded; the first poll never comes back
     venue.fetch_order_throws = True
     report = router.execute(plan, {'stub': venue}, {'strategy': 'limit_protected', 'live': True, 'usdRates': {'USDT': 1}, 'orderTimeoutMs': 4, 'pollIntervalMs': 1})
-    assert report['steps'][0]['status'] == 'failed'
+    #  NOT 'failed'. A step whose id is known had create_order RETURN, so an order exists;
+    #  calling that "failed" reads as "nothing happened" while openOrders, three lines down, says
+    #  the opposite. One report must not carry both readings.
+    assert report['steps'][0]['status'] == 'outcome_unknown'
+    assert report['haltReason'] == 'outcome_unknown', 'and the halt names the ambiguity rather than claiming an outright failure'
     assert report['steps'][0]['orderId'] == 'stub-order', 'the id is captured the instant create_order returns, not after the read'
     assert len(report['openOrders']) == 1, 'a live order the caller cannot see is the worst outcome there is'
     assert report['openOrders'][0]['orderId'] == 'stub-order'

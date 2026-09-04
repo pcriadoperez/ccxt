@@ -1856,6 +1856,11 @@ func (this *OrderRouter) placeStep(step map[string]any, venues map[string]IExcha
 // way would bury the ambiguous ones among answers the venue actually gave.
 func routerNoteUnconfirmed(sink *orderRouterSink, result map[string]any, exchangeId string, symbol string) {
 	if knownId := routerStringAt(result, "orderId", ""); knownId != "" {
+		// "failed" would read as "nothing happened" while openOrders says the opposite, and one
+		// report must not carry both readings. Having an id means CreateOrder RETURNED — the venue
+		// accepted something — so whatever threw afterwards left a real order behind whose fill is
+		// simply unknown to us.
+		result["status"] = "outcome_unknown"
 		routerRecordOpenOrder(sink, exchangeId, symbol, knownId, "outcome_unknown")
 		return
 	}

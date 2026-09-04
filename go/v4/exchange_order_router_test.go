@@ -1211,8 +1211,14 @@ func TestOrderRouterOrderIdSurvivesAFailureAfterCreate(t *testing.T) {
 		t.Fatalf("execute: %v", err)
 	}
 	step := report["steps"].([]map[string]any)[0]
-	if routerStringAt(step, "status", "") != "failed" {
-		t.Fatalf("the step failed, got %v", step)
+	// NOT "failed". A step whose id is known had CreateOrder RETURN, so an order exists; calling
+	// that "failed" reads as "nothing happened" while openOrders, a few lines down, says the
+	// opposite. One report must not carry both readings.
+	if routerStringAt(step, "status", "") != "outcome_unknown" {
+		t.Fatalf("a known id means an order exists, so the outcome is unknown rather than failed, got %v", step)
+	}
+	if routerStringAt(report, "haltReason", "") != "outcome_unknown" {
+		t.Fatalf("the halt must name the ambiguity rather than claim an outright failure, got %v", report["haltReason"])
 	}
 	if routerStringAt(step, "orderId", "") != "stub-order" {
 		t.Fatal("the id is captured the instant CreateOrder returns, not after the read")
