@@ -823,6 +823,7 @@ pub fn run() -> Result<usize, String> {
         ("execute: refuses to go live above a cap the caller set", Box::new(|| execute_refuses_to_go_live_above_the_cap(&router()?))),
         ("execute: the same trade goes through when nobody asked for a cap", Box::new(|| execute_places_the_same_trade_with_no_cap(&router()?))),
         ("execute: a throw after createOrder still reports the id and an open order", Box::new(|| a_known_order_id_survives_a_throw_after_create(&router()?))),
+        ("execute: atomic_ish demands the whole route pre-funded", Box::new(|| atomic_ish_demands_the_whole_route_prefunded(&router()?))),
         ("execute: best_effort demands both of its acknowledgements", Box::new(|| best_effort_demands_its_acknowledgements(&router()?))),
     ];
     let _ = (&f, &r);
@@ -883,6 +884,10 @@ struct StubVenue {
     /// When true createOrder returns a RESTING order, so limit_protected enters
     /// its poll loop and the fetch_order failure below is reached.
     created_open: bool,
+    /// The `free` map fetch_balance reports. `None` means "richly funded", so a
+    /// prefunding check passes without every other test having to declare
+    /// balances it does not care about.
+    free_balances: Option<Vec<(String, f64)>>,
 }
 
 impl StubVenue {
@@ -894,6 +899,7 @@ impl StubVenue {
             fail_with: None,
             omit_filled: false,
             created_open: false,
+            free_balances: None,
         }
     }
 }
@@ -951,6 +957,24 @@ impl RouterVenue for StubVenue {
     }
     async fn cancel_order(&self, _id: &str, _symbol: &str) -> Result<Value, crate::error::ExchangeError> {
         Ok(Value::Map(HashMap::new()))
+    }
+    async fn fetch_balance(&self) -> Result<Value, crate::error::ExchangeError> {
+        let mut free = HashMap::new();
+        match &self.free_balances {
+            Some(entries) => {
+                for (asset, amount) in entries {
+                    free.insert(asset.clone(), Value::Float(*amount));
+                }
+            }
+            None => {
+                free.insert("USDT".to_string(), Value::Float(1_000_000.0));
+                free.insert("BTC".to_string(), Value::Float(1_000_000.0));
+                free.insert("ETH".to_string(), Value::Float(1_000_000.0));
+            }
+        }
+        let mut balance = HashMap::new();
+        balance.insert("free".to_string(), Value::Map(free));
+        Ok(Value::Map(balance))
     }
 }
 
@@ -1246,6 +1270,44 @@ fn a_known_order_id_survives_a_throw_after_create(r: &OrderRouter) -> Result<(),
     }
     if r.string_at(&report, "haltReason", "") != "outcome_unknown" {
         return Err("the halt must name the ambiguity rather than claim an outright failure".to_string());
+    }
+    Ok(())
+}
+
+fn atomic_ish_demands_the_whole_route_prefunded(r: &OrderRouter) -> Result<(), String> {
+    // atomic_ish skips the downstream resize every other strategy performs — it
+    // is allowed to, BECAUSE the route is pre-funded end to end, so no hop is
+    // sized off the previous hop's proceeds. This port accepted the strategy,
+    // took the skip, and never ran the check that earns it: an underfunded route
+    // executed anyway and sized hop 1 against BTC that was never bought.
+    let plan = one_leg_plan(r)?;
+    let funded = StubVenue::new("stub");
+    let funded_counter = StdArc::clone(&funded.orders_placed);
+    let mut venues: BTreeMap<String, Box<dyn RouterVenue>> = BTreeMap::new();
+    venues.insert("stub".to_string(), Box::new(funded));
+    let report = block_on(r.execute(&plan, &venues, &execute_options(true, "atomic_ish")))
+        .map_err(|e| e.to_string())?;
+    if funded_counter.load(Ordering::SeqCst) != 1 {
+        return Err("a pre-funded route runs end to end".to_string());
+    }
+    if r.number_at(&report, "ordersPlaced", 0.0) != 1.0 {
+        return Err(format!("a pre-funded route places its order, got {report:?}"));
+    }
+
+    // The one-leg plan buys 0.2 BTC at 100 USDT, so it needs 20 USDT free.
+    let mut broke = StubVenue::new("stub");
+    broke.free_balances = Some(vec![("USDT".to_string(), 1.0), ("BTC".to_string(), 0.0)]);
+    let broke_counter = StdArc::clone(&broke.orders_placed);
+    let mut poor_venues: BTreeMap<String, Box<dyn RouterVenue>> = BTreeMap::new();
+    poor_venues.insert("stub".to_string(), Box::new(broke));
+    match block_on(r.execute(&plan, &poor_venues, &execute_options(true, "atomic_ish"))) {
+        Err(e) if e.message.contains("pre-funded") => {}
+        other => return Err(format!("an underfunded route must be refused, got {other:?}")),
+    }
+    // And refused BEFORE anything reaches a venue: a refusal that has already
+    // traded is not a refusal.
+    if broke_counter.load(Ordering::SeqCst) != 0 {
+        return Err("the refusal must come before the first createOrder".to_string());
     }
     Ok(())
 }

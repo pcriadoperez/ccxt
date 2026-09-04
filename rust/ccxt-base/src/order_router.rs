@@ -42,6 +42,10 @@ fn exchange_error(message: &str) -> ExchangeError {
     ExchangeError::new("ExchangeError", message)
 }
 
+fn insufficient_funds(message: &str) -> ExchangeError {
+    ExchangeError::new("InsufficientFunds", message)
+}
+
 /// NO_CAP is the default: this class does not decide how much of your money you
 /// may trade. `maxNotionalUsd` is an OPT-IN guardrail — set it and it is honoured
 /// exactly, at whatever value you choose; leave it unset and no notional check
@@ -2233,6 +2237,14 @@ impl OrderRouter {
                 blockers.join(", ")
             )));
         }
+        if strategy == "atomic_ish" {
+            // The check the strategy is NAMED for. Without it this port accepted
+            // atomic_ish, skipped the downstream resize that every other strategy
+            // performs — on the strength of the route being pre-funded end to
+            // end — and then never established that it was. A short hop would
+            // have sized the next one off proceeds it did not have.
+            self.assert_prefunded(&steps, venues).await?;
+        }
         if strategy == "parallel_within_hop" {
             self.execute_parallel_within_hop(&mut report, &mut steps, venues, options, &usd_rates).await;
         } else if strategy == "best_effort" {
@@ -2249,6 +2261,67 @@ impl OrderRouter {
 }
 
 impl OrderRouter {
+    /// Verifies every step's input is already sitting on its venue, which is what
+    /// `atomic_ish` actually requires. There is no cross-venue atomicity and there
+    /// cannot be, so the strategy names its own hedge: pre-fund the whole route,
+    /// and no hop then depends on the previous one settling.
+    ///
+    /// Most routes fail this, and that is the correct outcome.
+    async fn assert_prefunded(
+        &self,
+        steps: &[Value],
+        venues: &std::collections::BTreeMap<String, Box<dyn RouterVenue>>,
+    ) -> RouterResult<()> {
+        // Built as a Vec, not a map, so the first shortfall reported is the same
+        // one in all six languages.
+        let mut required: Vec<(String, String, f64)> = Vec::new();
+        for step in steps {
+            let exchange_id = self.string_at(step, "exchangeId", "");
+            let amount = self.number_at(step, "amount", 0.0);
+            let (asset, needed) = if self.string_at(step, "side", "") == "buy" {
+                (self.string_at(step, "quote", ""), amount * self.number_at(step, "limitPrice", 0.0))
+            } else {
+                (self.string_at(step, "base", ""), amount)
+            };
+            let mut found = false;
+            for entry in required.iter_mut() {
+                if entry.0 == exchange_id && entry.1 == asset {
+                    entry.2 += needed;
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                required.push((exchange_id, asset, needed));
+            }
+        }
+        // One fetch_balance per venue, cached: a route with four hops on one
+        // exchange must not cost four balance calls.
+        let mut balances: HashMap<String, Value> = HashMap::new();
+        for (exchange_id, asset, needed) in &required {
+            if !balances.contains_key(exchange_id) {
+                let venue = match venues.get(exchange_id) {
+                    Some(found) => found,
+                    None => {
+                        return Err(exchange_error(&format!(
+                            "OrderRouter: atomic_ish cannot check funding, no venue was passed for {exchange_id}"
+                        )))
+                    }
+                };
+                balances.insert(exchange_id.clone(), venue.fetch_balance().await?);
+            }
+            let balance = balances.get(exchange_id).expect("just inserted");
+            let free = self.dict_at(balance, "free");
+            let available = self.number_at(&free, asset, 0.0);
+            if available < *needed {
+                return Err(insufficient_funds(&format!(
+                    "OrderRouter: atomic_ish requires the whole route pre-funded, and {exchange_id} is short of {asset}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// Renders balance entries as the router's `[exchangeId.]ASSET:amount`
     /// comma-separated form.
     fn join_balances(&self, entries: &[Value]) -> RouterResult<String> {
