@@ -165,13 +165,16 @@ export async function buildServer (
                 ...bindings,
                 keyId: record?.id ?? null,
                 keyName: record?.name ?? null,
-                // Explicitly levelled so the audit trail survives LOG_LEVEL. A child may be more
-                // verbose than its parent in pino, which is exactly what is wanted here: turning
-                // down connector noise must not turn off the record of who called what.
+                // NOT levelled up. This child used to be forced to auditLogLevel so that audit
+                // lines on it would survive LOG_LEVEL — but the audit records all go to the
+                // `audit` stream, which carries its own level, and raising this one also raised
+                // Fastify's built-in per-request logging. The result was that LOG_LEVEL=warn
+                // could not reduce per-request volume at all: the box runs warn precisely because
+                // a misbehaving exchange once wrote 930MB of retry chatter, and the one knob for
+                // that did nothing for the largest contributor.
             }, {
                 ...opts,
                 serializers: { ...opts.serializers, req: requestLogLine },
-                level: config.auditLogLevel,
             });
         },
     });
@@ -605,8 +608,10 @@ export async function buildServer (
             // A long-lived socket otherwise produces exactly zero access-log lines despite being
             // the most expensive thing a key can do.
             const openedAt = Date.now();
-            request.log.info({
-                event: 'stream_open', keyId: record?.id ?? null, keyName: record?.name ?? null,
+            audit.info({
+                event: 'stream_open', reqId: String(request.id),
+                keyId: record?.id ?? null, keyName: record?.name ?? null,
+                keyUuid: record?.keyUuid ?? null, userId: record?.userId ?? null,
                 from: req.from, to: req.to, amountIn: req.amountIn ?? null, amountOut: req.amountOut ?? null,
             }, 'stream opened');
             // Revoking a key must not leave its live data feed running — "delete a key" is half of
@@ -740,8 +745,10 @@ export async function buildServer (
                     live.delete(socket);
                     if (live.size === 0) wsSocketsByKey.delete(connectionKey);
                 }
-                request.log.info({
-                    event: 'stream_close', keyId: record?.id ?? null, keyName: record?.name ?? null,
+                audit.info({
+                    event: 'stream_close', reqId: String(request.id),
+                    keyId: record?.id ?? null, keyName: record?.name ?? null,
+                    keyUuid: record?.keyUuid ?? null, userId: record?.userId ?? null,
                     durationMs: Date.now() - openedAt,
                 }, 'stream closed');
                 for (const pair of watched) cache.off(`update:${pair}`, onUpdate);

@@ -418,10 +418,18 @@ client hangs up.
 ### Attribution
 
 Every log line for a request carries `keyId` and `keyName`, bound in `childLoggerFactory` so they
-appear on Fastify's own lines too. These records are emitted at their own level
-(`ORDER_ROUTER_AUDIT_LOG_LEVEL`, default `info`) independently of `LOG_LEVEL` — the production box
-runs at `warn` because a misbehaving exchange once wrote 930MB of retry chatter, and quieting
-connector noise must not also silence the record of who called what.
+appear on Fastify's own lines too.
+
+**Two streams, two knobs.** Every record in the table below goes to the *audit* stream, which has
+its own level (`ORDER_ROUTER_AUDIT_LOG_LEVEL`, default `info`) and is unaffected by `LOG_LEVEL`.
+Everything else — connector chatter, reconnects, warnings — goes to the diagnostic stream that
+`LOG_LEVEL` governs. The production box runs `LOG_LEVEL=warn` because a misbehaving exchange once
+wrote 930MB of retry chatter, and quieting that must not silence the record of who called what.
+
+The two used to be entangled: the per-request child logger was forced up to the audit level, which
+also raised Fastify's built-in `incoming request` / `request completed` pair, so `LOG_LEVEL=warn`
+reduced per-request volume by nothing at all. It is no longer levelled up, so `warn` now genuinely
+quiets the diagnostic stream while every row below still lands.
 
 Logs must be JSON for any of the queries below to work, which means `NODE_ENV=production` (otherwise
 `pino-pretty` engages). Worth asserting in a deploy check. `keyId: null` on an unauthenticated request is deliberate — it
@@ -512,7 +520,7 @@ against a running router with live exchange data) during development — not jus
 | `ORDER_ROUTER_WS_MIN_PUSH_INTERVAL_MS` | `100` | Floor between two pushes on one stream socket. |
 | `ORDER_ROUTER_KEYS_FILE` | `./data/keys.json` | API key store. Digests only; mode 0600. |
 | `ORDER_ROUTER_KEYS_RELOAD_POLL_MS` | `10000` | How often to stat the key file for changes. |
-| `ORDER_ROUTER_AUDIT_LOG_LEVEL` | `info` | Level for the per-request audit records, set independently of `LOG_LEVEL`. |
+| `ORDER_ROUTER_AUDIT_LOG_LEVEL` | `info` | Level for the audit stream — the `request`, `route_recommendation`, `stream_open` and `stream_close` records. Independent of `LOG_LEVEL`, which governs the diagnostic stream only. |
 | `ORDER_ROUTER_WS_IDLE_TIMEOUT_MS` | `30000` | Heartbeat interval; a socket that misses two beats is terminated. Must stay below the reverse proxy's `proxy_read_timeout`. |
 | `ORDER_ROUTER_TRUST_PROXY` | `0` | How many reverse-proxy hops sit in front of this service. `0` trusts no `X-Forwarded-For` at all; `1` (also spelled `true`) believes only the address your own edge appended; `2` for a CDN in front of nginx. Never set it higher than the number of proxies you actually control — each extra hop hands one more entry of a client-written header to the rate limiter and the audit log. See "Deploying behind nginx". |
 | `ORDER_ROUTER_ALLOW_DEV_KEY` | `false` | Arms the built-in development API key (`dev-key`). Off unless set to `true`, on every host, regardless of `NODE_ENV` — a deployment that forgets to set `NODE_ENV=production` must not thereby publish an unauthenticated door. Local development only. |
@@ -537,7 +545,7 @@ against a running router with live exchange data) during development — not jus
 | `ORDER_ROUTER_WEB_SECURE_COOKIES` | `true` | `Secure` on the session cookie. Only set `false` for local HTTP development. |
 | `ORDER_ROUTER_WEB_ORIGINS` | `https://docs.ccxt.com` | Origins accepted on console form POSTs — the second CSRF leg, alongside the token. |
 | `ORDER_ROUTER_CSRF_SECRET` | (random per boot) | Signs console CSRF tokens. Unset means forms in flight across a restart are rejected; set it to keep them valid, and to keep multiple console processes agreeing. |
-| `LOG_LEVEL` | `info` | |
+| `LOG_LEVEL` | `info` | Level for the diagnostic stream: connector chatter, reconnects, warnings, and Fastify's own per-request pair. Does **not** affect the audit records — see `ORDER_ROUTER_AUDIT_LOG_LEVEL`. |
 
 ## Run
 

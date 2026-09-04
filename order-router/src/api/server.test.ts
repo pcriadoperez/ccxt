@@ -1435,3 +1435,51 @@ test('a streamed recommendation reaches the audit trail and the unroutable count
         else process.env['ORDER_ROUTER_API_KEY'] = previous;
     }
 });
+
+test('LOG_LEVEL can quiet the diagnostic log without silencing the audit trail', async () => {
+    // The per-request child logger used to be forced up to ORDER_ROUTER_AUDIT_LOG_LEVEL so that
+    // "audit lines on it" would survive LOG_LEVEL. They do not live on it — every audit record
+    // goes to the audit stream, which carries its own level — but the override also raised
+    // Fastify's built-in per-request pair, so LOG_LEVEL=warn reduced per-request volume by
+    // nothing. The box runs warn precisely because a misbehaving exchange once wrote 930MB of
+    // retry chatter, and the one knob for that did nothing for the biggest contributor.
+    const diagnostic: string[] = [];
+    const auditLines: string[] = [];
+    // Two streams, exactly as production has them: LOG_LEVEL governs the first, and
+    // ORDER_ROUTER_AUDIT_LOG_LEVEL the second.
+    const quiet = pino({ level: 'warn' }, { write: (line: string) => { diagnostic.push(line); } });
+    const auditLogger = pino({ level: 'info' }, { write: (line: string) => { auditLines.push(line); } });
+    const previous = process.env['ORDER_ROUTER_API_KEY'];
+    process.env['ORDER_ROUTER_API_KEY'] = TEST_API_KEY;
+    const cache = new OrderBookCache();
+    cache.setBook(book());
+    const app = await buildServer(cache, new FeeRegistry(), quiet, { auditLogger });
+    try {
+        // Startup warnings are legitimately at warn and are not what this test is about; only
+        // what the REQUEST adds is measured.
+        const beforeRequest = diagnostic.length;
+        const res = await app.inject({
+            method: 'GET',
+            url: '/route?from=USDT&to=BTC&amountIn=300',
+            headers: AUTH,
+        });
+        assert.equal(res.statusCode, 200, 'the request itself still succeeds');
+
+        // Nothing per-request reaches the diagnostic stream at warn. This is the whole point:
+        // the knob has to actually turn the volume down.
+        const perRequest = diagnostic.slice(beforeRequest);
+        assert.deepEqual(perRequest, [],
+            `LOG_LEVEL=warn must silence per-request diagnostics, got:\n${perRequest.join('\n')}`);
+
+        // And the audit trail is untouched — quieting connector noise must not turn off the
+        // record of who called what.
+        const events = auditLines.map((l) => JSON.parse(l)).map((l) => l.event);
+        assert.ok(events.includes('request'), `the access line must survive, got ${events.join(',')}`);
+        assert.ok(events.includes('route_recommendation'),
+            `the routing decision must survive, got ${events.join(',')}`);
+    } finally {
+        await app.close();
+        if (previous === undefined) delete process.env['ORDER_ROUTER_API_KEY'];
+        else process.env['ORDER_ROUTER_API_KEY'] = previous;
+    }
+});
