@@ -1359,3 +1359,851 @@ impl OrderRouter {
         Err(ExchangeError::new(kind, format!("OrderRouter: {message}")))
     }
 }
+
+// ---------------------------------------------------------------------------
+// IMPURE: execute
+// ---------------------------------------------------------------------------
+
+/// The strategies `execute` accepts. Anything else is refused before a venue is
+/// touched, rather than silently falling through to a default.
+const KNOWN_STRATEGIES: [&str; 6] = [
+    "dry_run", "sequential", "parallel_within_hop", "limit_protected", "best_effort", "atomic_ish",
+];
+
+impl OrderRouter {
+    /// Counts the distinct hops a step list spans, which is the only authority
+    /// on whether a plan is multi-hop.
+    fn hop_count_of(&self, steps: &[Value]) -> usize {
+        // A vector rather than a set, so the count is the same in six languages
+        // and does not depend on hash iteration order.
+        let mut seen: Vec<f64> = Vec::new();
+        for step in steps {
+            let hop_index = self.number_at(step, "hopIndex", 0.0);
+            if !seen.iter().any(|s| *s == hop_index) {
+                seen.push(hop_index);
+            }
+        }
+        seen.len()
+    }
+
+    /// A deep-enough copy of the plan's steps that resizing them cannot reach
+    /// back into the caller's plan.
+    fn clone_steps(&self, plan: &Value) -> Vec<Value> {
+        let mut copied = Vec::new();
+        for step in self.list_at(plan, "steps") {
+            let mut fresh = HashMap::new();
+            if let Some(map) = step.as_map() {
+                for (key, value) in map.iter() {
+                    fresh.insert(key.clone(), value.clone());
+                }
+            }
+            copied.push(Value::Map(fresh));
+        }
+        copied
+    }
+
+    /// The report skeleton, with one planned result per step.
+    fn empty_report(
+        &self,
+        plan: &Value,
+        strategy: &str,
+        requested_strategy: &str,
+        live: bool,
+        steps: &[Value],
+    ) -> Value {
+        let mut results = Vec::new();
+        for step in steps {
+            let mut result = HashMap::new();
+            result.insert("stepIndex".into(), Value::Float(self.number_at(step, "stepIndex", -1.0)));
+            result.insert("exchangeId".into(), Value::Str(self.string_at(step, "exchangeId", "")));
+            result.insert("symbol".into(), Value::Str(self.string_at(step, "symbol", "")));
+            result.insert("side".into(), Value::Str(self.string_at(step, "side", "")));
+            result.insert("status".into(), Value::Str("planned".into()));
+            result.insert("requestedAmount".into(), Value::Float(self.number_at(step, "amount", 0.0)));
+            result.insert("filledAmount".into(), Value::Float(0.0));
+            result.insert("averagePrice".into(), Value::Float(0.0));
+            result.insert("cost".into(), Value::Float(0.0));
+            result.insert("inAsset".into(), Value::Str(String::new()));
+            result.insert("inAmount".into(), Value::Float(0.0));
+            result.insert("outAsset".into(), Value::Str(String::new()));
+            result.insert("outAmount".into(), Value::Float(0.0));
+            result.insert("orderId".into(), Value::Str(String::new()));
+            result.insert("errorCode".into(), Value::Str(String::new()));
+            // False until an order is actually dispatched — a failure before
+            // dispatch cannot have left anything resting on a venue.
+            result.insert("placementAttempted".into(), Value::Bool(false));
+            results.push(Value::Map(result));
+        }
+        let mut report = HashMap::new();
+        report.insert("strategy".into(), Value::Str(strategy.to_string()));
+        report.insert("requestedStrategy".into(), Value::Str(requested_strategy.to_string()));
+        report.insert("dryRun".into(), Value::Bool(strategy == "dry_run"));
+        report.insert("live".into(), Value::Bool(live));
+        report.insert("from".into(), Value::Str(self.string_at(plan, "from", "")));
+        report.insert("to".into(), Value::Str(self.string_at(plan, "to", "")));
+        report.insert("slippageBps".into(), Value::Float(self.number_at(plan, "slippageBps", DEFAULT_SLIPPAGE_BPS)));
+        report.insert(
+            "reconcileToleranceRatio".into(),
+            Value::Float(self.number_at(plan, "reconcileToleranceRatio", DEFAULT_RECONCILE_TOLERANCE)),
+        );
+        report.insert("stepCount".into(), Value::Float(steps.len() as f64));
+        report.insert("wouldPlaceOrders".into(), Value::Float(0.0));
+        report.insert("ordersPlaced".into(), Value::Float(0.0));
+        report.insert("halted".into(), Value::Bool(false));
+        report.insert("haltReason".into(), Value::Str(String::new()));
+        report.insert("haltStepIndex".into(), Value::Float(-1.0));
+        report.insert("filledIn".into(), Value::Float(0.0));
+        report.insert("filledOut".into(), Value::Float(0.0));
+        report.insert("steps".into(), Value::List(results));
+        report.insert("openOrders".into(), Value::List(Vec::new()));
+        report.insert("errors".into(), Value::List(Vec::new()));
+        report.insert("reconciliations".into(), Value::List(Vec::new()));
+        Value::Map(report)
+    }
+
+    /// Appends one entry to a list-valued field of a container.
+    fn append_to(container: &mut Value, key: &str, entry: Value) {
+        let mut items = match container.as_map().and_then(|m| m.get(key)) {
+            Some(Value::Arr(existing)) => existing.as_ref().clone(),
+            _ => Vec::new(),
+        };
+        items.push(entry);
+        Self::put(container, key, Value::List(items));
+    }
+
+    /// Records an error against the report.
+    fn record_error(&self, report: &mut Value, step_index: f64, exchange_id: &str, symbol: &str, code: &str) {
+        let mut entry = HashMap::new();
+        entry.insert("stepIndex".into(), Value::Float(step_index));
+        entry.insert("exchangeId".into(), Value::Str(exchange_id.to_string()));
+        entry.insert("symbol".into(), Value::Str(symbol.to_string()));
+        entry.insert("code".into(), Value::Str(code.to_string()));
+        Self::append_to(report, "errors", Value::Map(entry));
+    }
+
+    /// Records an order that may still be resting on a venue.
+    fn record_open_order(&self, report: &mut Value, exchange_id: &str, symbol: &str, order_id: &str, reason: &str) {
+        let mut entry = HashMap::new();
+        entry.insert("exchangeId".into(), Value::Str(exchange_id.to_string()));
+        entry.insert("symbol".into(), Value::Str(symbol.to_string()));
+        entry.insert("orderId".into(), Value::Str(order_id.to_string()));
+        entry.insert("reason".into(), Value::Str(reason.to_string()));
+        Self::append_to(report, "openOrders", Value::Map(entry));
+    }
+
+    /// Records a placement whose outcome is genuinely unknown — the request may
+    /// or may not have reached the venue, so an order may or may not exist.
+    fn record_unconfirmed_placement(&self, report: &mut Value, exchange_id: &str, symbol: &str, reason: &str) {
+        // No order id, because there is none to record: that is the whole
+        // problem. It goes on openOrders regardless, because the one thing a
+        // caller must not conclude is that nothing was placed.
+        self.record_open_order(report, exchange_id, symbol, "", reason);
+    }
+
+    /// Reports whether a thrown error leaves a placement's outcome genuinely
+    /// unknown.
+    fn is_outcome_unknown_error(&self, error: &ExchangeError) -> bool {
+        // The NetworkError family, and only it: a request that timed out or hit
+        // an unavailable venue may still have been received and acted on. Every
+        // other class is the venue ANSWERING — a rejection is a definite "no",
+        // and treating it as unknown would halt a route that is fine to retry.
+        error.is("NetworkError")
+    }
+
+    /// Marks every step from an index onwards as skipped after a halt.
+    fn mark_remaining_skipped(&self, report: &mut Value, start: usize) {
+        let mut results = self.list_at(report, "steps");
+        for result in results.iter_mut().skip(start) {
+            if self.string_at(result, "status", "") == "planned" {
+                Self::put(result, "status", Value::Str("skipped".into()));
+            }
+        }
+        Self::put(report, "steps", Value::List(results));
+    }
+
+    /// Totals the report's fills once the loops are done.
+    fn summarise_report(&self, report: &mut Value, steps: &[Value]) {
+        let results = self.list_at(report, "steps");
+        let mut placed = 0.0;
+        let mut filled_in = 0.0;
+        let mut filled_out = 0.0;
+        for result in &results {
+            let status = self.string_at(result, "status", "");
+            if status == "filled" || status == "partial" || status == "unfilled" {
+                placed += 1.0;
+            }
+            filled_in += self.number_at(result, "inAmount", 0.0);
+            filled_out += self.number_at(result, "outAmount", 0.0);
+        }
+        Self::put(report, "ordersPlaced", Value::Float(placed));
+        Self::put(report, "filledIn", Value::Float(filled_in));
+        Self::put(report, "filledOut", Value::Float(filled_out));
+        Self::put(report, "stepCount", Value::Float(steps.len() as f64));
+    }
+}
+
+impl OrderRouter {
+    /// Sums the fees an order charged in one asset, ignoring any other currency.
+    fn order_fee_in_asset(&self, order: &Value, asset: &str) -> f64 {
+        if asset.is_empty() {
+            return 0.0;
+        }
+        let mut total = 0.0;
+        // ccxt sets a single `fee` and, since safeOrder, a `fees` list alongside
+        // it. Reading only one would under-count on venues that report per-trade
+        // fees, so both are summed — with `fee` skipped when it is also present
+        // in `fees`, which is how safeOrder fills them in.
+        let fees = self.list_at(order, "fees");
+        let mut saw_in_list = false;
+        for entry in &fees {
+            if self.string_at(entry, "currency", "").to_uppercase() == asset.to_uppercase() {
+                total += self.number_at(entry, "cost", 0.0);
+                saw_in_list = true;
+            }
+        }
+        if !saw_in_list {
+            let single = self.dict_at(order, "fee");
+            if self.string_at(&single, "currency", "").to_uppercase() == asset.to_uppercase() {
+                total += self.number_at(&single, "cost", 0.0);
+            }
+        }
+        if !Self::is_finite_number(total) || total < 0.0 {
+            return 0.0;
+        }
+        total
+    }
+
+    /// One re-read of an order the venue answered incompletely, falling back to
+    /// what we already had rather than losing the placement record.
+    async fn refetch_order(
+        &self,
+        venue: &dyn RouterVenue,
+        order_id: &str,
+        symbol: &str,
+        fallback: Value,
+    ) -> Value {
+        match venue.fetch_order(order_id, symbol).await {
+            Ok(reread) => reread,
+            // The caller marks the fill unknown; a failure here must not lose
+            // the placement record.
+            Err(_) => fallback,
+        }
+    }
+
+    /// Re-imposes the notional cap immediately before a placement.
+    fn assert_under_cap(
+        &self,
+        step: &Value,
+        amount: f64,
+        price: f64,
+        usd_rates: &Value,
+        options: &Value,
+    ) -> RouterResult<()> {
+        let mut cap = self.number_at(options, "maxNotionalUsd", self.max_notional_usd);
+        if cap > self.max_notional_usd {
+            cap = self.max_notional_usd;
+        }
+        if cap > MAX_NOTIONAL_USD {
+            cap = MAX_NOTIONAL_USD;
+        }
+        let usd_value = self.notional_usd(step, amount * price, usd_rates);
+        if usd_value <= 0.0 {
+            return Err(exchange_error(
+                "OrderRouter: refusing to place an order that cannot be valued in USD",
+            ));
+        }
+        if usd_value > cap * (1.0 + TOLERANCE) {
+            return Err(exchange_error(&format!(
+                "OrderRouter: refusing to place an order of {usd_value} USD, over the {cap} USD cap"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Places one order for one step and never returns an error, so that a
+    /// sibling leg's failure cannot abandon an in-flight order.
+    async fn place_step(
+        &self,
+        step: &Value,
+        venues: &std::collections::BTreeMap<String, Box<dyn RouterVenue>>,
+        options: &Value,
+        usd_rates: &Value,
+        strategy: &str,
+        report: &mut Value,
+    ) -> Value {
+        let step_index = self.number_at(step, "stepIndex", -1.0);
+        let exchange_id = self.string_at(step, "exchangeId", "");
+        let symbol = self.string_at(step, "symbol", "");
+        let side = self.string_at(step, "side", "");
+        let mut result = HashMap::new();
+        result.insert("stepIndex".into(), Value::Float(step_index));
+        result.insert("exchangeId".into(), Value::Str(exchange_id.clone()));
+        result.insert("symbol".into(), Value::Str(symbol.clone()));
+        result.insert("side".into(), Value::Str(side.clone()));
+        result.insert("status".into(), Value::Str("failed".into()));
+        result.insert("requestedAmount".into(), Value::Float(self.number_at(step, "amount", 0.0)));
+        result.insert("filledAmount".into(), Value::Float(0.0));
+        result.insert("averagePrice".into(), Value::Float(0.0));
+        result.insert("cost".into(), Value::Float(0.0));
+        result.insert("inAsset".into(), Value::Str(String::new()));
+        result.insert("inAmount".into(), Value::Float(0.0));
+        result.insert("outAsset".into(), Value::Str(String::new()));
+        result.insert("outAmount".into(), Value::Float(0.0));
+        result.insert("orderId".into(), Value::Str(String::new()));
+        result.insert("errorCode".into(), Value::Str(String::new()));
+        result.insert("placementAttempted".into(), Value::Bool(false));
+        let mut result = Value::Map(result);
+
+        let venue = match venues.get(&exchange_id) {
+            Some(found) => found,
+            None => {
+                Self::put(&mut result, "errorCode", Value::Str("venue_missing".into()));
+                self.record_error(report, step_index, &exchange_id, &symbol, "venue_missing");
+                return result;
+            }
+        };
+        let amount = self.parse_number(&venue.amount_to_precision(&symbol, self.number_at(step, "amount", 0.0)), 0.0);
+        let price = self.parse_number(&venue.price_to_precision(&symbol, self.number_at(step, "limitPrice", 0.0)), 0.0);
+        if !(amount > 0.0) || !(price > 0.0) {
+            Self::put(&mut result, "errorCode", Value::Str("rounded_to_zero".into()));
+            self.record_error(report, step_index, &exchange_id, &symbol, "rounded_to_zero");
+            return result;
+        }
+        // CLAUDE.md: compute the notional before EVERY createOrder. The
+        // plan-level check already ran, but the plan can have been resized by a
+        // reconciliation since, and the snapped price is not the one that was
+        // checked.
+        if let Err(e) = self.assert_under_cap(step, amount, price, usd_rates, options) {
+            Self::put(&mut result, "errorCode", Value::Str("over_cap".into()));
+            self.record_error(report, step_index, &exchange_id, &symbol, "over_cap");
+            let _ = e;
+            return result;
+        }
+        let order_params = self.dict_at(options, "orderParams");
+
+        // Dispatch. `placementAttempted` is set immediately before the call and
+        // not a line earlier: everything above this point is a refusal that
+        // cannot have reached a venue.
+        let order = if strategy == "limit_protected" {
+            self.place_protected_limit(
+                venue.as_ref(), step, &symbol, &side, amount, price, &order_params, options,
+                report, &mut result,
+            )
+            .await
+        } else {
+            self.place_immediate_order(
+                venue.as_ref(), &symbol, &side, amount, price, &order_params, options, &mut result,
+            )
+            .await
+        };
+        let order = match order {
+            Ok(placed) => placed,
+            Err(e) => {
+                Self::put(&mut result, "errorCode", Value::Str(e.kind.clone()));
+                self.record_error(report, step_index, &exchange_id, &symbol, &e.kind);
+                if self.bool_at(&result, "placementAttempted", false) && self.is_outcome_unknown_error(&e) {
+                    // The request may or may not have reached the venue. Halting
+                    // on an unknown quantity is recoverable; concluding that
+                    // nothing was placed is not.
+                    Self::put(&mut result, "status", Value::Str("outcome_unknown".into()));
+                    self.record_unconfirmed_placement(report, &exchange_id, &symbol, "placement_unconfirmed");
+                }
+                return result;
+            }
+        };
+        self.settle_order_into_result(&order, step, &mut result, venue.as_ref(), &symbol, &exchange_id, amount, price, report).await;
+        result
+    }
+}
+
+impl OrderRouter {
+    /// Places an immediate-or-cancel limit order, or — only with explicit
+    /// opt-in — a market order on a venue that cannot do IOC.
+    async fn place_immediate_order(
+        &self,
+        venue: &dyn RouterVenue,
+        symbol: &str,
+        side: &str,
+        amount: f64,
+        price: f64,
+        order_params: &Value,
+        options: &Value,
+        result: &mut Value,
+    ) -> RouterResult<Value> {
+        if venue.supports_ioc() {
+            let mut params = order_params.clone();
+            Self::put(&mut params, "timeInForce", Value::Str("IOC".into()));
+            // Set immediately before the call that can leave a real order on a
+            // real venue, and never reset. Anything that fails before this point
+            // — a missing venue, a size that rounds to zero, the notional cap, a
+            // venue that cannot do IOC — dispatched nothing, and recording an
+            // unconfirmed placement for it would be a false alarm.
+            Self::put(result, "placementAttempted", Value::Bool(true));
+            let order = venue.create_order(symbol, "limit", side, amount, price, &params).await?;
+            Self::put(result, "orderId", Value::Str(self.string_at(&order, "id", "")));
+            return Ok(order);
+        }
+        if !self.bool_at(options, "allowMarketOrders", false) {
+            // A market order is an unbounded price, and switching to one on a
+            // caller's behalf is exactly the decision they did not delegate.
+            return Err(ExchangeError::new(
+                "NotSupported",
+                "OrderRouter: venue cannot do IOC and allowMarketOrders was not set",
+            ));
+        }
+        Self::put(result, "placementAttempted", Value::Bool(true));
+        // Price 0 stands for "no price", which is what a market order carries.
+        let order = venue.create_order(symbol, "market", side, amount, 0.0, order_params).await?;
+        Self::put(result, "orderId", Value::Str(self.string_at(&order, "id", "")));
+        Ok(order)
+    }
+
+    /// Rests a limit order, then cancels it on timeout and ALWAYS re-reads it,
+    /// because a cancel and a fill can cross.
+    #[allow(clippy::too_many_arguments)]
+    async fn place_protected_limit(
+        &self,
+        venue: &dyn RouterVenue,
+        step: &Value,
+        symbol: &str,
+        side: &str,
+        amount: f64,
+        price: f64,
+        order_params: &Value,
+        options: &Value,
+        report: &mut Value,
+        result: &mut Value,
+    ) -> RouterResult<Value> {
+        let timeout_ms = self.number_at(options, "orderTimeoutMs", 20000.0);
+        let poll_interval_ms = self.number_at(options, "pollIntervalMs", 1000.0);
+        Self::put(result, "placementAttempted", Value::Bool(true));
+        let mut order = venue.create_order(symbol, "limit", side, amount, price, order_params).await?;
+        let order_id = self.string_at(&order, "id", "");
+        // Before the first poll, the first sleep and the first thing that can go
+        // wrong: from here on the caller can always name what is resting.
+        Self::put(result, "orderId", Value::Str(order_id.clone()));
+        let mut waited = 0.0;
+        while waited < timeout_ms {
+            let status = self.string_at(&order, "status", "");
+            if status == "closed" || status == "canceled" {
+                return Ok(order);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(poll_interval_ms.max(0.0) as u64)).await;
+            waited += poll_interval_ms;
+            order = venue.fetch_order(&order_id, symbol).await?;
+        }
+        let final_status = self.string_at(&order, "status", "");
+        if final_status == "closed" || final_status == "canceled" {
+            // The venue ended it on the last poll — an expiry, a self-trade
+            // prevention, a post-only rejection of the remainder. Cancelling an
+            // order the venue already closed throws, and the partial fill this
+            // order carries is real: dropping it would hide a live position from
+            // the report AND from the unwind plan built out of it.
+            return Ok(order);
+        }
+        if venue.cancel_order(&order_id, symbol).await.is_err() {
+            // The order may still be live. Reporting a fill we did not observe
+            // would be a lie, and continuing to the next hop on top of an
+            // unknown position is worse.
+            self.record_open_order(report, &self.string_at(step, "exchangeId", ""), symbol, &order_id, "cancel_failed");
+            return Err(exchange_error(
+                "OrderRouter: cancelOrder failed and an order is left OPEN, refusing to proceed",
+            ));
+        }
+        // ALWAYS re-read after a cancel: the cancel and the fill can cross, and
+        // the observed order is the only authority on what actually happened.
+        venue.fetch_order(&order_id, symbol).await
+    }
+
+    /// Reads a placed order into the step result: the fill, the direction, the
+    /// fee netting and the status.
+    #[allow(clippy::too_many_arguments)]
+    async fn settle_order_into_result(
+        &self,
+        order: &Value,
+        step: &Value,
+        result: &mut Value,
+        venue: &dyn RouterVenue,
+        symbol: &str,
+        exchange_id: &str,
+        amount: f64,
+        price: f64,
+        report: &mut Value,
+    ) {
+        let mut order = order.clone();
+        // "The venue said zero" and "the venue said nothing" are different facts
+        // and used to produce the same number. A venue that omits `filled`
+        // yielded 0, reconciliation read that as nothing_filled and halted the
+        // route — while a real position sat on a real venue. So presence is
+        // tested, not the value.
+        let order_id = self.string_at(result, "orderId", "");
+        if !self.has_number_at(&order, "filled") && !order_id.is_empty() {
+            // One re-read, exactly as place_protected_limit already does after
+            // its poll. The immediate path never did, so it could only ever
+            // fabricate.
+            order = self.refetch_order(venue, &order_id, symbol, order.clone()).await;
+        }
+        let filled_known = self.has_number_at(&order, "filled");
+        let filled = self.number_at(&order, "filled", 0.0);
+        let average_known = self.has_number_at(&order, "average") || self.has_number_at(&order, "price");
+        let mut average = self.number_at(&order, "average", 0.0);
+        if average <= 0.0 {
+            average = self.number_at(&order, "price", 0.0);
+        }
+        if average <= 0.0 {
+            average = price;
+        }
+        let cost_known = self.has_number_at(&order, "cost");
+        let mut cost = self.number_at(&order, "cost", 0.0);
+        if cost <= 0.0 {
+            cost = filled * average;
+        }
+        let side = self.string_at(step, "side", "");
+        Self::put(result, "filledAmount", Value::Float(filled));
+        Self::put(result, "averagePrice", Value::Float(average));
+        Self::put(result, "cost", Value::Float(cost));
+        if side == "buy" {
+            Self::put(result, "inAsset", Value::Str(self.string_at(step, "quote", "")));
+            Self::put(result, "inAmount", Value::Float(cost));
+            Self::put(result, "outAsset", Value::Str(self.string_at(step, "base", "")));
+            Self::put(result, "outAmount", Value::Float(filled));
+        } else {
+            Self::put(result, "inAsset", Value::Str(self.string_at(step, "base", "")));
+            Self::put(result, "inAmount", Value::Float(filled));
+            Self::put(result, "outAsset", Value::Str(self.string_at(step, "quote", "")));
+            Self::put(result, "outAmount", Value::Float(cost));
+        }
+        // Net the taker fee out of what is actually CARRIED FORWARD, when the
+        // venue charged it in the asset this step produced. filled and cost are
+        // gross of fees — the manual says so — so a venue taking its cut in the
+        // acquired asset credits less than `filled`, and sizing the next hop (or
+        // an unwind) on the gross figure orders more than the wallet holds. Fees
+        // in any OTHER currency are left alone: they do not reduce what this hop
+        // hands to the next one.
+        let out_asset = self.string_at(result, "outAsset", "");
+        let fee_cost = self.order_fee_in_asset(&order, &out_asset);
+        Self::put(result, "feeCost", Value::Float(fee_cost));
+        Self::put(result, "feeCurrency", Value::Str(out_asset));
+        if fee_cost > 0.0 {
+            let gross = self.number_at(result, "outAmount", 0.0);
+            let mut net = gross - fee_cost;
+            if net < 0.0 {
+                net = 0.0;
+            }
+            Self::put(result, "grossOutAmount", Value::Float(gross));
+            Self::put(result, "outAmount", Value::Float(net));
+        }
+        if !filled_known {
+            // Refuse to reconcile on a fabricated fill: halting on an unknown
+            // quantity is recoverable, sizing the next hop from an invented
+            // number is not.
+            Self::put(result, "status", Value::Str("outcome_unknown".into()));
+            self.record_open_order(report, exchange_id, symbol, &self.string_at(result, "orderId", ""), "fill_unconfirmed");
+            return;
+        }
+        if (!average_known || !cost_known) && filled > 0.0 {
+            // A fill with no price is a fill whose proceeds are a guess.
+            Self::put(result, "status", Value::Str("outcome_unknown".into()));
+            self.record_open_order(report, exchange_id, symbol, &self.string_at(result, "orderId", ""), "price_unconfirmed");
+            return;
+        }
+        if filled <= 0.0 {
+            Self::put(result, "status", Value::Str("unfilled".into()));
+        } else if filled >= amount * (1.0 - TOLERANCE) {
+            Self::put(result, "status", Value::Str("filled".into()));
+        } else {
+            Self::put(result, "status", Value::Str("partial".into()));
+        }
+        if self.string_at(&order, "status", "") == "open" {
+            // An order the venue explicitly calls open is RESTING. It should not
+            // be, on either path: place_protected_limit only returns a closed or
+            // canceled order, and place_immediate_order asked for
+            // immediate-or-cancel. A venue that silently dropped the timeInForce
+            // param leaves a plain limit order sitting there, and 'unfilled' on
+            // its own reads like nothing happened.
+            self.record_open_order(report, exchange_id, symbol, &self.string_at(result, "orderId", ""), "still_open");
+        }
+    }
+}
+
+impl OrderRouter {
+    /// Places one order at a time in plan order, reconciling after each and
+    /// obeying the halt verdict.
+    async fn execute_sequential(
+        &self,
+        report: &mut Value,
+        steps: &mut Vec<Value>,
+        venues: &std::collections::BTreeMap<String, Box<dyn RouterVenue>>,
+        options: &Value,
+        usd_rates: &Value,
+        strategy: &str,
+    ) {
+        for i in 0..steps.len() {
+            let step = steps[i].clone();
+            let result = self.place_step(&step, venues, options, usd_rates, strategy, report).await;
+            let mut results = self.list_at(report, "steps");
+            results[i] = result.clone();
+            Self::put(report, "steps", Value::List(results));
+            let status = self.string_at(&result, "status", "");
+            if status == "failed" || status == "outcome_unknown" {
+                Self::put(report, "halted", Value::Bool(true));
+                // An unknown outcome must NOT fall through to reconciliation:
+                // reconciling reads outAmount, which is 0 because nothing was
+                // observed, and reports the halt as "nothing_filled" — asserting
+                // the one thing we do not know.
+                let reason = if status == "failed" { "order_failed" } else { "outcome_unknown" };
+                Self::put(report, "haltReason", Value::Str(reason.into()));
+                Self::put(report, "haltStepIndex", Value::Float(i as f64));
+                self.mark_remaining_skipped(report, i + 1);
+                return;
+            }
+            let mut reconcile_plan = HashMap::new();
+            reconcile_plan.insert("steps".to_string(), Value::List(steps.clone()));
+            reconcile_plan.insert(
+                "reconcileToleranceRatio".to_string(),
+                Value::Float(self.number_at(report, "reconcileToleranceRatio", DEFAULT_RECONCILE_TOLERANCE)),
+            );
+            let reconciliation = match self.reconcile_execution_step(
+                &Value::Map(reconcile_plan), i as i64, self.number_at(&result, "outAmount", 0.0),
+            ) {
+                Ok(verdict) => verdict,
+                Err(_) => return,
+            };
+            Self::append_to(report, "reconciliations", reconciliation.clone());
+            if strategy != "atomic_ish" {
+                // atomic_ish is pre-funded end to end, so a hop's shortfall does
+                // not shrink the next hop's order — the money for it was already
+                // there before the first order went out.
+                self.apply_resize(steps, &reconciliation);
+            }
+            if self.string_at(&reconciliation, "verdict", "") == "halt" {
+                Self::put(report, "halted", Value::Bool(true));
+                Self::put(report, "haltReason", Value::Str(self.string_at(&reconciliation, "reason", "")));
+                Self::put(report, "haltStepIndex", Value::Float(i as f64));
+                self.mark_remaining_skipped(report, i + 1);
+                return;
+            }
+        }
+    }
+
+    /// Runs the legs of one hop concurrently ACROSS venues and serially WITHIN
+    /// a venue, and the hops strictly in order.
+    async fn execute_parallel_within_hop(
+        &self,
+        report: &mut Value,
+        steps: &mut Vec<Value>,
+        venues: &std::collections::BTreeMap<String, Box<dyn RouterVenue>>,
+        options: &Value,
+        usd_rates: &Value,
+    ) {
+        let mut cursor = 0usize;
+        while cursor < steps.len() {
+            let hop_index = self.number_at(&steps[cursor], "hopIndex", 0.0);
+            let mut end = cursor;
+            while end < steps.len() && self.number_at(&steps[end], "hopIndex", 0.0) == hop_index {
+                end += 1;
+            }
+            // THE CONTRACT: concurrent ACROSS venues, serialised WITHIN a venue.
+            // It is an ordering guarantee, not a performance promise, which is
+            // what lets six very different runtimes honour the same words. Two
+            // legs of one hop that land on the SAME venue must never have two
+            // orders in flight against that venue's throttle and nonce state.
+            //
+            // DIVERGENCE, recorded rather than hidden: TypeScript, Python, C#
+            // and Go run the venue groups concurrently. This port runs them one
+            // after another. `place_step` takes `&mut Value` for the report, so
+            // concurrent groups would need the report behind a lock, and a lock
+            // around every record_error/record_open_order is a great deal of
+            // machinery to buy back parallelism the contract does not promise.
+            // Serialising everything satisfies the ordering guarantee strictly
+            // more than grouping does — it is what the PHP port does, for the
+            // same reason — so the report is identical either way.
+            let mut group_ids: Vec<String> = Vec::new();
+            for i in cursor..end {
+                let exchange_id = self.string_at(&steps[i], "exchangeId", "");
+                if !group_ids.contains(&exchange_id) {
+                    group_ids.push(exchange_id);
+                }
+            }
+            for group in &group_ids {
+                for i in cursor..end {
+                    if self.string_at(&steps[i], "exchangeId", "") != *group {
+                        continue;
+                    }
+                    let step = steps[i].clone();
+                    let result = self
+                        .place_step(&step, venues, options, usd_rates, "parallel_within_hop", report)
+                        .await;
+                    let mut results = self.list_at(report, "steps");
+                    results[i] = result;
+                    Self::put(report, "steps", Value::List(results));
+                }
+            }
+            for i in cursor..end {
+                let results = self.list_at(report, "steps");
+                let result = results[i].clone();
+                let status = self.string_at(&result, "status", "");
+                if status == "failed" || status == "outcome_unknown" {
+                    Self::put(report, "halted", Value::Bool(true));
+                    let reason = if status == "failed" { "order_failed" } else { "outcome_unknown" };
+                    Self::put(report, "haltReason", Value::Str(reason.into()));
+                    Self::put(report, "haltStepIndex", Value::Float(i as f64));
+                    self.mark_remaining_skipped(report, end);
+                    return;
+                }
+                let mut reconcile_plan = HashMap::new();
+                reconcile_plan.insert("steps".to_string(), Value::List(steps.clone()));
+                reconcile_plan.insert(
+                    "reconcileToleranceRatio".to_string(),
+                    Value::Float(self.number_at(report, "reconcileToleranceRatio", DEFAULT_RECONCILE_TOLERANCE)),
+                );
+                let reconciliation = match self.reconcile_execution_step(
+                    &Value::Map(reconcile_plan), i as i64, self.number_at(&result, "outAmount", 0.0),
+                ) {
+                    Ok(verdict) => verdict,
+                    Err(_) => return,
+                };
+                Self::append_to(report, "reconciliations", reconciliation.clone());
+                self.apply_resize(steps, &reconciliation);
+                if self.string_at(&reconciliation, "verdict", "") == "halt" {
+                    Self::put(report, "halted", Value::Bool(true));
+                    Self::put(report, "haltReason", Value::Str(self.string_at(&reconciliation, "reason", "")));
+                    Self::put(report, "haltStepIndex", Value::Float(i as f64));
+                    self.mark_remaining_skipped(report, end);
+                    return;
+                }
+            }
+            cursor = end;
+        }
+    }
+
+    /// Places what it can and never halts, on a single hop only, up to
+    /// maxOrders.
+    async fn execute_best_effort(
+        &self,
+        report: &mut Value,
+        steps: &mut [Value],
+        venues: &std::collections::BTreeMap<String, Box<dyn RouterVenue>>,
+        options: &Value,
+        usd_rates: &Value,
+    ) {
+        let max_orders = self.number_at(options, "maxOrders", 0.0);
+        let mut placed = 0.0;
+        for i in 0..steps.len() {
+            let mut results = self.list_at(report, "steps");
+            if placed >= max_orders {
+                Self::put(&mut results[i], "status", Value::Str("skipped".into()));
+                Self::put(&mut results[i], "errorCode", Value::Str("max_orders_reached".into()));
+                Self::put(report, "steps", Value::List(results));
+                continue;
+            }
+            let step = steps[i].clone();
+            let result = self.place_step(&step, venues, options, usd_rates, "best_effort", report).await;
+            let mut results = self.list_at(report, "steps");
+            results[i] = result;
+            Self::put(report, "steps", Value::List(results));
+            placed += 1.0;
+            // No reconciliation and no halt: that is the whole point of the
+            // strategy, and why it is refused on anything but a single hop.
+        }
+    }
+
+    /// Executes a plan against live venues. THE ONLY IMPURE METHOD.
+    ///
+    /// `dry_run` is the default, and `options.live != true` forces `dry_run`
+    /// regardless of the strategy requested, so a call that looks live but
+    /// forgot the flag places nothing.
+    pub async fn execute(
+        &self,
+        plan: &Value,
+        venues: &std::collections::BTreeMap<String, Box<dyn RouterVenue>>,
+        options: &Value,
+    ) -> RouterResult<Value> {
+        let requested_strategy = self.string_at(options, "strategy", "dry_run");
+        if !KNOWN_STRATEGIES.contains(&requested_strategy.as_str()) {
+            return Err(bad_request(&format!(
+                "OrderRouter: unknown execution strategy {requested_strategy}"
+            )));
+        }
+        let live = self.bool_at(options, "live", false);
+        // THE default. Anything short of an explicit true is a rehearsal.
+        let strategy = if live { requested_strategy.clone() } else { "dry_run".to_string() };
+        let mut steps = self.clone_steps(plan);
+        let mut report = self.empty_report(plan, &strategy, &requested_strategy, live, &steps);
+        if strategy == "dry_run" {
+            // Not one call is made against a venue on this path, not even a read.
+            Self::put(&mut report, "wouldPlaceOrders", Value::Float(steps.len() as f64));
+            return Ok(report);
+        }
+        if venues.is_empty() {
+            return Err(arguments_required(
+                "OrderRouter.execute requires a venues dictionary when live",
+            ));
+        }
+        // Derived from the steps about to be executed, NEVER read off the plan:
+        // a plan that travelled through JSON, a persisted step list or a
+        // hand-rebuilt tail of a halted route can be missing hopCount, and a
+        // refusal that a missing key switches off is not a refusal.
+        let hop_count = self.hop_count_of(&steps);
+        if strategy == "best_effort" {
+            if hop_count > 1 {
+                // Best-effort multi-hop is the most reliable way to strand money
+                // in a bridge asset.
+                return Err(ExchangeError::new(
+                    "NotSupported",
+                    "OrderRouter: best_effort refuses multi-hop routes",
+                ));
+            }
+            if !self.bool_at(options, "acknowledgeDispersion", false) {
+                return Err(bad_request("OrderRouter: best_effort requires acknowledgeDispersion"));
+            }
+            if self.number_at(options, "maxOrders", 0.0) <= 0.0 {
+                return Err(bad_request("OrderRouter: best_effort requires a positive maxOrders"));
+            }
+        }
+        // Markets are needed for the safety check and for precision snapping.
+        // The caller supplies them: unlike the other five ports, this one cannot
+        // call loadMarkets() through the venue trait — adding it there would put
+        // a method on the trait that only this line uses, and every implementor
+        // would have to write it.
+        let markets = self.dict_at(options, "markets");
+        let usd_rates = self.dict_at(options, "usdRates");
+        let mut safety_options = HashMap::new();
+        safety_options.insert("usdRates".to_string(), usd_rates.clone());
+        safety_options.insert(
+            "maxNotionalUsd".to_string(),
+            Value::Float(self.number_at(options, "maxNotionalUsd", self.max_notional_usd)),
+        );
+        safety_options.insert(
+            "precisionMode".to_string(),
+            Value::Str(self.string_at(options, "precisionMode", "tick_size")),
+        );
+        let violations = self.check_execution_plan_safety(plan, &markets, &Value::Map(safety_options));
+        let mut blockers: Vec<String> = Vec::new();
+        for violation in &violations {
+            if self.bool_at(violation, "blocking", false) {
+                blockers.push(self.string_at(violation, "code", ""));
+            }
+        }
+        if !blockers.is_empty() {
+            // Returned as an error, not reported. A refusal a caller can forget
+            // to read is not a refusal.
+            return Err(exchange_error(&format!(
+                "OrderRouter: refusing to execute, blocking safety violations: {}",
+                blockers.join(", ")
+            )));
+        }
+        if strategy == "parallel_within_hop" {
+            self.execute_parallel_within_hop(&mut report, &mut steps, venues, options, &usd_rates).await;
+        } else if strategy == "best_effort" {
+            self.execute_best_effort(&mut report, &mut steps, venues, options, &usd_rates).await;
+        } else {
+            // sequential, limit_protected and atomic_ish all walk the plan one
+            // order at a time; they differ in how a single order is placed and in
+            // whether they lean on the previous hop's proceeds.
+            self.execute_sequential(&mut report, &mut steps, venues, options, &usd_rates, &strategy).await;
+        }
+        self.summarise_report(&mut report, &steps);
+        Ok(report)
+    }
+}

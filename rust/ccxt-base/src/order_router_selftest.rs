@@ -636,6 +636,15 @@ pub fn run() -> Result<usize, String> {
         ("formatNumber never emits exponent notation", Box::new(|| format_number_never_uses_exponents(&router()?))),
         ("fetchRoute builds a deterministic query", Box::new(|| route_url_is_deterministic(&router()?))),
         ("the query escaping is encodeURIComponent's, not form-urlencoded's", Box::new(|| encode_uri_component_matches_javascript(&router()?))),
+        ("execute: dry_run is the default and a forgotten live flag places nothing", Box::new(|| dry_run_places_nothing(&router()?))),
+        ("execute: an unknown strategy is refused even in dry run", Box::new(|| an_unknown_strategy_is_refused_even_in_dry_run(&router()?))),
+        ("execute: sequential places IOC limit orders in plan order", Box::new(|| sequential_places_and_fills(&router()?))),
+        ("execute: a failure BEFORE dispatch records no open order", Box::new(|| a_failure_before_dispatch_records_no_open_order(&router()?))),
+        ("execute: a createOrder that times out is outcome-unknown, not a plain failure", Box::new(|| a_timeout_is_outcome_unknown_not_a_plain_failure(&router()?))),
+        ("execute: a definite rejection stays a plain failure and reports no open order", Box::new(|| a_definite_rejection_stays_a_plain_failure(&router()?))),
+        ("execute: a fill that stays unknown after the re-read halts instead of guessing", Box::new(|| a_fill_that_stays_unknown_halts_instead_of_guessing(&router()?))),
+        ("execute: refuses to go live above the 25 USD cap", Box::new(|| execute_refuses_to_go_live_above_the_cap(&router()?))),
+        ("execute: best_effort demands both of its acknowledgements", Box::new(|| best_effort_demands_its_acknowledgements(&router()?))),
     ];
     let _ = (&f, &r);
     for (name, check) in checks {
@@ -661,5 +670,328 @@ mod tests {
             Ok(passed) => assert!(passed > 0, "the suite ran no checks"),
             Err(message) => panic!("{message}"),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// execute, against stub venues
+//
+// The money path. It cannot be exercised against a real exchange from a test,
+// and should not be — CLAUDE.md §5.5 caps a live trade at 25 USD and this suite
+// places none. What IS testable, and is what the other five ports test too, is
+// the behaviour around the placement: that dry_run touches nothing, that a
+// forgotten `live` flag places nothing, that a refusal before dispatch records
+// no open order, and that an unknown outcome halts rather than reconciling on a
+// number nobody observed.
+// ---------------------------------------------------------------------------
+
+use crate::order_router::RouterVenue;
+use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc as StdArc;
+
+struct StubVenue {
+    id: String,
+    supports_ioc: bool,
+    /// Counts createOrder calls, so "placed nothing" is asserted rather than
+    /// assumed.
+    orders_placed: StdArc<AtomicUsize>,
+    /// When set, createOrder fails with this error kind instead of filling.
+    fail_with: Option<&'static str>,
+    /// When true the order comes back with no `filled` at all — the case that
+    /// used to be read as a zero fill.
+    omit_filled: bool,
+}
+
+impl StubVenue {
+    fn new(id: &str) -> Self {
+        StubVenue {
+            id: id.to_string(),
+            supports_ioc: true,
+            orders_placed: StdArc::new(AtomicUsize::new(0)),
+            fail_with: None,
+            omit_filled: false,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl RouterVenue for StubVenue {
+    fn id(&self) -> String {
+        self.id.clone()
+    }
+    fn amount_to_precision(&self, _symbol: &str, amount: f64) -> String {
+        format!("{amount}")
+    }
+    fn price_to_precision(&self, _symbol: &str, price: f64) -> String {
+        format!("{price}")
+    }
+    fn supports_ioc(&self) -> bool {
+        self.supports_ioc
+    }
+    async fn create_order(
+        &self,
+        _symbol: &str,
+        _order_type: &str,
+        _side: &str,
+        amount: f64,
+        price: f64,
+        _params: &Value,
+    ) -> Result<Value, crate::error::ExchangeError> {
+        self.orders_placed.fetch_add(1, Ordering::SeqCst);
+        if let Some(kind) = self.fail_with {
+            return Err(crate::error::ExchangeError::new(kind, "stub refuses"));
+        }
+        let mut order = HashMap::new();
+        order.insert("id".to_string(), Value::Str("stub-1".to_string()));
+        order.insert("status".to_string(), Value::Str("closed".to_string()));
+        if !self.omit_filled {
+            order.insert("filled".to_string(), Value::Float(amount));
+            order.insert("average".to_string(), Value::Float(price));
+            order.insert("cost".to_string(), Value::Float(amount * price));
+        }
+        Ok(Value::Map(order))
+    }
+    async fn fetch_order(&self, _id: &str, _symbol: &str) -> Result<Value, crate::error::ExchangeError> {
+        if self.omit_filled {
+            // Still incomplete on the re-read: the fill stays genuinely unknown.
+            let mut order = HashMap::new();
+            order.insert("id".to_string(), Value::Str("stub-1".to_string()));
+            order.insert("status".to_string(), Value::Str("closed".to_string()));
+            return Ok(Value::Map(order));
+        }
+        Err(crate::error::ExchangeError::new("ExchangeError", "stub cannot read the order back"))
+    }
+    async fn cancel_order(&self, _id: &str, _symbol: &str) -> Result<Value, crate::error::ExchangeError> {
+        Ok(Value::Map(HashMap::new()))
+    }
+}
+
+fn one_leg_plan(r: &OrderRouter) -> Result<Value, String> {
+    let route = one_leg_route("buy", "BTC", "USDT", 0.2, 100.0);
+    r.build_execution_plan(&route, &Value::Map(HashMap::new())).map_err(|e| e.to_string())
+}
+
+fn block_on<F: std::future::Future>(future: F) -> F::Output {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a tokio runtime")
+        .block_on(future)
+}
+
+fn execute_options(live: bool, strategy: &str) -> Value {
+    let mut usd_rates = HashMap::new();
+    usd_rates.insert("USDT".to_string(), Value::Float(1.0));
+    let mut market = HashMap::new();
+    market.insert("symbol".to_string(), Value::Str("BTC/USDT".to_string()));
+    market.insert("base".to_string(), Value::Str("BTC".to_string()));
+    market.insert("quote".to_string(), Value::Str("USDT".to_string()));
+    let mut by_symbol = HashMap::new();
+    by_symbol.insert("BTC/USDT".to_string(), Value::Map(market));
+    let mut markets = HashMap::new();
+    markets.insert("stub".to_string(), Value::Map(by_symbol));
+    let mut options = HashMap::new();
+    options.insert("strategy".to_string(), Value::Str(strategy.to_string()));
+    options.insert("live".to_string(), Value::Bool(live));
+    options.insert("usdRates".to_string(), Value::Map(usd_rates));
+    options.insert("markets".to_string(), Value::Map(markets));
+    Value::Map(options)
+}
+
+fn dry_run_places_nothing(r: &OrderRouter) -> Result<(), String> {
+    // The default, and the one that matters most: a caller who forgets `live`
+    // must get a rehearsal, not a trade. Asserted by counting createOrder calls
+    // rather than by reading the report, because the report is exactly what a
+    // buggy implementation would still fill in correctly.
+    let plan = one_leg_plan(r)?;
+    let venue = StubVenue::new("stub");
+    let counter = StdArc::clone(&venue.orders_placed);
+    let mut venues: BTreeMap<String, Box<dyn RouterVenue>> = BTreeMap::new();
+    venues.insert("stub".to_string(), Box::new(venue));
+
+    // strategy: sequential, but live is FALSE — this is the forgotten-flag case.
+    let report = block_on(r.execute(&plan, &venues, &execute_options(false, "sequential")))
+        .map_err(|e| e.to_string())?;
+    if counter.load(Ordering::SeqCst) != 0 {
+        return Err("a non-live execute placed an order".to_string());
+    }
+    if r.string_at(&report, "strategy", "") != "dry_run" {
+        return Err("live=false must force dry_run".to_string());
+    }
+    if !r.bool_at(&report, "dryRun", false) {
+        return Err("the report must say it was a dry run".to_string());
+    }
+    if r.number_at(&report, "wouldPlaceOrders", 0.0) != 1.0 {
+        return Err("a dry run reports what it would have placed".to_string());
+    }
+    Ok(())
+}
+
+fn an_unknown_strategy_is_refused_even_in_dry_run(r: &OrderRouter) -> Result<(), String> {
+    let plan = one_leg_plan(r)?;
+    let venues: BTreeMap<String, Box<dyn RouterVenue>> = BTreeMap::new();
+    let outcome = block_on(r.execute(&plan, &venues, &execute_options(false, "sideways")));
+    match outcome {
+        Err(e) if e.message.contains("unknown execution strategy") => Ok(()),
+        Err(e) => Err(format!("wrong refusal: {e}")),
+        Ok(_) => Err("an unknown strategy is refused before anything else".to_string()),
+    }
+}
+
+fn sequential_places_and_fills(r: &OrderRouter) -> Result<(), String> {
+    let plan = one_leg_plan(r)?;
+    let venue = StubVenue::new("stub");
+    let counter = StdArc::clone(&venue.orders_placed);
+    let mut venues: BTreeMap<String, Box<dyn RouterVenue>> = BTreeMap::new();
+    venues.insert("stub".to_string(), Box::new(venue));
+    let report = block_on(r.execute(&plan, &venues, &execute_options(true, "sequential")))
+        .map_err(|e| e.to_string())?;
+    if counter.load(Ordering::SeqCst) != 1 {
+        return Err(format!("expected 1 order, placed {}", counter.load(Ordering::SeqCst)));
+    }
+    let results = r.list_at(&report, "steps");
+    let status = r.string_at(&results[0], "status", "");
+    if status != "filled" {
+        return Err(format!("expected filled, got {status}"));
+    }
+    if !r.bool_at(&results[0], "placementAttempted", false) {
+        return Err("a dispatched order records placementAttempted".to_string());
+    }
+    Ok(())
+}
+
+fn a_failure_before_dispatch_records_no_open_order(r: &OrderRouter) -> Result<(), String> {
+    // The distinction placementAttempted exists for. A venue that is not in the
+    // map cannot have received anything, so reporting an unconfirmed placement
+    // for it would be a false alarm — and a false alarm on this particular
+    // signal sends someone hunting for an order that does not exist.
+    let plan = one_leg_plan(r)?;
+    let venue = StubVenue::new("other");
+    let mut venues: BTreeMap<String, Box<dyn RouterVenue>> = BTreeMap::new();
+    venues.insert("other".to_string(), Box::new(venue));
+    let report = block_on(r.execute(&plan, &venues, &execute_options(true, "sequential")))
+        .map_err(|e| e.to_string())?;
+    let results = r.list_at(&report, "steps");
+    if r.bool_at(&results[0], "placementAttempted", true) {
+        return Err("nothing was dispatched, so placementAttempted must be false".to_string());
+    }
+    if r.string_at(&results[0], "errorCode", "") != "venue_missing" {
+        return Err("the missing venue is named".to_string());
+    }
+    if !r.list_at(&report, "openOrders").is_empty() {
+        return Err("a failure before dispatch records NO open order".to_string());
+    }
+    if r.string_at(&report, "haltReason", "") != "order_failed" {
+        return Err("a definite failure halts as order_failed".to_string());
+    }
+    Ok(())
+}
+
+fn a_timeout_is_outcome_unknown_not_a_plain_failure(r: &OrderRouter) -> Result<(), String> {
+    // A request that timed out may still have been received and acted on. The
+    // report must say so: concluding that nothing was placed is the one
+    // conclusion that can strand a real position on a real venue.
+    let plan = one_leg_plan(r)?;
+    let mut venue = StubVenue::new("stub");
+    venue.fail_with = Some("RequestTimeout");
+    let mut venues: BTreeMap<String, Box<dyn RouterVenue>> = BTreeMap::new();
+    venues.insert("stub".to_string(), Box::new(venue));
+    let report = block_on(r.execute(&plan, &venues, &execute_options(true, "sequential")))
+        .map_err(|e| e.to_string())?;
+    let results = r.list_at(&report, "steps");
+    if r.string_at(&results[0], "status", "") != "outcome_unknown" {
+        return Err(format!("expected outcome_unknown, got {}", r.string_at(&results[0], "status", "")));
+    }
+    if r.string_at(&report, "haltReason", "") != "outcome_unknown" {
+        return Err("the halt reason must not claim nothing_filled".to_string());
+    }
+    let open = r.list_at(&report, "openOrders");
+    if open.len() != 1 || r.string_at(&open[0], "reason", "") != "placement_unconfirmed" {
+        return Err("an unconfirmed placement is recorded".to_string());
+    }
+    Ok(())
+}
+
+fn a_definite_rejection_stays_a_plain_failure(r: &OrderRouter) -> Result<(), String> {
+    // The counterpart. An ExchangeError is the venue ANSWERING — a definite
+    // "no" — and treating it as unknown would send someone hunting for an order
+    // that was never accepted.
+    let plan = one_leg_plan(r)?;
+    let mut venue = StubVenue::new("stub");
+    venue.fail_with = Some("ExchangeError");
+    let mut venues: BTreeMap<String, Box<dyn RouterVenue>> = BTreeMap::new();
+    venues.insert("stub".to_string(), Box::new(venue));
+    let report = block_on(r.execute(&plan, &venues, &execute_options(true, "sequential")))
+        .map_err(|e| e.to_string())?;
+    let results = r.list_at(&report, "steps");
+    if r.string_at(&results[0], "status", "") != "failed" {
+        return Err("a definite rejection is a plain failure".to_string());
+    }
+    if !r.list_at(&report, "openOrders").is_empty() {
+        return Err("a definite rejection leaves no open order".to_string());
+    }
+    Ok(())
+}
+
+fn a_fill_that_stays_unknown_halts_instead_of_guessing(r: &OrderRouter) -> Result<(), String> {
+    // "The venue said zero" and "the venue said nothing" are different facts.
+    // A venue that omits `filled` used to yield 0, which reconciliation read as
+    // nothing_filled and halted on — while a real position sat on a real venue.
+    let plan = one_leg_plan(r)?;
+    let mut venue = StubVenue::new("stub");
+    venue.omit_filled = true;
+    let mut venues: BTreeMap<String, Box<dyn RouterVenue>> = BTreeMap::new();
+    venues.insert("stub".to_string(), Box::new(venue));
+    let report = block_on(r.execute(&plan, &venues, &execute_options(true, "sequential")))
+        .map_err(|e| e.to_string())?;
+    let results = r.list_at(&report, "steps");
+    if r.string_at(&results[0], "status", "") != "outcome_unknown" {
+        return Err(format!("expected outcome_unknown, got {}", r.string_at(&results[0], "status", "")));
+    }
+    let open = r.list_at(&report, "openOrders");
+    if open.len() != 1 || r.string_at(&open[0], "reason", "") != "fill_unconfirmed" {
+        return Err("the unconfirmed fill is recorded".to_string());
+    }
+    Ok(())
+}
+
+fn execute_refuses_to_go_live_above_the_cap(r: &OrderRouter) -> Result<(), String> {
+    // The 25 USD cap, re-imposed at execute rather than only at plan time.
+    let route = one_leg_route("buy", "BTC", "USDT", 1.0, 100.0);
+    let plan = r.build_execution_plan(&route, &Value::Map(HashMap::new())).map_err(|e| e.to_string())?;
+    let venue = StubVenue::new("stub");
+    let counter = StdArc::clone(&venue.orders_placed);
+    let mut venues: BTreeMap<String, Box<dyn RouterVenue>> = BTreeMap::new();
+    venues.insert("stub".to_string(), Box::new(venue));
+    let outcome = block_on(r.execute(&plan, &venues, &execute_options(true, "sequential")));
+    match outcome {
+        Err(e) if e.message.contains("blocking safety violations") => {
+            if counter.load(Ordering::SeqCst) != 0 {
+                return Err("the cap must be refused BEFORE any order goes out".to_string());
+            }
+            Ok(())
+        }
+        Err(e) => Err(format!("wrong refusal: {e}")),
+        Ok(_) => Err("a 100 USD notional is over the 25 USD cap".to_string()),
+    }
+}
+
+fn best_effort_demands_its_acknowledgements(r: &OrderRouter) -> Result<(), String> {
+    let plan = one_leg_plan(r)?;
+    let venue = StubVenue::new("stub");
+    let mut venues: BTreeMap<String, Box<dyn RouterVenue>> = BTreeMap::new();
+    venues.insert("stub".to_string(), Box::new(venue));
+    // No acknowledgeDispersion.
+    match block_on(r.execute(&plan, &venues, &execute_options(true, "best_effort"))) {
+        Err(e) if e.message.contains("acknowledgeDispersion") => {}
+        other => return Err(format!("expected an acknowledgeDispersion refusal, got {other:?}")),
+    }
+    // With the acknowledgement but no maxOrders.
+    let mut options = execute_options(true, "best_effort");
+    OrderRouter::set_key(&mut options, "acknowledgeDispersion", Value::Bool(true));
+    match block_on(r.execute(&plan, &venues, &options)) {
+        Err(e) if e.message.contains("maxOrders") => Ok(()),
+        other => Err(format!("expected a maxOrders refusal, got {other:?}")),
     }
 }
