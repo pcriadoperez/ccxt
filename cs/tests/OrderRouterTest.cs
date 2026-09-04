@@ -1,0 +1,1702 @@
+// NO_AUTO_TRANSPILE
+//  ---------------------------------------------------------------------------
+//  OrderRouter — offline tests, C# port.
+//
+//  Two halves, and both matter:
+//
+//  1. The FIXTURE half drives the four pure methods from
+//     ts/src/test/base/fixtures/orderRouter.json — the SAME file the
+//     TypeScript, Python, PHP and Go suites read. Nothing here restates an
+//     expected value by hand: every expectation is read out of that file, so a
+//     port that drifts fails in its own language and nowhere else, which is
+//     what makes drift impossible to hide. The comparison follows the algorithm
+//     the fixture's own `comparison` field documents: key sets compared in BOTH
+//     directions, numbers at a 1e-9 relative tolerance, strings/booleans and
+//     array lengths exactly.
+//
+//  2. The INVARIANT half asserts the safety properties directly, in literal
+//     numbers written by hand. The fixture's expectations were produced by the
+//     reference implementation, so on their own they would only prove the five
+//     languages agree — not that they agree on the right answer. These are the
+//     tests that would fail if the implementation itself were wrong.
+//
+//  Nothing here touches the network and nothing here places an order. The only
+//  venues are the StubVenue below, which records every call it receives so that
+//  "the dry run reached the venue zero times" is an assertion and not a hope.
+//  ---------------------------------------------------------------------------
+
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
+using System.Threading.Tasks;
+
+using ccxt;
+
+namespace Tests;
+
+using dict = Dictionary<string, object>;
+using list = List<object>;
+
+/// <summary>
+/// The offline OrderRouter suite. Call <see cref="RunAll"/>; it returns the
+/// number of failed tests and prints one line per test.
+/// </summary>
+public class OrderRouterTest
+{
+    private const double Tolerance = 1e-9;
+
+    private static dict fixture = null;
+
+    private static int failures = 0;
+
+    private static int passes = 0;
+
+    //  -----------------------------------------------------------------------
+    //  entry point
+    //  -----------------------------------------------------------------------
+
+    public static int RunAll()
+    {
+        failures = 0;
+        passes = 0;
+        fixture = LoadFixture();
+        //  1. the shared fixture — the cross-language contract
+        Run("fixture: buildExecutionPlan", FixtureBuildExecutionPlan);
+        Run("fixture: buildExecutionPlan is deterministic and does not mutate its input", FixtureBuildExecutionPlanIsPure);
+        Run("fixture: checkExecutionPlanSafety", FixtureCheckExecutionPlanSafety);
+        Run("fixture: reconcileExecutionStep", FixtureReconcileExecutionStep);
+        Run("fixture: a sequence of reconciliations on one hop", FixtureReconcileSequence);
+        Run("fixture: buildUnwindPlan", FixtureBuildUnwindPlan);
+        Run("fixture: numberAt reads one number grammar in all five languages", FixtureNumberAt);
+        Run("a route that does not run from the requested asset to the requested asset is refused", RouteProducesMismatch);
+        Run("a route that spends an asset the caller never offered is refused", RouteSpendsMismatch);
+        Run("a bridged route whose hops do not connect is refused", RouteChainBreak);
+        Run("a well-formed route still plans normally", RouteWellFormedStillPlans);
+        //  2. invariants, asserted directly rather than through the fixture
+        Run("constructor: apiKey is required, and maxNotionalUsd is an opt-in guardrail at any size", ConstructorGuards);
+        Run("the limit price sits on the side that costs you, and only there", LimitPriceSide);
+        Run("a cap that IS set binds exactly, at whatever size, and includes the slippage", NotionalCap);
+        Run("with no cap set, no notional check runs at all", NoCapMeansNoNotionalCheck);
+        Run("a step that cannot be valued in USD BLOCKS when a cap is in force — it is never skipped", UnvaluableBlocks);
+        Run("USDT is not assumed to be one dollar; USD is", UsdtIsNotADollar);
+        Run("an empty plan is not a safe plan", EmptyPlanIsNotSafe);
+        Run("reconcileExecutionStep never scales a downstream order UP", ReconcileNeverScalesUp);
+        Run("reconcileExecutionStep halts on a total miss and on an over-tolerance shortfall", ReconcileHalts);
+        Run("buildUnwindPlan is never automatic and never nets across venues", UnwindNeverNetsAcrossVenues);
+        //  3. execute — stub venues only, and not one real order anywhere
+        RunAsync("dry_run is the default: a live-looking call with live unset places nothing", DryRunIsTheDefault);
+        RunAsync("execute refuses to go live without a way to value the trade in USD — when a cap is set", RefusesLiveWithoutRates);
+        RunAsync("execute refuses to go live above a cap the caller set", RefusesLiveAboveTheCap);
+        RunAsync("sequential places IOC limit orders in plan order", SequentialPlacesIoc);
+        RunAsync("sequential obeys the halt verdict and never starts the next hop", SequentialObeysHalt);
+        RunAsync("a market order needs BOTH a venue that cannot do IOC and an explicit opt-in", MarketOrdersNeedBoth);
+        RunAsync("parallel_within_hop contains a failing leg instead of abandoning its siblings", ParallelContainsFailure);
+        RunAsync("best_effort refuses multi-hop and demands both of its acknowledgements", BestEffortRefusals);
+        RunAsync("best_effort stops at maxOrders and never halts", BestEffortMaxOrders);
+        Run("a per-call cap overrides the client-level one, in both directions", PerCallCapOverrides);
+        RunAsync("best_effort derives the hop count from the steps, not from a key the plan may not carry", BestEffortDerivesHopCount);
+        RunAsync("venueSupportsIoc reads the dictionary of booleans every real exchange declares", VenueSupportsIocReadsADictionary);
+        RunAsync("limit_protected keeps the fill from an order the venue canceled on the last poll", LimitProtectedKeepsAVenueSideCancelFill);
+        RunAsync("a failure after createOrder still reports the order id and an open order", OrderIdSurvivesAFailureAfterCreate);
+        RunAsync("an unknown strategy is refused even in dry run", UnknownStrategyRefused);
+        RunAsync("a plan carries its age, and a stale one is refused only when asked", PlanAgeIsReportedAndRefusedOnlyWhenAsked);
+        RunAsync("atomic_ish demands the whole route pre-funded", AtomicIshDemandsPrefunding);
+        RunAsync("a fee charged in the acquired asset is netted out of what the hop carries forward", FeeInAcquiredAssetIsNetted);
+        //  4. fetchRoute request shaping, with the HTTP layer stubbed out
+        RunAsync("fetchRoute refuses neither-or-both amounts before touching the network", FetchRouteRefusesAmbiguousAmounts);
+        RunAsync("fetchRoute builds a deterministic query", FetchRouteQuery);
+        RunAsync("fetchRouteWithBalances skips zeros, sorts largest first and reports what it dropped", BalancesSkipsAndSorts);
+        RunAsync("fetchRouteWithBalances refuses a route computed against balances the router ignored", BalancesMustBeEchoed);
+        RunAsync("fetchRouteWithBalances trims to the router 64-entry cap, dropping the smallest", BalancesEntryCap);
+        Run("formatNumber never emits exponent notation", FormatNumberIsPlain);
+        Console.WriteLine("[C#] OrderRouter: " + passes.ToString(CultureInfo.InvariantCulture) + " passed, " + failures.ToString(CultureInfo.InvariantCulture) + " failed");
+        return failures;
+    }
+
+    private static void Run(string name, Action body)
+    {
+        try
+        {
+            body();
+            passes = passes + 1;
+            Console.WriteLine("  ok   " + name);
+        }
+        catch (Exception e)
+        {
+            failures = failures + 1;
+            Console.WriteLine("  FAIL " + name + "\n       " + e.Message);
+        }
+    }
+
+    private static void RunAsync(string name, Func<Task> body)
+    {
+        Run(name, () => body().GetAwaiter().GetResult());
+    }
+
+    //  -----------------------------------------------------------------------
+    //  assertions
+    //  -----------------------------------------------------------------------
+
+    private class AssertionError : Exception
+    {
+        public AssertionError(string message) : base(message) { }
+    }
+
+    private static void Ok(bool condition, string message)
+    {
+        if (!condition)
+        {
+            throw new AssertionError(message);
+        }
+    }
+
+    private static void EqualString(string actual, string expected, string message)
+    {
+        if (actual != expected)
+        {
+            throw new AssertionError(message + ": expected \"" + expected + "\", got \"" + actual + "\"");
+        }
+    }
+
+    private static void EqualNumber(double actual, double expected, string message)
+    {
+        if (!NumbersMatch(actual, expected))
+        {
+            throw new AssertionError(message + ": expected " + Describe(expected) + ", got " + Describe(actual));
+        }
+    }
+
+    private static void EqualBool(bool actual, bool expected, string message)
+    {
+        if (actual != expected)
+        {
+            throw new AssertionError(message + ": expected " + (expected ? "true" : "false") + ", got " + (actual ? "true" : "false"));
+        }
+    }
+
+    private static void Throws<T>(Action body, string message) where T : Exception
+    {
+        try
+        {
+            body();
+        }
+        catch (Exception e)
+        {
+            if (e is T)
+            {
+                return;
+            }
+            throw new AssertionError(message + ": expected " + typeof(T).Name + ", got " + e.GetType().Name + " (" + e.Message + ")");
+        }
+        throw new AssertionError(message + ": expected " + typeof(T).Name + ", nothing was thrown");
+    }
+
+    private static async Task Rejects<T>(Func<Task> body, string message) where T : Exception
+    {
+        try
+        {
+            await body();
+        }
+        catch (Exception e)
+        {
+            if (e is T)
+            {
+                return;
+            }
+            throw new AssertionError(message + ": expected " + typeof(T).Name + ", got " + e.GetType().Name + " (" + e.Message + ")");
+        }
+        throw new AssertionError(message + ": expected " + typeof(T).Name + ", nothing was thrown");
+    }
+
+    private static bool NumbersMatch(double a, double b)
+    {
+        if (a == b)
+        {
+            return true;
+        }
+        if (double.IsInfinity(a) || double.IsInfinity(b) || double.IsNaN(a) || double.IsNaN(b))
+        {
+            //  an infinity only ever matches itself. Without this the relative
+            //  comparison below reads Infinity <= Infinity as a match and an
+            //  infinite value passes against ANY expectation — which is exactly
+            //  how a number grammar that overflows would slip past numberCases
+            return false;
+        }
+        double scale = 1;
+        if (Math.Abs(a) > scale)
+        {
+            scale = Math.Abs(a);
+        }
+        if (Math.Abs(b) > scale)
+        {
+            scale = Math.Abs(b);
+        }
+        return Math.Abs(a - b) <= Tolerance * scale;
+    }
+
+    /// <summary>
+    /// The comparison algorithm the fixture documents, and the one every port's
+    /// test must use: arrays element by element with the same length, objects
+    /// with the key sets compared in BOTH directions so that a missing field and
+    /// an invented field are both drift, numbers at a 1e-9 relative tolerance,
+    /// and everything else exactly.
+    /// </summary>
+    private static void AssertMatches(object actual, object expected, string where)
+    {
+        if (IsList(expected))
+        {
+            Ok(IsList(actual), where + ": expected an array");
+            var expectedItems = ToList(expected);
+            var actualItems = ToList(actual);
+            EqualNumber(actualItems.Count, expectedItems.Count, where + ": array length");
+            for (var i = 0; i < expectedItems.Count; i++)
+            {
+                AssertMatches(actualItems[i], expectedItems[i], where + "[" + i.ToString(CultureInfo.InvariantCulture) + "]");
+            }
+            return;
+        }
+        if (IsDict(expected))
+        {
+            Ok(IsDict(actual) && !IsList(actual), where + ": expected an object, got " + Describe(actual));
+            var expectedMap = ToDict(expected);
+            var actualMap = ToDict(actual);
+            foreach (var entry in expectedMap)
+            {
+                Ok(actualMap.ContainsKey(entry.Key), where + ": missing key " + entry.Key);
+            }
+            foreach (var entry in actualMap)
+            {
+                Ok(expectedMap.ContainsKey(entry.Key), where + ": unexpected key " + entry.Key);
+            }
+            foreach (var entry in expectedMap)
+            {
+                AssertMatches(actualMap[entry.Key], entry.Value, where + "." + entry.Key);
+            }
+            return;
+        }
+        if (IsNumber(expected))
+        {
+            Ok(IsNumber(actual), where + ": expected a number, got " + Describe(actual));
+            EqualNumber(ToDouble(actual), ToDouble(expected), where);
+            return;
+        }
+        if (expected is bool)
+        {
+            Ok(actual is bool, where + ": expected a boolean, got " + Describe(actual));
+            EqualBool((bool)actual, (bool)expected, where);
+            return;
+        }
+        if (expected is string)
+        {
+            Ok(actual is string, where + ": expected a string, got " + Describe(actual));
+            EqualString((string)actual, (string)expected, where);
+            return;
+        }
+        Ok(actual == null && expected == null, where + ": expected " + Describe(expected) + ", got " + Describe(actual));
+    }
+
+    //  -----------------------------------------------------------------------
+    //  value helpers — the fixture arrives as Dictionary<string, object>,
+    //  List<object>, double, long, string, bool and null
+    //  -----------------------------------------------------------------------
+
+    private static bool IsList(object value)
+    {
+        return (value is IList) && !(value is string);
+    }
+
+    private static bool IsDict(object value)
+    {
+        return value is IDictionary<string, object>;
+    }
+
+    private static bool IsNumber(object value)
+    {
+        if (value is bool)
+        {
+            return false;
+        }
+        return (value is double) || (value is float) || (value is decimal) || (value is int) || (value is long) || (value is short) || (value is uint) || (value is ulong) || (value is ushort) || (value is byte) || (value is sbyte);
+    }
+
+    private static list ToList(object value)
+    {
+        var items = new list();
+        if (value is IList)
+        {
+            foreach (var item in (IList)value)
+            {
+                items.Add(item);
+            }
+        }
+        return items;
+    }
+
+    private static dict ToDict(object value)
+    {
+        var map = new dict();
+        if (value is IDictionary<string, object>)
+        {
+            foreach (var entry in (IDictionary<string, object>)value)
+            {
+                map[entry.Key] = entry.Value;
+            }
+        }
+        return map;
+    }
+
+    private static double ToDouble(object value)
+    {
+        return Convert.ToDouble(value, CultureInfo.InvariantCulture);
+    }
+
+    private static int ToInt(object value)
+    {
+        return Convert.ToInt32(value, CultureInfo.InvariantCulture);
+    }
+
+    private static string Describe(object value)
+    {
+        if (value == null)
+        {
+            return "null";
+        }
+        if (value is bool)
+        {
+            return ((bool)value) ? "true" : "false";
+        }
+        if (value is string)
+        {
+            return "\"" + (string)value + "\"";
+        }
+        if (IsNumber(value))
+        {
+            return ToDouble(value).ToString("R", CultureInfo.InvariantCulture);
+        }
+        if (IsList(value))
+        {
+            return "an array of " + ToList(value).Count.ToString(CultureInfo.InvariantCulture);
+        }
+        if (IsDict(value))
+        {
+            var keys = "";
+            foreach (var entry in ToDict(value))
+            {
+                if (keys != "")
+                {
+                    keys = keys + ", ";
+                }
+                keys = keys + entry.Key;
+            }
+            return "an object {" + keys + "}";
+        }
+        return value.GetType().Name;
+    }
+
+    /// <summary>
+    /// A stable textual rendering, used only to prove that a pure method did not
+    /// mutate the structure it was handed.
+    /// </summary>
+    private static string Stringify(object value)
+    {
+        if (value == null)
+        {
+            return "null";
+        }
+        if (value is bool)
+        {
+            return ((bool)value) ? "true" : "false";
+        }
+        if (value is string)
+        {
+            return "\"" + (string)value + "\"";
+        }
+        if (IsNumber(value))
+        {
+            return ToDouble(value).ToString("R", CultureInfo.InvariantCulture);
+        }
+        if (IsList(value))
+        {
+            var items = ToList(value);
+            var text = "[";
+            for (var i = 0; i < items.Count; i++)
+            {
+                if (i > 0)
+                {
+                    text = text + ",";
+                }
+                text = text + Stringify(items[i]);
+            }
+            return text + "]";
+        }
+        if (IsDict(value))
+        {
+            var map = ToDict(value);
+            var keys = new List<string>();
+            foreach (var entry in map)
+            {
+                keys.Add(entry.Key);
+            }
+            keys.Sort(string.CompareOrdinal);
+            var text = "{";
+            for (var i = 0; i < keys.Count; i++)
+            {
+                if (i > 0)
+                {
+                    text = text + ",";
+                }
+                text = text + "\"" + keys[i] + "\":" + Stringify(map[keys[i]]);
+            }
+            return text + "}";
+        }
+        return value.ToString();
+    }
+
+    //  -----------------------------------------------------------------------
+    //  the shared fixture
+    //  -----------------------------------------------------------------------
+
+    /// <summary>
+    /// Finds and reads ts/src/test/base/fixtures/orderRouter.json by walking up
+    /// from the test assembly and then from the working directory, so the same
+    /// file drives all five languages no matter where the runner was launched.
+    /// </summary>
+    public static dict LoadFixture()
+    {
+        var relative = Path.Combine("ts", "src", "test", "base", "fixtures", "orderRouter.json");
+        var path = FindUpwards(AppContext.BaseDirectory, relative);
+        if (path == "")
+        {
+            path = FindUpwards(Directory.GetCurrentDirectory(), relative);
+        }
+        if (path == "")
+        {
+            throw new AssertionError("could not find " + relative + " above " + AppContext.BaseDirectory + " or " + Directory.GetCurrentDirectory());
+        }
+        var parsed = JsonHelper.Deserialize(File.ReadAllText(path)) as dict;
+        if (parsed == null)
+        {
+            throw new AssertionError("the OrderRouter fixture is not a JSON object: " + path);
+        }
+        return parsed;
+    }
+
+    private static string FindUpwards(string start, string relative)
+    {
+        var directory = new DirectoryInfo(start);
+        while (directory != null)
+        {
+            var candidate = Path.Combine(directory.FullName, relative);
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+            directory = directory.Parent;
+        }
+        return "";
+    }
+
+    private static dict FixtureSection(string name)
+    {
+        var section = fixture[name] as dict;
+        Ok(section != null, "the fixture has a " + name + " section");
+        return section;
+    }
+
+    private static list FixtureCases(string name)
+    {
+        var cases = ToList(fixture[name]);
+        Ok(cases.Count > 0, "the fixture has " + name);
+        return cases;
+    }
+
+    private static dict RouteNamed(string name)
+    {
+        return FixtureSection("routes")[name] as dict;
+    }
+
+    private static OrderRouter NewRouter()
+    {
+        return new OrderRouter(new dict() { { "apiKey", "test-key" } });
+    }
+
+    /// <summary>
+    /// The only clock the class reads, pinned so a plan's age is deterministic.
+    /// </summary>
+    private class PinnedClockRouter : OrderRouter
+    {
+        public double pinned;
+        public PinnedClockRouter(dict config) : base(config) { }
+        public override double NowMs() { return this.pinned; }
+    }
+
+    //  -----------------------------------------------------------------------
+    //  1. the shared fixture — the cross-language contract
+    //  -----------------------------------------------------------------------
+
+    private static void FixtureBuildExecutionPlan()
+    {
+        var router = NewRouter();
+        var cases = FixtureCases("planCases");
+        for (var i = 0; i < cases.Count; i++)
+        {
+            var testCase = ToDict(cases[i]);
+            var route = RouteNamed((string)testCase["route"]);
+            var plan = router.BuildExecutionPlan(route, testCase["options"] as dict);
+            AssertMatches(plan, testCase["expected"], "planCase " + (string)testCase["id"]);
+        }
+    }
+
+    private static void FixtureBuildExecutionPlanIsPure()
+    {
+        var router = NewRouter();
+        var cases = FixtureCases("planCases");
+        for (var i = 0; i < cases.Count; i++)
+        {
+            var testCase = ToDict(cases[i]);
+            var route = RouteNamed((string)testCase["route"]);
+            var before = Stringify(route);
+            var first = router.BuildExecutionPlan(route, testCase["options"] as dict);
+            var second = router.BuildExecutionPlan(route, testCase["options"] as dict);
+            AssertMatches(second, first, "planCase " + (string)testCase["id"] + " repeated");
+            EqualString(Stringify(route), before, "planCase " + (string)testCase["id"] + ": the route was mutated");
+        }
+    }
+
+    private static void FixtureCheckExecutionPlanSafety()
+    {
+        var router = NewRouter();
+        var cases = FixtureCases("safetyCases");
+        for (var i = 0; i < cases.Count; i++)
+        {
+            var testCase = ToDict(cases[i]);
+            var route = RouteNamed((string)testCase["route"]);
+            var markets = FixtureSection("marketSets")[(string)testCase["markets"]] as dict;
+            var plan = router.BuildExecutionPlan(route, testCase["planOptions"] as dict);
+            var violations = router.CheckExecutionPlanSafety(plan, markets, testCase["options"] as dict);
+            AssertMatches(AsPlainList(violations), testCase["expected"], "safetyCase " + (string)testCase["id"]);
+        }
+    }
+
+    private static void RefusesPlan(dict route, string fragment, string message)
+    {
+        var router = NewRouter();
+        try
+        {
+            router.BuildExecutionPlan(route, new dict());
+        }
+        catch (Exception e)
+        {
+            if (e.Message.IndexOf(fragment) == -1)
+            {
+                throw new Exception(message + ": threw \"" + e.Message + "\", expected \"" + fragment + "\"");
+            }
+            return;
+        }
+        throw new Exception(message + ": nothing was thrown");
+    }
+
+    private static void RouteProducesMismatch()
+    {
+        //  BuildExecutionPlan used to copy from, to, pair and side straight out of the server's
+        //  JSON, and the safety checks only tested internal consistency against whatever market
+        //  that named. So a compromised — or simply buggy — router response could steer real
+        //  orders into any real market and every check would pass it, under the 25 USD cap.
+        var route = OneLegRoute("buy", "BTC", "USDT", 0.1, 100);
+        route["clientRequestedFrom"] = "USDT";
+        route["clientRequestedTo"] = "ETH";   //  the caller wanted ETH; the route delivers BTC
+        RefusesPlan(route, "produces BTC, not the requested ETH", "a produces mismatch");
+    }
+
+    private static void RouteSpendsMismatch()
+    {
+        var route = OneLegRoute("buy", "BTC", "USDT", 0.1, 100);
+        route["clientRequestedFrom"] = "EUR";
+        route["clientRequestedTo"] = "BTC";
+        RefusesPlan(route, "spends USDT, not the requested EUR", "a spends mismatch");
+    }
+
+    private static void RouteChainBreak()
+    {
+        //  Internal coherence, checked with or without a client stamp: hop 2 must spend exactly
+        //  what hop 1 produced, or the plan strands the proceeds of one order and funds the next
+        //  from a wallet nobody checked.
+        var route = TwoHopRoute();
+        //  cast, not ToDict: ToDict COPIES, so mutating its result would leave the route untouched
+        //  and the test would silently assert nothing
+        var second = (dict)ToList(route["hops"])[1];
+        second["base"] = "DOGE";
+        second["quote"] = "EUR";
+        RefusesPlan(route, "spends DOGE but the previous hop produced BTC", "a broken chain");
+    }
+
+    private static void RouteWellFormedStillPlans()
+    {
+        var router = NewRouter();
+        var route = OneLegRoute("buy", "BTC", "USDT", 0.1, 100);
+        route["clientRequestedFrom"] = "USDT";
+        route["clientRequestedTo"] = "BTC";
+        var plan = router.BuildExecutionPlan(route, new dict());
+        if (ToList(plan["steps"]).Count != 1)
+        {
+            throw new Exception("a coherent route still plans");
+        }
+    }
+
+    private static void FixtureReconcileSequence()
+    {
+        //  ReconcileExecutionStep is pure and cannot remember across calls, so a hop's cumulative
+        //  shortfall lives on the steps themselves — written by ApplyResize. That interaction is
+        //  only visible across a SEQUENCE of calls, which reconcileCases (one call each) cannot
+        //  express, and it is exactly where the five ports could silently disagree.
+        var router = NewRouter();
+        var cases = FixtureCases("reconcileSequenceCases");
+        for (var i = 0; i < cases.Count; i++)
+        {
+            var testCase = ToDict(cases[i]);
+            var id = (string)testCase["id"];
+            var raw = ToList(testCase["steps"]);
+            var steps = new list();
+            for (var s = 0; s < raw.Count; s++)
+            {
+                var copied = new dict();
+                foreach (var pair in ToDict(raw[s]))
+                {
+                    copied[pair.Key] = pair.Value;
+                }
+                steps.Add(copied);
+            }
+            var calls = ToList(testCase["calls"]);
+            var expectedScales = ToList(testCase["expectedScales"]);
+            for (var c = 0; c < calls.Count; c++)
+            {
+                //  the plan is rebuilt from the working steps on every call, exactly as Execute
+                //  does — PHP copies arrays on assignment, so a plan built once outside this loop
+                //  would mean five ports running five different tests
+                var plan = new dict() { { "steps", steps }, { "reconcileToleranceRatio", testCase["reconcileToleranceRatio"] } };
+                var call = ToDict(calls[c]);
+                var reconciliation = router.ReconcileExecutionStep(plan, ToInt(call["stepIndex"]), ToDouble(call["realisedOut"]));
+                if (!NumbersMatch(ToDouble(reconciliation["scale"]), ToDouble(expectedScales[c])))
+                {
+                    throw new Exception("reconcileSequenceCase " + id + " call " + c.ToString(CultureInfo.InvariantCulture) + ": scale " + Describe(reconciliation["scale"]));
+                }
+                router.ApplyResize(steps, reconciliation);
+            }
+            var expectedAmounts = ToList(testCase["expectedAmounts"]);
+            for (var s = 0; s < steps.Count; s++)
+            {
+                if (!NumbersMatch(ToDouble(ToDict(steps[s])["amount"]), ToDouble(expectedAmounts[s])))
+                {
+                    throw new Exception("reconcileSequenceCase " + id + " step " + s.ToString(CultureInfo.InvariantCulture) + ": amount " + Describe(ToDict(steps[s])["amount"]));
+                }
+            }
+        }
+    }
+
+    private static void FixtureReconcileExecutionStep()
+    {
+        var router = NewRouter();
+        var cases = FixtureCases("reconcileCases");
+        for (var i = 0; i < cases.Count; i++)
+        {
+            var testCase = ToDict(cases[i]);
+            //  a case names either a route to plan from, or a plan written out in
+            //  full — the latter is how a plan with field types no builder
+            //  produces (an int hopIndex on one step and a float on the next)
+            //  gets covered
+            dict plan = null;
+            if (testCase.ContainsKey("plan"))
+            {
+                plan = FixtureSection("plans")[(string)testCase["plan"]] as dict;
+            }
+            else
+            {
+                plan = router.BuildExecutionPlan(RouteNamed((string)testCase["route"]), testCase["planOptions"] as dict);
+            }
+            var verdict = router.ReconcileExecutionStep(plan, ToInt(testCase["stepIndex"]), ToDouble(testCase["realisedOut"]));
+            AssertMatches(verdict, testCase["expected"], "reconcileCase " + (string)testCase["id"]);
+        }
+    }
+
+    /// <summary>
+    /// The ONE number grammar. Every port hand-implements JavaScript's parseFloat
+    /// prefix rather than calling its own parser, because every language's own
+    /// parser disagrees with the other four somewhere. A cap read as 1234.5 in
+    /// one language and 1 in another is a cap that silently disappears, and this
+    /// table is what stops that shipping green.
+    /// </summary>
+    private static void FixtureNumberAt()
+    {
+        var router = NewRouter();
+        var cases = FixtureCases("numberCases");
+        for (var i = 0; i < cases.Count; i++)
+        {
+            var testCase = ToDict(cases[i]);
+            var actual = router.NumberAt(testCase["container"], (string)testCase["key"], ToDouble(testCase["default"]));
+            EqualNumber(actual, ToDouble(testCase["expected"]), "numberCase " + (string)testCase["id"]);
+        }
+    }
+
+    private static void FixtureBuildUnwindPlan()
+    {
+        var router = NewRouter();
+        var cases = FixtureCases("unwindCases");
+        for (var i = 0; i < cases.Count; i++)
+        {
+            var testCase = ToDict(cases[i]);
+            var report = FixtureSection("reports")[(string)testCase["report"]] as dict;
+            var unwind = router.BuildUnwindPlan(report);
+            AssertMatches(unwind, testCase["expected"], "unwindCase " + (string)testCase["id"]);
+        }
+    }
+
+    private static list AsPlainList(List<dict> values)
+    {
+        var items = new list();
+        for (var i = 0; i < values.Count; i++)
+        {
+            items.Add(values[i]);
+        }
+        return items;
+    }
+
+    //  -----------------------------------------------------------------------
+    //  2. invariants
+    //  -----------------------------------------------------------------------
+
+    private static dict OneLegRoute(string side, string baseCode, string quote, double amount, double price)
+    {
+        return new dict()
+        {
+            { "from", (side == "buy") ? quote : baseCode },
+            { "to", (side == "buy") ? baseCode : quote },
+            { "strategy", "best_single" },
+            { "exactSide", "in" },
+            { "amountIn", (side == "buy") ? amount * price : amount },
+            { "amountOut", (side == "buy") ? amount : amount * price },
+            { "fullyFillable", true },
+            { "fillRatio", 1.0 },
+            { "unroutableReason", null },
+            {
+                "hops", new list()
+                {
+                    new dict()
+                    {
+                        { "pair", baseCode + "/" + quote },
+                        { "side", side },
+                        { "base", baseCode },
+                        { "quote", quote },
+                        { "amountIn", (side == "buy") ? amount * price : amount },
+                        { "amountOut", (side == "buy") ? amount : amount * price },
+                        { "legs", new list() { new dict() { { "exchangeId", "stub" }, { "amount", amount }, { "averagePrice", price }, { "takerFeeRate", 0.0 }, { "feeCost", 0.0 }, { "effectivePrice", price } } } },
+                        { "fullyFillable", true },
+                    },
+                }
+            },
+        };
+    }
+
+    private static dict TwoHopRoute()
+    {
+        return new dict()
+        {
+            { "from", "USDT" },
+            { "to", "SOL" },
+            { "strategy", "best_single" },
+            { "exactSide", "in" },
+            { "amountIn", 20.0 },
+            { "amountOut", 0.2 },
+            { "fullyFillable", true },
+            { "fillRatio", 1.0 },
+            { "unroutableReason", null },
+            {
+                "hops", new list()
+                {
+                    new dict() { { "pair", "BTC/USDT" }, { "side", "buy" }, { "base", "BTC" }, { "quote", "USDT" }, { "amountIn", 20.0 }, { "amountOut", 0.2 }, { "legs", new list() { new dict() { { "exchangeId", "stub" }, { "amount", 0.2 }, { "averagePrice", 100.0 }, { "effectivePrice", 100.0 } } } } },
+                    new dict() { { "pair", "BTC/USDT" }, { "side", "sell" }, { "base", "BTC" }, { "quote", "USDT" }, { "amountIn", 0.2 }, { "amountOut", 20.0 }, { "legs", new list() { new dict() { { "exchangeId", "stub" }, { "amount", 0.2 }, { "averagePrice", 100.0 }, { "effectivePrice", 100.0 } } } } },
+                }
+            },
+        };
+    }
+
+    private static dict StubMarket()
+    {
+        return new dict()
+        {
+            {
+                "BTC/USDT", new dict()
+                {
+                    { "symbol", "BTC/USDT" },
+                    { "base", "BTC" },
+                    { "quote", "USDT" },
+                    { "precision", new dict() { { "amount", 0.0 }, { "price", 0.0 } } },
+                    { "limits", new dict() { { "amount", new dict() { { "min", 0.0 }, { "max", 0.0 } } }, { "price", new dict() { { "min", 0.0 }, { "max", 0.0 } } }, { "cost", new dict() { { "min", 0.0 }, { "max", 0.0 } } } } },
+                }
+            },
+        };
+    }
+
+    private static dict PermissiveStubMarkets()
+    {
+        return new dict() { { "stub", StubMarket() } };
+    }
+
+    private static void ConstructorGuards()
+    {
+        Throws<ArgumentsRequired>(() => new OrderRouter(new dict()), "an apiKey is required");
+        //  No ceiling. A caller trading thousands is using this correctly, and the
+        //  class does not get to decide otherwise — the old hard 25 USD limit came
+        //  from this repository's own live-test safety rule, which is not a rule
+        //  about anyone's money.
+        var large = new OrderRouter(new dict() { { "apiKey", "k" }, { "maxNotionalUsd", 250000.0 } });
+        EqualNumber(large.maxNotionalUsd, 250000, "honoured exactly, not clamped");
+        var small = new OrderRouter(new dict() { { "apiKey", "k" }, { "maxNotionalUsd", 0.05 } });
+        EqualNumber(small.maxNotionalUsd, 0.05, "cents are a legitimate trade size");
+        //  The default is NO cap.
+        var standard = new OrderRouter(new dict() { { "apiKey", "k" } });
+        EqualNumber(standard.maxNotionalUsd, OrderRouter.NoCap, "the default is no cap");
+        EqualNumber(OrderRouter.NoCap, 0, "and no cap is spelled 0");
+        //  0 is the explicit spelling of "no cap"; negative is a typo, and silently
+        //  ignoring it would leave the caller believing a guardrail is in place.
+        EqualNumber(new OrderRouter(new dict() { { "apiKey", "k" }, { "maxNotionalUsd", 0.0 } }).maxNotionalUsd, 0, "0 is no cap, not a refusal");
+        Throws<BadRequest>(() => new OrderRouter(new dict() { { "apiKey", "k" }, { "maxNotionalUsd", -1.0 } }), "a negative cap is a typo, not a policy");
+    }
+
+    private static void LimitPriceSide()
+    {
+        var router = NewRouter();
+        var buy = router.BuildExecutionPlan(OneLegRoute("buy", "BTC", "USDT", 1, 100), new dict() { { "slippageBps", 100.0 } });
+        EqualNumber(StepNumber(buy, 0, "limitPrice"), 101, "a buy pays up to 1% more");
+        var sell = router.BuildExecutionPlan(OneLegRoute("sell", "BTC", "USDT", 1, 100), new dict() { { "slippageBps", 100.0 } });
+        EqualNumber(StepNumber(sell, 0, "limitPrice"), 99, "a sell accepts down to 1% less");
+        var none = router.BuildExecutionPlan(OneLegRoute("buy", "BTC", "USDT", 1, 100), new dict() { { "slippageBps", 0.0 } });
+        EqualNumber(StepNumber(none, 0, "limitPrice"), 100, "zero slippage means the expected price");
+    }
+
+    private static double StepNumber(dict plan, int index, string key)
+    {
+        var steps = ToList(plan["steps"]);
+        return ToDouble(ToDict(steps[index])[key]);
+    }
+
+    private static void NotionalCap()
+    {
+        var router = NewRouter();
+        var capped = new dict() { { "usdRates", new dict() { { "USDT", 1.0 } } }, { "maxNotionalUsd", 25.0 } };
+        //  amount * limitPrice is what is measured, so a 1% slippage on a 24.90
+        //  USD step is what carries it over the line
+        var under = router.BuildExecutionPlan(OneLegRoute("buy", "BTC", "USDT", 0.24, 100), new dict() { { "slippageBps", 0.0 } });
+        EqualNumber(router.CheckExecutionPlanSafety(under, PermissiveStubMarkets(), capped).Count, 0, "24 USD passes a 25 USD cap");
+        var at = router.BuildExecutionPlan(OneLegRoute("buy", "BTC", "USDT", 0.25, 100), new dict() { { "slippageBps", 0.0 } });
+        EqualNumber(router.CheckExecutionPlanSafety(at, PermissiveStubMarkets(), capped).Count, 0, "exactly at the cap passes");
+        var over = router.BuildExecutionPlan(OneLegRoute("buy", "BTC", "USDT", 0.2501, 100), new dict() { { "slippageBps", 0.0 } });
+        var overViolations = router.CheckExecutionPlanSafety(over, PermissiveStubMarkets(), capped);
+        EqualNumber(overViolations.Count, 1, "25.01 USD is one violation");
+        EqualString((string)overViolations[0]["code"], "notional_exceeds_cap", "the code");
+        EqualBool((bool)overViolations[0]["blocking"], true, "the cap blocks");
+        //  and the slippage is inside the measurement, not outside it
+        var slipped = router.BuildExecutionPlan(OneLegRoute("buy", "BTC", "USDT", 0.249, 100), new dict() { { "slippageBps", 100.0 } });
+        var slippedViolations = router.CheckExecutionPlanSafety(slipped, PermissiveStubMarkets(), capped);
+        EqualNumber(slippedViolations.Count, 1, "24.90 USD at 1% slippage is 25.15 USD of risk");
+        EqualString((string)slippedViolations[0]["code"], "notional_exceeds_cap", "the code");
+        //  A LARGE cap is honoured just as exactly. This is the case the old hard
+        //  ceiling made unreachable: 2,000 USD of BTC under a 5,000 USD guardrail
+        //  is a normal trade.
+        var large = router.BuildExecutionPlan(OneLegRoute("buy", "BTC", "USDT", 20, 100), new dict() { { "slippageBps", 0.0 } });
+        EqualNumber(router.CheckExecutionPlanSafety(large, PermissiveStubMarkets(), new dict() { { "usdRates", new dict() { { "USDT", 1.0 } } }, { "maxNotionalUsd", 5000.0 } }).Count, 0, "2,000 USD under a 5,000 USD cap");
+        var overLarge = router.CheckExecutionPlanSafety(large, PermissiveStubMarkets(), new dict() { { "usdRates", new dict() { { "USDT", 1.0 } } }, { "maxNotionalUsd", 1000.0 } });
+        EqualString((string)overLarge[0]["code"], "notional_exceeds_cap", "and the same 2,000 USD trips a 1,000 USD cap");
+    }
+
+    /// <summary>
+    /// The default. This class does not decide how much of your money you may
+    /// trade — the guardrail is opt-in, so a plan of any size passes untouched,
+    /// and a caller who never asked for a cap is not made to supply usdRates
+    /// for it.
+    /// </summary>
+    private static void NoCapMeansNoNotionalCheck()
+    {
+        var router = NewRouter();
+        var large = router.BuildExecutionPlan(OneLegRoute("buy", "BTC", "USDT", 1000, 100), new dict() { { "slippageBps", 0.0 } });
+        EqualNumber(router.CheckExecutionPlanSafety(large, PermissiveStubMarkets(), new dict() { { "usdRates", new dict() { { "USDT", 1.0 } } } }).Count, 0, "100,000 USD passes when no cap is set");
+        EqualNumber(router.CheckExecutionPlanSafety(large, PermissiveStubMarkets(), new dict()).Count, 0, "and needs no usdRates at all");
+    }
+
+    private static void UnvaluableBlocks()
+    {
+        var router = NewRouter();
+        var plan = router.BuildExecutionPlan(OneLegRoute("buy", "BTC", "USDT", 0.0001, 100), new dict() { { "slippageBps", 0.0 } });
+        //  0.01 USDT of notional: trivially under the cap, and still refused,
+        //  because the point is that the cap the caller ASKED FOR could not be
+        //  evaluated. With no cap set there is nothing to enforce and this same
+        //  plan passes — see the test above.
+        var violations = router.CheckExecutionPlanSafety(plan, PermissiveStubMarkets(), new dict() { { "usdRates", new dict() }, { "maxNotionalUsd", 25.0 } });
+        EqualNumber(violations.Count, 1, "one violation");
+        EqualString((string)violations[0]["code"], "notional_unvaluable", "the code");
+        EqualBool((bool)violations[0]["blocking"], true, "an unvaluable step must block, or the cap is decorative");
+        //  unrelated rates do not help
+        var stillBlocked = router.CheckExecutionPlanSafety(plan, PermissiveStubMarkets(), new dict() { { "usdRates", new dict() { { "ETH", 3000.0 }, { "DOGE", 0.09 } } }, { "maxNotionalUsd", 25.0 } });
+        EqualString((string)stillBlocked[0]["code"], "notional_unvaluable", "unrelated rates do not rescue it");
+        //  either side of the market resolves it
+        EqualNumber(router.CheckExecutionPlanSafety(plan, PermissiveStubMarkets(), new dict() { { "usdRates", new dict() { { "USDT", 1.0 } } }, { "maxNotionalUsd", 25.0 } }).Count, 0, "the quote rate resolves it");
+        EqualNumber(router.CheckExecutionPlanSafety(plan, PermissiveStubMarkets(), new dict() { { "usdRates", new dict() { { "BTC", 100.0 } } }, { "maxNotionalUsd", 25.0 } }).Count, 0, "the base rate resolves it");
+    }
+
+    private static void UsdtIsNotADollar()
+    {
+        var router = NewRouter();
+        var plan = router.BuildExecutionPlan(OneLegRoute("buy", "BTC", "USDT", 0.1, 100), new dict() { { "slippageBps", 0.0 } });
+        var violations = router.CheckExecutionPlanSafety(plan, PermissiveStubMarkets(), new dict() { { "usdRates", new dict() { { "USD", 1.0 } } }, { "maxNotionalUsd", 25.0 } });
+        EqualNumber(violations.Count, 1, "one violation");
+        EqualString((string)violations[0]["code"], "notional_unvaluable", "a stablecoin peg is an observation, not a definition");
+        //  a depegged rate is respected: 10 USDT at 0.40 is 4 USD
+        var depegged = router.CheckExecutionPlanSafety(plan, PermissiveStubMarkets(), new dict() { { "usdRates", new dict() { { "USDT", 0.4 } } }, { "maxNotionalUsd", 25.0 } });
+        EqualNumber(depegged.Count, 0, "a depegged rate is respected");
+    }
+
+    private static void EmptyPlanIsNotSafe()
+    {
+        var router = NewRouter();
+        var plan = router.BuildExecutionPlan(RouteNamed("unroutable"), new dict());
+        EqualNumber(ToList(plan["steps"]).Count, 0, "an unroutable route has no steps");
+        var violations = router.CheckExecutionPlanSafety(plan, PermissiveStubMarkets(), new dict() { { "usdRates", new dict() { { "USDT", 1.0 } } } });
+        EqualNumber(violations.Count, 1, "one violation");
+        EqualString((string)violations[0]["code"], "empty_plan", "the code");
+        EqualBool((bool)violations[0]["blocking"], true, "zero violations on zero steps would read as approval");
+    }
+
+    private static void ReconcileNeverScalesUp()
+    {
+        var router = NewRouter();
+        var plan = router.BuildExecutionPlan(RouteNamed("multiHop"), new dict());
+        var overfilled = router.ReconcileExecutionStep(plan, 0, 1000000);
+        EqualNumber(ToDouble(overfilled["scale"]), 1, "an overfill must not grow an order the safety check never saw");
+        EqualString((string)overfilled["verdict"], "proceed", "an overfill still proceeds");
+        var downstream = ToDict(ToList(overfilled["resizedSteps"])[0]);
+        EqualNumber(ToDouble(downstream["amount"]), ToDouble(downstream["previousAmount"]), "the downstream order is untouched");
+    }
+
+    private static void ReconcileHalts()
+    {
+        var router = NewRouter();
+        var plan = router.BuildExecutionPlan(RouteNamed("multiHop"), new dict());
+        EqualString((string)router.ReconcileExecutionStep(plan, 0, 0)["verdict"], "halt", "a total miss halts");
+        EqualString((string)router.ReconcileExecutionStep(plan, 0, 0)["reason"], "nothing_filled", "and says why");
+        //  expectedOut of step 0 is 500 * 0.089 = 44.5; 2% of that is 0.89
+        EqualString((string)router.ReconcileExecutionStep(plan, 0, 44.5 - 0.88)["verdict"], "proceed", "inside the tolerance");
+        EqualString((string)router.ReconcileExecutionStep(plan, 0, 44.5 - 0.9)["verdict"], "halt", "outside the tolerance");
+        EqualString((string)router.ReconcileExecutionStep(plan, 0, 44.5 - 0.9)["reason"], "shortfall_exceeds_tolerance", "and says why");
+        Throws<BadRequest>(() => router.ReconcileExecutionStep(plan, 7, 1), "an out-of-range step index is refused");
+    }
+
+    private static void UnwindNeverNetsAcrossVenues()
+    {
+        var router = NewRouter();
+        var unwind = router.BuildUnwindPlan(FixtureSection("reports")["haltedCrossVenue"] as dict);
+        EqualBool((bool)unwind["requiresConfirmation"], true, "an unwind is never automatic");
+        EqualBool((bool)unwind["automatic"], false, "an unwind is never automatic");
+        EqualNumber(ToDouble(unwind["residualCount"]), 2, "the mexc USDT and the binance SOL are separate positions");
+        //  the USDT sold on mexc and the USDT spent on binance are NOT the same
+        //  money, because this class never moves funds between venues
+        var steps = ToList(unwind["steps"]);
+        EqualString((string)ToDict(steps[0])["exchangeId"], "binance", "unwound in reverse execution order");
+        EqualString((string)ToDict(steps[1])["exchangeId"], "mexc", "unwound in reverse execution order");
+        EqualString((string)ToDict(steps[1])["side"], "buy", "leftover quote is spent buying the asset back");
+        EqualNumber(ToDouble(ToDict(steps[1])["amount"]), 500, "44.5 USDT at 0.089 is 500 DOGE");
+        EqualBool((bool)ToDict(steps[1])["reachesFrom"], true, "that hop gets you home");
+        EqualString((string)ToDict(steps[0])["side"], "sell", "leftover base is sold back");
+        EqualBool((bool)ToDict(steps[0])["reachesFrom"], false, "selling SOL for USDT is not yet DOGE");
+    }
+
+    //  -----------------------------------------------------------------------
+    //  3. execute — stub venues only
+    //  -----------------------------------------------------------------------
+
+    /// <summary>
+    /// A venue that records every call it receives, so "the dry run reached the
+    /// venue zero times" can be asserted rather than assumed. It places nothing
+    /// anywhere: createOrder returns a fabricated order and never leaves the
+    /// process.
+    /// </summary>
+    public class StubVenue : Exchange
+    {
+        public List<string> calls = new List<string>();
+
+        public double fillRatio = 1;
+
+        public bool failCreate = false;
+
+        public dict balanceOverride = null;
+
+        //  a queue of orders fetchOrder hands back, one per poll; empty means the
+        //  created order comes back closed on the first read
+        public List<dict> fetchOrderResults = new List<dict>();
+
+        public bool fetchOrderThrows = false;
+
+        public bool cancelThrows = false;
+
+        public string createdStatus = "";
+
+        //  When set, the created order carries this fee — currency, cost — in both the single
+        //  `fee` and the `fees` list, exactly as safeOrder fills them in.
+        public dict feeOverride = null;
+
+        public StubVenue(string id, double fillRatio = 1, bool failCreate = false) : base(null)
+        {
+            this.id = id;
+            this.fillRatio = fillRatio;
+            this.failCreate = failCreate;
+            this.markets = StubMarket();
+            this.features = new dict() { { "spot", new dict() { { "createOrder", new dict() { { "timeInForce", new list() { "GTC", "IOC" } } } } } } };
+        }
+
+        public override async Task<ccxt.Order> FetchOrder(string id, string symbol = null, object parameters = null)
+        {
+            this.calls.Add("fetchOrder:" + id);
+            await Task.CompletedTask;
+            if (this.fetchOrderThrows)
+            {
+                throw new ExchangeError("stub cannot read the order back");
+            }
+            if (this.fetchOrderResults.Count > 0)
+            {
+                var next = this.fetchOrderResults[0];
+                this.fetchOrderResults.RemoveAt(0);
+                return new ccxt.Order(next);
+            }
+            return new ccxt.Order(new dict() { { "id", id }, { "status", "closed" }, { "filled", 0.0 }, { "average", 0.0 }, { "cost", 0.0 } });
+        }
+
+        public override async Task<ccxt.Order> CancelOrder(string id, string symbol = null, object parameters = null)
+        {
+            this.calls.Add("cancelOrder:" + id);
+            await Task.CompletedTask;
+            if (this.cancelThrows)
+            {
+                throw new ExchangeError("stub refuses to cancel");
+            }
+            return new ccxt.Order(new dict() { { "id", id }, { "status", "canceled" } });
+        }
+
+        public override Task<object> loadMarkets(object reload2 = null, object parameters2 = null)
+        {
+            this.calls.Add("loadMarkets");
+            return Task.FromResult((object)this.markets);
+        }
+
+        public override object amountToPrecision(object symbol, object amount)
+        {
+            return Convert.ToString(amount, CultureInfo.InvariantCulture);
+        }
+
+        public override object priceToPrecision(object symbol, object price)
+        {
+            return Convert.ToString(price, CultureInfo.InvariantCulture);
+        }
+
+        public override async Task<object> fetchBalance(object parameters = null)
+        {
+            this.calls.Add("fetchBalance");
+            await Task.CompletedTask;
+            if (this.balanceOverride != null)
+            {
+                return this.balanceOverride;
+            }
+            return new dict()
+            {
+                { "free", new dict() { { "USDT", 1000.0 }, { "BTC", 1.0 }, { "ZERO", 0.0 } } },
+                { "total", new dict() { { "USDT", 1000.0 }, { "BTC", 1.0 } } },
+            };
+        }
+
+        public override async Task<ccxt.Order> CreateOrder(string symbol, string type, string side, double amount, double? price = null, object parameters = null)
+        {
+            var size = amount;
+            this.calls.Add("createOrder:" + type + ":" + side + ":" + size.ToString(CultureInfo.InvariantCulture));
+            await Task.CompletedTask;
+            if (this.failCreate)
+            {
+                throw new ExchangeError("stub refuses");
+            }
+            var filled = size * this.fillRatio;
+            var average = (price == null) ? 100.0 : (double)price;
+            var status = (this.createdStatus == "") ? "closed" : this.createdStatus;
+            var payload = new dict() { { "id", "stub-order" }, { "status", status }, { "filled", filled }, { "average", average }, { "cost", filled * average } };
+            if (this.feeOverride != null)
+            {
+                payload["fee"] = this.feeOverride;
+                payload["fees"] = new list() { this.feeOverride };
+            }
+            return new ccxt.Order(payload);
+        }
+    }
+
+    private static Dictionary<string, Exchange> Venues(params Exchange[] instances)
+    {
+        var venues = new Dictionary<string, Exchange>();
+        for (var i = 0; i < instances.Length; i++)
+        {
+            venues[(string)instances[i].id] = instances[i];
+        }
+        return venues;
+    }
+
+    private static void EqualCalls(List<string> actual, List<string> expected, string message)
+    {
+        EqualNumber(actual.Count, expected.Count, message + ": call count (" + string.Join(", ", actual) + ")");
+        for (var i = 0; i < expected.Count; i++)
+        {
+            EqualString(actual[i], expected[i], message + ": call " + i.ToString(CultureInfo.InvariantCulture));
+        }
+    }
+
+    private static async Task DryRunIsTheDefault()
+    {
+        var router = NewRouter();
+        var plan = router.BuildExecutionPlan(OneLegRoute("buy", "BTC", "USDT", 0.2, 100), new dict());
+        var venue = new StubVenue("stub");
+        //  everything a real call would carry, EXCEPT live
+        var report = await router.Execute(plan, Venues(venue), new dict()
+        {
+            { "strategy", "sequential" },
+            { "usdRates", new dict() { { "USDT", 1.0 } } },
+            { "allowMarketOrders", true },
+        });
+        EqualBool((bool)report["dryRun"], true, "dry run");
+        EqualString((string)report["strategy"], "dry_run", "the strategy in force");
+        EqualString((string)report["requestedStrategy"], "sequential", "the report says what was asked for as well as what happened");
+        EqualNumber(ToDouble(report["ordersPlaced"]), 0, "nothing was placed");
+        EqualNumber(ToDouble(report["wouldPlaceOrders"]), 1, "one order would have been placed");
+        EqualString((string)ToDict(ToList(report["steps"])[0])["status"], "planned", "the step stayed planned");
+        EqualCalls(venue.calls, new List<string>(), "not one call reached the venue — not even a read");
+        //  live: false, absent, "true" and 1 are all not-true
+        var notLive = new list() { false, null, "true", 1 };
+        for (var i = 0; i < notLive.Count; i++)
+        {
+            var other = new StubVenue("stub");
+            var again = await router.Execute(plan, Venues(other), new dict() { { "strategy", "sequential" }, { "live", notLive[i] }, { "usdRates", new dict() { { "USDT", 1.0 } } } });
+            EqualBool((bool)again["dryRun"], true, "live must be exactly true");
+            EqualCalls(other.calls, new List<string>(), "not one call reached the venue");
+        }
+    }
+
+    private static async Task RefusesLiveWithoutRates()
+    {
+        var router = NewRouter();
+        var plan = router.BuildExecutionPlan(OneLegRoute("buy", "BTC", "USDT", 0.2, 100), new dict());
+        var venue = new StubVenue("stub");
+        await Rejects<ExchangeError>(async () => await router.Execute(plan, Venues(venue), new dict() { { "strategy", "sequential" }, { "live", true }, { "maxNotionalUsd", 25.0 } }), "an unvaluable plan is refused");
+        for (var i = 0; i < venue.calls.Count; i++)
+        {
+            Ok(venue.calls[i].IndexOf("createOrder", StringComparison.Ordinal) < 0, "no order was placed");
+        }
+        //  and with NO cap asked for, usdRates is not required: there is no cap to
+        //  evaluate, so demanding the inputs for one would be asking for something
+        //  nobody wanted.
+        var uncapped = new StubVenue("stub");
+        var report = await router.Execute(plan, Venues(uncapped), new dict() { { "strategy", "sequential" }, { "live", true } });
+        EqualString((string)ToDict(ToList(report["steps"])[0])["status"], "filled", "no cap, no valuation demanded");
+    }
+
+    private static async Task RefusesLiveAboveTheCap()
+    {
+        //  500 USD against a 25 USD guardrail. The refusal happens BEFORE any order
+        //  goes out, which is the property worth asserting — a cap checked after the
+        //  fact is an incident report, not a guardrail.
+        var router = NewRouter();
+        var plan = router.BuildExecutionPlan(OneLegRoute("buy", "BTC", "USDT", 5, 100), new dict());
+        var venue = new StubVenue("stub");
+        await Rejects<ExchangeError>(async () => await router.Execute(plan, Venues(venue), new dict() { { "strategy", "sequential" }, { "live", true }, { "usdRates", new dict() { { "USDT", 1.0 } } }, { "maxNotionalUsd", 25.0 } }), "500 USD is refused");
+        for (var i = 0; i < venue.calls.Count; i++)
+        {
+            Ok(venue.calls[i].IndexOf("createOrder", StringComparison.Ordinal) < 0, "no order was placed");
+        }
+        //  the same 500 USD trade with no cap set goes through: that is the point of
+        //  the guardrail being opt-in
+        var uncapped = new StubVenue("stub");
+        var report = await router.Execute(plan, Venues(uncapped), new dict() { { "strategy", "sequential" }, { "live", true }, { "usdRates", new dict() { { "USDT", 1.0 } } } });
+        EqualString((string)ToDict(ToList(report["steps"])[0])["status"], "filled", "500 USD is a normal trade when nobody asked for a cap");
+    }
+
+    private static async Task SequentialPlacesIoc()
+    {
+        var router = NewRouter();
+        var plan = router.BuildExecutionPlan(OneLegRoute("buy", "BTC", "USDT", 0.2, 100), new dict() { { "slippageBps", 100.0 } });
+        var venue = new StubVenue("stub");
+        var report = await router.Execute(plan, Venues(venue), new dict() { { "strategy", "sequential" }, { "live", true }, { "usdRates", new dict() { { "USDT", 1.0 } } } });
+        EqualBool((bool)report["dryRun"], false, "this one is live");
+        EqualNumber(ToDouble(report["ordersPlaced"]), 1, "one order");
+        var first = ToDict(ToList(report["steps"])[0]);
+        EqualString((string)first["status"], "filled", "it filled");
+        EqualString((string)first["outAsset"], "BTC", "a buy produces base");
+        EqualNumber(ToDouble(first["outAmount"]), 0.2, "0.2 BTC");
+        EqualString((string)first["inAsset"], "USDT", "a buy spends quote");
+        EqualCalls(venue.calls, new List<string>() { "createOrder:limit:buy:0.2" }, "one IOC limit order");
+        EqualBool((bool)report["halted"], false, "nothing halted");
+    }
+
+    private static async Task SequentialObeysHalt()
+    {
+        var router = NewRouter();
+        var plan = router.BuildExecutionPlan(TwoHopRoute(), new dict());
+        //  hop 0 fills half: a 50% shortfall against a 2% tolerance
+        var venue = new StubVenue("stub", 0.5);
+        var report = await router.Execute(plan, Venues(venue), new dict() { { "strategy", "sequential" }, { "live", true }, { "usdRates", new dict() { { "USDT", 1.0 } } } });
+        EqualBool((bool)report["halted"], true, "it halted");
+        EqualString((string)report["haltReason"], "shortfall_exceeds_tolerance", "and said why");
+        EqualNumber(ToDouble(report["haltStepIndex"]), 0, "at step 0");
+        EqualNumber(ToDouble(report["ordersPlaced"]), 1, "the second hop was never attempted");
+        EqualString((string)ToDict(ToList(report["steps"])[1])["status"], "skipped", "the second step is skipped");
+        EqualNumber(venue.calls.Count, 1, "one venue call");
+        //  and the halted report is exactly what BuildUnwindPlan is for
+        var unwind = router.BuildUnwindPlan(report);
+        EqualNumber(ToDouble(unwind["residualCount"]), 1, "one residual");
+        var step = ToDict(ToList(unwind["steps"])[0]);
+        EqualString((string)step["side"], "sell", "the BTC bought on hop 0 goes back to USDT");
+        EqualBool((bool)step["reachesFrom"], true, "and that gets you home");
+    }
+
+    /// <summary>
+    /// The cap is a guardrail the CALLER sets, so the per-call value wins — there
+    /// is no ceiling re-imposed behind their back. Both directions are asserted
+    /// because the old implementation clamped one way only, and a guardrail that
+    /// silently refuses to loosen is as surprising as one that silently refuses
+    /// to tighten.
+    /// </summary>
+    private static void PerCallCapOverrides()
+    {
+        var client = new OrderRouter(new dict() { { "apiKey", "k" }, { "maxNotionalUsd", 100.0 } });
+        //  0.005 BTC at 100000 USDT is 500 USD
+        var plan = client.BuildExecutionPlan(OneLegRoute("buy", "BTC", "USDT", 0.005, 100000), new dict() { { "slippageBps", 0.0 } });
+        var underClientCap = client.CheckExecutionPlanSafety(plan, PermissiveStubMarkets(), new dict() { { "usdRates", new dict() { { "USDT", 1.0 } } } });
+        EqualString((string)underClientCap[0]["code"], "notional_exceeds_cap", "500 USD trips the client cap of 100");
+        EqualNumber(ToDouble(underClientCap[0]["limit"]), 100, "and the limit reported is the client's own");
+        //  raised for this call
+        EqualNumber(client.CheckExecutionPlanSafety(plan, PermissiveStubMarkets(), new dict() { { "usdRates", new dict() { { "USDT", 1.0 } } }, { "maxNotionalUsd", 1000.0 } }).Count, 0, "a per-call cap of 1000 lets it through");
+        //  lowered for this call
+        var tightened = client.CheckExecutionPlanSafety(plan, PermissiveStubMarkets(), new dict() { { "usdRates", new dict() { { "USDT", 1.0 } } }, { "maxNotionalUsd", 10.0 } });
+        EqualNumber(ToDouble(tightened[0]["limit"]), 10, "and a per-call cap of 10 tightens it");
+        //  and the last check before an order goes out honours the same value
+        var step = ToDict(ToList(plan["steps"])[0]);
+        Throws<ExchangeError>(() => client.AssertUnderCap(step, 0.005, 100000, new dict() { { "USDT", 1.0 } }, new dict() { { "maxNotionalUsd", 100.0 } }), "the last check before an order goes out refuses too");
+        client.AssertUnderCap(step, 0.005, 100000, new dict() { { "USDT", 1.0 } }, new dict() { { "maxNotionalUsd", 1000.0 } });
+    }
+
+    /// <summary>
+    /// best_effort must derive the hop count from the steps it is about to
+    /// execute: a plan that travelled through JSON, was rebuilt from persisted
+    /// steps, or is the tail of a halted route can be missing hopCount entirely.
+    /// </summary>
+    private static async Task BestEffortDerivesHopCount()
+    {
+        var router = NewRouter();
+        var complete = router.BuildExecutionPlan(TwoHopRoute(), new dict());
+        var withoutHopCount = new dict();
+        foreach (var entry in complete)
+        {
+            if (entry.Key != "hopCount")
+            {
+                withoutHopCount[entry.Key] = entry.Value;
+            }
+        }
+        Ok(!withoutHopCount.ContainsKey("hopCount"), "the plan really has no hopCount");
+        EqualNumber(ToList(withoutHopCount["steps"]).Count, 2, "and it really has two hops worth of steps");
+        var venue = new StubVenue("stub", 0.1);
+        await Rejects<NotSupported>(async () => await router.Execute(withoutHopCount, Venues(venue), new dict() { { "strategy", "best_effort" }, { "live", true }, { "usdRates", new dict() { { "USDT", 1.0 } } }, { "acknowledgeDispersion", true }, { "maxOrders", 5.0 } }), "best_effort across a bridge is refused however the plan reached us");
+        EqualCalls(venue.calls, new List<string>(), "not one order was placed");
+    }
+
+    /// <summary>
+    /// features.spot.createOrder.timeInForce is a dictionary of booleans on every
+    /// real ccxt exchange and a list on none of them. bit2c, bitbank, bithumb and
+    /// coinone all say IOC: false, and reading it as a list answered "yes" for
+    /// every one of them.
+    /// </summary>
+    private static async Task VenueSupportsIocReadsADictionary()
+    {
+        var router = NewRouter();
+        var noIocFeatures = new dict() { { "spot", new dict() { { "createOrder", new dict() { { "timeInForce", new dict() { { "IOC", false }, { "FOK", false }, { "PO", false }, { "GTD", false }, { "GTC", true } } } } } } } };
+        var noIoc = new StubVenue("stub");
+        noIoc.features = noIocFeatures;
+        EqualBool(router.VenueSupportsIoc(noIoc), false, "IOC: false means no");
+        var withIoc = new StubVenue("stub");
+        withIoc.features = new dict() { { "spot", new dict() { { "createOrder", new dict() { { "timeInForce", new dict() { { "IOC", true }, { "FOK", true }, { "PO", true }, { "GTD", false }, { "GTC", true } } } } } } } };
+        EqualBool(router.VenueSupportsIoc(withIoc), true, "IOC: true means yes");
+        //  a dictionary that enumerates its values and omits IOC has said no
+        var silentAboutIoc = new StubVenue("stub");
+        silentAboutIoc.features = new dict() { { "spot", new dict() { { "createOrder", new dict() { { "timeInForce", new dict() { { "GTC", true } } } } } } } };
+        EqualBool(router.VenueSupportsIoc(silentAboutIoc), false, "a list of values without IOC means no");
+        //  and a venue that says nothing at all is still assumed to do IOC
+        var silent = new StubVenue("stub");
+        silent.features = new dict();
+        EqualBool(router.VenueSupportsIoc(silent), true, "silence is still assumed to be yes");
+        //  end to end: the documented market-order fallback is reachable again
+        var plan = router.BuildExecutionPlan(OneLegRoute("buy", "BTC", "USDT", 0.2, 100), new dict());
+        var rates = new dict() { { "USDT", 1.0 } };
+        var refused = await router.Execute(plan, Venues(noIoc), new dict() { { "strategy", "sequential" }, { "live", true }, { "usdRates", rates } });
+        EqualString((string)ToDict(ToList(refused["steps"])[0])["errorCode"], "NotSupported", "the step refuses rather than sending an IOC");
+        EqualCalls(noIoc.calls, new List<string>(), "an IOC was never sent to a venue that cannot do one");
+        var allowed = new StubVenue("stub");
+        allowed.features = noIocFeatures;
+        var placed = await router.Execute(plan, Venues(allowed), new dict() { { "strategy", "sequential" }, { "live", true }, { "usdRates", rates }, { "allowMarketOrders", true } });
+        EqualString((string)ToDict(ToList(placed["steps"])[0])["status"], "filled", "the opt-in reaches the market order");
+        EqualCalls(allowed.calls, new List<string>() { "createOrder:market:buy:0.2" }, "and it is a market order");
+        //  ...but not under a cap. AssertUnderCap values the order at the plan's LIMIT price and
+        //  the market call sends no price at all, so passing the check and then removing the price
+        //  it was computed from is a cap that silently disappears. Refused together.
+        var capped = new StubVenue("stub");
+        capped.features = noIocFeatures;
+        var underCap = await router.Execute(plan, Venues(capped), new dict() { { "strategy", "sequential" }, { "live", true }, { "usdRates", rates }, { "allowMarketOrders", true }, { "maxNotionalUsd", 1000.0 } });
+        EqualString((string)ToDict(ToList(underCap["steps"])[0])["status"], "failed", "a market order under a cap is refused");
+        EqualString((string)ToDict(ToList(underCap["steps"])[0])["errorCode"], "NotSupported", "and names the refusal");
+        EqualCalls(capped.calls, new List<string>(), "refused BEFORE dispatch: a cap checked against a price that is then discarded is worse than no cap");
+    }
+
+    /// <summary>
+    /// A venue that cancels an order itself on the last poll — expiry, self-trade
+    /// prevention, a post-only rejection of the remainder — has ENDED it, and the
+    /// partial fill it carries is real.
+    /// </summary>
+    private static async Task LimitProtectedKeepsAVenueSideCancelFill()
+    {
+        var router = NewRouter();
+        var plan = router.BuildExecutionPlan(OneLegRoute("buy", "BTC", "USDT", 0.0002, 100000), new dict() { { "slippageBps", 0.0 } });
+        var venue = new StubVenue("stub");
+        venue.createdStatus = "open";
+        venue.fetchOrderResults.Add(new dict() { { "id", "stub-order" }, { "status", "open" }, { "filled", 0.0 }, { "average", 0.0 }, { "cost", 0.0 } });
+        venue.fetchOrderResults.Add(new dict() { { "id", "stub-order" }, { "status", "canceled" }, { "filled", 0.0001 }, { "average", 100000.0 }, { "cost", 10.0 } });
+        venue.cancelThrows = true;
+        var report = await router.Execute(plan, Venues(venue), new dict() { { "strategy", "limit_protected" }, { "live", true }, { "usdRates", new dict() { { "USDT", 1.0 } } }, { "orderTimeoutMs", 2.0 }, { "pollIntervalMs", 1.0 } });
+        Ok(!venue.calls.Contains("cancelOrder:stub-order"), "an order the venue already closed is not cancelled again");
+        var step = ToDict(ToList(report["steps"])[0]);
+        EqualString((string)step["status"], "partial", "the fill is kept");
+        EqualNumber(ToDouble(step["filledAmount"]), 0.0001, "and it is the right size");
+        EqualNumber(ToDouble(step["outAmount"]), 0.0001, "and it reaches outAmount");
+        EqualString((string)step["orderId"], "stub-order", "and the id is reported");
+        EqualNumber(ToList(report["openOrders"]).Count, 0, "nothing is open: the venue closed it");
+        //  and the 0.0001 BTC that was actually bought reaches the unwind plan
+        var unwind = router.BuildUnwindPlan(report);
+        EqualNumber(ToDouble(unwind["residualCount"]), 1, "a real position must never be invisible to the unwind path");
+        EqualNumber(ToDouble(ToDict(ToList(unwind["steps"])[0])["amount"]), 0.0001, "the unwind sells exactly what was bought");
+    }
+
+    /// <summary>
+    /// Every path between a successful createOrder and the final read leaves a
+    /// real order on a real venue. The id must be captured the instant
+    /// createOrder returns, and a failure after that must file an open order.
+    /// </summary>
+    private static async Task OrderIdSurvivesAFailureAfterCreate()
+    {
+        var router = NewRouter();
+        var plan = router.BuildExecutionPlan(OneLegRoute("buy", "BTC", "USDT", 0.0002, 100000), new dict() { { "slippageBps", 0.0 } });
+        var venue = new StubVenue("stub");
+        venue.createdStatus = "open";
+        venue.fetchOrderThrows = true;
+        var report = await router.Execute(plan, Venues(venue), new dict() { { "strategy", "limit_protected" }, { "live", true }, { "usdRates", new dict() { { "USDT", 1.0 } } }, { "orderTimeoutMs", 4.0 }, { "pollIntervalMs", 1.0 } });
+        var step = ToDict(ToList(report["steps"])[0]);
+        //  NOT "failed". A step whose id is known had CreateOrder RETURN, so an order exists;
+        //  calling that "failed" reads as "nothing happened" while openOrders, a few lines down,
+        //  says the opposite. One report must not carry both readings.
+        EqualString((string)step["status"], "outcome_unknown", "a known id means an order exists, so the outcome is unknown rather than failed");
+        EqualString((string)report["haltReason"], "outcome_unknown", "and the halt names the ambiguity rather than claiming an outright failure");
+        EqualString((string)step["orderId"], "stub-order", "the id is captured the instant createOrder returns, not after the read");
+        var openOrders = ToList(report["openOrders"]);
+        EqualNumber(openOrders.Count, 1, "a live order the caller cannot see is the worst outcome there is");
+        var open = ToDict(openOrders[0]);
+        EqualString((string)open["orderId"], "stub-order", "and it names the order");
+        EqualString((string)open["exchangeId"], "stub", "and the venue it is on");
+        EqualString((string)open["reason"], "outcome_unknown", "and why it may still be live");
+        //  the same holds for an immediate order, which has no poll loop at all
+        var other = new StubVenue("stub");
+        other.createdStatus = "open";
+        var okReport = await router.Execute(plan, Venues(other), new dict() { { "strategy", "sequential" }, { "live", true }, { "usdRates", new dict() { { "USDT", 1.0 } } } });
+        EqualString((string)ToDict(ToList(okReport["steps"])[0])["orderId"], "stub-order", "an immediate order reports its id too");
+        //  and an "immediate" order the venue reports as STILL OPEN is a resting
+        //  order, which is what a venue that silently drops timeInForce leaves you
+        var stillOpen = ToList(okReport["openOrders"]);
+        EqualNumber(stillOpen.Count, 1, "a still-open immediate order is reported");
+        EqualString((string)ToDict(stillOpen[0])["orderId"], "stub-order", "and it names the order");
+        EqualString((string)ToDict(stillOpen[0])["reason"], "still_open", "and says it is still open");
+    }
+
+    private static async Task MarketOrdersNeedBoth()
+    {
+        var router = NewRouter();
+        var plan = router.BuildExecutionPlan(OneLegRoute("buy", "BTC", "USDT", 0.2, 100), new dict());
+        var rates = new dict() { { "USDT", 1.0 } };
+        //  a venue that advertises GTC only
+        var noIoc = new StubVenue("stub");
+        noIoc.features = new dict() { { "spot", new dict() { { "createOrder", new dict() { { "timeInForce", new list() { "GTC" } } } } } } };
+        var refused = await router.Execute(plan, Venues(noIoc), new dict() { { "strategy", "sequential" }, { "live", true }, { "usdRates", rates } });
+        var refusedStep = ToDict(ToList(refused["steps"])[0]);
+        EqualString((string)refusedStep["status"], "failed", "the leg failed");
+        EqualString((string)refusedStep["errorCode"], "NotSupported", "with the class name of the refusal");
+        EqualCalls(noIoc.calls, new List<string>(), "defaulting to a market order is the decision the caller did not delegate");
+        var allowed = new StubVenue("stub");
+        allowed.features = new dict() { { "spot", new dict() { { "createOrder", new dict() { { "timeInForce", new list() { "GTC" } } } } } } };
+        var placed = await router.Execute(plan, Venues(allowed), new dict() { { "strategy", "sequential" }, { "live", true }, { "usdRates", rates }, { "allowMarketOrders", true } });
+        EqualString((string)ToDict(ToList(placed["steps"])[0])["status"], "filled", "the market order went through");
+        EqualCalls(allowed.calls, new List<string>() { "createOrder:market:buy:0.2" }, "a market order");
+        //  a venue that says nothing about timeInForce is assumed to do IOC: a
+        //  rejected IOC is loud and cheap, an unintended market order is not
+        var unknown = new StubVenue("stub");
+        unknown.features = new dict();
+        var assumed = await router.Execute(plan, Venues(unknown), new dict() { { "strategy", "sequential" }, { "live", true }, { "usdRates", rates } });
+        EqualString((string)ToDict(ToList(assumed["steps"])[0])["status"], "filled", "it filled");
+        EqualCalls(unknown.calls, new List<string>() { "createOrder:limit:buy:0.2" }, "an IOC limit order");
+    }
+
+    private static async Task ParallelContainsFailure()
+    {
+        var router = NewRouter();
+        var route = OneLegRoute("buy", "BTC", "USDT", 0.1, 100);
+        //  ToDict copies, so reach the hop through a cast: this must rewrite
+        //  the route itself, not a snapshot of it
+        ((dict)((list)route["hops"])[0])["legs"] = new list()
+        {
+            new dict() { { "exchangeId", "good" }, { "amount", 0.1 }, { "averagePrice", 100.0 }, { "effectivePrice", 100.0 } },
+            new dict() { { "exchangeId", "bad" }, { "amount", 0.1 }, { "averagePrice", 100.0 }, { "effectivePrice", 100.0 } },
+            new dict() { { "exchangeId", "good2" }, { "amount", 0.1 }, { "averagePrice", 100.0 }, { "effectivePrice", 100.0 } },
+        };
+        var plan = router.BuildExecutionPlan(route, new dict());
+        var good = new StubVenue("good");
+        var bad = new StubVenue("bad", 1, true);
+        var good2 = new StubVenue("good2");
+        var report = await router.Execute(plan, Venues(good, bad, good2), new dict() { { "strategy", "parallel_within_hop" }, { "live", true }, { "usdRates", new dict() { { "USDT", 1.0 } } } });
+        var steps = ToList(report["steps"]);
+        EqualString((string)ToDict(steps[0])["status"], "filled", "the first leg filled");
+        EqualString((string)ToDict(steps[1])["status"], "failed", "the second leg failed");
+        EqualString((string)ToDict(steps[2])["status"], "filled", "the sibling behind the failure still ran");
+        var errors = ToList(report["errors"]);
+        EqualNumber(errors.Count, 1, "one error");
+        EqualString((string)ToDict(errors[0])["exchangeId"], "bad", "and it names the venue");
+        EqualBool((bool)report["halted"], true, "a failed leg still halts the route after the hop settles");
+        EqualString((string)report["haltReason"], "order_failed", "and says why");
+    }
+
+    private static async Task BestEffortRefusals()
+    {
+        var router = NewRouter();
+        var rates = new dict() { { "USDT", 1.0 } };
+        var multiHop = router.BuildExecutionPlan(TwoHopRoute(), new dict());
+        var venue = new StubVenue("stub");
+        await Rejects<NotSupported>(async () => await router.Execute(multiHop, Venues(venue), new dict() { { "strategy", "best_effort" }, { "live", true }, { "usdRates", rates }, { "acknowledgeDispersion", true }, { "maxOrders", 5 } }), "best_effort refuses multi-hop");
+        var singleHop = router.BuildExecutionPlan(OneLegRoute("buy", "BTC", "USDT", 0.2, 100), new dict());
+        await Rejects<BadRequest>(async () => await router.Execute(singleHop, Venues(venue), new dict() { { "strategy", "best_effort" }, { "live", true }, { "usdRates", rates }, { "maxOrders", 5 } }), "best_effort demands acknowledgeDispersion");
+        await Rejects<BadRequest>(async () => await router.Execute(singleHop, Venues(venue), new dict() { { "strategy", "best_effort" }, { "live", true }, { "usdRates", rates }, { "acknowledgeDispersion", true } }), "best_effort demands maxOrders");
+        EqualCalls(venue.calls, new List<string>(), "nothing reached the venue");
+    }
+
+    private static async Task BestEffortMaxOrders()
+    {
+        var router = NewRouter();
+        var route = OneLegRoute("buy", "BTC", "USDT", 0.1, 100);
+        //  ToDict copies, so reach the hop through a cast: this must rewrite
+        //  the route itself, not a snapshot of it
+        ((dict)((list)route["hops"])[0])["legs"] = new list()
+        {
+            new dict() { { "exchangeId", "a" }, { "amount", 0.1 }, { "averagePrice", 100.0 }, { "effectivePrice", 100.0 } },
+            new dict() { { "exchangeId", "b" }, { "amount", 0.1 }, { "averagePrice", 100.0 }, { "effectivePrice", 100.0 } },
+            new dict() { { "exchangeId", "c" }, { "amount", 0.1 }, { "averagePrice", 100.0 }, { "effectivePrice", 100.0 } },
+        };
+        var plan = router.BuildExecutionPlan(route, new dict());
+        var a = new StubVenue("a");
+        var b = new StubVenue("b", 0.01);
+        var c = new StubVenue("c");
+        var report = await router.Execute(plan, Venues(a, b, c), new dict() { { "strategy", "best_effort" }, { "live", true }, { "usdRates", new dict() { { "USDT", 1.0 } } }, { "acknowledgeDispersion", true }, { "maxOrders", 2 } });
+        EqualNumber(ToDouble(report["ordersPlaced"]), 2, "two orders");
+        var third = ToDict(ToList(report["steps"])[2]);
+        EqualString((string)third["status"], "skipped", "the third was skipped");
+        EqualString((string)third["errorCode"], "max_orders_reached", "and said why");
+        EqualBool((bool)report["halted"], false, "a 1% fill on leg b does not stop best_effort — that is the whole strategy");
+        EqualCalls(c.calls, new List<string>(), "the third venue was never called");
+    }
+
+    private static async Task UnknownStrategyRefused()
+    {
+        var router = NewRouter();
+        var plan = router.BuildExecutionPlan(OneLegRoute("buy", "BTC", "USDT", 0.2, 100), new dict());
+        await Rejects<BadRequest>(async () => await router.Execute(plan, new Dictionary<string, Exchange>(), new dict() { { "strategy", "yolo" } }), "an unknown strategy is refused even in dry run");
+    }
+
+    private static async Task FeeInAcquiredAssetIsNetted()
+    {
+        //  OrderToDict carried only id/status/filled/average/cost, so OrderFeeInAsset — which is
+        //  itself correct — was handed an order with no fee fields at all and always returned 0.
+        //  C# alone therefore reported outAmount GROSS of fees, and the next hop (and any unwind
+        //  built from the report) was sized on base the wallet does not hold.
+        var router = NewRouter();
+        var plan = router.BuildExecutionPlan(OneLegRoute("buy", "BTC", "USDT", 0.2, 100), new dict() { { "slippageBps", 0.0 } });
+        var venue = new StubVenue("stub");
+        //  0.2 BTC bought, 0.0002 BTC taken as the taker fee — charged in the asset acquired
+        venue.feeOverride = new dict() { { "currency", "BTC" }, { "cost", 0.0002 } };
+        var report = await router.Execute(plan, Venues(venue), new dict() { { "strategy", "sequential" }, { "live", true }, { "usdRates", new dict() { { "USDT", 1.0 } } } });
+        var step = ToDict(ToList(report["steps"])[0]);
+        EqualNumber(ToDouble(step["feeCost"]), 0.0002, "the fee reaches the report at all");
+        EqualString((string)step["feeCurrency"], "BTC", "and names the asset it was taken in");
+        EqualNumber(ToDouble(step["grossOutAmount"]), 0.2, "the gross figure is kept for the audit trail");
+        EqualNumber(ToDouble(step["outAmount"]), 0.1998, "and what is carried forward is net of it");
+
+        //  A fee in any OTHER currency does not reduce what this hop hands to the next one.
+        var other = new StubVenue("stub");
+        other.feeOverride = new dict() { { "currency", "USDT" }, { "cost", 0.02 } };
+        var quoteFeeReport = await router.Execute(plan, Venues(other), new dict() { { "strategy", "sequential" }, { "live", true }, { "usdRates", new dict() { { "USDT", 1.0 } } } });
+        var quoteFeeStep = ToDict(ToList(quoteFeeReport["steps"])[0]);
+        EqualNumber(ToDouble(quoteFeeStep["outAmount"]), 0.2, "a fee in the spent asset leaves the acquired amount alone");
+    }
+
+    private static async Task PlanAgeIsReportedAndRefusedOnlyWhenAsked()
+    {
+        //  A plan is a snapshot of a book. `calculatedAt` was carried on every plan and read by
+        //  nothing, so Execute() would happily trade an hour-old plan at hour-old prices — and the
+        //  notional cap, computed from those same prices, was just as stale.
+        var router = NewRouter();
+        var route = OneLegRoute("buy", "BTC", "USDT", 0.2, 100);
+        route["calculatedAt"] = 1000000.0;
+        var plan = router.BuildExecutionPlan(route, new dict());
+        var pinned = new PinnedClockRouter(new dict() { { "apiKey", "test-key" } });
+        pinned.pinned = 1060000.0;   //  the plan is exactly 60s old
+        var rates = new dict() { { "USDT", 1.0 } };
+        Func<dict> opts = () => new dict() { { "strategy", "sequential" }, { "live", true }, { "usdRates", rates } };
+
+        //  Always reported, even with nothing enforced, and nothing is refused by default.
+        var report = await pinned.Execute(plan, Venues(new StubVenue("stub")), opts());
+        EqualNumber(ToDouble(report["planAgeMs"]), 60000, "the age is on the report whether or not it is checked");
+        EqualString((string)ToDict(ToList(report["steps"])[0])["status"], "filled", "and nothing is refused by default");
+
+        //  Enforced exactly, at whatever value is asked for.
+        var strict = new StubVenue("stub");
+        var strictOpts = opts();
+        strictOpts["maxPlanAgeMs"] = 30000.0;
+        await Rejects<ExchangeError>(async () => await pinned.Execute(plan, Venues(strict), strictOpts), "a stale plan is refused under a limit");
+        EqualCalls(strict.calls, new List<string>(), "refused before anything reached the venue");
+        var wideOpts = opts();
+        wideOpts["maxPlanAgeMs"] = 120000.0;
+        var passed = await pinned.Execute(plan, Venues(new StubVenue("stub")), wideOpts);
+        EqualString((string)ToDict(ToList(passed["steps"])[0])["status"], "filled", "a limit the plan is inside of lets it through");
+
+        //  An age that cannot be determined BLOCKS under an active limit.
+        var undated = router.BuildExecutionPlan(OneLegRoute("buy", "BTC", "USDT", 0.2, 100), new dict());
+        var undatedReport = await pinned.Execute(undated, Venues(new StubVenue("stub")), opts());
+        EqualNumber(ToDouble(undatedReport["planAgeMs"]), -1, "unknown is -1, never 0: 0 would read as fresh");
+        var undatedOpts = opts();
+        undatedOpts["maxPlanAgeMs"] = 30000.0;
+        await Rejects<ExchangeError>(async () => await pinned.Execute(undated, Venues(new StubVenue("stub")), undatedOpts), "an undatable plan is refused under a limit");
+    }
+
+    private static async Task AtomicIshDemandsPrefunding()
+    {
+        var router = NewRouter();
+        var plan = router.BuildExecutionPlan(TwoHopRoute(), new dict());
+        //  hop 0 needs 20 USDT and hop 1 needs 0.2 BTC, both already sitting there
+        var funded = new StubVenue("stub");
+        var rich = await router.Execute(plan, Venues(funded), new dict() { { "strategy", "atomic_ish" }, { "live", true }, { "usdRates", new dict() { { "USDT", 1.0 } } } });
+        EqualNumber(ToDouble(rich["ordersPlaced"]), 2, "a pre-funded route runs end to end");
+        var broke = new StubVenue("stub");
+        broke.balanceOverride = new dict() { { "free", new dict() { { "USDT", 1.0 }, { "BTC", 0.0 } } } };
+        await Rejects<ExchangeError>(async () => await router.Execute(plan, Venues(broke), new dict() { { "strategy", "atomic_ish" }, { "live", true }, { "usdRates", new dict() { { "USDT", 1.0 } } } }), "an underfunded route is refused");
+    }
+
+    //  -----------------------------------------------------------------------
+    //  4. fetchRoute request shaping, with the HTTP layer stubbed out
+    //  -----------------------------------------------------------------------
+
+    /// <summary>
+    /// An OrderRouter whose only change is that Request never leaves the
+    /// process: it records the url it was handed and answers with a canned body.
+    /// </summary>
+    public class RecordingRouter : OrderRouter
+    {
+        public string lastUrl = "";
+
+        public dict body = null;
+
+        public RecordingRouter(dict config, dict body) : base(config)
+        {
+            this.body = body;
+        }
+
+        public override Task<dict> Request(string url)
+        {
+            this.lastUrl = url;
+            return Task.FromResult(this.body);
+        }
+    }
+
+    private static async Task FetchRouteRefusesAmbiguousAmounts()
+    {
+        var recorder = new RecordingRouter(new dict() { { "apiKey", "k" } }, new dict());
+        await Rejects<BadRequest>(async () => await recorder.FetchRoute("USDT", "BTC", new dict()), "neither amount is refused");
+        await Rejects<BadRequest>(async () => await recorder.FetchRoute("USDT", "BTC", new dict() { { "amountIn", 1.0 }, { "amountOut", 1.0 } }), "both amounts are refused");
+        EqualString(recorder.lastUrl, "", "neither reached the wire");
+    }
+
+    private static async Task FetchRouteQuery()
+    {
+        var recorder = new RecordingRouter(new dict() { { "apiKey", "k" }, { "baseUrl", "https://example.test/api/" } }, new dict() { { "hops", new list() } });
+        await recorder.FetchRoute("usdt", "btc", new dict()
+        {
+            { "amountIn", 0.001 },
+            { "strategy", "split_capped" },
+            { "maxVenues", 3 },
+            { "exchanges", new list() { "binance", "kraken" } },
+            { "certified", true },
+        });
+        EqualString(recorder.lastUrl, "https://example.test/api/route?from=USDT&to=BTC&amountIn=0.001&strategy=split_capped&maxVenues=3&exchanges=binance%2Ckraken&certified=true", "the query is deterministic");
+    }
+
+    private static async Task BalancesSkipsAndSorts()
+    {
+        var recorder = new RecordingRouter(new dict() { { "apiKey", "k" } }, new dict() { { "hops", new list() }, { "balancesApplied", "stub.BTC:1,stub.USDT:1000" } });
+        var route = await recorder.FetchRouteWithBalances("USDT", "BTC", Venues(new StubVenue("stub")), new dict() { { "amountIn", 10.0 } });
+        EqualString((string)route["balancesUsed"], "stub.USDT:1000,stub.BTC:1", "largest first, and the ZERO holding is gone");
+        EqualNumber(ToList(route["balancesDropped"]).Count, 0, "nothing was dropped");
+        Ok(recorder.lastUrl.IndexOf("balances=stub.USDT%3A1000%2Cstub.BTC%3A1", StringComparison.Ordinal) >= 0, "the balances reached the query");
+    }
+
+    private static async Task BalancesMustBeEchoed()
+    {
+        var silent = new RecordingRouter(new dict() { { "apiKey", "k" } }, new dict() { { "hops", new list() } });
+        await Rejects<ExchangeError>(async () => await silent.FetchRouteWithBalances("USDT", "BTC", Venues(new StubVenue("stub")), new dict() { { "amountIn", 10.0 } }), "a router that ignored the balances is refused");
+        //  and the caller can opt out with their eyes open
+        var opted = new RecordingRouter(new dict() { { "apiKey", "k" } }, new dict() { { "hops", new list() } });
+        var route = await opted.FetchRouteWithBalances("USDT", "BTC", Venues(new StubVenue("stub")), new dict() { { "amountIn", 10.0 }, { "requireBalancesApplied", false } });
+        EqualString((string)route["balancesUsed"], "stub.USDT:1000,stub.BTC:1", "the balances were still built");
+    }
+
+    private static async Task BalancesEntryCap()
+    {
+        var recorder = new RecordingRouter(new dict() { { "apiKey", "k" } }, new dict() { { "hops", new list() }, { "balancesApplied", "x" } });
+        var many = new StubVenue("stub");
+        var free = new dict();
+        for (var i = 0; i < 70; i++)
+        {
+            free["C" + i.ToString(CultureInfo.InvariantCulture)] = (double)(i + 1);
+        }
+        many.balanceOverride = new dict() { { "free", free } };
+        var route = await recorder.FetchRouteWithBalances("USDT", "BTC", Venues(many), new dict() { { "amountIn", 10.0 } });
+        var dropped = ToList(route["balancesDropped"]);
+        EqualNumber(dropped.Count, 6, "six holdings went");
+        EqualNumber(((string)route["balancesUsed"]).Split(',').Length, 64, "sixty-four entries survive");
+        for (var i = 0; i < dropped.Count; i++)
+        {
+            var entry = ToDict(dropped[i]);
+            EqualString((string)entry["reason"], "entry_cap", "dropped for the entry cap");
+            Ok(ToDouble(entry["amount"]) <= 6, "the six smallest holdings are the ones that went");
+        }
+    }
+
+    private static void FormatNumberIsPlain()
+    {
+        var router = NewRouter();
+        EqualString(router.FormatNumber(0.0000001), "0.0000001", "no exponent for a small number");
+        Throws<BadRequest>(() => router.FormatNumber(1e21), "refused rather than rendered as 1e+21 in one language and not the others");
+        EqualString(router.FormatNumber(0), "0", "zero");
+        EqualString(router.FormatNumber(1000000), "1000000", "a round million");
+        EqualString(router.FormatNumber(0.5), "0.5", "a half");
+        EqualString(router.FormatNumber(1e-15), "0", "below the twelfth decimal");
+    }
+}

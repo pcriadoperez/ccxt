@@ -953,6 +953,72 @@ await exchange.cancelOrder(exchange.safeString(order, "id"), handle);
 - Price/trade methods (`fetchTicker`, `fetchOrderBook`, `fetchOHLCV`, `fetchTrades`, `createOrder`, `cancelOrder`, …) take an **outcome handle or outcomeId** (the `outcome` / `outcomes` parameter), not `symbol`.
 - Check support with `exchange.has["prediction"]`; discover markets via `fetchEvents` / `fetchEvent` (or `loadMarkets`).
 
+## Order Router
+
+A client for the CCXT order-router service — a separate process holding live books across many
+venues, which answers "what is the cheapest way to turn asset A into asset B right now?", including
+bridges (`SOL -> USDT -> BTC` when no `SOL/BTC` market exists). It is **not** an exchange: it does
+not derive from `Exchange`, has no unified methods, and is constructed directly.
+
+```csharp
+using dict = System.Collections.Generic.Dictionary<string, object>;
+
+var router = new ccxt.OrderRouter(new dict() { { "apiKey", apiKey } });
+
+// exactly one of amountIn / amountOut
+var route = await router.FetchRoute("USDT", "BTC", new dict() { { "amountIn", 1000 } });
+
+// routing and executing are separate steps; everything between is PURE (no I/O)
+var plan = router.BuildExecutionPlan(route, new dict());
+var violations = router.CheckExecutionPlanSafety(plan, markets, new dict());
+if (violations.Count == 0)
+{
+    var venues = new Dictionary<string, Exchange>() { { "binance", binance }, { "kraken", kraken } };
+    var report = await router.Execute(plan, venues, new dict() {
+        { "strategy", "sequential" },
+        { "live", true },
+        { "usdRates", new dict() { { "USDT", 1 } } },
+    });
+}
+```
+
+`execute` defaults to `dry_run`, and **anything other than an explicit live flag forces `dry_run`
+regardless of the strategy requested** — a call that looks live but forgot the flag places nothing.
+
+Strategies: `dry_run` (default), `sequential`, `parallel_within_hop` (concurrent across venues,
+serialised within a venue), `atomic_ish` (requires the route pre-funded), `best_effort`
+(single-hop, never halts).
+
+Every report carries `planAgeMs` — how old the plan's prices were when `execute` was called (`-1`
+when the route carried no `calculatedAt`, which means unknown, not fresh). Pass
+`options.maxPlanAgeMs` to refuse a live execution of a plan older than that; there is no default
+limit, and under an active limit a plan whose age cannot be determined is refused too.
+
+There is **no notional cap by default** — trade cents or trade thousands. `maxNotionalUsd` is an
+opt-in guardrail: pass it to the constructor, or per call in the options, and it is honoured
+exactly at whatever value you choose, in either direction; omit it (or pass 0) and no notional
+check runs. Only a negative value is refused.
+
+A market order cannot be placed under a cap: the cap is checked against the plan's limit price and
+a market order carries no price at all, so asking for `allowMarketOrders` together with a cap is
+refused rather than silently unbounded.
+
+When a cap IS set it is enforced immediately before **every** order — not just at plan time,
+because a reconciliation may have resized the plan since — and a step that cannot be valued in USD
+**blocks**, so supply a USD rate for every quote asset in the plan. With no cap set there is
+nothing to evaluate and USD rates are not required either.
+
+In the report, `status: 'outcome_unknown'` means the request may or may not have reached the venue
+— execution halts rather than reconciling, because reconciling would read the fill as 0 and report
+"nothing filled", asserting the one thing nobody knows. Check the open orders and the venue before
+retrying. `placementAttempted` is false until an order was actually dispatched.
+
+`buildExecutionPlan` refuses a route that does not run from the asset you offered to the asset you
+wanted, or whose hops do not connect — the answer is checked against the client's own record of
+the question, so a compromised or buggy router response cannot steer orders into another market.
+
+Full reference: [Order Router in the CCXT Manual](https://docs.ccxt.com/#/?id=order-router).
+
 ## Learn More
 
 - [CCXT Manual](https://docs.ccxt.com/)
