@@ -36,12 +36,12 @@ Two different things carry the name OrderRouter, and only one of them is the ser
 | | what | where | ships as |
 |---|---|---|---|
 | The service | holds live books, answers `/route` | `order-router/` | a deployed process |
-| The client | calls that service, plans and executes | `ts/src/base/OrderRouter.ts` and its Python, PHP, C# and Go ports, plus `examples/` | part of the ccxt package |
+| The client | calls that service, plans and executes | `ts/src/base/OrderRouter.ts` and its Python, PHP, C#, Go and Rust ports, plus `examples/` | part of the ccxt package |
 
-The client belongs in ccxt whatever happens to the service — it is a public class in five
+The client belongs in ccxt whatever happens to the service — it is a public class in six
 languages with a shared fixture suite, and extracting it would mean publishing a second package
 for one class. The root `package.json`'s `test-order-router-*` scripts drive the CLIENT suites and
-correctly stay wired into `test-base-rest-*`; a change to any of those five files SHOULD run the
+correctly stay wired into `test-base-rest-*`; a change to any of those six files SHOULD run the
 full matrix, and after the filters above it still does.
 
 ## Consequences

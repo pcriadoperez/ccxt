@@ -8533,12 +8533,34 @@ var route = await router.FetchRoute("USDT", "BTC", new dict() { { "amountIn", 10
 router, err := ccxt.NewOrderRouter(map[string]any{"apiKey": apiKey})
 route, err := router.FetchRoute("USDT", "BTC", map[string]any{"amountIn": 1000.0})
 ```
+#### **Rust**
+```rust
+use ccxt::{OrderRouter, Value};
+use ccxt::value::HashMap;
+
+let mut config = HashMap::new();
+config.insert("apiKey".to_string(), Value::Str(api_key));
+let router = OrderRouter::new(&Value::Map(config))?;
+
+let mut params = HashMap::new();
+params.insert("amountIn".to_string(), Value::Float(1000.0));
+let route = router.fetch_route("USDT", "BTC", &Value::Map(params)).await?;
+```
 <!-- tabs:end -->
+
+Rust differs from the other five in two places, both forced by the language rather than chosen.
+The fallible methods return `Result<_, ExchangeError>` where the others throw — the error's `kind`
+carries the same class name, so `err.is("NetworkError")` asks the question the other ports ask of
+an exception class. And `execute` takes `BTreeMap<String, Box<dyn RouterVenue>>` rather than your
+exchange objects directly: `ExchangeBase`'s methods return `impl Future`, which is not
+object-safe, so a map of exchanges cannot exist. `RouterVenue` is that map's element type, narrowed
+to the operations the money path performs, and you implement it for whatever exchange type you
+hold.
 
 ## The pipeline
 
 Routing and executing are separate steps on purpose. Every step between the route and the orders
-is **pure** — no I/O, and the same input produces the same output in all five languages — so a
+is **pure** — no I/O, and the same input produces the same output in all six languages — so a
 plan can be inspected, logged, diffed and tested before anything is placed.
 
 | Method | I/O | What it does |

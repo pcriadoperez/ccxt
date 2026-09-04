@@ -88,6 +88,11 @@ fn violation_message(code: &str) -> &'static str {
     }
 }
 const DEFAULT_TIMEOUT_MS: f64 = 30000.0;
+/// The router accepts at most this many balance entries; the rest are dropped
+/// smallest-first and reported.
+const MAX_BALANCE_ENTRIES: usize = 64;
+/// And at most this many characters in the rendered value.
+const MAX_BALANCE_CHARS: usize = 4096;
 
 /// A client for the CCXT order-router service.
 pub struct OrderRouter {
@@ -549,6 +554,13 @@ pub trait RouterVenue: Send + Sync {
 
     /// Cancels an order. Used by the protected-limit path when the poll expires.
     async fn cancel_order(&self, id: &str, symbol: &str) -> RouterResult<Value>;
+
+    /// Reads the account's holdings, in ccxt's balance shape — `free` and
+    /// `total` maps of currency code to amount. Only `fetch_route_with_balances`
+    /// calls this; a venue used solely with `execute` can return an empty map.
+    async fn fetch_balance(&self) -> RouterResult<Value> {
+        Ok(Value::Map(HashMap::new()))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2205,5 +2217,128 @@ impl OrderRouter {
         }
         self.summarise_report(&mut report, &steps);
         Ok(report)
+    }
+}
+
+impl OrderRouter {
+    /// Renders balance entries as the router's `[exchangeId.]ASSET:amount`
+    /// comma-separated form.
+    fn join_balances(&self, entries: &[Value]) -> RouterResult<String> {
+        let mut text = String::new();
+        for (i, entry) in entries.iter().enumerate() {
+            if i > 0 {
+                text.push(',');
+            }
+            text.push_str(&self.string_at(entry, "exchangeId", ""));
+            text.push('.');
+            text.push_str(&self.string_at(entry, "asset", ""));
+            text.push(':');
+            text.push_str(&self.format_number(self.number_at(entry, "amount", 0.0))?);
+        }
+        Ok(text)
+    }
+
+    /// Reads the live balances of the supplied venues, sends them to the router,
+    /// and returns a route you can actually fund.
+    ///
+    /// The returned route carries two client-side additions: `balancesUsed`,
+    /// the exact string sent, and `balancesDropped`, everything that did not fit
+    /// and why.
+    pub async fn fetch_route_with_balances(
+        &self,
+        from_asset: &str,
+        to_asset: &str,
+        venues: &std::collections::BTreeMap<String, Box<dyn RouterVenue>>,
+        params: &Value,
+    ) -> RouterResult<Value> {
+        let require_applied = self.bool_at(params, "requireBalancesApplied", true);
+        let mut entries: Vec<Value> = Vec::new();
+        let mut dropped: Vec<Value> = Vec::new();
+        // BTreeMap iterates in key order, which is the sort the other five ports
+        // do explicitly — six languages must build the same string from the same
+        // wallet.
+        for (exchange_id, venue) in venues.iter() {
+            let balance = venue.fetch_balance().await?;
+            let mut holdings = self.dict_at(&balance, "free");
+            if holdings.as_map().map(|m| m.is_empty()).unwrap_or(true) {
+                holdings = self.dict_at(&balance, "total");
+            }
+            let mut codes: Vec<String> = match holdings.as_map() {
+                Some(map) => map.keys().cloned().collect(),
+                None => Vec::new(),
+            };
+            codes.sort();
+            for code in &codes {
+                let amount = self.number_at(&holdings, code, 0.0);
+                if amount <= 0.0 {
+                    // A zero holding is not information, and it costs one of the
+                    // router's 64 entries.
+                    continue;
+                }
+                let mut entry = HashMap::new();
+                entry.insert("exchangeId".to_string(), Value::Str(exchange_id.clone()));
+                entry.insert("asset".to_string(), Value::Str(code.clone()));
+                entry.insert("amount".to_string(), Value::Float(amount));
+                if amount >= 1e18 {
+                    // Beyond fixed-point rendering; reported rather than sent,
+                    // because a silently reshaped amount is worse than a missing
+                    // one.
+                    entry.insert("reason".to_string(), Value::Str("amount_out_of_range".to_string()));
+                    dropped.push(Value::Map(entry));
+                    continue;
+                }
+                entries.push(Value::Map(entry));
+            }
+        }
+        // Largest first, so trimming to the router's caps drops the smallest
+        // holdings. Ties break on exchangeId then asset so six languages produce
+        // the same list from the same wallet.
+        entries.sort_by(|a, b| {
+            let amount_a = self.number_at(a, "amount", 0.0);
+            let amount_b = self.number_at(b, "amount", 0.0);
+            if amount_a != amount_b {
+                // Descending. partial_cmp cannot be None here: number_at only
+                // ever returns a finite number.
+                return amount_b.partial_cmp(&amount_a).unwrap_or(std::cmp::Ordering::Equal);
+            }
+            let id_a = self.string_at(a, "exchangeId", "");
+            let id_b = self.string_at(b, "exchangeId", "");
+            if id_a != id_b {
+                return id_a.cmp(&id_b);
+            }
+            self.string_at(a, "asset", "").cmp(&self.string_at(b, "asset", ""))
+        });
+        while entries.len() > MAX_BALANCE_ENTRIES {
+            let mut removed = entries.pop().expect("entries is non-empty inside this loop");
+            Self::put(&mut removed, "reason", Value::Str("entry_cap".to_string()));
+            dropped.push(removed);
+        }
+        let mut balances = self.join_balances(&entries)?;
+        while balances.len() > MAX_BALANCE_CHARS && !entries.is_empty() {
+            let mut removed = entries.pop().expect("entries is non-empty inside this loop");
+            Self::put(&mut removed, "reason", Value::Str("char_cap".to_string()));
+            dropped.push(removed);
+            balances = self.join_balances(&entries)?;
+        }
+        let mut route_params = HashMap::new();
+        if let Some(map) = params.as_map() {
+            for (key, value) in map.iter() {
+                route_params.insert(key.clone(), value.clone());
+            }
+        }
+        route_params.insert("balances".to_string(), Value::Str(balances.clone()));
+        let mut route = self.fetch_route(from_asset, to_asset, &Value::Map(route_params)).await?;
+        if require_applied && !balances.is_empty() && self.string_at(&route, "balancesApplied", "").is_empty() {
+            // /route declares its query without a JSON schema, so a router that
+            // predates the balances feature answers byte-identically to one that
+            // never received it. Executing a plan computed against a portfolio
+            // the server never saw is the case worth failing on.
+            return Err(exchange_error(
+                "OrderRouter did not echo balancesApplied: the balances were ignored, so this route is not funded-aware",
+            ));
+        }
+        Self::put(&mut route, "balancesUsed", Value::Str(balances));
+        Self::put(&mut route, "balancesDropped", Value::List(dropped));
+        Ok(route)
     }
 }
