@@ -2223,7 +2223,15 @@ public class OrderRouter
                 //  recoverable, sizing the next hop from an invented number is not.
                 result["status"] = "outcome_unknown";
                 this.RecordOpenOrder(report, exchangeId, symbol, this.StringAt(result, "orderId", ""), "fill_unconfirmed");
-                report["ordersPlaced"] = this.NumberAt(report, "ordersPlaced", 0) + 1;
+                //  Read-modify-write on the shared report. The sibling increment on the success
+                //  path below takes the lock; this one did not, so two parallel legs finishing on
+                //  different thread-pool threads could both read the same count and both write
+                //  back one more than it — losing a placement from the tally on exactly the path
+                //  where an order is known to exist and its fill is not.
+                lock (this.reportLock)
+                {
+                    report["ordersPlaced"] = this.NumberAt(report, "ordersPlaced", 0) + 1;
+                }
                 return result;
             }
             if (filled <= 0)
@@ -2360,20 +2368,28 @@ public class OrderRouter
     /// </summary>
     public void RecordUnconfirmedPlacement(dict report, string exchangeId, string symbol, string reason)
     {
-        var openOrders = this.ListAt(report, "openOrders");
-        foreach (var entryObject in openOrders)
+        //  Same list, same lock as RecordOpenOrder. This one was writing to report["openOrders"]
+        //  without it: List<T>.Add is a resize plus a Count increment, so two parallel legs
+        //  appending at once can lose an entry outright or throw out of List's own internals. The
+        //  scan and the append must also be ATOMIC together, or the duplicate check races the
+        //  append it is meant to guard.
+        lock (this.reportLock)
         {
-            var entry = this.AsDict(entryObject);
-            if (this.StringAt(entry, "exchangeId", "") == exchangeId
-                && this.StringAt(entry, "symbol", "") == symbol
-                && this.StringAt(entry, "reason", "") == reason)
+            var openOrders = this.ListAt(report, "openOrders");
+            foreach (var entryObject in openOrders)
             {
-                return;
+                var entry = this.AsDict(entryObject);
+                if (this.StringAt(entry, "exchangeId", "") == exchangeId
+                    && this.StringAt(entry, "symbol", "") == symbol
+                    && this.StringAt(entry, "reason", "") == reason)
+                {
+                    return;
+                }
             }
+            ((list)report["openOrders"]).Add(new dict() {
+                { "exchangeId", exchangeId }, { "symbol", symbol }, { "orderId", "" }, { "reason", reason },
+            });
         }
-        ((list)report["openOrders"]).Add(new dict() {
-            { "exchangeId", exchangeId }, { "symbol", symbol }, { "orderId", "" }, { "reason", reason },
-        });
     }
 
     public void RecordOpenOrder(dict report, string exchangeId, string symbol, string orderId, string reason)
