@@ -14,8 +14,23 @@ const silent = pino({ level: 'silent' });
 // never reach the file, that the router can still authenticate from a stale file — are all about
 // what the projection does with what it gets back, not about SQL. Those are better asserted
 // deterministically than against a live database that may or may not be running in CI.
-function fakePool (behaviour: () => { rows: unknown[] }): { query: () => Promise<{ rows: unknown[] }> } {
-    return { query: async () => behaviour() };
+// `totalRows` answers the `count(*) FROM api_keys` the projection makes only when the active set is
+// empty — the query that tells a revocation (the revoked row is still there) apart from a lost or
+// wrong database (no rows at all). It defaults to the active count, which is right for every case
+// that does not drain to zero.
+function fakePool (
+    behaviour: () => { rows: unknown[] },
+    totalRows?: number,
+): { query: (sql: string) => Promise<{ rows: unknown[] }> } {
+    return {
+        query: async (sql: string) => {
+            if (sql.indexOf('count(*)') !== -1) {
+                const rows = behaviour().rows;
+                return { rows: [{ total: String(totalRows ?? rows.length) }] };
+            }
+            return behaviour();
+        },
+    };
 }
 
 function row (over: Record<string, unknown> = {}): Record<string, unknown> {
@@ -92,18 +107,49 @@ test('a Postgres failure leaves the previous snapshot intact', async () => {
     assert.ok(store.lookup(key), 'an existing key must keep working while Postgres is unreachable');
 });
 
-test('an empty result set writes an empty snapshot rather than being treated as a failure', async () => {
-    // The opposite hazard to the one above, and it has to be distinguished: "no keys exist" is a
-    // legitimate answer that must be honoured, or revoking the last key would leave it working.
+test('revoking the last key writes an empty snapshot rather than being treated as a failure', async () => {
+    // The opposite hazard to the one above, and it has to be distinguished: "the last key was
+    // revoked" is a legitimate answer that must be honoured, or the revoked key would keep working.
+    // Revocation is a soft UPDATE, so the row is still in api_keys — hence totalRows 1.
     const key = generateKey();
     const path = tmpFile();
     await projectKeys(fakePool(() => ({ rows: [row({ hash: hashKey(key) })] })) as never, path, silent);
 
-    await projectKeys(fakePool(() => ({ rows: [] })) as never, path, silent);
+    const result = await projectKeys(fakePool(() => ({ rows: [] }), 1) as never, path, silent);
+    assert.notEqual(result.refused, true);
     const store = new ApiKeyStore(path, silent);
     store.load();
-    assert.equal(store.lookup(key), undefined, 'a key removed from the database must stop working');
+    assert.equal(store.lookup(key), undefined, 'a revoked key must stop working');
     assert.equal(store.activeCount(), 0);
+});
+
+test('an empty api_keys table never overwrites a populated snapshot', async () => {
+    // Point the projector at a restored, migrated-but-unseeded, or simply wrong database and the
+    // active-key query returns nothing — indistinguishable from a revocation by count alone, and
+    // writing it de-authenticates every customer at once. One level down they differ: a revocation
+    // leaves its row behind, so zero rows in the whole table is a lost database, never a revocation.
+    const key = generateKey();
+    const path = tmpFile();
+    await projectKeys(fakePool(() => ({ rows: [row({ hash: hashKey(key) })] })) as never, path, silent);
+
+    const result = await projectKeys(fakePool(() => ({ rows: [] }), 0) as never, path, silent);
+    assert.equal(result.refused, true);
+    assert.equal(result.changed, false);
+    assert.equal(result.keys, 1, 'the refusal reports what is still in force, not what it declined');
+
+    const store = new ApiKeyStore(path, silent);
+    store.load();
+    assert.ok(store.lookup(key), 'every existing key must keep authenticating');
+});
+
+test('a first run against a legitimately empty database still writes an empty snapshot', async () => {
+    // The guard must not turn a fresh install into a permanent failure: with no previous snapshot
+    // there is nothing to protect, so zero keys is simply the answer.
+    const path = tmpFile();
+    const result = await projectKeys(fakePool(() => ({ rows: [] }), 0) as never, path, silent);
+    assert.notEqual(result.refused, true);
+    assert.equal(result.keys, 0);
+    assert.equal(readKeyFile(path).keys.length, 0);
 });
 
 test('an unchanged key set does not rewrite the file', async () => {

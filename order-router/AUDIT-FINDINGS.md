@@ -150,20 +150,6 @@ Extract the shard's bounded-concurrency start loop into a shared helper and use 
 
 In ensurePartitions, also create partitions for the months already present in the backlog (e.g. from min(ts) of the pending window, or simply the trailing N months), and/or attach a DEFAULT partition to requests/request_hops/request_legs so an out-of-range ts lands somewhere instead of aborting the
 
-### 22. A projection against an empty/restored database silently overwrites the router's key snapshot with zero keys, de-authenticating every customer
-
-**Severity:** high &nbsp;·&nbsp; **estimated effort:** minutes
-
-**Claimed evidence**
-
-```
-/home/user/ccxt/order-router/src/db/keyProjection.ts:40-68 takes whatever the SELECT returns and writes it unconditionally: `const file: KeyFile = { version: 1, keys: rows.map(...) }; const changed = writeKeyFile(path, file);`. There is no guard for an empty result — /home/user/ccxt/order-router/src
-```
-
-**Suggested fix** — a suggestion, not a verdict; verify before following it.
-
-Refuse to project a snapshot that drops to zero keys (or that removes more than a configured fraction of the current set) unless an explicit override flag is passed; log an error and keep the previous file instead. Assert row-count sanity before calling writeKeyFile, and alert on `keys: 0`.
-
 ### 23. No migration mechanism beyond CREATE IF NOT EXISTS, and the deploy never runs it — a schema change ships code without the schema
 
 **Severity:** high &nbsp;·&nbsp; **estimated effort:** days
@@ -244,25 +230,6 @@ The three suggested rules (README.md:863-865) include:
 **Suggested fix** — a suggestion, not a verdict; verify before following it.
 
 Ship a `prometheus/order-router.rules.yml` in the repo with tested thresholds, and correct the stale_books rule to compare against the observed baseline (e.g. `> 0.9` or a deviation from a 6h rolling median) rather than 0.2. Add rules for `up{job="order-router"} == 0`, `absent(order_router_shard_eve
-
-### 29. API key creation and user-initiated revocation through the dashboard are not logged at all
-
-**Severity:** high &nbsp;·&nbsp; **estimated effort:** minutes
-
-**Claimed evidence**
-
-```
-`src/web/server.ts:291-300`, the key-mint route, logs nothing:
-```ts
-const name = (request.body.name ?? '').trim().slice(0, 40) || 'default';
-const plaintext = await mintKey(pool, keysFile, user.id, name, logger);
-void reply.redirect(`${base}/dashboard?reveal=${stashReveal(plaintext, token!)}`);
-```
-```
-
-**Suggested fix** — a suggestion, not a verdict; verify before following it.
-
-Emit `audit.info({ event: 'key_created' | 'key_revoked', userId, displayId, actor, ip, userAgent })` from `mintKey` and both revoke handlers, route the web app's audit records to the same `ORDER_ROUTER_AUDIT_LOG_FILE` stream, and extend `src/db/ingest.ts`'s event filter and schema to persist them.
 
 ### 35. execute() has no idempotency of any kind — re-running it on the same plan re-places every order, including ones already filled
 
@@ -1002,20 +969,6 @@ The code uses it as how many *exchanges within one shard* start concurrently —
 
 Correct README.md:526 to "How many exchanges within one shard start concurrently; raising it rebuilds the startup memory peak the shard heap ceiling must hold."
 
-### 79. admin_audit is created but never written — admin actions leave no durable audit trail
-
-**Severity:** low &nbsp;·&nbsp; **estimated effort:** hours
-
-**Claimed evidence**
-
-```
-/home/user/ccxt/order-router/src/db/schema.sql:209-218 defines `CREATE TABLE IF NOT EXISTS admin_audit (id bigserial PRIMARY KEY, ts ..., actor_user_id uuid REFERENCES users(id), action text NOT NULL, subject text, detail jsonb, ip inet);` under the heading "Admin audit". `grep -rn "admin_audit" --i
-```
-
-**Suggested fix** — a suggestion, not a verdict; verify before following it.
-
-Insert into admin_audit from the admin mutation handlers in src/web/server.ts (revoke, plan change, admin creation) in the same transaction as the change, or delete the table so its absence is honest.
-
 ### 80. formatNumber tie-rounding differs between ports, so the balances query string is not byte-identical as the file claims
 
 **Severity:** low &nbsp;·&nbsp; **estimated effort:** hours
@@ -1173,6 +1126,9 @@ Kept so the same ground is not re-covered, and so a `wontfix` is not silently re
 | 10 | high | Docker image cannot build: the Dockerfile never COPYs openapi/ or scripts/, yet the README documents `docker compose up --build` as a way to run the service | **fixed** — build stage COPYs openapi/ and scripts/, takes the commit as a build arg, drops to USER node and probes /ready; a .dockerignore added. src/packaging.test.ts derives the required dirs from the build script itself, so a new asset dir fails there rather than in a terminal. |
 | 16 | high | The one-time API-key reveal page and every authenticated console page are served with no Cache-Control, so a live `or_live_…` key is cacheable | **fixed** — the onSend hook now sets `no-store, no-cache, must-revalidate, private`, `Pragma: no-cache` and `Vary: Cookie` on everything outside `/static/`, which keeps its own caching. |
 | 20 | high | IPC backpressure covers only `book` messages; health messages bypass it and their rate is proportional to the failure rate | **fixed** — the send path moved to src/sharding/ipcSend.ts (testable without forking) and the pipeFull gate now covers `health`, which is an idempotent snapshot re-flushed every 2s. Drops are counted separately and exported as order_router_shard_health_dropped_total: a rising figure points at a flapping venue, not at capacity. |
+| 22 | high | A projection against an empty/restored database silently overwrites the router's key snapshot with zero keys, de-authenticating every customer | **fixed** — a drain to zero is now checked one level down before it is written: revocation is a soft UPDATE, so a real revocation leaves its row in api_keys, while zero rows in the whole table under a populated snapshot is a lost or wrong database. That one is refused and logged at error level, keeping the previous file. A legitimately empty first run still writes an empty snapshot, and revoking the last key still takes effect. |
+| 29 | high | API key creation and user-initiated revocation through the dashboard are not logged at all | **fixed** — with 79, below: mint, self-revoke and admin-revoke write to admin_audit through src/db/adminAudit.ts. Only a revocation that changed a row is recorded, an unparseable client address is stored NULL rather than handed to `inet`, and a failed audit write logs but never fails the action — a revocation that 500s leaves a compromised key live. |
+| 79 | low | admin_audit is created but never written — admin actions leave no durable audit trail | **fixed** — same change as 29. Note the resolution taken was to write the table, not to delete it. |
 | 14 | high | Attacker-controlled request.ip is inserted into an `inet` column inside the ingest transaction; one crafted header wedges audit ingestion permanently | **fixed** — 6f88bfb3 same fix as blocker 4 |
 | 15 | high | The published dev API key `dev-local-key-change-me` is enabled in production whenever NODE_ENV is unset, and the documented systemd unit never sets it | **fixed** — 6f88bfb3 same fix as blocker 0 |
 | 25 | high | /stream/route produces zero audit records and zero HTTP metrics — streaming usage is invisible to billing and to Prometheus | **fixed** — cc1501bf audit emission shared by GET/POST /route and every pushed frame; unroutable counter with it |

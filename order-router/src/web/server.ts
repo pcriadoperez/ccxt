@@ -10,6 +10,7 @@ import type { Pool } from '../db/pool.js';
 import { config } from '../config.js';
 import { generateKey, hashKey } from '../api/keyStore.js';
 import { projectKeys } from '../db/keyProjection.js';
+import { recordAdminAction } from '../db/adminAudit.js';
 import {
     hashPassword, verifyPassword, createSession, loadSession, destroySession,
     setSessionCookie, clearSessionCookie, readCookie, csrfToken, csrfOk, originOk,
@@ -234,11 +235,15 @@ export async function buildWebServer (opts: WebOptions) {
 
             // Issue the first key immediately. The whole point of the funnel is landing page to a
             // working curl without a second step.
-            const plaintext = await mintKey(pool, keysFile, userId, 'default', logger);
+            const minted = await mintKey(pool, keysFile, userId, 'default', logger);
+            await recordAdminAction(pool, logger, {
+                actorUserId: userId, action: 'key_created', subject: minted.displayId,
+                detail: { name: minted.name, via: 'signup' }, ip: request.ip,
+            });
             const sessionToken = await createSession(pool, userId, request.ip, request.headers['user-agent']);
             setSessionCookie(reply, sessionToken, secureCookies);
             logger.info({ email, userId }, 'signup');
-            void reply.redirect(`${base}/dashboard?reveal=${stashReveal(plaintext, sessionToken)}`);
+            void reply.redirect(`${base}/dashboard?reveal=${stashReveal(minted.plaintext, sessionToken)}`);
             return reply;
         },
     );
@@ -304,8 +309,14 @@ export async function buildWebServer (opts: WebOptions) {
         const bad = guard(request.body.csrf, token, request as never);
         if (bad !== undefined) { void reply.redirect(`${base}/dashboard`); return reply; }
         const name = (request.body.name ?? '').trim().slice(0, 40) || 'default';
-        const plaintext = await mintKey(pool, keysFile, user.id, name, logger);
-        void reply.redirect(`${base}/dashboard?reveal=${stashReveal(plaintext, token!)}`);
+        const minted = await mintKey(pool, keysFile, user.id, name, logger);
+        // Minting a credential is one of the two events an incident review starts from. It left no
+        // durable trace at all before this — admin_audit shipped with the schema unwritten.
+        await recordAdminAction(pool, logger, {
+            actorUserId: user.id, action: 'key_created', subject: minted.displayId,
+            detail: { name: minted.name, via: 'dashboard' }, ip: request.ip,
+        });
+        void reply.redirect(`${base}/dashboard?reveal=${stashReveal(minted.plaintext, token!)}`);
         return reply;
     });
 
@@ -316,11 +327,19 @@ export async function buildWebServer (opts: WebOptions) {
         if (bad === undefined) {
             // Scoped by user_id from the SESSION, never from the request — this is the whole
             // authz boundary, and taking the owner from the form would be a textbook IDOR.
-            await pool.query(
+            const displayId = request.body.displayId ?? '';
+            const revoked = await pool.query(
                 'UPDATE api_keys SET revoked_at = now() WHERE display_id = $1 AND user_id = $2 AND revoked_at IS NULL',
-                [request.body.displayId ?? '', user.id],
+                [displayId, user.id],
             );
             await projectKeys(pool, keysFile, logger);
+            // Only a revocation that actually changed a row is recorded: a re-submitted form or a
+            // guessed id belonging to someone else must not manufacture an audit entry.
+            if ((revoked.rowCount ?? 0) > 0) {
+                await recordAdminAction(pool, logger, {
+                    actorUserId: user.id, action: 'key_revoked', subject: displayId, ip: request.ip,
+                });
+            }
         }
         void reply.redirect(`${base}/dashboard`);
         return reply;
@@ -418,12 +437,21 @@ export async function buildWebServer (opts: WebOptions) {
         const { token } = await sessionOf(request as never);
         const bad = guard(request.body.csrf, token, request as never);
         if (bad === undefined) {
-            await pool.query(
+            const displayId = request.body.displayId ?? '';
+            const revoked = await pool.query(
                 'UPDATE api_keys SET revoked_at = now() WHERE display_id = $1 AND revoked_at IS NULL',
-                [request.body.displayId ?? ''],
+                [displayId],
             );
             await projectKeys(pool, keysFile, logger);
-            logger.warn({ actor: user.email, key: request.body.displayId }, 'admin revoked a key');
+            logger.warn({ actor: user.email, key: displayId }, 'admin revoked a key');
+            // An admin acting on someone else's key is the entry that most needs to outlive log
+            // rotation, and it was the one only written to the diagnostic log.
+            if ((revoked.rowCount ?? 0) > 0) {
+                await recordAdminAction(pool, logger, {
+                    actorUserId: user.id, action: 'key_revoked_by_admin', subject: displayId,
+                    detail: { actorEmail: user.email }, ip: request.ip,
+                });
+            }
         }
         void reply.redirect(`${base}/admin`);
         return reply;
@@ -508,9 +536,12 @@ async function recentRoutes (pool: Pool, userId: string) {
     });
 }
 
+// Returns the display id alongside the plaintext: the id is what the audit trail, the dashboard
+// and every later revocation refer to, and deriving it a second time at the call site would be a
+// second chance to derive it differently.
 async function mintKey (
     pool: Pool, keysFile: string, userId: string, name: string, logger: Logger,
-): Promise<string> {
+): Promise<{ plaintext: string; displayId: string; name: string }> {
     const plaintext = generateKey();
     const id = randomUUID();
     // Derived from the row's uuid rather than generated separately, so it inherits that uniqueness
@@ -538,5 +569,5 @@ async function mintKey (
     // Project immediately so the key works by the time the user has copied it, rather than waiting
     // for the next scheduled projection.
     await projectKeys(pool, keysFile, logger);
-    return plaintext;
+    return { plaintext, displayId, name: finalName };
 }

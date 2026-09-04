@@ -1,6 +1,6 @@
 import type { Logger } from 'pino';
 import type { Pool } from './pool.js';
-import { writeKeyFile, type ApiKeyRecord, type KeyFile } from '../api/keyStore.js';
+import { readKeyFile, writeKeyFile, type ApiKeyRecord, type KeyFile } from '../api/keyStore.js';
 
 // Projects api_keys from Postgres into the snapshot file the router reads.
 //
@@ -18,6 +18,8 @@ import { writeKeyFile, type ApiKeyRecord, type KeyFile } from '../api/keyStore.j
 export interface ProjectionResult {
     keys: number;
     changed: boolean;
+    // True when a projection was refused because the source table was empty. See refusal note below.
+    refused?: boolean;
 }
 
 interface KeyRow {
@@ -64,6 +66,31 @@ export async function projectKeys (pool: Pool, path: string, logger: Logger): Pr
             lastUsedAt: null,
         })),
     };
+
+    // Revoking the last key is a legitimate way to reach zero, and it must be honoured or the key
+    // would keep working. Pointing the projector at an empty or freshly-restored database is not,
+    // and both look identical from the active-key count alone. They are distinguishable one level
+    // down: revocation is a soft UPDATE that sets revoked_at, so a real revocation LEAVES the row
+    // behind. A table with no rows at all, under a snapshot that currently has keys, is a database
+    // that lost them — never a revocation. That one is refused, loudly, and the previous file is
+    // left in place, which is the same silent-and-stale posture a Postgres outage gets.
+    if (rows.length === 0) {
+        const current = readKeyFile(path);
+        if (current.keys.length > 0) {
+            const { rows: totals } = await pool.query<{ total: string }>(
+                'SELECT count(*) AS total FROM api_keys',
+            );
+            const total = Number(totals[0]?.total ?? 0);
+            if (total === 0) {
+                logger.error(
+                    { path, previousKeys: current.keys.length },
+                    'refusing to project an empty key set: api_keys holds no rows at all, which is a '
+                    + 'lost or wrong database rather than a revocation — the previous snapshot is kept',
+                );
+                return { keys: current.keys.length, changed: false, refused: true };
+            }
+        }
+    }
 
     const changed = writeKeyFile(path, file);
     if (changed) {
