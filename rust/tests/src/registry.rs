@@ -128,6 +128,14 @@ pub fn exchange_snapshot(id: &str, cfg: Value) -> Value {
         arm!(binance, PredBinanceCore);
         arm!(hyperliquid, PredHyperliquidCore);
     }
+    // Under --ws the live Core is the pro venue (build_core prefers
+    // for_each_ws_core!). Snapshot from that same Core: its describe() carries
+    // the pro-only `options` (bitget WS `timeframes`, okx watchOrderBook depth)
+    // that the REST describe lacks, and the dispatch-time options write-through
+    // replaces the Core's options with this snapshot's.
+    if crate::live_dispatch::is_ws_mode() {
+        for_each_ws_core!(arm);
+    }
     for_each_core!(arm);
     Value::Null
 }

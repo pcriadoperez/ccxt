@@ -42,6 +42,29 @@ pub fn is_prediction_mode() -> bool {
     PREDICTION_MODE.load(Ordering::Relaxed)
 }
 
+/// Set by `ensure_live_core` when the harness runs under `--ws`: the live Core is
+/// the pro venue (see `build_core`), so `registry::exchange_snapshot` must
+/// snapshot from the same pro Core. Its `describe()` deep-extends the REST one
+/// with pro-only `options` (bitget's WS `timeframes`, okx's watchOrderBook
+/// depth, …); a REST-Core snapshot lacks them, and the per-dispatch options
+/// write-through below would then replace the pro Core's live options with the
+/// REST set — bitget `watchOHLCV` subscribed to a `candlenull` channel.
+static WS_MODE: AtomicBool = AtomicBool::new(false);
+
+/// True when the binary runs one of the fixture-driven suites
+/// (`--requestTests` / `--responseTests` / `--wsTests` / `--idTests`), where the
+/// harness resets the snapshot per case and the Core must follow it. Live runs
+/// (`ti-rust <id> [symbol] [method]`) return false.
+pub fn is_static_harness_mode() -> bool {
+    static FLAG: OnceLock<bool> = OnceLock::new();
+    *FLAG.get_or_init(|| std::env::args().any(|a| matches!(a.as_str(),
+        "--requestTests" | "--responseTests" | "--wsTests" | "--idTests")))
+}
+
+pub fn is_ws_mode() -> bool {
+    WS_MODE.load(Ordering::Relaxed)
+}
+
 /// Set once when a static-WS test registers its mock transport
 /// (`setupWsMockTransport`). Static-WS tests use a FRESH offline Core per case,
 /// so pushing the snapshot's (per-case-merged) `options` to the Core is both
@@ -212,6 +235,9 @@ pub fn write_field_for_id(id: &str, key: &str, value: Value) {
 }
 
 pub fn ensure_live_core(id: &str, cfg: Value, ws: bool) {
+    if ws {
+        WS_MODE.store(true, Ordering::Relaxed);
+    }
     if let Some(entry) = build_core(id, cfg, ws) {
         // Drop the old entry's leaked Box before replacing — otherwise
         // static-fixture tests (one initExchange per case, ~thousands of
@@ -272,7 +298,15 @@ pub async fn dispatch(ex: &mut Value, method: &str, args: Vec<Value>) -> Value {
     // static-WS, write it exactly ONCE per case (the first watch dispatch), so
     // the per-case options reach the fresh Core (e.g. okx watchOrderBook depth →
     // books-rpi) without clobbering accumulated state on re-watch calls.
-    let write_opts = if is_ws_method { is_static_ws_mode() && take_ws_options_pending() } else { true };
+    // REST dispatches write the snapshot's `options` through only in the
+    // static harness modes (request/response/ws/id fixtures reset them per
+    // case). In a LIVE run the Core is the single source of truth — as in TS,
+    // where the harness mutates the one exchange object — so replacing its
+    // options with the init snapshot on every call would (a) discard the
+    // keys.local.json `options` that `setExchangeProp` wrote to the Core and
+    // (b) wipe option state the venue set at runtime (timeDifference, cached
+    // listen keys, …).
+    let write_opts = if is_ws_method { is_static_ws_mode() && take_ws_options_pending() } else { is_static_harness_mode() };
     if write_opts {
         // Pre-flight: propagate snapshot writes (e.g. `options.uta = false`
         // in the kucoin broker test) to the live Core before the call so the
@@ -499,6 +533,13 @@ fn build_core(id: &str, cfg: Value, ws: bool) -> Option<CoreEntry> {
                     "wsProxy"       => core.wsProxy       = value,
                     "wssProxy"      => core.wssProxy      = value,
                     "wsSocksProxy"  => core.wsSocksProxy  = value,
+                    // Settings the harness applies from keys.json / keys.local.json
+                    // (`expand_settings` → `setExchangeProp`): the merged
+                    // `options` block and the common scalar knobs.
+                    "options"         => core.options         = value,
+                    "verbose"         => core.verbose         = value,
+                    "timeout"         => core.timeout         = value,
+                    "enableRateLimit" => core.enableRateLimit = value,
                     // Heavy fields. Static fixtures load these from
                     // `static/{markets,currencies}/<id>.json` and the
                     // test runner reassigns them on the snapshot after
