@@ -102,6 +102,7 @@ public class OrderRouterTest
         RunAsync("a failure after createOrder still reports the order id and an open order", OrderIdSurvivesAFailureAfterCreate);
         RunAsync("an unknown strategy is refused even in dry run", UnknownStrategyRefused);
         RunAsync("atomic_ish demands the whole route pre-funded", AtomicIshDemandsPrefunding);
+        RunAsync("a fee charged in the acquired asset is netted out of what the hop carries forward", FeeInAcquiredAssetIsNetted);
         //  4. fetchRoute request shaping, with the HTTP layer stubbed out
         RunAsync("fetchRoute refuses neither-or-both amounts before touching the network", FetchRouteRefusesAmbiguousAmounts);
         RunAsync("fetchRoute builds a deterministic query", FetchRouteQuery);
@@ -1028,6 +1029,10 @@ public class OrderRouterTest
 
         public string createdStatus = "";
 
+        //  When set, the created order carries this fee — currency, cost — in both the single
+        //  `fee` and the `fees` list, exactly as safeOrder fills them in.
+        public dict feeOverride = null;
+
         public StubVenue(string id, double fillRatio = 1, bool failCreate = false) : base(null)
         {
             this.id = id;
@@ -1108,7 +1113,13 @@ public class OrderRouterTest
             var filled = size * this.fillRatio;
             var average = (price == null) ? 100.0 : (double)price;
             var status = (this.createdStatus == "") ? "closed" : this.createdStatus;
-            return new ccxt.Order(new dict() { { "id", "stub-order" }, { "status", status }, { "filled", filled }, { "average", average }, { "cost", filled * average } });
+            var payload = new dict() { { "id", "stub-order" }, { "status", status }, { "filled", filled }, { "average", average }, { "cost", filled * average } };
+            if (this.feeOverride != null)
+            {
+                payload["fee"] = this.feeOverride;
+                payload["fees"] = new list() { this.feeOverride };
+            }
+            return new ccxt.Order(payload);
         }
     }
 
@@ -1489,6 +1500,32 @@ public class OrderRouterTest
         var router = NewRouter();
         var plan = router.BuildExecutionPlan(OneLegRoute("buy", "BTC", "USDT", 0.2, 100), new dict());
         await Rejects<BadRequest>(async () => await router.Execute(plan, new Dictionary<string, Exchange>(), new dict() { { "strategy", "yolo" } }), "an unknown strategy is refused even in dry run");
+    }
+
+    private static async Task FeeInAcquiredAssetIsNetted()
+    {
+        //  OrderToDict carried only id/status/filled/average/cost, so OrderFeeInAsset — which is
+        //  itself correct — was handed an order with no fee fields at all and always returned 0.
+        //  C# alone therefore reported outAmount GROSS of fees, and the next hop (and any unwind
+        //  built from the report) was sized on base the wallet does not hold.
+        var router = NewRouter();
+        var plan = router.BuildExecutionPlan(OneLegRoute("buy", "BTC", "USDT", 0.2, 100), new dict() { { "slippageBps", 0.0 } });
+        var venue = new StubVenue("stub");
+        //  0.2 BTC bought, 0.0002 BTC taken as the taker fee — charged in the asset acquired
+        venue.feeOverride = new dict() { { "currency", "BTC" }, { "cost", 0.0002 } };
+        var report = await router.Execute(plan, Venues(venue), new dict() { { "strategy", "sequential" }, { "live", true }, { "usdRates", new dict() { { "USDT", 1.0 } } } });
+        var step = ToDict(ToList(report["steps"])[0]);
+        EqualNumber(ToDouble(step["feeCost"]), 0.0002, "the fee reaches the report at all");
+        EqualString((string)step["feeCurrency"], "BTC", "and names the asset it was taken in");
+        EqualNumber(ToDouble(step["grossOutAmount"]), 0.2, "the gross figure is kept for the audit trail");
+        EqualNumber(ToDouble(step["outAmount"]), 0.1998, "and what is carried forward is net of it");
+
+        //  A fee in any OTHER currency does not reduce what this hop hands to the next one.
+        var other = new StubVenue("stub");
+        other.feeOverride = new dict() { { "currency", "USDT" }, { "cost", 0.02 } };
+        var quoteFeeReport = await router.Execute(plan, Venues(other), new dict() { { "strategy", "sequential" }, { "live", true }, { "usdRates", new dict() { { "USDT", 1.0 } } } });
+        var quoteFeeStep = ToDict(ToList(quoteFeeReport["steps"])[0]);
+        EqualNumber(ToDouble(quoteFeeStep["outAmount"]), 0.2, "a fee in the spent asset leaves the acquired amount alone");
     }
 
     private static async Task AtomicIshDemandsPrefunding()

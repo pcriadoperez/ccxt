@@ -439,6 +439,113 @@ fn one_leg_route(side: &str, base_code: &str, quote: &str, amount: f64, price: f
     Value::Map(route)
 }
 
+/// USDT -> BTC -> ETH across two hops on the same stub venue, so a report's
+/// filledIn/filledOut can be checked against the assets they are supposed to be
+/// denominated in.
+fn two_hop_route() -> Value {
+    let hop = |base_code: &str, quote: &str, side: &str, amount: f64, price: f64| {
+        let mut leg = HashMap::new();
+        leg.insert("exchangeId".to_string(), Value::Str("stub".into()));
+        leg.insert("amount".to_string(), Value::Float(amount));
+        leg.insert("averagePrice".to_string(), Value::Float(price));
+        leg.insert("effectivePrice".to_string(), Value::Float(price));
+        let mut hop = HashMap::new();
+        hop.insert("pair".to_string(), Value::Str(format!("{base_code}/{quote}")));
+        hop.insert("side".to_string(), Value::Str(side.into()));
+        hop.insert("base".to_string(), Value::Str(base_code.into()));
+        hop.insert("quote".to_string(), Value::Str(quote.into()));
+        hop.insert("legs".to_string(), Value::List(vec![Value::Map(leg)]));
+        Value::Map(hop)
+    };
+    let mut route = HashMap::new();
+    route.insert("from".to_string(), Value::Str("USDT".into()));
+    route.insert("to".to_string(), Value::Str("ETH".into()));
+    route.insert("strategy".to_string(), Value::Str("best_single".into()));
+    route.insert("exactSide".to_string(), Value::Str("in".into()));
+    route.insert("fullyFillable".to_string(), Value::Bool(true));
+    route.insert("fillRatio".to_string(), Value::Float(1.0));
+    // hop 0 spends 20 USDT for 0.2 BTC; hop 1 sells that 0.2 BTC for 2 ETH
+    route.insert("hops".to_string(), Value::List(vec![
+        hop("BTC", "USDT", "buy", 0.2, 100.0),
+        hop("BTC", "ETH", "sell", 0.2, 10.0),
+    ]));
+    Value::Map(route)
+}
+
+fn a_report_is_summarised_in_the_assets_it_names(r: &OrderRouter) -> Result<(), String> {
+    // filledIn is denominated in the route's FROM asset and filledOut in its TO
+    // asset, which holds only if each is summed over ONE hop. This port summed
+    // inAmount and outAmount across every step, adding USDT to BTC to ETH and
+    // reporting the total as one number — meaningless on a multi-hop route, and
+    // meaningless in a way that reads like a figure.
+    let route = two_hop_route();
+    let plan = r.build_execution_plan(&route, &Value::Map(HashMap::new())).map_err(|e| e.to_string())?;
+    let venue = StubVenue::new("stub");
+    let mut venues: BTreeMap<String, Box<dyn RouterVenue>> = BTreeMap::new();
+    venues.insert("stub".to_string(), Box::new(venue));
+    let mut options = execute_options(true, "sequential");
+    // Both markets, so neither hop is refused for want of one.
+    let mut btc_usdt = HashMap::new();
+    btc_usdt.insert("symbol".to_string(), Value::Str("BTC/USDT".into()));
+    btc_usdt.insert("base".to_string(), Value::Str("BTC".into()));
+    btc_usdt.insert("quote".to_string(), Value::Str("USDT".into()));
+    let mut btc_eth = HashMap::new();
+    btc_eth.insert("symbol".to_string(), Value::Str("BTC/ETH".into()));
+    btc_eth.insert("base".to_string(), Value::Str("BTC".into()));
+    btc_eth.insert("quote".to_string(), Value::Str("ETH".into()));
+    let mut by_symbol = HashMap::new();
+    by_symbol.insert("BTC/USDT".to_string(), Value::Map(btc_usdt));
+    by_symbol.insert("BTC/ETH".to_string(), Value::Map(btc_eth));
+    let mut markets = HashMap::new();
+    markets.insert("stub".to_string(), Value::Map(by_symbol));
+    OrderRouter::set_key(&mut options, "markets", Value::Map(markets));
+    let mut usd_rates = HashMap::new();
+    usd_rates.insert("USDT".to_string(), Value::Float(1.0));
+    usd_rates.insert("ETH".to_string(), Value::Float(10.0));
+    OrderRouter::set_key(&mut options, "usdRates", Value::Map(usd_rates));
+
+    let report = block_on(r.execute(&plan, &venues, &options)).map_err(|e| e.to_string())?;
+    let results = r.list_at(&report, "steps");
+    if results.len() != 2 {
+        return Err(format!("the two-hop route must place two orders, got {results:?}"));
+    }
+    // hop 0 spends USDT and acquires BTC; hop 1 spends that BTC and produces ETH.
+    // filledIn must therefore be hop 0's inAmount alone (USDT) and filledOut hop
+    // 1's outAmount alone (ETH). The bug summed both columns over both steps, so
+    // filledIn was USDT + BTC and filledOut was BTC + ETH — two currencies added
+    // together and reported as one figure.
+    let first_in = r.number_at(&results[0], "inAmount", 0.0);
+    let second_in = r.number_at(&results[1], "inAmount", 0.0);
+    let first_out = r.number_at(&results[0], "outAmount", 0.0);
+    let second_out = r.number_at(&results[1], "outAmount", 0.0);
+    let filled_in = r.number_at(&report, "filledIn", -1.0);
+    let filled_out = r.number_at(&report, "filledOut", -1.0);
+    if (filled_in - first_in).abs() > 1e-9 {
+        return Err(format!("filledIn is the FIRST hop's spend alone ({first_in} USDT), got {filled_in}"));
+    }
+    if (filled_out - second_out).abs() > 1e-9 {
+        return Err(format!("filledOut is the LAST hop's proceeds alone ({second_out} ETH), got {filled_out}"));
+    }
+    // Belt and braces: the two hops must actually differ, or the check above
+    // would pass on a route where summing happens to give the same answer.
+    if second_in <= 0.0 || first_out <= 0.0 {
+        return Err("the fixture route must have a real middle asset for this to mean anything".to_string());
+    }
+    if r.number_at(&report, "ordersPlaced", 0.0) != 2.0 {
+        return Err(format!("both placements are counted, got {}", r.number_at(&report, "ordersPlaced", 0.0)));
+    }
+    // And the companion flags this port dropped entirely: a caller must be able
+    // to tell the venue's own figure from this class's fallback.
+    for result in &results {
+        for flag in ["filledKnown", "averageKnown", "costKnown"] {
+            if !r.bool_at(result, flag, false) {
+                return Err(format!("{flag} must be reported, and true when the stub answered fully: {result:?}"));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn limit_price_side(r: &OrderRouter) -> Result<(), String> {
     // The limit sits on the side that costs you, and only there.
     let options = config_with(&[("slippageBps", Value::Float(100.0))]);
@@ -823,6 +930,7 @@ pub fn run() -> Result<usize, String> {
         ("execute: refuses to go live above a cap the caller set", Box::new(|| execute_refuses_to_go_live_above_the_cap(&router()?))),
         ("execute: the same trade goes through when nobody asked for a cap", Box::new(|| execute_places_the_same_trade_with_no_cap(&router()?))),
         ("execute: a throw after createOrder still reports the id and an open order", Box::new(|| a_known_order_id_survives_a_throw_after_create(&router()?))),
+        ("execute: a report is summarised in the assets it names, not across currencies", Box::new(|| a_report_is_summarised_in_the_assets_it_names(&router()?))),
         ("execute: atomic_ish demands the whole route pre-funded", Box::new(|| atomic_ish_demands_the_whole_route_prefunded(&router()?))),
         ("execute: best_effort demands both of its acknowledgements", Box::new(|| best_effort_demands_its_acknowledgements(&router()?))),
     ];

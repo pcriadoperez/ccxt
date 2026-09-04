@@ -1444,6 +1444,8 @@ impl OrderRouter {
         for step in steps {
             let mut result = HashMap::new();
             result.insert("stepIndex".into(), Value::Float(self.number_at(step, "stepIndex", -1.0)));
+            result.insert("hopIndex".into(), Value::Float(self.number_at(step, "hopIndex", 0.0)));
+            result.insert("legIndex".into(), Value::Float(self.number_at(step, "legIndex", 0.0)));
             result.insert("exchangeId".into(), Value::Str(self.string_at(step, "exchangeId", "")));
             result.insert("symbol".into(), Value::Str(self.string_at(step, "symbol", "")));
             result.insert("side".into(), Value::Str(self.string_at(step, "side", "")));
@@ -1553,18 +1555,34 @@ impl OrderRouter {
     /// Totals the report's fills once the loops are done.
     fn summarise_report(&self, report: &mut Value, steps: &[Value]) {
         let results = self.list_at(report, "steps");
-        let mut placed = 0.0;
+        // filledIn is denominated in the route's FROM asset and filledOut in its
+        // TO asset, which is only true if each is summed over one hop: the first
+        // and the last. Summing inAmount and outAmount across every step, as
+        // this port did, adds USDT to BTC to ETH and reports the total as one
+        // number — meaningless on any route longer than a single hop, and
+        // meaningless in a way that reads like a figure.
+        let mut last_hop = 0.0;
+        for step in steps {
+            let hop_index = self.number_at(step, "hopIndex", 0.0);
+            if hop_index > last_hop {
+                last_hop = hop_index;
+            }
+        }
         let mut filled_in = 0.0;
         let mut filled_out = 0.0;
         for result in &results {
-            let status = self.string_at(result, "status", "");
-            if status == "filled" || status == "partial" || status == "unfilled" {
-                placed += 1.0;
+            let hop_index = self.number_at(result, "hopIndex", 0.0);
+            if hop_index == 0.0 {
+                filled_in += self.number_at(result, "inAmount", 0.0);
             }
-            filled_in += self.number_at(result, "inAmount", 0.0);
-            filled_out += self.number_at(result, "outAmount", 0.0);
+            if hop_index == last_hop {
+                filled_out += self.number_at(result, "outAmount", 0.0);
+            }
         }
-        Self::put(report, "ordersPlaced", Value::Float(placed));
+        // ordersPlaced is NOT recomputed here. It is incremented as each order is
+        // placed, so it counts an outcome_unknown step too — a status-derived
+        // recount silently dropped exactly those, which are the placements an
+        // operator most needs to know about.
         Self::put(report, "filledIn", Value::Float(filled_in));
         Self::put(report, "filledOut", Value::Float(filled_out));
         Self::put(report, "stepCount", Value::Float(steps.len() as f64));
@@ -1665,6 +1683,12 @@ impl OrderRouter {
         let side = self.string_at(step, "side", "");
         let mut result = HashMap::new();
         result.insert("stepIndex".into(), Value::Float(step_index));
+        // Carried from the step, not derived. Without them every result read as
+        // hopIndex 0, which is what let summarise_report sum a two-hop route's
+        // spends together — and it is also how a caller tells which hop a result
+        // belongs to at all.
+        result.insert("hopIndex".into(), Value::Float(self.number_at(step, "hopIndex", 0.0)));
+        result.insert("legIndex".into(), Value::Float(self.number_at(step, "legIndex", 0.0)));
         result.insert("exchangeId".into(), Value::Str(exchange_id.clone()));
         result.insert("symbol".into(), Value::Str(symbol.clone()));
         result.insert("side".into(), Value::Str(side.clone()));
@@ -1906,6 +1930,13 @@ impl OrderRouter {
         Self::put(result, "filledAmount", Value::Float(filled));
         Self::put(result, "averagePrice", Value::Float(average));
         Self::put(result, "cost", Value::Float(cost));
+        // Companion flags, per the file's own "was it known" rule. A false here
+        // means the number beside it is this class's best guess, not the venue's
+        // answer. This port omitted all three, so a caller reading a Rust report
+        // could not tell a venue's figure from a fallback.
+        Self::put(result, "filledKnown", Value::Bool(filled_known));
+        Self::put(result, "averageKnown", Value::Bool(average_known));
+        Self::put(result, "costKnown", Value::Bool(cost_known));
         if side == "buy" {
             Self::put(result, "inAsset", Value::Str(self.string_at(step, "quote", "")));
             Self::put(result, "inAmount", Value::Float(cost));
@@ -1943,14 +1974,17 @@ impl OrderRouter {
             // number is not.
             Self::put(result, "status", Value::Str("outcome_unknown".into()));
             self.record_open_order(report, exchange_id, symbol, &self.string_at(result, "orderId", ""), "fill_unconfirmed");
+            // An order WAS placed, and this is exactly the path where knowing
+            // that matters most. Counted here, as in the other five ports.
+            Self::put(report, "ordersPlaced", Value::Float(self.number_at(report, "ordersPlaced", 0.0) + 1.0));
             return;
         }
-        if (!average_known || !cost_known) && filled > 0.0 {
-            // A fill with no price is a fill whose proceeds are a guess.
-            Self::put(result, "status", Value::Str("outcome_unknown".into()));
-            self.record_open_order(report, exchange_id, symbol, &self.string_at(result, "orderId", ""), "price_unconfirmed");
-            return;
-        }
+        // No halt on an unknown PRICE. This port had an extra `price_unconfirmed`
+        // branch that no other has: a fill whose average or cost the venue did
+        // not report falls back to the order's `price`, then to the limit price,
+        // and is flagged above rather than stopping the route. The reference
+        // halts on an unknown FILL — an invented quantity is what makes the next
+        // hop unsafe — and reports an estimated price as an estimate.
         if filled <= 0.0 {
             Self::put(result, "status", Value::Str("unfilled".into()));
         } else if filled >= amount * (1.0 - TOLERANCE) {
@@ -1967,6 +2001,7 @@ impl OrderRouter {
             // its own reads like nothing happened.
             self.record_open_order(report, exchange_id, symbol, &self.string_at(result, "orderId", ""), "still_open");
         }
+        Self::put(report, "ordersPlaced", Value::Float(self.number_at(report, "ordersPlaced", 0.0) + 1.0));
     }
 }
 

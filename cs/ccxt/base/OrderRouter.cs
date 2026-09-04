@@ -2432,6 +2432,45 @@ public class OrderRouter
         mapped["average"] = order.average;
         mapped["cost"] = order.cost;
         mapped["price"] = order.price;
+        //  The fee fields are read by OrderFeeInAsset, which nets a fee charged in the acquired
+        //  asset out of what this hop carries FORWARD. Omitting them here did not make C# fee-blind
+        //  in some harmless way: OrderFeeInAsset simply always returned 0, so C# alone sized the
+        //  next hop — and any unwind — on the gross figure, ordering more than the wallet holds.
+        //  ccxt.Order carries both the single `fee` and the `fees` list safeOrder fills in, and
+        //  OrderFeeInAsset needs both to avoid under-counting per-trade fees.
+        if (order.fee != null)
+        {
+            mapped["fee"] = FeeToDict(order.fee.Value);
+        }
+        if (order.fees != null)
+        {
+            var feeList = new list();
+            foreach (var entry in order.fees)
+            {
+                feeList.Add(FeeToDict(entry));
+            }
+            mapped["fees"] = feeList;
+        }
+        return mapped;
+    }
+
+    /// <summary>
+    /// Views a typed ccxt.Fee as the plain dict OrderFeeInAsset reads. `cost` is left ABSENT
+    /// rather than coerced to 0 when the venue did not report one: NumberAt then falls back to its
+    /// own default, and a missing fee stays distinguishable from a zero one.
+    /// </summary>
+    public dict FeeToDict(ccxt.Fee fee)
+    {
+        var mapped = new dict();
+        mapped["currency"] = fee.currency;
+        if (fee.cost != null)
+        {
+            mapped["cost"] = fee.cost.Value;
+        }
+        if (fee.rate != null)
+        {
+            mapped["rate"] = fee.rate.Value;
+        }
         return mapped;
     }
 
