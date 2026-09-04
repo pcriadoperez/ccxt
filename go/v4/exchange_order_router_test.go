@@ -364,26 +364,37 @@ func routerCodes(violations []map[string]any) []string {
 	return codes
 }
 
-func TestOrderRouterConstructorCapMayBeLoweredNeverRaised(t *testing.T) {
+func TestOrderRouterConstructorCapIsAnOptInGuardrailAtAnySize(t *testing.T) {
 	if _, err := NewOrderRouter(map[string]any{}); routerErrorCode(err) != "ArgumentsRequired" {
 		t.Fatalf("an apiKey is required, got %v", err)
 	}
-	if _, err := NewOrderRouter(map[string]any{"apiKey": "k", "maxNotionalUsd": 25.01}); routerErrorCode(err) != "BadRequest" {
-		t.Fatalf("the 25 USD cap must not be raisable, got %v", err)
+	// No ceiling. A caller trading thousands is using this correctly, and the type
+	// does not get to decide otherwise — the old hard 25 USD limit came from this
+	// repository's own live-test safety rule, which is not a rule about anyone's money.
+	large, err := NewOrderRouter(map[string]any{"apiKey": "k", "maxNotionalUsd": 250000})
+	if err != nil || large.MaxNotionalUsd != 250000 {
+		t.Fatalf("a large cap is honoured exactly, not clamped, got %v %v", large, err)
 	}
-	if _, err := NewOrderRouter(map[string]any{"apiKey": "k", "maxNotionalUsd": 0}); routerErrorCode(err) != "BadRequest" {
-		t.Fatalf("a non-positive cap must be refused, got %v", err)
+	small, err := NewOrderRouter(map[string]any{"apiKey": "k", "maxNotionalUsd": 0.05})
+	if err != nil || small.MaxNotionalUsd != 0.05 {
+		t.Fatalf("cents are a legitimate trade size, got %v %v", small, err)
 	}
-	lowered, err := NewOrderRouter(map[string]any{"apiKey": "k", "maxNotionalUsd": 5})
-	if err != nil || lowered.MaxNotionalUsd != 5 {
-		t.Fatalf("the cap may be lowered, got %v %v", lowered, err)
-	}
+	// the default is NO cap
 	standard, err := NewOrderRouter(map[string]any{"apiKey": "k"})
-	if err != nil || standard.MaxNotionalUsd != 25 {
-		t.Fatalf("the default cap is 25, got %v %v", standard, err)
+	if err != nil || standard.MaxNotionalUsd != OrderRouterNoCap {
+		t.Fatalf("the default is no cap, got %v %v", standard, err)
 	}
-	if OrderRouterMaxNotionalUsd != 25 {
-		t.Fatalf("the hard ceiling is 25, got %v", OrderRouterMaxNotionalUsd)
+	if OrderRouterNoCap != 0 {
+		t.Fatalf("no cap is spelled 0, got %v", OrderRouterNoCap)
+	}
+	// 0 is the explicit spelling of "no cap"; negative is a typo, and silently
+	// ignoring it would leave the caller believing a guardrail is in place
+	explicit, err := NewOrderRouter(map[string]any{"apiKey": "k", "maxNotionalUsd": 0})
+	if err != nil || explicit.MaxNotionalUsd != 0 {
+		t.Fatalf("0 is the explicit spelling of no cap, got %v %v", explicit, err)
+	}
+	if _, err := NewOrderRouter(map[string]any{"apiKey": "k", "maxNotionalUsd": -1}); routerErrorCode(err) != "BadRequest" {
+		t.Fatalf("a negative cap is a typo and must be refused, got %v", err)
 	}
 }
 
@@ -403,40 +414,69 @@ func TestOrderRouterLimitPriceSitsOnTheSideThatCostsYou(t *testing.T) {
 	}
 }
 
-func TestOrderRouterNotionalCapBlocksAt25(t *testing.T) {
+func TestOrderRouterACapThatIsSetBindsExactlyAtWhateverSize(t *testing.T) {
 	router := routerTestRouter(t)
 	markets := routerPermissiveStubMarkets()
-	rates := map[string]any{"usdRates": map[string]any{"USDT": 1.0}}
+	capped := map[string]any{"usdRates": map[string]any{"USDT": 1.0}, "maxNotionalUsd": 25.0}
 	// amount * limitPrice is what is measured, so a 1% slippage on a 24.90 USD
 	// step is what carries it over the line
 	under := routerMustPlan(router.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 0.24, 100), map[string]any{"slippageBps": 0.0}))
-	if got := router.CheckExecutionPlanSafety(under, markets, rates); len(got) != 0 {
-		t.Fatalf("24 USD passes, got %v", routerCodes(got))
+	if got := router.CheckExecutionPlanSafety(under, markets, capped); len(got) != 0 {
+		t.Fatalf("24 USD passes a 25 USD cap, got %v", routerCodes(got))
 	}
 	at := routerMustPlan(router.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 0.25, 100), map[string]any{"slippageBps": 0.0}))
-	if got := router.CheckExecutionPlanSafety(at, markets, rates); len(got) != 0 {
-		t.Fatalf("exactly 25 USD passes, got %v", routerCodes(got))
+	if got := router.CheckExecutionPlanSafety(at, markets, capped); len(got) != 0 {
+		t.Fatalf("exactly at the cap passes, got %v", routerCodes(got))
 	}
 	over := routerMustPlan(router.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 0.2501, 100), map[string]any{"slippageBps": 0.0}))
-	overViolations := router.CheckExecutionPlanSafety(over, markets, rates)
+	overViolations := router.CheckExecutionPlanSafety(over, markets, capped)
 	if len(overViolations) != 1 || routerStringAt(overViolations[0], "code", "") != "notional_exceeds_cap" || !routerBoolAt(overViolations[0], "blocking", false) {
 		t.Fatalf("25.01 USD blocks, got %v", routerCodes(overViolations))
 	}
 	// and the slippage is inside the measurement, not outside it
 	slipped := routerMustPlan(router.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 0.249, 100), map[string]any{"slippageBps": 100.0}))
-	slippedViolations := router.CheckExecutionPlanSafety(slipped, markets, rates)
+	slippedViolations := router.CheckExecutionPlanSafety(slipped, markets, capped)
 	if len(slippedViolations) != 1 || routerStringAt(slippedViolations[0], "code", "") != "notional_exceeds_cap" {
 		t.Fatalf("24.90 USD at 1%% slippage is 25.15 USD of risk, got %v", routerCodes(slippedViolations))
 	}
+	// A LARGE cap is honoured just as exactly. This is the case the old hard ceiling
+	// made unreachable: 2,000 USD of BTC under a 5,000 USD guardrail is a normal trade.
+	large := routerMustPlan(router.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 20, 100), map[string]any{"slippageBps": 0.0}))
+	if got := router.CheckExecutionPlanSafety(large, markets, map[string]any{"usdRates": map[string]any{"USDT": 1.0}, "maxNotionalUsd": 5000.0}); len(got) != 0 {
+		t.Fatalf("2,000 USD under a 5,000 USD cap passes, got %v", routerCodes(got))
+	}
+	overLarge := router.CheckExecutionPlanSafety(large, markets, map[string]any{"usdRates": map[string]any{"USDT": 1.0}, "maxNotionalUsd": 1000.0})
+	if len(overLarge) != 1 || routerStringAt(overLarge[0], "code", "") != "notional_exceeds_cap" {
+		t.Fatalf("and the same 2,000 USD trips a 1,000 USD cap, got %v", routerCodes(overLarge))
+	}
+	if routerNumberAt(overLarge[0], "limit", 0) != 1000 {
+		t.Fatalf("the limit reported is the cap as given, got %v", overLarge[0]["limit"])
+	}
 }
 
-func TestOrderRouterUnvaluableStepBlocksAndIsNeverSkipped(t *testing.T) {
+// The default is NO cap. This type does not decide how much of your money you may
+// trade — the guardrail is opt-in, so a plan of any size passes untouched, and a
+// caller who never asked for a cap is not made to supply usdRates for it.
+func TestOrderRouterWithNoCapSetNoNotionalCheckRunsAtAll(t *testing.T) {
 	router := routerTestRouter(t)
 	markets := routerPermissiveStubMarkets()
-	// 0.01 USDT of notional: trivially under any cap, and still refused, because
-	// the point is that the cap could not be EVALUATED
+	large := routerMustPlan(router.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 1000, 100), map[string]any{"slippageBps": 0.0}))
+	if got := router.CheckExecutionPlanSafety(large, markets, map[string]any{"usdRates": map[string]any{"USDT": 1.0}}); len(got) != 0 {
+		t.Fatalf("100,000 USD passes when no cap is set, got %v", routerCodes(got))
+	}
+	if got := router.CheckExecutionPlanSafety(large, markets, map[string]any{}); len(got) != 0 {
+		t.Fatalf("and it needs no usdRates at all, got %v", routerCodes(got))
+	}
+}
+
+func TestOrderRouterUnvaluableStepBlocksWhenACapIsInForceAndIsNeverSkipped(t *testing.T) {
+	router := routerTestRouter(t)
+	markets := routerPermissiveStubMarkets()
+	// 0.01 USDT of notional: trivially under the cap, and still refused, because the
+	// point is that the cap the caller ASKED FOR could not be evaluated. With no cap
+	// set there is nothing to enforce and this same plan passes — see the test above.
 	plan := routerMustPlan(router.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 0.0001, 100), map[string]any{"slippageBps": 0.0}))
-	violations := router.CheckExecutionPlanSafety(plan, markets, map[string]any{"usdRates": map[string]any{}})
+	violations := router.CheckExecutionPlanSafety(plan, markets, map[string]any{"usdRates": map[string]any{}, "maxNotionalUsd": 25.0})
 	if len(violations) != 1 || routerStringAt(violations[0], "code", "") != "notional_unvaluable" {
 		t.Fatalf("an unvaluable step must be reported, got %v", routerCodes(violations))
 	}
@@ -444,16 +484,20 @@ func TestOrderRouterUnvaluableStepBlocksAndIsNeverSkipped(t *testing.T) {
 		t.Fatal("an unvaluable step must block, or the cap is decorative")
 	}
 	// unrelated rates do not help
-	stillBlocked := router.CheckExecutionPlanSafety(plan, markets, map[string]any{"usdRates": map[string]any{"ETH": 3000.0, "DOGE": 0.09}})
+	stillBlocked := router.CheckExecutionPlanSafety(plan, markets, map[string]any{"usdRates": map[string]any{"ETH": 3000.0, "DOGE": 0.09}, "maxNotionalUsd": 25.0})
 	if routerStringAt(stillBlocked[0], "code", "") != "notional_unvaluable" {
 		t.Fatalf("unrelated rates do not rescue it, got %v", routerCodes(stillBlocked))
 	}
 	// either side of the market resolves it
-	if got := router.CheckExecutionPlanSafety(plan, markets, map[string]any{"usdRates": map[string]any{"USDT": 1.0}}); len(got) != 0 {
+	if got := router.CheckExecutionPlanSafety(plan, markets, map[string]any{"usdRates": map[string]any{"USDT": 1.0}, "maxNotionalUsd": 25.0}); len(got) != 0 {
 		t.Fatalf("a quote rate values it, got %v", routerCodes(got))
 	}
-	if got := router.CheckExecutionPlanSafety(plan, markets, map[string]any{"usdRates": map[string]any{"BTC": 100.0}}); len(got) != 0 {
+	if got := router.CheckExecutionPlanSafety(plan, markets, map[string]any{"usdRates": map[string]any{"BTC": 100.0}, "maxNotionalUsd": 25.0}); len(got) != 0 {
 		t.Fatalf("a base rate values it, got %v", routerCodes(got))
+	}
+	// and with no cap in force the very same unvaluable step is not a finding at all
+	if got := router.CheckExecutionPlanSafety(plan, markets, map[string]any{"usdRates": map[string]any{}}); len(got) != 0 {
+		t.Fatalf("no cap means no notional check to be unvaluable for, got %v", routerCodes(got))
 	}
 }
 
@@ -461,12 +505,12 @@ func TestOrderRouterUsdtIsNotAssumedToBeOneDollar(t *testing.T) {
 	router := routerTestRouter(t)
 	markets := routerPermissiveStubMarkets()
 	plan := routerMustPlan(router.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 0.1, 100), map[string]any{"slippageBps": 0.0}))
-	violations := router.CheckExecutionPlanSafety(plan, markets, map[string]any{"usdRates": map[string]any{"USD": 1.0}})
+	violations := router.CheckExecutionPlanSafety(plan, markets, map[string]any{"usdRates": map[string]any{"USD": 1.0}, "maxNotionalUsd": 25.0})
 	if len(violations) != 1 || routerStringAt(violations[0], "code", "") != "notional_unvaluable" {
 		t.Fatalf("a stablecoin peg is an observation, not a definition, got %v", routerCodes(violations))
 	}
 	// a depegged rate is respected: 10 USDT at 0.40 is 4 USD
-	if got := router.CheckExecutionPlanSafety(plan, markets, map[string]any{"usdRates": map[string]any{"USDT": 0.4}}); len(got) != 0 {
+	if got := router.CheckExecutionPlanSafety(plan, markets, map[string]any{"usdRates": map[string]any{"USDT": 0.4}, "maxNotionalUsd": 25.0}); len(got) != 0 {
 		t.Fatalf("a depegged rate is respected, got %v", routerCodes(got))
 	}
 }
@@ -743,11 +787,11 @@ func TestOrderRouterDryRunIsTheDefault(t *testing.T) {
 	}
 }
 
-func TestOrderRouterRefusesToGoLiveWithoutAWayToValueTheTrade(t *testing.T) {
+func TestOrderRouterRefusesToGoLiveWithoutAWayToValueTheTradeWhenACapIsSet(t *testing.T) {
 	router := routerTestRouter(t)
 	plan := routerMustPlan(router.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 0.2, 100), nil))
 	venue := newOrderRouterStubVenue(1, false)
-	_, err := router.Execute(plan, routerStubVenues(map[string]*orderRouterStubVenue{"stub": venue}), map[string]any{"strategy": "sequential", "live": true})
+	_, err := router.Execute(plan, routerStubVenues(map[string]*orderRouterStubVenue{"stub": venue}), map[string]any{"strategy": "sequential", "live": true, "maxNotionalUsd": 25.0})
 	if routerErrorCode(err) != "ExchangeError" {
 		t.Fatalf("an unvaluable plan is refused, got %v", err)
 	}
@@ -756,20 +800,44 @@ func TestOrderRouterRefusesToGoLiveWithoutAWayToValueTheTrade(t *testing.T) {
 			t.Fatalf("no order was placed, got %v", venue.callLog())
 		}
 	}
+	// and with NO cap asked for, usdRates is not required: there is no cap to
+	// evaluate, so demanding the inputs for one would be asking for something
+	// nobody wanted
+	uncapped := newOrderRouterStubVenue(1, false)
+	report, err := router.Execute(plan, routerStubVenues(map[string]*orderRouterStubVenue{"stub": uncapped}), map[string]any{"strategy": "sequential", "live": true})
+	if err != nil {
+		t.Fatalf("no cap means no usdRates are needed, got %v", err)
+	}
+	if got := routerStringAt(report["steps"].([]map[string]any)[0], "status", ""); got != "filled" {
+		t.Fatalf("the step goes through, got %v", got)
+	}
 }
 
-func TestOrderRouterRefusesToGoLiveAboveTheCap(t *testing.T) {
+func TestOrderRouterRefusesToGoLiveAboveACapTheCallerSet(t *testing.T) {
+	// 500 USD against a 25 USD guardrail. The refusal happens BEFORE any order goes
+	// out, which is the property worth asserting — a cap checked after the fact is
+	// an incident report, not a guardrail.
 	router := routerTestRouter(t)
 	plan := routerMustPlan(router.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 5, 100), nil))
 	venue := newOrderRouterStubVenue(1, false)
-	_, err := router.Execute(plan, routerStubVenues(map[string]*orderRouterStubVenue{"stub": venue}), map[string]any{"strategy": "sequential", "live": true, "usdRates": map[string]any{"USDT": 1.0}})
+	_, err := router.Execute(plan, routerStubVenues(map[string]*orderRouterStubVenue{"stub": venue}), map[string]any{"strategy": "sequential", "live": true, "usdRates": map[string]any{"USDT": 1.0}, "maxNotionalUsd": 25.0})
 	if routerErrorCode(err) != "ExchangeError" {
-		t.Fatalf("a 500 USD plan is refused, got %v", err)
+		t.Fatalf("a 500 USD plan is refused under a 25 USD cap, got %v", err)
 	}
 	for _, call := range venue.callLog() {
 		if strings.Contains(call, "createOrder") {
 			t.Fatalf("no order was placed, got %v", venue.callLog())
 		}
+	}
+	// the same 500 USD trade with no cap set goes through: that is the point of the
+	// guardrail being opt-in
+	uncapped := newOrderRouterStubVenue(1, false)
+	report, err := router.Execute(plan, routerStubVenues(map[string]*orderRouterStubVenue{"stub": uncapped}), map[string]any{"strategy": "sequential", "live": true, "usdRates": map[string]any{"USDT": 1.0}})
+	if err != nil {
+		t.Fatalf("500 USD is a normal trade when nobody asked for a cap, got %v", err)
+	}
+	if got := routerStringAt(report["steps"].([]map[string]any)[0], "status", ""); got != "filled" {
+		t.Fatalf("the step goes through, got %v", got)
 	}
 }
 
@@ -958,25 +1026,46 @@ func TestOrderRouterBestEffortStopsAtMaxOrdersAndNeverHalts(t *testing.T) {
 	}
 }
 
-// The hard 25 USD cap must survive a writable MaxNotionalUsd. The constructor
-// refuses to be built above 25, but MaxNotionalUsd is an exported struct field
-// and plain assignment is idiomatic Go — a ceiling that one assignment removes
-// is not a ceiling, so both clamp sites re-impose the constant.
-func TestOrderRouterCapSurvivesAWritableField(t *testing.T) {
-	tampered := routerTestRouter(t)
-	tampered.MaxNotionalUsd = 1000
+// The cap is a guardrail the CALLER sets, so the per-call value wins — there is no
+// ceiling re-imposed behind their back. Both directions are asserted because the
+// old implementation clamped one way only, and a guardrail that silently refuses to
+// loosen is as surprising as one that silently refuses to tighten.
+func TestOrderRouterPerCallCapOverridesTheClientLevelOneInBothDirections(t *testing.T) {
+	client, err := NewOrderRouter(map[string]any{"apiKey": "k", "maxNotionalUsd": 100})
+	if err != nil {
+		t.Fatalf("NewOrderRouter: %v", err)
+	}
 	// 0.005 BTC at 100000 USDT is 500 USD
-	plan := routerMustPlan(tampered.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 0.005, 100000), map[string]any{"slippageBps": 0.0}))
-	violations := tampered.CheckExecutionPlanSafety(plan, routerPermissiveStubMarkets(), map[string]any{"usdRates": map[string]any{"USDT": 1.0}, "maxNotionalUsd": 1000.0})
-	if len(violations) != 1 || routerStringAt(violations[0], "code", "") != "notional_exceeds_cap" {
-		t.Fatalf("a 500 USD step must still be refused, got %v", violations)
+	plan := routerMustPlan(client.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 0.005, 100000), map[string]any{"slippageBps": 0.0}))
+	markets := routerPermissiveStubMarkets()
+	underClientCap := client.CheckExecutionPlanSafety(plan, markets, map[string]any{"usdRates": map[string]any{"USDT": 1.0}})
+	if len(underClientCap) != 1 || routerStringAt(underClientCap[0], "code", "") != "notional_exceeds_cap" {
+		t.Fatalf("500 USD trips the client cap of 100, got %v", routerCodes(underClientCap))
 	}
-	if routerNumberAt(violations[0], "limit", 0) != 25 {
-		t.Fatalf("the limit reported is the constant, not the tampered field, got %v", violations[0]["limit"])
+	if routerNumberAt(underClientCap[0], "limit", 0) != 100 {
+		t.Fatalf("the client cap is reported as given, got %v", underClientCap[0]["limit"])
 	}
-	step := routerListAt(plan, "steps")[0]
-	if err := tampered.assertUnderCap(routerContainer(step), 0.005, 100000, map[string]any{"USDT": 1.0}, map[string]any{"maxNotionalUsd": 1000.0}); err == nil {
-		t.Fatal("the last check before an order goes out refuses too")
+	// raised for this call
+	if got := client.CheckExecutionPlanSafety(plan, markets, map[string]any{"usdRates": map[string]any{"USDT": 1.0}, "maxNotionalUsd": 1000.0}); len(got) != 0 {
+		t.Fatalf("a per-call cap of 1000 lets it through, got %v", routerCodes(got))
+	}
+	// lowered for this call
+	tightened := client.CheckExecutionPlanSafety(plan, markets, map[string]any{"usdRates": map[string]any{"USDT": 1.0}, "maxNotionalUsd": 10.0})
+	if len(tightened) != 1 || routerNumberAt(tightened[0], "limit", 0) != 10 {
+		t.Fatalf("a per-call cap of 10 binds, got %v", tightened)
+	}
+	// and the last check before an order goes out honours the same value
+	step := routerContainer(routerListAt(plan, "steps")[0])
+	if err := client.assertUnderCap(step, 0.005, 100000, map[string]any{"USDT": 1.0}, map[string]any{"maxNotionalUsd": 100.0}); err == nil {
+		t.Fatal("500 USD against a 100 USD cap is refused at the last moment too")
+	}
+	if err := client.assertUnderCap(step, 0.005, 100000, map[string]any{"USDT": 1.0}, map[string]any{"maxNotionalUsd": 1000.0}); err != nil {
+		t.Fatalf("and a per-call 1000 USD cap lets the same order out, got %v", err)
+	}
+	// with no cap anywhere it does not even ask for a rate
+	uncapped := routerTestRouter(t)
+	if err := uncapped.assertUnderCap(step, 0.005, 100000, map[string]any{}, map[string]any{}); err != nil {
+		t.Fatalf("no cap means nothing to enforce, got %v", err)
 	}
 }
 

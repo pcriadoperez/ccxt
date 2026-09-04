@@ -80,8 +80,6 @@ class OrderRouter {
 
     static DEFAULT_RECONCILE_TOLERANCE = 0.02;
 
-    //  CLAUDE.md: never risk more than 25 USD equivalent per trade. This is a
-    //  ceiling, not a default — the constructor refuses to raise it.
     //  NO_CAP is the default: this class does not decide how much of your money you
     //  may trade. `maxNotionalUsd` is an OPT-IN guardrail — set it and it is honoured
     //  exactly, at whatever value you choose; leave it unset and no notional check runs
@@ -119,7 +117,7 @@ class OrderRouter {
      * @param {string} config.apiKey the router API key, sent as the x-api-key header (required)
      * @param {string} [config.baseUrl] router base url, defaults to https://docs.ccxt.com/router/api
      * @param {int} [config.timeoutMs] request timeout in milliseconds, defaults to 30000
-     * @param {float} [config.maxNotionalUsd] per-trade USD notional cap, defaults to 25 and may only be LOWERED
+     * @param {float} [config.maxNotionalUsd] optional per-trade USD notional guardrail. Omitted or 0 means NO cap and no notional check at all; any positive value is honoured exactly, never clamped
      * @returns {OrderRouter} a router client
      */
     constructor (config: Dict = {}) {
@@ -804,7 +802,7 @@ class OrderRouter {
      * @param {object} markets a dictionary of exchangeId to that exchange's markets dictionary, i.e. markets[exchangeId][symbol]
      * @param {object} [options] check options
      * @param {object} [options.usdRates] a dictionary of currency code to its USD price. USD itself is 1 implicitly; nothing else is assumed
-     * @param {float} [options.maxNotionalUsd] per-trade cap, clamped to the client's own cap, which is clamped to 25
+     * @param {float} [options.maxNotionalUsd] per-trade cap for this call, overriding the client's own in either direction. Omitted falls back to the client's; 0 or absent on both means no cap and no notional check
      * @param {string} [options.precisionMode] tick_size (default) or decimal_places, matching the venue's precisionMode
      * @returns {object[]} the violations, each with stepIndex, code, blocking, actual, limit and a constant message. An empty array means the plan passed
      */
@@ -1270,7 +1268,7 @@ class OrderRouter {
                 'side': side,
                 //  base and quote are carried so that an unwind plan can be fed
                 //  straight back into checkExecutionPlanSafety: unwinding is
-                //  trading, and it is subject to the same 25 USD cap
+                //  trading, and it is subject to whatever cap the caller set
                 'base': marketBase,
                 'quote': marketQuote,
                 'asset': asset,
@@ -2255,7 +2253,7 @@ class OrderRouter {
      * @param {float} amount the snapped amount actually being sent
      * @param {float} price the snapped price actually being sent
      * @param {object} usdRates currency code to USD price
-     * @param {object} options the execute options, read for a lowered maxNotionalUsd
+     * @param {object} options the execute options, read for maxNotionalUsd; returns without checking anything when no cap is set
      * @returns {undefined}
      */
     assertUnderCap (step: Dict, amount: number, price: number, usdRates: Dict, options: Dict) {

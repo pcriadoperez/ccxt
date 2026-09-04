@@ -20,7 +20,7 @@
 // means THIS port is wrong — that is the whole reason for running the same table
 // six times rather than trusting six readings of the same spec.
 
-use crate::order_router::{OrderRouter, TOLERANCE};
+use crate::order_router::{OrderRouter, NO_CAP, TOLERANCE};
 use crate::value::{HashMap, Value};
 
 fn fixture() -> Result<Value, String> {
@@ -352,32 +352,56 @@ fn config_with(entries: &[(&str, Value)]) -> Value {
     Value::Map(config)
 }
 
+fn capped_client(cap: f64) -> Result<OrderRouter, String> {
+    let config = config_with(&[
+        ("apiKey", Value::Str("k".into())),
+        ("maxNotionalUsd", Value::Float(cap)),
+    ]);
+    OrderRouter::new(&config).map_err(|e| e.to_string())
+}
+
 fn constructor_guards() -> Result<(), String> {
-    // The cap is a hard rule, not a preference.
     if OrderRouter::new(&config_with(&[])).is_ok() {
         return Err("an apiKey is required".to_string());
     }
-    let raised = config_with(&[
-        ("apiKey", Value::Str("k".into())),
-        ("maxNotionalUsd", Value::Float(25.01)),
-    ]);
-    if OrderRouter::new(&raised).is_ok() {
-        return Err("the cap may not be raised".to_string());
+    // No ceiling. A caller trading thousands is using this correctly, and the
+    // class does not get to decide otherwise — the old hard 25 USD limit came
+    // from this repository's own live-test safety rule, which is not a rule
+    // about anyone's money.
+    let large = capped_client(250000.0)?;
+    if !numbers_match(large.max_notional_usd(), 250000.0) {
+        return Err(format!(
+            "a large cap is honoured exactly, not clamped, got {}",
+            large.max_notional_usd()
+        ));
     }
-    let zero = config_with(&[
-        ("apiKey", Value::Str("k".into())),
-        ("maxNotionalUsd", Value::Float(0.0)),
-    ]);
-    if OrderRouter::new(&zero).is_ok() {
-        return Err("the cap must be positive".to_string());
+    let small = capped_client(0.05)?;
+    if !numbers_match(small.max_notional_usd(), 0.05) {
+        return Err("cents are a legitimate trade size".to_string());
     }
-    let lowered = config_with(&[
+    // The default is NO cap.
+    let standard = OrderRouter::new(&config_with(&[("apiKey", Value::Str("k".into()))]))
+        .map_err(|e| e.to_string())?;
+    if !numbers_match(standard.max_notional_usd(), NO_CAP) || !numbers_match(NO_CAP, 0.0) {
+        return Err(format!(
+            "the default is NO_CAP, which is 0, got {}",
+            standard.max_notional_usd()
+        ));
+    }
+    // 0 is the explicit spelling of "no cap"; a negative value is a typo, and
+    // silently ignoring it would leave the caller believing a guardrail is in
+    // place.
+    if !numbers_match(capped_client(0.0)?.max_notional_usd(), 0.0) {
+        return Err("0 is the explicit spelling of no cap".to_string());
+    }
+    let negative = config_with(&[
         ("apiKey", Value::Str("k".into())),
-        ("maxNotionalUsd", Value::Float(5.0)),
+        ("maxNotionalUsd", Value::Float(-1.0)),
     ]);
-    let client = OrderRouter::new(&lowered).map_err(|e| e.to_string())?;
-    if client.max_notional_usd() != 5.0 {
-        return Err("the cap may be lowered".to_string());
+    match OrderRouter::new(&negative) {
+        Ok(_) => return Err("a negative cap is refused, not ignored".to_string()),
+        Err(e) if e.is("BadRequest") => {}
+        Err(e) => return Err(format!("a negative cap is a BadRequest, got {e}")),
     }
     // Trailing slashes are stripped so the url is built the same way in six
     // languages.
@@ -456,12 +480,9 @@ fn empty_plan_is_not_safe(r: &OrderRouter) -> Result<(), String> {
     Ok(())
 }
 
-fn usdt_is_not_a_dollar(r: &OrderRouter) -> Result<(), String> {
-    // A stablecoin peg is an empirical fact, not a definition. With no rate
-    // supplied, a USDT-quoted step cannot be valued and must BLOCK.
-    let plan = r
-        .build_execution_plan(&one_leg_route("buy", "BTC", "USDT", 0.001, 100.0), &Value::Null)
-        .map_err(|e| e.to_string())?;
+/// The market set the cap tests check against: it constrains nothing, so the
+/// only findings a plan can produce against it are the notional ones.
+fn permissive_stub_markets() -> Value {
     let mut market = HashMap::new();
     market.insert("symbol".to_string(), Value::Str("BTC/USDT".into()));
     market.insert("base".to_string(), Value::Str("BTC".into()));
@@ -470,13 +491,166 @@ fn usdt_is_not_a_dollar(r: &OrderRouter) -> Result<(), String> {
     venue.insert("BTC/USDT".to_string(), Value::Map(market));
     let mut markets = HashMap::new();
     markets.insert("stub".to_string(), Value::Map(venue));
+    Value::Map(markets)
+}
+
+/// `{ 'usdRates': { <code>: <rate>, ... } }`, plus whatever else the check
+/// options carry.
+fn rates(entries: &[(&str, f64)]) -> Value {
+    let mut usd_rates = HashMap::new();
+    for (code, rate) in entries {
+        usd_rates.insert((*code).to_string(), Value::Float(*rate));
+    }
+    Value::Map(usd_rates)
+}
+
+fn capped_options(cap: f64, usd_rates: &[(&str, f64)]) -> Value {
+    config_with(&[
+        ("usdRates", rates(usd_rates)),
+        ("maxNotionalUsd", Value::Float(cap)),
+    ])
+}
+
+fn uncapped_options(usd_rates: &[(&str, f64)]) -> Value {
+    config_with(&[("usdRates", rates(usd_rates))])
+}
+
+/// The codes of a plan's findings, in order, so an expectation reads as one
+/// line rather than as five index lookups.
+fn codes(violations: &[Value]) -> Vec<String> {
+    violations.iter().map(|v| text(v, "code")).collect()
+}
+
+fn planned(r: &OrderRouter, amount: f64, price: f64, slippage_bps: f64) -> Result<Value, String> {
+    let options = config_with(&[("slippageBps", Value::Float(slippage_bps))]);
+    r.build_execution_plan(&one_leg_route("buy", "BTC", "USDT", amount, price), &options)
+        .map_err(|e| e.to_string())
+}
+
+fn a_cap_that_is_set_binds_exactly(r: &OrderRouter) -> Result<(), String> {
+    // A cap the caller ASKED FOR is honoured at whatever size they chose, and
+    // the slippage is inside the measurement rather than outside it.
+    let markets = permissive_stub_markets();
+    let capped = capped_options(25.0, &[("USDT", 1.0)]);
+    let under = planned(r, 0.24, 100.0, 0.0)?;
+    if !codes(&r.check_execution_plan_safety(&under, &markets, &capped)).is_empty() {
+        return Err("24 USD passes a 25 USD cap".to_string());
+    }
+    let at_the_cap = planned(r, 0.25, 100.0, 0.0)?;
+    if !codes(&r.check_execution_plan_safety(&at_the_cap, &markets, &capped)).is_empty() {
+        return Err("exactly at the cap passes".to_string());
+    }
+    let over = planned(r, 0.2501, 100.0, 0.0)?;
+    if codes(&r.check_execution_plan_safety(&over, &markets, &capped)) != ["notional_exceeds_cap"] {
+        return Err("25.01 USD trips a 25 USD cap".to_string());
+    }
+    let slipped = planned(r, 0.249, 100.0, 100.0)?;
+    if codes(&r.check_execution_plan_safety(&slipped, &markets, &capped)) != ["notional_exceeds_cap"]
+    {
+        return Err("24.90 USD at 1% slippage is 25.15 USD of risk".to_string());
+    }
+    // A LARGE cap is honoured just as exactly. This is the case the old hard
+    // ceiling made unreachable: 2,000 USD of BTC under a 5,000 USD guardrail is
+    // a normal trade.
+    let large = planned(r, 20.0, 100.0, 0.0)?;
+    let generous = capped_options(5000.0, &[("USDT", 1.0)]);
+    if !codes(&r.check_execution_plan_safety(&large, &markets, &generous)).is_empty() {
+        return Err("2,000 USD under a 5,000 USD cap".to_string());
+    }
+    let tighter = capped_options(1000.0, &[("USDT", 1.0)]);
+    if codes(&r.check_execution_plan_safety(&large, &markets, &tighter)) != ["notional_exceeds_cap"]
+    {
+        return Err("and the same 2,000 USD trips a 1,000 USD cap".to_string());
+    }
+    Ok(())
+}
+
+fn with_no_cap_no_notional_check_runs(r: &OrderRouter) -> Result<(), String> {
+    // The default. This class does not decide how much of your money you may
+    // trade — the guardrail is opt-in, so a plan of any size passes untouched,
+    // and a caller who never asked for a cap is not made to supply usdRates for
+    // it.
+    let markets = permissive_stub_markets();
+    let large = planned(r, 1000.0, 100.0, 0.0)?;
+    let found = codes(&r.check_execution_plan_safety(&large, &markets, &uncapped_options(&[("USDT", 1.0)])));
+    if !found.is_empty() {
+        return Err(format!("100,000 USD passes when no cap is set, got {found:?}"));
+    }
+    let bare = codes(&r.check_execution_plan_safety(&large, &markets, &Value::Map(HashMap::new())));
+    if !bare.is_empty() {
+        return Err(format!("and needs no usdRates at all, got {bare:?}"));
+    }
+    Ok(())
+}
+
+fn usdt_is_not_a_dollar(r: &OrderRouter) -> Result<(), String> {
+    // A stablecoin peg is an empirical fact, not a definition. With a cap in
+    // force and no rate supplied, a USDT-quoted step cannot be valued and must
+    // BLOCK — 0.1 USDT of notional is trivially under the cap, and it is still
+    // refused, because the point is that the cap the caller ASKED FOR could not
+    // be evaluated.
+    let markets = permissive_stub_markets();
+    let plan = planned(r, 0.001, 100.0, 25.0)?;
     let violations =
-        r.check_execution_plan_safety(&plan, &Value::Map(markets), &Value::Map(HashMap::new()));
+        r.check_execution_plan_safety(&plan, &markets, &capped_options(25.0, &[("USD", 1.0)]));
     let blocked = violations
         .iter()
         .any(|v| text(v, "code") == "notional_unvaluable" && r.bool_at(v, "blocking", false));
     if !blocked {
         return Err("an unvaluable step BLOCKS rather than being skipped".to_string());
+    }
+    // Unrelated rates do not help.
+    let unrelated =
+        r.check_execution_plan_safety(&plan, &markets, &capped_options(25.0, &[("ETH", 3000.0)]));
+    if codes(&unrelated) != ["notional_unvaluable"] {
+        return Err("a rate for another currency does not value this step".to_string());
+    }
+    // Either side of the market resolves it, and a depegged rate is respected.
+    for resolving in [("USDT", 0.4), ("BTC", 100.0)] {
+        let resolved =
+            r.check_execution_plan_safety(&plan, &markets, &capped_options(25.0, &[resolving]));
+        if !codes(&resolved).is_empty() {
+            return Err(format!("a rate for {} values the step", resolving.0));
+        }
+    }
+    // And with NO cap set there is nothing to enforce, so the same unvaluable
+    // step passes.
+    let uncapped = r.check_execution_plan_safety(&plan, &markets, &uncapped_options(&[]));
+    if !codes(&uncapped).is_empty() {
+        return Err("an unvaluable step passes when no cap is set".to_string());
+    }
+    Ok(())
+}
+
+fn a_per_call_cap_overrides_the_client_one() -> Result<(), String> {
+    // The cap is a guardrail the CALLER sets, so the per-call value wins — there
+    // is no ceiling re-imposed behind their back. Both directions are asserted
+    // because the old implementation clamped one way only, and a guardrail that
+    // silently refuses to loosen is as surprising as one that silently refuses
+    // to tighten.
+    let client = capped_client(100.0)?;
+    let markets = permissive_stub_markets();
+    // 0.005 BTC at 100000 USDT is 500 USD.
+    let plan = planned(&client, 0.005, 100000.0, 0.0)?;
+    let against_the_client_cap =
+        client.check_execution_plan_safety(&plan, &markets, &uncapped_options(&[("USDT", 1.0)]));
+    if codes(&against_the_client_cap) != ["notional_exceeds_cap"] {
+        return Err("500 USD trips the client cap of 100".to_string());
+    }
+    if !numbers_match(client.number_at(&against_the_client_cap[0], "limit", 0.0), 100.0) {
+        return Err("the client cap is the limit reported".to_string());
+    }
+    // Raised for this call.
+    let raised =
+        client.check_execution_plan_safety(&plan, &markets, &capped_options(1000.0, &[("USDT", 1.0)]));
+    if !codes(&raised).is_empty() {
+        return Err("a per-call cap of 1000 lets it through".to_string());
+    }
+    // Lowered for this call.
+    let tightened =
+        client.check_execution_plan_safety(&plan, &markets, &capped_options(10.0, &[("USDT", 1.0)]));
+    if !numbers_match(client.number_at(&tightened[0], "limit", 0.0), 10.0) {
+        return Err("a per-call cap of 10 is the limit reported".to_string());
     }
     Ok(())
 }
@@ -628,10 +802,13 @@ pub fn run() -> Result<usize, String> {
         ("fixture: a sequence of reconciliations on one hop", Box::new(|| fixture_reconcile_sequence(&router()?, &fixture()?))),
         ("fixture: buildUnwindPlan", Box::new(|| fixture_build_unwind_plan(&router()?, &fixture()?))),
         ("fixture: numberAt reads one number grammar in all six languages", Box::new(|| fixture_number_at(&router()?, &fixture()?))),
-        ("constructor: apiKey is required and the 25 USD cap may be lowered but never raised", Box::new(constructor_guards)),
+        ("constructor: apiKey is required, and maxNotionalUsd is an opt-in guardrail at any size", Box::new(constructor_guards)),
         ("the limit price sits on the side that costs you, and only there", Box::new(|| limit_price_side(&router()?))),
         ("an empty plan is not a safe plan", Box::new(|| empty_plan_is_not_safe(&router()?))),
-        ("USDT is not assumed to be one dollar", Box::new(|| usdt_is_not_a_dollar(&router()?))),
+        ("a cap that IS set binds exactly, at whatever size, and includes the slippage", Box::new(|| a_cap_that_is_set_binds_exactly(&router()?))),
+        ("with no cap set, no notional check runs at all", Box::new(|| with_no_cap_no_notional_check_runs(&router()?))),
+        ("a per-call cap overrides the client-level one, in both directions", Box::new(a_per_call_cap_overrides_the_client_one)),
+        ("USDT is not assumed to be one dollar, and an unvaluable step blocks only under a cap", Box::new(|| usdt_is_not_a_dollar(&router()?))),
         ("a route that does not match the question asked is refused", Box::new(|| refuses_incoherent_routes(&router()?))),
         ("formatNumber never emits exponent notation", Box::new(|| format_number_never_uses_exponents(&router()?))),
         ("fetchRoute builds a deterministic query", Box::new(|| route_url_is_deterministic(&router()?))),
@@ -643,7 +820,8 @@ pub fn run() -> Result<usize, String> {
         ("execute: a createOrder that times out is outcome-unknown, not a plain failure", Box::new(|| a_timeout_is_outcome_unknown_not_a_plain_failure(&router()?))),
         ("execute: a definite rejection stays a plain failure and reports no open order", Box::new(|| a_definite_rejection_stays_a_plain_failure(&router()?))),
         ("execute: a fill that stays unknown after the re-read halts instead of guessing", Box::new(|| a_fill_that_stays_unknown_halts_instead_of_guessing(&router()?))),
-        ("execute: refuses to go live above the 25 USD cap", Box::new(|| execute_refuses_to_go_live_above_the_cap(&router()?))),
+        ("execute: refuses to go live above a cap the caller set", Box::new(|| execute_refuses_to_go_live_above_the_cap(&router()?))),
+        ("execute: the same trade goes through when nobody asked for a cap", Box::new(|| execute_places_the_same_trade_with_no_cap(&router()?))),
         ("execute: best_effort demands both of its acknowledgements", Box::new(|| best_effort_demands_its_acknowledgements(&router()?))),
     ];
     let _ = (&f, &r);
@@ -957,14 +1135,19 @@ fn a_fill_that_stays_unknown_halts_instead_of_guessing(r: &OrderRouter) -> Resul
 }
 
 fn execute_refuses_to_go_live_above_the_cap(r: &OrderRouter) -> Result<(), String> {
-    // The 25 USD cap, re-imposed at execute rather than only at plan time.
+    // 100 USD against a 25 USD guardrail the caller asked for, re-checked at
+    // execute rather than only at plan time. The refusal happens BEFORE any
+    // order goes out, which is the property worth asserting — a cap checked
+    // after the fact is an incident report, not a guardrail.
     let route = one_leg_route("buy", "BTC", "USDT", 1.0, 100.0);
     let plan = r.build_execution_plan(&route, &Value::Map(HashMap::new())).map_err(|e| e.to_string())?;
     let venue = StubVenue::new("stub");
     let counter = StdArc::clone(&venue.orders_placed);
     let mut venues: BTreeMap<String, Box<dyn RouterVenue>> = BTreeMap::new();
     venues.insert("stub".to_string(), Box::new(venue));
-    let outcome = block_on(r.execute(&plan, &venues, &execute_options(true, "sequential")));
+    let mut options = execute_options(true, "sequential");
+    OrderRouter::set_key(&mut options, "maxNotionalUsd", Value::Float(25.0));
+    let outcome = block_on(r.execute(&plan, &venues, &options));
     match outcome {
         Err(e) if e.message.contains("blocking safety violations") => {
             if counter.load(Ordering::SeqCst) != 0 {
@@ -973,8 +1156,49 @@ fn execute_refuses_to_go_live_above_the_cap(r: &OrderRouter) -> Result<(), Strin
             Ok(())
         }
         Err(e) => Err(format!("wrong refusal: {e}")),
-        Ok(_) => Err("a 100 USD notional is over the 25 USD cap".to_string()),
+        Ok(_) => Err("a 100 USD notional is over a 25 USD cap the caller set".to_string()),
     }
+}
+
+fn execute_places_the_same_trade_with_no_cap(r: &OrderRouter) -> Result<(), String> {
+    // The counterpart, and the point of the guardrail being opt-in: the very
+    // same 100 USD trade goes through when nobody asked for a cap. It is also
+    // the case the old hard ceiling made unreachable.
+    let route = one_leg_route("buy", "BTC", "USDT", 1.0, 100.0);
+    let plan = r.build_execution_plan(&route, &Value::Map(HashMap::new())).map_err(|e| e.to_string())?;
+    let venue = StubVenue::new("stub");
+    let counter = StdArc::clone(&venue.orders_placed);
+    let mut venues: BTreeMap<String, Box<dyn RouterVenue>> = BTreeMap::new();
+    venues.insert("stub".to_string(), Box::new(venue));
+    let report = block_on(r.execute(&plan, &venues, &execute_options(true, "sequential")))
+        .map_err(|e| e.to_string())?;
+    if counter.load(Ordering::SeqCst) != 1 {
+        return Err(format!("expected 1 order, placed {}", counter.load(Ordering::SeqCst)));
+    }
+    let results = r.list_at(&report, "steps");
+    let status = r.string_at(&results[0], "status", "");
+    if status != "filled" {
+        return Err(format!("100 USD is a normal trade when nobody asked for a cap, got {status}"));
+    }
+    // And with no cap set, usdRates is not required either: there is no cap to
+    // evaluate, so demanding the inputs for one would be asking for something
+    // nobody wanted.
+    let bare_venue = StubVenue::new("stub");
+    let bare_counter = StdArc::clone(&bare_venue.orders_placed);
+    let mut bare_venues: BTreeMap<String, Box<dyn RouterVenue>> = BTreeMap::new();
+    bare_venues.insert("stub".to_string(), Box::new(bare_venue));
+    let mut bare_options = execute_options(true, "sequential");
+    OrderRouter::set_key(&mut bare_options, "usdRates", Value::Map(HashMap::new()));
+    let bare_report = block_on(r.execute(&plan, &bare_venues, &bare_options))
+        .map_err(|e| e.to_string())?;
+    if bare_counter.load(Ordering::SeqCst) != 1 {
+        return Err("no usdRates are needed when no cap was asked for".to_string());
+    }
+    let bare_results = r.list_at(&bare_report, "steps");
+    if r.string_at(&bare_results[0], "status", "") != "filled" {
+        return Err("the order fills without usdRates when no cap is set".to_string());
+    }
+    Ok(())
 }
 
 fn best_effort_demands_its_acknowledgements(r: &OrderRouter) -> Result<(), String> {

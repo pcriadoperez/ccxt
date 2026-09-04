@@ -99,9 +99,17 @@ const (
 
 	OrderRouterDefaultReconcileTolerance = 0.02
 
-	// CLAUDE.md: never risk more than 25 USD equivalent per trade. This is a
-	// ceiling, not a default — NewOrderRouter refuses to raise it.
-	OrderRouterMaxNotionalUsd = 25.0
+	// OrderRouterNoCap is the default: this type does not decide how much of your
+	// money you may trade. MaxNotionalUsd is an OPT-IN guardrail — set it and it is
+	// honoured exactly, at whatever value you choose; leave it unset and no
+	// notional check runs at all.
+	//
+	// It used to be a hard 25 USD ceiling that could be lowered but never raised.
+	// That number came from CLAUDE.md §5.5, which governs THIS REPOSITORY'S live
+	// tests against real exchanges — not the people using the library. A client
+	// that refuses a 30 USD order because its own test suite is cautious is broken
+	// as a product.
+	OrderRouterNoCap = 0.0
 
 	// router-side caps on the `balances` query parameter; both REJECT rather
 	// than truncate server-side, so the client trims before sending
@@ -146,7 +154,7 @@ type OrderRouter struct {
 //	apiKey         string  the router API key, sent as the x-api-key header (required)
 //	baseUrl        string  router base url, defaults to https://docs.ccxt.com/router/api
 //	timeoutMs      float   request timeout in milliseconds, defaults to 30000
-//	maxNotionalUsd float   per-trade USD notional cap, defaults to 25 and may only be LOWERED
+//	maxNotionalUsd float   per-trade USD notional cap, an opt-in guardrail; 0 (the default) means NO CAP
 func NewOrderRouter(config map[string]any) (*OrderRouter, error) {
 	apiKey := routerStringAt(config, "apiKey", "")
 	if apiKey == "" {
@@ -156,14 +164,14 @@ func NewOrderRouter(config map[string]any) (*OrderRouter, error) {
 	for len(baseUrl) > 0 && baseUrl[len(baseUrl)-1] == '/' {
 		baseUrl = baseUrl[:len(baseUrl)-1]
 	}
-	maxNotionalUsd := routerNumberAt(config, "maxNotionalUsd", OrderRouterMaxNotionalUsd)
-	if maxNotionalUsd > OrderRouterMaxNotionalUsd {
-		// the cap is a hard rule, not a preference; raising it is refused
-		return nil, BadRequest("OrderRouter maxNotionalUsd may not exceed the hard 25 USD per-trade cap")
+	maxNotionalUsd := routerNumberAt(config, "maxNotionalUsd", OrderRouterNoCap)
+	if maxNotionalUsd < 0 {
+		// a negative cap is a typo, not a policy, and silently ignoring it would
+		// leave the caller believing a guardrail is in place
+		return nil, BadRequest("OrderRouter maxNotionalUsd must not be negative; omit it, or pass 0, for no cap")
 	}
-	if maxNotionalUsd <= 0 {
-		return nil, BadRequest("OrderRouter maxNotionalUsd must be positive")
-	}
+	// 0 means NO CAP. Any positive value is honoured exactly — it is not clamped,
+	// because the caller is the one who knows the size of their own trade.
 	timeoutMs := routerNumberAt(config, "timeoutMs", OrderRouterDefaultTimeoutMs)
 	router := &OrderRouter{
 		ApiKey:         apiKey,
@@ -861,33 +869,28 @@ func (this *OrderRouter) BuildExecutionPlan(route map[string]any, options map[st
 //  PURE: CheckExecutionPlanSafety
 //  ---------------------------------------------------------------------------
 
-// CheckExecutionPlanSafety checks a plan against per-venue market rules and the
-// hard per-trade USD notional cap. PURE — no I/O. A step that cannot be valued in
-// USD BLOCKS; it is never skipped, because a cap that silently disappears when a
-// rate is missing is not a cap.
+// CheckExecutionPlanSafety checks a plan against per-venue market rules and, when
+// one is set, the per-trade USD notional cap. PURE — no I/O. A step that cannot be
+// valued in USD BLOCKS while a cap is in force; it is never skipped, because a cap
+// that silently disappears when a rate is missing is not a cap. With no cap there
+// is nothing to enforce and the check does not run at all.
 //
 // markets is markets[exchangeId][symbol].
 //
 // options keys:
 //
 //	usdRates        dict    currency code to its USD price. USD itself is 1 implicitly; nothing else is assumed
-//	maxNotionalUsd  float   per-trade cap, clamped to the client's own cap, which is clamped to 25
+//	maxNotionalUsd  float   per-trade cap, honoured exactly; 0 or absent means no cap and no notional check
 //	precisionMode   string  tick_size (default) or decimal_places, matching the venue's precisionMode
 //
 // Each violation carries stepIndex, exchangeId, symbol, code, blocking, actual,
 // limit and a constant message. An empty slice means the plan passed.
 func (this *OrderRouter) CheckExecutionPlanSafety(plan map[string]any, markets map[string]any, options map[string]any) []map[string]any {
 	violations := make([]map[string]any, 0)
+	// Honoured exactly as given, per call or per client. No clamping: a caller
+	// trading thousands and a caller trading cents are both using this correctly.
 	maxNotionalUsd := routerNumberAt(options, "maxNotionalUsd", this.MaxNotionalUsd)
-	if maxNotionalUsd > this.MaxNotionalUsd {
-		maxNotionalUsd = this.MaxNotionalUsd
-	}
-	if maxNotionalUsd > OrderRouterMaxNotionalUsd {
-		// MaxNotionalUsd is an exported struct field, so the constructor's
-		// refusal is not the last word on it. The hard 25 USD ceiling is
-		// re-imposed HERE, where the number is used.
-		maxNotionalUsd = OrderRouterMaxNotionalUsd
-	}
+	capInForce := maxNotionalUsd > 0
 	usdRates := routerDictAt(options, "usdRates")
 	precisionMode := routerStringAt(options, "precisionMode", "tick_size")
 	steps := routerListAt(plan, "steps")
@@ -977,14 +980,19 @@ func (this *OrderRouter) CheckExecutionPlanSafety(plan map[string]any, markets m
 		if limitPrice > worstPrice {
 			worstPrice = limitPrice
 		}
-		worstNotional := amount * worstPrice
-		usdValue := this.notionalUsd(step, worstNotional, usdRates)
-		if usdValue <= 0 {
-			// BLOCKING, and deliberately so. Skipping the cap for a step whose
-			// USD value is unknown defeats the entire safety layer.
-			violations = append(violations, this.violation(stepIndex, exchangeId, symbol, "notional_unvaluable", true, worstNotional, maxNotionalUsd))
-		} else if usdValue > maxNotionalUsd*(1+OrderRouterTolerance) {
-			violations = append(violations, this.violation(stepIndex, exchangeId, symbol, "notional_exceeds_cap", true, usdValue, maxNotionalUsd))
+		if capInForce {
+			// Only when a cap is actually set. With no cap there is nothing to
+			// enforce, so a missing USD rate is not an error and the caller is not
+			// made to supply usdRates for a check they did not ask for.
+			worstNotional := amount * worstPrice
+			usdValue := this.notionalUsd(step, worstNotional, usdRates)
+			if usdValue <= 0 {
+				// BLOCKING, and deliberately so. Skipping the cap for a step whose
+				// USD value is unknown defeats the cap the caller DID ask for.
+				violations = append(violations, this.violation(stepIndex, exchangeId, symbol, "notional_unvaluable", true, worstNotional, maxNotionalUsd))
+			} else if usdValue > maxNotionalUsd*(1+OrderRouterTolerance) {
+				violations = append(violations, this.violation(stepIndex, exchangeId, symbol, "notional_exceeds_cap", true, usdValue, maxNotionalUsd))
+			}
 		}
 	}
 	return violations
@@ -1302,7 +1310,7 @@ func (this *OrderRouter) BuildUnwindPlan(report map[string]any) map[string]any {
 			"side":       side,
 			// base and quote are carried so that an unwind plan can be fed
 			// straight back into CheckExecutionPlanSafety: unwinding is trading,
-			// and it is subject to the same 25 USD cap
+			// and it is subject to the same notional cap
 			"base":          marketBase,
 			"quote":         marketQuote,
 			"asset":         asset,
@@ -2272,16 +2280,13 @@ func (this *OrderRouter) venueSupportsIoc(venue IExchange) bool {
 }
 
 // assertUnderCap refuses unless a single order's USD notional is known and
-// within the per-trade cap.
+// within the per-trade cap. With no cap set it has nothing to enforce and returns
+// immediately.
 func (this *OrderRouter) assertUnderCap(step map[string]any, amount float64, price float64, usdRates map[string]any, options map[string]any) error {
 	notionalCap := routerNumberAt(options, "maxNotionalUsd", this.MaxNotionalUsd)
-	if notionalCap > this.MaxNotionalUsd {
-		notionalCap = this.MaxNotionalUsd
-	}
-	if notionalCap > OrderRouterMaxNotionalUsd {
-		// same ceiling as CheckExecutionPlanSafety, re-imposed at the last moment
-		// before an order goes out
-		notionalCap = OrderRouterMaxNotionalUsd
+	if notionalCap <= 0 {
+		// no cap set, so there is nothing to enforce here
+		return nil
 	}
 	probe := map[string]any{
 		"base":   routerStringAt(step, "base", ""),

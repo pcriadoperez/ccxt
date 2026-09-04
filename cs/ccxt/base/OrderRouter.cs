@@ -111,9 +111,16 @@ public class OrderRouter
 
     public const double DefaultReconcileTolerance = 0.02;
 
-    //  CLAUDE.md: never risk more than 25 USD equivalent per trade. This is a
-    //  ceiling, not a default — the constructor refuses to raise it.
-    public const double MaxNotionalUsd = 25;
+    //  NoCap is the default: this class does not decide how much of your money you
+    //  may trade. `maxNotionalUsd` is an OPT-IN guardrail — set it and it is honoured
+    //  exactly, at whatever value you choose; leave it unset and no notional check runs
+    //  at all.
+    //
+    //  It used to be a hard 25 USD ceiling that could be lowered but never raised. That
+    //  number came from CLAUDE.md §5.5, which governs THIS REPOSITORY'S live tests
+    //  against real exchanges — not the people using the library. A client that refuses
+    //  a 30 USD order because its own test suite is cautious is broken as a product.
+    public const double NoCap = 0;
 
     //  router-side caps on the `balances` query parameter; both REJECT rather
     //  than truncate server-side, so the client trims before sending
@@ -149,7 +156,8 @@ public class OrderRouter
     /// <param name="config">
     /// apiKey (required, sent as the x-api-key header), baseUrl (defaults to
     /// https://docs.ccxt.com/router/api), timeoutMs (defaults to 30000) and
-    /// maxNotionalUsd (defaults to 25, and may only be LOWERED).
+    /// maxNotionalUsd (an opt-in guardrail honoured exactly at whatever value
+    /// you choose; omit it, or pass 0, for no cap).
     /// </param>
     public OrderRouter(dict config = null)
     {
@@ -166,16 +174,15 @@ public class OrderRouter
         }
         this.baseUrl = url;
         this.timeoutMs = this.NumberAt(config, "timeoutMs", DefaultTimeoutMs);
-        var configuredCap = this.NumberAt(config, "maxNotionalUsd", MaxNotionalUsd);
-        if (configuredCap > MaxNotionalUsd)
+        var configuredCap = this.NumberAt(config, "maxNotionalUsd", NoCap);
+        if (configuredCap < 0)
         {
-            //  the cap is a hard rule, not a preference; raising it is refused
-            throw new BadRequest("OrderRouter maxNotionalUsd may not exceed the hard 25 USD per-trade cap");
+            //  a negative cap is a typo, not a policy, and silently ignoring it would
+            //  leave the caller believing a guardrail is in place
+            throw new BadRequest("OrderRouter maxNotionalUsd must not be negative; omit it, or pass 0, for no cap");
         }
-        if (configuredCap <= 0)
-        {
-            throw new BadRequest("OrderRouter maxNotionalUsd must be positive");
-        }
+        //  0 means NO CAP. Any positive value is honoured exactly — it is not clamped,
+        //  because the caller is the one who knows the size of their own trade.
         this.maxNotionalUsd = configuredCap;
     }
 
@@ -1047,18 +1054,18 @@ public class OrderRouter
     //  -----------------------------------------------------------------------
 
     /// <summary>
-    /// Checks a plan against per-venue market rules and the hard per-trade USD
-    /// notional cap. PURE — no I/O. A step that cannot be valued in USD BLOCKS;
-    /// it is never skipped, because a cap that silently disappears when a rate
-    /// is missing is not a cap.
+    /// Checks a plan against per-venue market rules and, when one is set, the
+    /// per-trade USD notional cap. PURE — no I/O. A step that cannot be valued
+    /// in USD BLOCKS while a cap is in force; it is never skipped, because a cap
+    /// that silently disappears when a rate is missing is not a cap.
     /// </summary>
     /// <param name="plan">a plan from BuildExecutionPlan</param>
     /// <param name="markets">exchangeId to that exchange's markets, i.e. markets[exchangeId][symbol]</param>
     /// <param name="options">
     /// usdRates maps a currency code to its USD price (USD itself is 1
-    /// implicitly and nothing else is assumed); maxNotionalUsd is clamped to the
-    /// client's own cap, which is clamped to 25; precisionMode is tick_size
-    /// (default) or decimal_places.
+    /// implicitly and nothing else is assumed); maxNotionalUsd is the per-trade
+    /// cap, honoured exactly as given and 0 for no cap; precisionMode is
+    /// tick_size (default) or decimal_places.
     /// </param>
     /// <returns>
     /// the violations, each with stepIndex, code, blocking, actual, limit and a
@@ -1067,18 +1074,10 @@ public class OrderRouter
     public List<dict> CheckExecutionPlanSafety(dict plan, dict markets, dict options = null)
     {
         var violations = new List<dict>();
+        //  Honoured exactly as given, per call or per client. No clamping: a caller
+        //  trading thousands and a caller trading cents are both using this correctly.
         var cap = this.NumberAt(options, "maxNotionalUsd", this.maxNotionalUsd);
-        if (cap > this.maxNotionalUsd)
-        {
-            cap = this.maxNotionalUsd;
-        }
-        if (cap > MaxNotionalUsd)
-        {
-            //  the instance field is private-set here but public in the other four
-            //  ports, so the hard 25 USD ceiling is re-imposed WHERE THE NUMBER
-            //  IS USED, and all five refuse the same plan.
-            cap = MaxNotionalUsd;
-        }
+        var capInForce = cap > 0;
         var usdRates = this.DictAt(options, "usdRates");
         var precisionMode = this.StringAt(options, "precisionMode", "tick_size");
         var steps = this.ListAt(plan, "steps");
@@ -1178,17 +1177,24 @@ public class OrderRouter
             {
                 worstPrice = limitPrice;
             }
-            var worstNotional = amount * worstPrice;
-            var usdValue = this.NotionalUsd(step, worstNotional, usdRates);
-            if (usdValue <= 0)
+            if (capInForce)
             {
-                //  BLOCKING, and deliberately so. Skipping the cap for a step
-                //  whose USD value is unknown defeats the entire safety layer.
-                violations.Add(this.Violation(stepIndex, exchangeId, symbol, "notional_unvaluable", true, worstNotional, cap));
-            }
-            else if (usdValue > cap * (1 + Tolerance))
-            {
-                violations.Add(this.Violation(stepIndex, exchangeId, symbol, "notional_exceeds_cap", true, usdValue, cap));
+                //  Only when a cap is actually set. With no cap there is nothing to
+                //  enforce, so a missing USD rate is not an error and the caller is
+                //  not made to supply usdRates for a check they did not ask for.
+                var worstNotional = amount * worstPrice;
+                var usdValue = this.NotionalUsd(step, worstNotional, usdRates);
+                if (usdValue <= 0)
+                {
+                    //  BLOCKING, and deliberately so. Skipping the cap for a step
+                    //  whose USD value is unknown defeats the cap the caller DID
+                    //  ask for.
+                    violations.Add(this.Violation(stepIndex, exchangeId, symbol, "notional_unvaluable", true, worstNotional, cap));
+                }
+                else if (usdValue > cap * (1 + Tolerance))
+                {
+                    violations.Add(this.Violation(stepIndex, exchangeId, symbol, "notional_exceeds_cap", true, usdValue, cap));
+                }
             }
         }
         return violations;
@@ -2547,15 +2553,10 @@ public class OrderRouter
     public void AssertUnderCap(dict step, double amount, double price, dict usdRates, dict options)
     {
         var cap = this.NumberAt(options, "maxNotionalUsd", this.maxNotionalUsd);
-        if (cap > this.maxNotionalUsd)
+        if (cap <= 0)
         {
-            cap = this.maxNotionalUsd;
-        }
-        if (cap > MaxNotionalUsd)
-        {
-            //  same ceiling as CheckExecutionPlanSafety, re-imposed at the last
-            //  moment before an order goes out
-            cap = MaxNotionalUsd;
+            //  no cap set, so there is nothing to enforce here
+            return;
         }
         var probe = new dict()
         {

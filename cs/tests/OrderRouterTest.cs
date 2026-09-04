@@ -75,10 +75,11 @@ public class OrderRouterTest
         Run("a bridged route whose hops do not connect is refused", RouteChainBreak);
         Run("a well-formed route still plans normally", RouteWellFormedStillPlans);
         //  2. invariants, asserted directly rather than through the fixture
-        Run("constructor: apiKey is required and the 25 USD cap may be lowered but never raised", ConstructorGuards);
+        Run("constructor: apiKey is required, and maxNotionalUsd is an opt-in guardrail at any size", ConstructorGuards);
         Run("the limit price sits on the side that costs you, and only there", LimitPriceSide);
-        Run("the notional cap blocks at 25 USD and passes below it", NotionalCap);
-        Run("a step that cannot be valued in USD BLOCKS — it is never skipped", UnvaluableBlocks);
+        Run("a cap that IS set binds exactly, at whatever size, and includes the slippage", NotionalCap);
+        Run("with no cap set, no notional check runs at all", NoCapMeansNoNotionalCheck);
+        Run("a step that cannot be valued in USD BLOCKS when a cap is in force — it is never skipped", UnvaluableBlocks);
         Run("USDT is not assumed to be one dollar; USD is", UsdtIsNotADollar);
         Run("an empty plan is not a safe plan", EmptyPlanIsNotSafe);
         Run("reconcileExecutionStep never scales a downstream order UP", ReconcileNeverScalesUp);
@@ -86,15 +87,15 @@ public class OrderRouterTest
         Run("buildUnwindPlan is never automatic and never nets across venues", UnwindNeverNetsAcrossVenues);
         //  3. execute — stub venues only, and not one real order anywhere
         RunAsync("dry_run is the default: a live-looking call with live unset places nothing", DryRunIsTheDefault);
-        RunAsync("execute refuses to go live without a way to value the trade in USD", RefusesLiveWithoutRates);
-        RunAsync("execute refuses to go live above the cap", RefusesLiveAboveTheCap);
+        RunAsync("execute refuses to go live without a way to value the trade in USD — when a cap is set", RefusesLiveWithoutRates);
+        RunAsync("execute refuses to go live above a cap the caller set", RefusesLiveAboveTheCap);
         RunAsync("sequential places IOC limit orders in plan order", SequentialPlacesIoc);
         RunAsync("sequential obeys the halt verdict and never starts the next hop", SequentialObeysHalt);
         RunAsync("a market order needs BOTH a venue that cannot do IOC and an explicit opt-in", MarketOrdersNeedBoth);
         RunAsync("parallel_within_hop contains a failing leg instead of abandoning its siblings", ParallelContainsFailure);
         RunAsync("best_effort refuses multi-hop and demands both of its acknowledgements", BestEffortRefusals);
         RunAsync("best_effort stops at maxOrders and never halts", BestEffortMaxOrders);
-        Run("the hard 25 USD cap survives a maxNotionalUsd the other ports leave writable", CapSurvivesTampering);
+        Run("a per-call cap overrides the client-level one, in both directions", PerCallCapOverrides);
         RunAsync("best_effort derives the hop count from the steps, not from a key the plan may not carry", BestEffortDerivesHopCount);
         RunAsync("venueSupportsIoc reads the dictionary of booleans every real exchange declares", VenueSupportsIocReadsADictionary);
         RunAsync("limit_protected keeps the fill from an order the venue canceled on the last poll", LimitProtectedKeepsAVenueSideCancelFill);
@@ -833,13 +834,22 @@ public class OrderRouterTest
     private static void ConstructorGuards()
     {
         Throws<ArgumentsRequired>(() => new OrderRouter(new dict()), "an apiKey is required");
-        Throws<BadRequest>(() => new OrderRouter(new dict() { { "apiKey", "k" }, { "maxNotionalUsd", 25.01 } }), "the cap may not be raised");
-        Throws<BadRequest>(() => new OrderRouter(new dict() { { "apiKey", "k" }, { "maxNotionalUsd", 0.0 } }), "the cap must be positive");
-        var lowered = new OrderRouter(new dict() { { "apiKey", "k" }, { "maxNotionalUsd", 5.0 } });
-        EqualNumber(lowered.maxNotionalUsd, 5, "the cap may be lowered");
+        //  No ceiling. A caller trading thousands is using this correctly, and the
+        //  class does not get to decide otherwise — the old hard 25 USD limit came
+        //  from this repository's own live-test safety rule, which is not a rule
+        //  about anyone's money.
+        var large = new OrderRouter(new dict() { { "apiKey", "k" }, { "maxNotionalUsd", 250000.0 } });
+        EqualNumber(large.maxNotionalUsd, 250000, "honoured exactly, not clamped");
+        var small = new OrderRouter(new dict() { { "apiKey", "k" }, { "maxNotionalUsd", 0.05 } });
+        EqualNumber(small.maxNotionalUsd, 0.05, "cents are a legitimate trade size");
+        //  The default is NO cap.
         var standard = new OrderRouter(new dict() { { "apiKey", "k" } });
-        EqualNumber(standard.maxNotionalUsd, 25, "the default cap is 25");
-        EqualNumber(OrderRouter.MaxNotionalUsd, 25, "the hard ceiling is 25");
+        EqualNumber(standard.maxNotionalUsd, OrderRouter.NoCap, "the default is no cap");
+        EqualNumber(OrderRouter.NoCap, 0, "and no cap is spelled 0");
+        //  0 is the explicit spelling of "no cap"; negative is a typo, and silently
+        //  ignoring it would leave the caller believing a guardrail is in place.
+        EqualNumber(new OrderRouter(new dict() { { "apiKey", "k" }, { "maxNotionalUsd", 0.0 } }).maxNotionalUsd, 0, "0 is no cap, not a refusal");
+        Throws<BadRequest>(() => new OrderRouter(new dict() { { "apiKey", "k" }, { "maxNotionalUsd", -1.0 } }), "a negative cap is a typo, not a policy");
     }
 
     private static void LimitPriceSide()
@@ -862,52 +872,75 @@ public class OrderRouterTest
     private static void NotionalCap()
     {
         var router = NewRouter();
-        var rates = new dict() { { "usdRates", new dict() { { "USDT", 1.0 } } } };
+        var capped = new dict() { { "usdRates", new dict() { { "USDT", 1.0 } } }, { "maxNotionalUsd", 25.0 } };
         //  amount * limitPrice is what is measured, so a 1% slippage on a 24.90
         //  USD step is what carries it over the line
         var under = router.BuildExecutionPlan(OneLegRoute("buy", "BTC", "USDT", 0.24, 100), new dict() { { "slippageBps", 0.0 } });
-        EqualNumber(router.CheckExecutionPlanSafety(under, PermissiveStubMarkets(), rates).Count, 0, "24 USD passes");
+        EqualNumber(router.CheckExecutionPlanSafety(under, PermissiveStubMarkets(), capped).Count, 0, "24 USD passes a 25 USD cap");
         var at = router.BuildExecutionPlan(OneLegRoute("buy", "BTC", "USDT", 0.25, 100), new dict() { { "slippageBps", 0.0 } });
-        EqualNumber(router.CheckExecutionPlanSafety(at, PermissiveStubMarkets(), rates).Count, 0, "exactly 25 USD passes");
+        EqualNumber(router.CheckExecutionPlanSafety(at, PermissiveStubMarkets(), capped).Count, 0, "exactly at the cap passes");
         var over = router.BuildExecutionPlan(OneLegRoute("buy", "BTC", "USDT", 0.2501, 100), new dict() { { "slippageBps", 0.0 } });
-        var overViolations = router.CheckExecutionPlanSafety(over, PermissiveStubMarkets(), rates);
+        var overViolations = router.CheckExecutionPlanSafety(over, PermissiveStubMarkets(), capped);
         EqualNumber(overViolations.Count, 1, "25.01 USD is one violation");
         EqualString((string)overViolations[0]["code"], "notional_exceeds_cap", "the code");
         EqualBool((bool)overViolations[0]["blocking"], true, "the cap blocks");
         //  and the slippage is inside the measurement, not outside it
         var slipped = router.BuildExecutionPlan(OneLegRoute("buy", "BTC", "USDT", 0.249, 100), new dict() { { "slippageBps", 100.0 } });
-        var slippedViolations = router.CheckExecutionPlanSafety(slipped, PermissiveStubMarkets(), rates);
+        var slippedViolations = router.CheckExecutionPlanSafety(slipped, PermissiveStubMarkets(), capped);
         EqualNumber(slippedViolations.Count, 1, "24.90 USD at 1% slippage is 25.15 USD of risk");
         EqualString((string)slippedViolations[0]["code"], "notional_exceeds_cap", "the code");
+        //  A LARGE cap is honoured just as exactly. This is the case the old hard
+        //  ceiling made unreachable: 2,000 USD of BTC under a 5,000 USD guardrail
+        //  is a normal trade.
+        var large = router.BuildExecutionPlan(OneLegRoute("buy", "BTC", "USDT", 20, 100), new dict() { { "slippageBps", 0.0 } });
+        EqualNumber(router.CheckExecutionPlanSafety(large, PermissiveStubMarkets(), new dict() { { "usdRates", new dict() { { "USDT", 1.0 } } }, { "maxNotionalUsd", 5000.0 } }).Count, 0, "2,000 USD under a 5,000 USD cap");
+        var overLarge = router.CheckExecutionPlanSafety(large, PermissiveStubMarkets(), new dict() { { "usdRates", new dict() { { "USDT", 1.0 } } }, { "maxNotionalUsd", 1000.0 } });
+        EqualString((string)overLarge[0]["code"], "notional_exceeds_cap", "and the same 2,000 USD trips a 1,000 USD cap");
+    }
+
+    /// <summary>
+    /// The default. This class does not decide how much of your money you may
+    /// trade — the guardrail is opt-in, so a plan of any size passes untouched,
+    /// and a caller who never asked for a cap is not made to supply usdRates
+    /// for it.
+    /// </summary>
+    private static void NoCapMeansNoNotionalCheck()
+    {
+        var router = NewRouter();
+        var large = router.BuildExecutionPlan(OneLegRoute("buy", "BTC", "USDT", 1000, 100), new dict() { { "slippageBps", 0.0 } });
+        EqualNumber(router.CheckExecutionPlanSafety(large, PermissiveStubMarkets(), new dict() { { "usdRates", new dict() { { "USDT", 1.0 } } } }).Count, 0, "100,000 USD passes when no cap is set");
+        EqualNumber(router.CheckExecutionPlanSafety(large, PermissiveStubMarkets(), new dict()).Count, 0, "and needs no usdRates at all");
     }
 
     private static void UnvaluableBlocks()
     {
         var router = NewRouter();
         var plan = router.BuildExecutionPlan(OneLegRoute("buy", "BTC", "USDT", 0.0001, 100), new dict() { { "slippageBps", 0.0 } });
-        //  0.01 USDT of notional: trivially under any cap, and still refused,
-        //  because the point is that the cap could not be EVALUATED
-        var violations = router.CheckExecutionPlanSafety(plan, PermissiveStubMarkets(), new dict() { { "usdRates", new dict() } });
+        //  0.01 USDT of notional: trivially under the cap, and still refused,
+        //  because the point is that the cap the caller ASKED FOR could not be
+        //  evaluated. With no cap set there is nothing to enforce and this same
+        //  plan passes — see the test above.
+        var violations = router.CheckExecutionPlanSafety(plan, PermissiveStubMarkets(), new dict() { { "usdRates", new dict() }, { "maxNotionalUsd", 25.0 } });
         EqualNumber(violations.Count, 1, "one violation");
         EqualString((string)violations[0]["code"], "notional_unvaluable", "the code");
         EqualBool((bool)violations[0]["blocking"], true, "an unvaluable step must block, or the cap is decorative");
         //  unrelated rates do not help
-        var stillBlocked = router.CheckExecutionPlanSafety(plan, PermissiveStubMarkets(), new dict() { { "usdRates", new dict() { { "ETH", 3000.0 }, { "DOGE", 0.09 } } } });
+        var stillBlocked = router.CheckExecutionPlanSafety(plan, PermissiveStubMarkets(), new dict() { { "usdRates", new dict() { { "ETH", 3000.0 }, { "DOGE", 0.09 } } }, { "maxNotionalUsd", 25.0 } });
         EqualString((string)stillBlocked[0]["code"], "notional_unvaluable", "unrelated rates do not rescue it");
         //  either side of the market resolves it
-        EqualNumber(router.CheckExecutionPlanSafety(plan, PermissiveStubMarkets(), new dict() { { "usdRates", new dict() { { "USDT", 1.0 } } } }).Count, 0, "the quote rate resolves it");
-        EqualNumber(router.CheckExecutionPlanSafety(plan, PermissiveStubMarkets(), new dict() { { "usdRates", new dict() { { "BTC", 100.0 } } } }).Count, 0, "the base rate resolves it");
+        EqualNumber(router.CheckExecutionPlanSafety(plan, PermissiveStubMarkets(), new dict() { { "usdRates", new dict() { { "USDT", 1.0 } } }, { "maxNotionalUsd", 25.0 } }).Count, 0, "the quote rate resolves it");
+        EqualNumber(router.CheckExecutionPlanSafety(plan, PermissiveStubMarkets(), new dict() { { "usdRates", new dict() { { "BTC", 100.0 } } }, { "maxNotionalUsd", 25.0 } }).Count, 0, "the base rate resolves it");
     }
 
     private static void UsdtIsNotADollar()
     {
         var router = NewRouter();
         var plan = router.BuildExecutionPlan(OneLegRoute("buy", "BTC", "USDT", 0.1, 100), new dict() { { "slippageBps", 0.0 } });
-        var violations = router.CheckExecutionPlanSafety(plan, PermissiveStubMarkets(), new dict() { { "usdRates", new dict() { { "USD", 1.0 } } } });
+        var violations = router.CheckExecutionPlanSafety(plan, PermissiveStubMarkets(), new dict() { { "usdRates", new dict() { { "USD", 1.0 } } }, { "maxNotionalUsd", 25.0 } });
         EqualNumber(violations.Count, 1, "one violation");
         EqualString((string)violations[0]["code"], "notional_unvaluable", "a stablecoin peg is an observation, not a definition");
         //  a depegged rate is respected: 10 USDT at 0.40 is 4 USD
-        var depegged = router.CheckExecutionPlanSafety(plan, PermissiveStubMarkets(), new dict() { { "usdRates", new dict() { { "USDT", 0.4 } } } });
+        var depegged = router.CheckExecutionPlanSafety(plan, PermissiveStubMarkets(), new dict() { { "usdRates", new dict() { { "USDT", 0.4 } } }, { "maxNotionalUsd", 25.0 } });
         EqualNumber(depegged.Count, 0, "a depegged rate is respected");
     }
 
@@ -1133,23 +1166,37 @@ public class OrderRouterTest
         var router = NewRouter();
         var plan = router.BuildExecutionPlan(OneLegRoute("buy", "BTC", "USDT", 0.2, 100), new dict());
         var venue = new StubVenue("stub");
-        await Rejects<ExchangeError>(async () => await router.Execute(plan, Venues(venue), new dict() { { "strategy", "sequential" }, { "live", true } }), "an unvaluable plan is refused");
+        await Rejects<ExchangeError>(async () => await router.Execute(plan, Venues(venue), new dict() { { "strategy", "sequential" }, { "live", true }, { "maxNotionalUsd", 25.0 } }), "an unvaluable plan is refused");
         for (var i = 0; i < venue.calls.Count; i++)
         {
             Ok(venue.calls[i].IndexOf("createOrder", StringComparison.Ordinal) < 0, "no order was placed");
         }
+        //  and with NO cap asked for, usdRates is not required: there is no cap to
+        //  evaluate, so demanding the inputs for one would be asking for something
+        //  nobody wanted.
+        var uncapped = new StubVenue("stub");
+        var report = await router.Execute(plan, Venues(uncapped), new dict() { { "strategy", "sequential" }, { "live", true } });
+        EqualString((string)ToDict(ToList(report["steps"])[0])["status"], "filled", "no cap, no valuation demanded");
     }
 
     private static async Task RefusesLiveAboveTheCap()
     {
+        //  500 USD against a 25 USD guardrail. The refusal happens BEFORE any order
+        //  goes out, which is the property worth asserting — a cap checked after the
+        //  fact is an incident report, not a guardrail.
         var router = NewRouter();
         var plan = router.BuildExecutionPlan(OneLegRoute("buy", "BTC", "USDT", 5, 100), new dict());
         var venue = new StubVenue("stub");
-        await Rejects<ExchangeError>(async () => await router.Execute(plan, Venues(venue), new dict() { { "strategy", "sequential" }, { "live", true }, { "usdRates", new dict() { { "USDT", 1.0 } } } }), "500 USD is refused");
+        await Rejects<ExchangeError>(async () => await router.Execute(plan, Venues(venue), new dict() { { "strategy", "sequential" }, { "live", true }, { "usdRates", new dict() { { "USDT", 1.0 } } }, { "maxNotionalUsd", 25.0 } }), "500 USD is refused");
         for (var i = 0; i < venue.calls.Count; i++)
         {
             Ok(venue.calls[i].IndexOf("createOrder", StringComparison.Ordinal) < 0, "no order was placed");
         }
+        //  the same 500 USD trade with no cap set goes through: that is the point of
+        //  the guardrail being opt-in
+        var uncapped = new StubVenue("stub");
+        var report = await router.Execute(plan, Venues(uncapped), new dict() { { "strategy", "sequential" }, { "live", true }, { "usdRates", new dict() { { "USDT", 1.0 } } } });
+        EqualString((string)ToDict(ToList(report["steps"])[0])["status"], "filled", "500 USD is a normal trade when nobody asked for a cap");
     }
 
     private static async Task SequentialPlacesIoc()
@@ -1191,24 +1238,29 @@ public class OrderRouterTest
     }
 
     /// <summary>
-    /// The hard 25 USD cap must not depend on the instance field. C# declares it
-    /// { get; private set; }, but TypeScript, Python, PHP and Go all leave it
-    /// writable, so both clamp sites re-impose the constant and all five refuse
-    /// the same order.
+    /// The cap is a guardrail the CALLER sets, so the per-call value wins — there
+    /// is no ceiling re-imposed behind their back. Both directions are asserted
+    /// because the old implementation clamped one way only, and a guardrail that
+    /// silently refuses to loosen is as surprising as one that silently refuses
+    /// to tighten.
     /// </summary>
-    private static void CapSurvivesTampering()
+    private static void PerCallCapOverrides()
     {
-        var router = NewRouter();
-        //  0.005 BTC at 100000 USDT is 500 USD, and the option asks for a 1000
-        //  USD cap the constructor would have refused
-        var plan = router.BuildExecutionPlan(OneLegRoute("buy", "BTC", "USDT", 0.005, 100000), new dict() { { "slippageBps", 0.0 } });
-        var options = new dict() { { "usdRates", new dict() { { "USDT", 1.0 } } }, { "maxNotionalUsd", 1000.0 } };
-        var violations = router.CheckExecutionPlanSafety(plan, PermissiveStubMarkets(), options);
-        EqualNumber(violations.Count, 1, "a 500 USD step must still be refused");
-        EqualString((string)violations[0]["code"], "notional_exceeds_cap", "and refused for the right reason");
-        EqualNumber(ToDouble(violations[0]["limit"]), 25, "the limit reported is the constant, never the option");
+        var client = new OrderRouter(new dict() { { "apiKey", "k" }, { "maxNotionalUsd", 100.0 } });
+        //  0.005 BTC at 100000 USDT is 500 USD
+        var plan = client.BuildExecutionPlan(OneLegRoute("buy", "BTC", "USDT", 0.005, 100000), new dict() { { "slippageBps", 0.0 } });
+        var underClientCap = client.CheckExecutionPlanSafety(plan, PermissiveStubMarkets(), new dict() { { "usdRates", new dict() { { "USDT", 1.0 } } } });
+        EqualString((string)underClientCap[0]["code"], "notional_exceeds_cap", "500 USD trips the client cap of 100");
+        EqualNumber(ToDouble(underClientCap[0]["limit"]), 100, "and the limit reported is the client's own");
+        //  raised for this call
+        EqualNumber(client.CheckExecutionPlanSafety(plan, PermissiveStubMarkets(), new dict() { { "usdRates", new dict() { { "USDT", 1.0 } } }, { "maxNotionalUsd", 1000.0 } }).Count, 0, "a per-call cap of 1000 lets it through");
+        //  lowered for this call
+        var tightened = client.CheckExecutionPlanSafety(plan, PermissiveStubMarkets(), new dict() { { "usdRates", new dict() { { "USDT", 1.0 } } }, { "maxNotionalUsd", 10.0 } });
+        EqualNumber(ToDouble(tightened[0]["limit"]), 10, "and a per-call cap of 10 tightens it");
+        //  and the last check before an order goes out honours the same value
         var step = ToDict(ToList(plan["steps"])[0]);
-        Throws<ExchangeError>(() => router.AssertUnderCap(step, 0.005, 100000, new dict() { { "USDT", 1.0 } }, new dict() { { "maxNotionalUsd", 1000.0 } }), "the last check before an order goes out refuses too");
+        Throws<ExchangeError>(() => client.AssertUnderCap(step, 0.005, 100000, new dict() { { "USDT", 1.0 } }, new dict() { { "maxNotionalUsd", 100.0 } }), "the last check before an order goes out refuses too");
+        client.AssertUnderCap(step, 0.005, 100000, new dict() { { "USDT", 1.0 } }, new dict() { { "maxNotionalUsd", 1000.0 } });
     }
 
     /// <summary>

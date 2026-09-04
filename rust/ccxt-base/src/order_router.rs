@@ -42,9 +42,17 @@ fn exchange_error(message: &str) -> ExchangeError {
     ExchangeError::new("ExchangeError", message)
 }
 
-/// The per-trade USD notional ceiling. A hard rule, not a preference: it may be
-/// lowered in the constructor and never raised. See CLAUDE.md §5.5.
-pub const MAX_NOTIONAL_USD: f64 = 25.0;
+/// NO_CAP is the default: this class does not decide how much of your money you
+/// may trade. `maxNotionalUsd` is an OPT-IN guardrail — set it and it is honoured
+/// exactly, at whatever value you choose; leave it unset and no notional check
+/// runs at all.
+///
+/// It used to be a hard 25 USD ceiling that could be lowered but never raised.
+/// That number came from CLAUDE.md §5.5, which governs THIS REPOSITORY'S live
+/// tests against real exchanges — not the people using the library. A client that
+/// refuses a 30 USD order because its own test suite is cautious is broken as a
+/// product.
+pub const NO_CAP: f64 = 0.0;
 /// Default distance from the expected price at which the limit is placed.
 pub const DEFAULT_SLIPPAGE_BPS: f64 = 25.0;
 /// Default shortfall ratio at which `reconcile_execution_step` halts.
@@ -325,8 +333,9 @@ impl OrderRouter {
     /// Creates a client for the CCXT order-router service.
     ///
     /// `config` keys: `apiKey` (required), `baseUrl`, `timeoutMs`,
-    /// `maxNotionalUsd` (may be LOWERED below the hard 25 USD cap, never
-    /// raised).
+    /// `maxNotionalUsd` (an OPT-IN per-trade USD cap, honoured exactly at
+    /// whatever value is given; 0 — the default — means NO CAP, and a negative
+    /// value is refused).
     pub fn new(config: &Value) -> RouterResult<Self> {
         // Constructed through a temporary so the accessors — which are methods,
         // exactly as in the other five ports — are available while reading the
@@ -335,7 +344,7 @@ impl OrderRouter {
             api_key: String::new(),
             base_url: String::new(),
             timeout_ms: DEFAULT_TIMEOUT_MS,
-            max_notional_usd: MAX_NOTIONAL_USD,
+            max_notional_usd: NO_CAP,
         };
         let api_key = reader.string_at(config, "apiKey", "");
         if api_key.is_empty() {
@@ -346,20 +355,22 @@ impl OrderRouter {
             base_url.pop();
         }
         let timeout_ms = reader.number_at(config, "timeoutMs", DEFAULT_TIMEOUT_MS);
-        let max_notional_usd = reader.number_at(config, "maxNotionalUsd", MAX_NOTIONAL_USD);
-        if max_notional_usd > MAX_NOTIONAL_USD {
-            // The cap is a hard rule, not a preference; raising it is refused.
+        let max_notional_usd = reader.number_at(config, "maxNotionalUsd", NO_CAP);
+        if max_notional_usd < 0.0 {
+            // A negative cap is a typo, not a policy, and silently ignoring it
+            // would leave the caller believing a guardrail is in place.
             return Err(bad_request(
-                "OrderRouter maxNotionalUsd may not exceed the hard 25 USD per-trade cap",
+                "OrderRouter maxNotionalUsd must not be negative; omit it, or pass 0, for no cap",
             ));
         }
-        if max_notional_usd <= 0.0 {
-            return Err(bad_request("OrderRouter maxNotionalUsd must be positive"));
-        }
+        // 0 means NO CAP. Any positive value is honoured exactly — it is not
+        // clamped, because the caller is the one who knows the size of their own
+        // trade.
         Ok(OrderRouter { api_key, base_url, timeout_ms, max_notional_usd })
     }
 
-    /// The per-trade USD notional ceiling this client will enforce.
+    /// The per-trade USD notional cap this client will enforce, or `NO_CAP` when
+    /// the caller never asked for one.
     pub fn max_notional_usd(&self) -> f64 {
         self.max_notional_usd
     }
@@ -659,16 +670,11 @@ impl OrderRouter {
         options: &Value,
     ) -> Vec<Value> {
         let mut violations: Vec<Value> = Vec::new();
-        let mut max_notional_usd = self.number_at(options, "maxNotionalUsd", self.max_notional_usd);
-        if max_notional_usd > self.max_notional_usd {
-            max_notional_usd = self.max_notional_usd;
-        }
-        if max_notional_usd > MAX_NOTIONAL_USD {
-            // The instance field stays writable in four of the six languages, so
-            // the constructor's refusal is not the last word on it. The hard
-            // 25 USD ceiling is re-imposed HERE, where the number is used.
-            max_notional_usd = MAX_NOTIONAL_USD;
-        }
+        // Honoured exactly as given, per call or per client. No clamping: a
+        // caller trading thousands and a caller trading cents are both using
+        // this correctly.
+        let max_notional_usd = self.number_at(options, "maxNotionalUsd", self.max_notional_usd);
+        let cap_in_force = max_notional_usd > 0.0;
         let usd_rates = self.dict_at(options, "usdRates");
         let precision_mode = self.string_at(options, "precisionMode", "tick_size");
         let steps = self.list_at(plan, "steps");
@@ -780,20 +786,27 @@ impl OrderRouter {
             if limit_price > worst_price {
                 worst_price = limit_price;
             }
-            let worst_notional = amount * worst_price;
-            let usd_value = self.notional_usd(step, worst_notional, &usd_rates);
-            if usd_value <= 0.0 {
-                // BLOCKING, and deliberately so. Skipping the cap for a step
-                // whose USD value is unknown defeats the entire safety layer.
-                violations.push(self.violation(
-                    step_index, &exchange_id, &symbol, "notional_unvaluable", true, worst_notional,
-                    max_notional_usd,
-                ));
-            } else if usd_value > max_notional_usd * (1.0 + TOLERANCE) {
-                violations.push(self.violation(
-                    step_index, &exchange_id, &symbol, "notional_exceeds_cap", true, usd_value,
-                    max_notional_usd,
-                ));
+            if cap_in_force {
+                // Only when a cap is actually set. With no cap there is nothing
+                // to enforce, so a missing USD rate is not an error and the
+                // caller is not made to supply usdRates for a check they did not
+                // ask for.
+                let worst_notional = amount * worst_price;
+                let usd_value = self.notional_usd(step, worst_notional, &usd_rates);
+                if usd_value <= 0.0 {
+                    // BLOCKING, and deliberately so. Skipping the cap for a step
+                    // whose USD value is unknown defeats the cap the caller DID
+                    // ask for.
+                    violations.push(self.violation(
+                        step_index, &exchange_id, &symbol, "notional_unvaluable", true,
+                        worst_notional, max_notional_usd,
+                    ));
+                } else if usd_value > max_notional_usd * (1.0 + TOLERANCE) {
+                    violations.push(self.violation(
+                        step_index, &exchange_id, &symbol, "notional_exceeds_cap", true, usd_value,
+                        max_notional_usd,
+                    ));
+                }
             }
         }
         violations
@@ -1602,7 +1615,8 @@ impl OrderRouter {
         }
     }
 
-    /// Re-imposes the notional cap immediately before a placement.
+    /// Re-checks the notional cap immediately before a placement, and does
+    /// nothing at all when the caller never asked for one.
     fn assert_under_cap(
         &self,
         step: &Value,
@@ -1611,12 +1625,10 @@ impl OrderRouter {
         usd_rates: &Value,
         options: &Value,
     ) -> RouterResult<()> {
-        let mut cap = self.number_at(options, "maxNotionalUsd", self.max_notional_usd);
-        if cap > self.max_notional_usd {
-            cap = self.max_notional_usd;
-        }
-        if cap > MAX_NOTIONAL_USD {
-            cap = MAX_NOTIONAL_USD;
+        let cap = self.number_at(options, "maxNotionalUsd", self.max_notional_usd);
+        if cap <= 0.0 {
+            // No cap set, so there is nothing to enforce here.
+            return Ok(());
         }
         let usd_value = self.notional_usd(step, amount * price, usd_rates);
         if usd_value <= 0.0 {
