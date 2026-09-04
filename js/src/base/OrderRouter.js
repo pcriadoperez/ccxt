@@ -2117,6 +2117,15 @@ class OrderRouter {
             //  caller's behalf is exactly the decision they did not delegate
             throw new NotSupported('OrderRouter: venue cannot do IOC and allowMarketOrders was not set');
         }
+        //  A market order and a notional cap cannot both be honoured. assertUnderCap valued this
+        //  order at the plan's LIMIT price, and the call below sends no price at all: the venue
+        //  fills wherever the book is, which is the one thing the cap exists to bound. Passing the
+        //  check and then removing the price it was computed from is a cap that silently
+        //  disappears, which by this file's own rule is not a cap. So the two options are refused
+        //  together — lift maxNotionalUsd, or drop allowMarketOrders.
+        if (this.numberAt(options, 'maxNotionalUsd', this.maxNotionalUsd) > 0) {
+            throw new NotSupported('OrderRouter: allowMarketOrders cannot be honoured under a maxNotionalUsd cap, because a market order has no price to check');
+        }
         result['placementAttempted'] = true;
         const marketOrder = await venue.createOrder(symbol, 'market', side, amount, undefined, orderParams);
         result['orderId'] = this.stringAt(marketOrder, 'id', '');

@@ -552,6 +552,20 @@ test('a market order needs BOTH a venue that cannot do IOC and an explicit opt-i
     const placed = await router.execute(plan, { 'stub': allowed }, { 'strategy': 'sequential', 'live': true, 'usdRates': { 'USDT': 1 }, 'allowMarketOrders': true });
     assert.strictEqual(placed['steps'][0]['status'], 'filled');
     assert.deepStrictEqual(allowed.calls, ['createOrder:market:buy:0.2']);
+    //  ...but not under a cap. assertUnderCap values the order at the plan's LIMIT price and the
+    //  market call sends no price at all, so passing the check and then removing the price it was
+    //  computed from is a cap that silently disappears. The two options are refused together.
+    const capped = new StubVenue('stub');
+    capped.features = { 'spot': { 'createOrder': { 'timeInForce': ['GTC'] } } };
+    const underCap = await router.execute(plan, { 'stub': capped }, {
+        'strategy': 'sequential', 'live': true, 'usdRates': { 'USDT': 1 },
+        'allowMarketOrders': true, 'maxNotionalUsd': 1000,
+    });
+    assert.strictEqual(underCap['steps'][0]['status'], 'failed');
+    assert.strictEqual(underCap['steps'][0]['errorCode'], 'NotSupported');
+    assert.deepStrictEqual(capped.calls, [], 'refused BEFORE dispatch: a cap checked against a price that is then discarded is worse than no cap');
+    //  and the refusal is about the CAP, not about market orders as such — with no cap set, the
+    //  same call goes through, which is the case asserted a few lines above.
     //  a venue that says nothing about timeInForce is assumed to do IOC: a
     //  rejected IOC is loud and cheap, an unintended market order is not
     const unknown = new StubVenue('stub');

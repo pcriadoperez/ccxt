@@ -668,6 +668,15 @@ def test_market_orders_need_two_keys():
     placed = router.execute(plan, {'stub': allowed}, {'strategy': 'sequential', 'live': True, 'usdRates': {'USDT': 1}, 'allowMarketOrders': True})
     assert placed['steps'][0]['status'] == 'filled'
     assert allowed.calls == ['createOrder:market:buy:0.2']
+    # ...but not under a cap. assert_under_cap values the order at the plan's LIMIT price and the
+    # market call sends no price at all, so passing the check and then removing the price it was
+    # computed from is a cap that silently disappears. The two options are refused together.
+    capped = StubVenue('stub')
+    capped.features = {'spot': {'createOrder': {'timeInForce': ['GTC']}}}
+    under_cap = router.execute(plan, {'stub': capped}, {'strategy': 'sequential', 'live': True, 'usdRates': {'USDT': 1}, 'allowMarketOrders': True, 'maxNotionalUsd': 1000})
+    assert under_cap['steps'][0]['status'] == 'failed'
+    assert under_cap['steps'][0]['errorCode'] == 'NotSupported'
+    assert capped.calls == [], 'refused BEFORE dispatch: a cap checked against a price that is then discarded is worse than no cap'
     # a venue that says nothing about timeInForce is assumed to do IOC: a
     # rejected IOC is loud and cheap, an unintended market order is not
     unknown = StubVenue('stub')

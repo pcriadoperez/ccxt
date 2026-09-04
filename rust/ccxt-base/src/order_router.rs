@@ -1819,6 +1819,14 @@ impl OrderRouter {
                 "OrderRouter: venue cannot do IOC and allowMarketOrders was not set",
             ));
         }
+        // A market order and a notional cap cannot both be honoured. assertUnderCap valued this order
+        // at the plan's LIMIT price, and the call below sends no price at all: the venue fills wherever
+        // the book is, which is the one thing the cap exists to bound. Passing the check and then
+        // removing the price it was computed from is a cap that silently disappears, which by this
+        // file's own rule is not a cap. So the two options are refused together.
+        if self.number_at(options, "maxNotionalUsd", self.max_notional_usd) > 0.0 {
+            return Err(ExchangeError::new("NotSupported", "OrderRouter: allowMarketOrders cannot be honoured under a maxNotionalUsd cap, because a market order has no price to check"));
+        }
         Self::put(result, "placementAttempted", Value::Bool(true));
         // Price 0 stands for "no price", which is what a market order carries.
         let order = venue.create_order(symbol, "market", side, amount, 0.0, order_params).await?;

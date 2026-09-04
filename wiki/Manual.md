@@ -8622,6 +8622,12 @@ notional is recomputed immediately before **every** `createOrder` — the plan-l
 ran, but a reconciliation may have resized the plan since, and the snapped price is not the one
 that was checked.
 
+A market order cannot be placed under a cap, and asking for both is refused. The cap is evaluated
+against the plan's limit price; a market order is then sent with no price at all and fills wherever
+the book is, which is exactly what the cap exists to bound. Passing the check and then discarding
+the price it was computed from would be a cap that silently disappears. Lift `maxNotionalUsd`, or
+drop `allowMarketOrders`.
+
 Under a cap, a step that cannot be valued in USD **blocks**. It is never skipped: a cap that
 silently disappears when a rate is missing is not a cap. Supply `options.usdRates` for every quote
 asset in the plan. With no cap set there is nothing to evaluate, so `usdRates` is not required

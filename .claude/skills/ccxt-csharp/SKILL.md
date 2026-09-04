@@ -994,6 +994,10 @@ opt-in guardrail: pass it to the constructor, or per call in the options, and it
 exactly at whatever value you choose, in either direction; omit it (or pass 0) and no notional
 check runs. Only a negative value is refused.
 
+A market order cannot be placed under a cap: the cap is checked against the plan's limit price and
+a market order carries no price at all, so asking for `allowMarketOrders` together with a cap is
+refused rather than silently unbounded.
+
 When a cap IS set it is enforced immediately before **every** order — not just at plan time,
 because a reconciliation may have resized the plan since — and a step that cannot be valued in USD
 **blocks**, so supply a USD rate for every quote asset in the plan. With no cap set there is

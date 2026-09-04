@@ -932,6 +932,7 @@ pub fn run() -> Result<usize, String> {
         ("execute: a throw after createOrder still reports the id and an open order", Box::new(|| a_known_order_id_survives_a_throw_after_create(&router()?))),
         ("execute: a spend the venue DID report survives an unknown fill", Box::new(|| a_reported_spend_survives_an_unknown_fill(&router()?))),
         ("execute: a report is summarised in the assets it names, not across currencies", Box::new(|| a_report_is_summarised_in_the_assets_it_names(&router()?))),
+        ("execute: a market order and a notional cap are refused together", Box::new(|| a_market_order_and_a_cap_are_refused_together(&router()?))),
         ("execute: atomic_ish demands the whole route pre-funded", Box::new(|| atomic_ish_demands_the_whole_route_prefunded(&router()?))),
         ("execute: best_effort demands both of its acknowledgements", Box::new(|| best_effort_demands_its_acknowledgements(&router()?))),
     ];
@@ -1471,6 +1472,48 @@ fn a_reported_spend_survives_an_unknown_fill(r: &OrderRouter) -> Result<(), Stri
     // And the halt, not the missing fields, is what protects the next hop.
     if !r.bool_at(&report, "halted", false) || r.string_at(&report, "haltReason", "") != "outcome_unknown" {
         return Err(format!("the route must halt on the ambiguity, got {report:?}"));
+    }
+    Ok(())
+}
+
+fn a_market_order_and_a_cap_are_refused_together(r: &OrderRouter) -> Result<(), String> {
+    // assert_under_cap values the order at the plan's LIMIT price; the market
+    // call then sends no price at all and the venue fills wherever the book is,
+    // which is the one thing the cap exists to bound. Passing the check and then
+    // discarding the price it was computed from is a cap that silently
+    // disappears — by this file's own rule, not a cap. So the two are refused
+    // together, and refused BEFORE anything reaches a venue.
+    let plan = one_leg_plan(r)?;
+    let mut capped = StubVenue::new("stub");
+    capped.supports_ioc = false;
+    let capped_counter = StdArc::clone(&capped.orders_placed);
+    let mut venues: BTreeMap<String, Box<dyn RouterVenue>> = BTreeMap::new();
+    venues.insert("stub".to_string(), Box::new(capped));
+    let mut options = execute_options(true, "sequential");
+    OrderRouter::set_key(&mut options, "allowMarketOrders", Value::Bool(true));
+    OrderRouter::set_key(&mut options, "maxNotionalUsd", Value::Float(1000.0));
+    let report = block_on(r.execute(&plan, &venues, &options)).map_err(|e| e.to_string())?;
+    let results = r.list_at(&report, "steps");
+    if r.string_at(&results[0], "status", "") != "failed"
+        || r.string_at(&results[0], "errorCode", "") != "NotSupported" {
+        return Err(format!("a market order under a cap must be refused, got {:?}", results[0]));
+    }
+    if capped_counter.load(Ordering::SeqCst) != 0 {
+        return Err("refused BEFORE dispatch: a cap checked against a price that is then discarded is worse than no cap".to_string());
+    }
+
+    // The refusal is about the CAP, not about market orders as such: with no cap
+    // set, the identical call goes through.
+    let mut uncapped = StubVenue::new("stub");
+    uncapped.supports_ioc = false;
+    let uncapped_counter = StdArc::clone(&uncapped.orders_placed);
+    let mut open_venues: BTreeMap<String, Box<dyn RouterVenue>> = BTreeMap::new();
+    open_venues.insert("stub".to_string(), Box::new(uncapped));
+    let mut open_options = execute_options(true, "sequential");
+    OrderRouter::set_key(&mut open_options, "allowMarketOrders", Value::Bool(true));
+    let open_report = block_on(r.execute(&plan, &open_venues, &open_options)).map_err(|e| e.to_string())?;
+    if uncapped_counter.load(Ordering::SeqCst) != 1 {
+        return Err(format!("with no cap the market order goes out, got {open_report:?}"));
     }
     Ok(())
 }

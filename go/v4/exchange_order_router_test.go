@@ -926,6 +926,22 @@ func TestOrderRouterMarketOrderNeedsBothAMissingIocAndAnExplicitOptIn(t *testing
 	if got := allowed.callLog(); len(got) != 1 || got[0] != "createOrder:market:buy:0.2" {
 		t.Fatalf("a market order was placed, got %v", got)
 	}
+	// ...but not under a cap. assertUnderCap values the order at the plan's LIMIT price and the
+	// market call sends no price at all, so passing the check and then removing the price it was
+	// computed from is a cap that silently disappears. Refused together.
+	capped := newOrderRouterStubVenue(1, false)
+	capped.features = gtcOnly
+	underCap, err := router.Execute(plan, routerStubVenues(map[string]*orderRouterStubVenue{"stub": capped}), map[string]any{"strategy": "sequential", "live": true, "usdRates": map[string]any{"USDT": 1.0}, "allowMarketOrders": true, "maxNotionalUsd": 1000.0})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	cappedStep := underCap["steps"].([]map[string]any)[0]
+	if routerStringAt(cappedStep, "status", "") != "failed" || routerStringAt(cappedStep, "errorCode", "") != "NotSupported" {
+		t.Fatalf("a market order under a cap must be refused, got %v", cappedStep)
+	}
+	if got := capped.callLog(); len(got) != 0 {
+		t.Fatalf("refused BEFORE dispatch: a cap checked against a price that is then discarded is worse than no cap, got %v", got)
+	}
 	// a venue that says nothing about timeInForce is assumed to do IOC: a
 	// rejected IOC is loud and cheap, an unintended market order is not
 	unknown := newOrderRouterStubVenue(1, false)

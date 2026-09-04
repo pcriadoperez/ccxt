@@ -1333,6 +1333,15 @@ public class OrderRouterTest
         var placed = await router.Execute(plan, Venues(allowed), new dict() { { "strategy", "sequential" }, { "live", true }, { "usdRates", rates }, { "allowMarketOrders", true } });
         EqualString((string)ToDict(ToList(placed["steps"])[0])["status"], "filled", "the opt-in reaches the market order");
         EqualCalls(allowed.calls, new List<string>() { "createOrder:market:buy:0.2" }, "and it is a market order");
+        //  ...but not under a cap. AssertUnderCap values the order at the plan's LIMIT price and
+        //  the market call sends no price at all, so passing the check and then removing the price
+        //  it was computed from is a cap that silently disappears. Refused together.
+        var capped = new StubVenue("stub");
+        capped.features = noIocFeatures;
+        var underCap = await router.Execute(plan, Venues(capped), new dict() { { "strategy", "sequential" }, { "live", true }, { "usdRates", rates }, { "allowMarketOrders", true }, { "maxNotionalUsd", 1000.0 } });
+        EqualString((string)ToDict(ToList(underCap["steps"])[0])["status"], "failed", "a market order under a cap is refused");
+        EqualString((string)ToDict(ToList(underCap["steps"])[0])["errorCode"], "NotSupported", "and names the refusal");
+        EqualCalls(capped.calls, new List<string>(), "refused BEFORE dispatch: a cap checked against a price that is then discarded is worse than no cap");
     }
 
     /// <summary>

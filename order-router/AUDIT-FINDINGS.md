@@ -344,26 +344,6 @@ ts/src/base/OrderRouter.ts:1354-1355 builds fresh state on every call and never 
 
 Derive a deterministic client order id per step — e.g. `clientOrderId = requestId + '-' + stepIndex` (plus an execute-call attempt number) — and inject it into orderParams in placeStep, so a re-run is rejected by the venue as a duplicate rather than filled. At minimum, refuse to execute a plan whose
 
-### 36. The 25 USD cap is computed entirely from route-supplied prices with no freshness check, and on the allowMarketOrders path the order is sent with no price at all
-
-**Severity:** high &nbsp;·&nbsp; **estimated effort:** hours
-
-**Claimed evidence**
-
-```
-assertUnderCap values the order from the plan's own numbers, ts/src/base/OrderRouter.ts:2270-2281:
-```
-        const usdValue = this.notionalUsd (probe, amount * price, usdRates);
-        if (usdValue <= 0) { throw ... }
-        if (usdValue > cap * (1 + OrderRouter.TOLERANCE)) { throw ... }
-```
-whe
-```
-
-**Suggested fix** — a suggestion, not a verdict; verify before following it.
-
-Refuse to execute a plan whose `calculatedAt` is older than a small explicit maxPlanAgeMs (e.g. 30s) — the field is already carried, just unread. For the market-order path, compute the cap against a freshly fetched ticker rather than the plan's expectedPrice, or drop the market fallback entirely and
-
 ### 38. README describes authentication as a single shared secret with no revocation in three places; the shipped system is per-user named keys with revocation, per-key limits and live socket termination
 
 **Severity:** high &nbsp;·&nbsp; **estimated effort:** minutes
@@ -1218,6 +1198,26 @@ order-router/README.md:563 and :569:
 Either delete the per-file coverage table and print the count from the suite, or extend the existing drift test in src/config.docs.test.ts to assert that every path named in the README's coverage table exists on disk — the same technique already used there for env vars, applied to the one table that
 
 ## Started, not finished
+
+### 36. The 25 USD cap is computed entirely from route-supplied prices with no freshness check, and on the allowMarketOrders path the order is sent with no price at all
+
+**Severity:** high &nbsp;·&nbsp; **estimated effort:** hours
+
+**Claimed evidence**
+
+```
+assertUnderCap values the order from the plan's own numbers, ts/src/base/OrderRouter.ts:2270-2281:
+```
+        const usdValue = this.notionalUsd (probe, amount * price, usdRates);
+        if (usdValue <= 0) { throw ... }
+        if (usdValue > cap * (1 + OrderRouter.TOLERANCE)) { throw ... }
+```
+whe
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Refuse to execute a plan whose `calculatedAt` is older than a small explicit maxPlanAgeMs (e.g. 30s) — the field is already carried, just unread. For the market-order path, compute the cap against a freshly fetched ticker rather than the plan's expectedPrice, or drop the market fallback entirely and
 
 ### 41. Deployment docs and the deploy workflow cover only the router process; the web console, ingester and key projector are undocumented and never started, so a box built from the README can never authenticate a request
 
