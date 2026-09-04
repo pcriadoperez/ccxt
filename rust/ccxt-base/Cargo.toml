@@ -23,14 +23,14 @@ default = []
 #
 # The transpiled WebSocket (`pro`) venues and the typed unified-method wrappers
 # used to live behind features here; they were split into the sibling
-# `ccxt-pro` and `ccxt-typed` crates so no single `rustc` invocation holds the
+# `ccxt-pro` and `ccxt` crates so no single `rustc` invocation holds the
 # whole generated surface at once (it OOM'd the 16 GB CI runner). Depend on
 # those crates directly instead of enabling a feature.
 transpiled-base = []
 
 [dependencies]
 # HTTP client (async)
-reqwest = { version = "0.12", features = ["json", "rustls-tls", "socks", "gzip"], default-features = false }
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "rustls-tls-native-roots", "socks", "gzip"], default-features = false }
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 # JSON serialisation / deserialisation
@@ -96,7 +96,7 @@ indexmap = { version = "2", features = ["serde"] }
 ed25519-dalek = "2"
 # WebSocket transport for the pro (watch*) API. rustls stack to match reqwest
 # (no OpenSSL). `connect_async` handles ws:// and wss://.
-tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "rustls-tls-webpki-roots", "rustls-tls-native-roots"] }
 # gzip / raw-inflate for venues that compress WS frames (htx, bitmart, …).
 flate2 = "1"
 # Global lazy statics for the WS client registry.

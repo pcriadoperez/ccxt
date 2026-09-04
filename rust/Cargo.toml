@@ -7,3 +7,12 @@ resolver = "2"
 # perf impact (just larger binaries).
 [profile.release]
 debug = true
+
+# Debuginfo for a ~900k-line generated workspace is the dominant compile-time and
+# memory cost (a default `debug = true` dev build of `ccxt-base` needs well over
+# 16 GB and OOMs the CI runner; rust.yml sets CARGO_PROFILE_DEV_DEBUG=0 for the
+# same reason). Match that here so a plain `cargo build` / `cargo run` — including
+# the `node run-tests <id> --rust` wrapper — builds in the same footprint locally.
+# Override with `CARGO_PROFILE_DEV_DEBUG=1` when a debugger session needs it.
+[profile.dev]
+debug = 0
