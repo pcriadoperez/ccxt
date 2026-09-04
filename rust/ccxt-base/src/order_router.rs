@@ -1555,11 +1555,19 @@ impl OrderRouter {
     /// Reports whether a thrown error leaves a placement's outcome genuinely
     /// unknown.
     fn is_outcome_unknown_error(&self, error: &ExchangeError) -> bool {
-        // The NetworkError family, and only it: a request that timed out or hit
-        // an unavailable venue may still have been received and acted on. Every
-        // other class is the venue ANSWERING — a rejection is a definite "no",
-        // and treating it as unknown would halt a route that is fine to retry.
-        error.is("NetworkError")
+        // Four names, matched exactly — the same list the other five ports use.
+        //
+        // NOT `error.is("NetworkError")`: that walks the hierarchy, and in
+        // ccxt's tree DDoSProtection, RateLimitExceeded and InvalidNonce are
+        // all children of NetworkError. Those are the venue ANSWERING — a
+        // rate-limit rejection is a definite "no order was placed" — so the
+        // walk reported every throttled request as a possibly-live order,
+        // halting a route the other five ports complete and sending an
+        // operator hunting for an order that never existed.
+        matches!(
+            error.kind.as_str(),
+            "RequestTimeout" | "ExchangeNotAvailable" | "NetworkError" | "OnMaintenance"
+        )
     }
 
     /// Marks every step from an index onwards as skipped after a halt.

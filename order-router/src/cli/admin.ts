@@ -94,7 +94,7 @@ async function main (): Promise<number> {
             return 0;
         }
 
-        process.stderr.write('usage: admin <create-admin|project> [...]\n');
+        process.stderr.write('usage: admin <create-admin|create-key|project> [...]\n');
         return 2;
     } finally {
         await pool.end();

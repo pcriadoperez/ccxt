@@ -363,28 +363,38 @@ traversed every level of every book — repeatedly, on every update.
 
 ### API keys
 
-Multiple named keys, stored hashed, created and revoked from a CLI, with every request in the log
-attributable to the key that made it.
+Multiple named keys per user, stored hashed, created and revoked from the web console, with every
+request in the log attributable to the key that made it.
 
 One key per real consumer, named after it — the name is what shows up in every log line, so it
 should identify who is calling, not what you hoped would call.
 
-```bash
-npm run keys:create -- --name acme-desk --note "issued 2026-08-23"
-  id         k_7f3a91c2
-  name       acme-desk
-  key        or_live_kQ8vN2pR7wZ3xL9mT4bY6cF1hJ5sD0aG8nV2eU7iO3x7Qa
-  ! This is the only time the key is shown. It is stored hashed and cannot be recovered.
+**Day to day, keys are managed in the dashboard** (`/router/dashboard`): create names a key and
+shows its plaintext exactly once; revoke takes effect within about 10 seconds. Postgres holds the
+rows; the router reads a projected snapshot and never holds a database credential. Both actions are
+recorded in `admin_audit` with the actor, the key's display id and the client address.
 
-npm run keys:list                      # never prints a key, only its identity and last4
-npm run keys:revoke -- acme-desk        # by id or name; takes effect within 10s
-npm run keys:delete -- k_7f3a91c2 --yes # removes the row entirely; prefer revoke
+The CLI covers only what a web UI cannot: the first admin account, before any login exists to
+create one with, and the first key, before a dashboard session exists to mint one with.
+
+```bash
+npm run admin -- create-admin --email ops@example.com --password '<at least 12 chars>'
+npm run admin -- create-key --email ops@example.com --name acme-desk --note "issued 2026-08-23"
+  id    k_7f3a91c2ab34
+  key   or_live_kQ8vN2pR7wZ3xL9mT4bY6cF1hJ5sD0aG8nV2eU7iO3x7Qa
+  ! Shown once. Stored only as a digest.
+
+npm run admin -- project               # force a projection, for debugging the router's snapshot
 ```
 
-The CLI prints which file it is acting on, because the service takes its path from an env file an
-interactive shell does not source — without that line an operator can administer a store the running
-service never reads, and every key they mint looks fine while the API keeps returning 401. Set
-`ORDER_ROUTER_KEYS_FILE` in your shell to match the unit, or pass it inline.
+There is deliberately no `revoke` command: with Postgres holding the rows, a second writer to them
+is a lost-update problem, and revocation is one click in the dashboard. To revoke a leaked key
+without a browser, set `revoked_at` on its row and run `npm run admin -- project`.
+
+`npm run admin -- project` prints which file it wrote, because the service takes that path from an
+env file an interactive shell does not source — without that line an operator can administer a store
+the running service never reads, and every key they mint looks fine while the API keeps returning
+401. Set `ORDER_ROUTER_KEYS_FILE` in your shell to match the unit, or pass it inline.
 
 Keys live in `keys.json` (`ORDER_ROUTER_KEYS_FILE`, mode 0600, atomic `rename` writes). Only the
 SHA-256 digest is stored, so a leaked file yields no usable credential. A change is picked up
@@ -459,7 +469,8 @@ cardinality trap the codebase already avoids for `/orderbook/:exchange/:symbol`.
 
 ### Still not an identity system
 
-No scopes, no expiry, no quotas, no self-serve signup. Every endpoint is read-only, so there is
+No scopes, no expiry, no quotas. (Signup *is* self-serve — see the web console — but an account
+is still one undifferentiated level of access.) Every endpoint is read-only, so there is
 nothing to separate yet; a stored-but-unenforced `scopes` field would be worse than none, and the
 loader rejects one outright rather than ignoring it. See `docs/auth-plan.md` for the full design
 and the ordered v2 list.
@@ -1011,7 +1022,7 @@ Not ready to expose publicly. Honest status of the blockers:
 
 | Blocker | Status |
 |---|---|
-| No authentication | **Partly closed** — shared-key auth exists and is tested, but it's a stopgap: no rotation, no per-client keys, no revocation, no scopes (see Security) |
+| No authentication | **Closed** — per-user named keys in Postgres, projected to `keys.json`, created and revoked from the dashboard, with per-key rate and WS-connection caps and live socket termination on revocation. **Still open:** no scopes, no expiry, no quotas (see Security) |
 | No rate limiting | **Closed** — per-key limiting, tested, `/health` exempt |
 | Never load tested | **Closed** — see Benchmarks; 4.3k–13.8k req/s depending on endpoint |
 | Never run against many exchanges at once | **Closed for connection concurrency** — 28 simultaneous live exchanges verified. **Still open for full symbol load** (55k subscriptions) |

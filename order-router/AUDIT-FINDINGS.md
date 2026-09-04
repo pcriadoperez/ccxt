@@ -250,41 +250,6 @@ ts/src/base/OrderRouter.ts:1354-1355 builds fresh state on every call and never 
 
 Derive a deterministic client order id per step — e.g. `clientOrderId = requestId + '-' + stepIndex` (plus an execute-call attempt number) — and inject it into orderParams in placeStep, so a re-run is rejected by the venue as a duplicate rather than filled. At minimum, refuse to execute a plan whose
 
-### 38. README describes authentication as a single shared secret with no revocation in three places; the shipped system is per-user named keys with revocation, per-key limits and live socket termination
-
-**Severity:** high &nbsp;·&nbsp; **estimated effort:** minutes
-
-**Claimed evidence**
-
-```
-Three false statements:
-
-1. order-router/README.md:996 — "| No authentication | **Partly closed** — shared-key auth exists and is tested, but it's a stopgap: no rotation, no per-client keys, no revocation, no scopes (see Security) |"
-2. order-router/README.md:1012 — "- Replace shared-key auth with s
-```
-
-**Suggested fix** — a suggestion, not a verdict; verify before following it.
-
-Rewrite README.md:996 and delete README.md:1012 to match the shipped model (per-user named keys in Postgres, projected to keys.json, revocable from the dashboard, per-key rate and WS caps). Replace README.md:652-653 with the real residual gap (no scopes, no expiry, no quotas — the accurate statement
-
-### 39. The documented key-management commands (npm run keys:create/list/revoke/delete) do not exist — including the revoke command an operator would run on a leaked key
-
-**Severity:** high &nbsp;·&nbsp; **estimated effort:** minutes
-
-**Claimed evidence**
-
-```
-order-router/README.md:371-381 documents an interactive procedure:
-```
-npm run keys:create -- --name acme-desk --note "issued 2026-08-23"
-npm run keys:list                      # never prints a key, only its identity and last4
-npm run keys:revoke -- acme-desk        # by id or name; takes effect wit
-```
-
-**Suggested fix** — a suggestion, not a verdict; verify before following it.
-
-Replace order-router/README.md:371-381 with the real procedure: `npm run admin -- create-admin --email … --password …` for bootstrap, the `/router/dashboard` key create/revoke flow for day-to-day, `npm run admin -- create-key --email … --name …` for break-glass, and `npm run admin -- project` to for
-
 ### 40. README states the service is not publicly exposed, has no self-serve signup, and deliberately has no admin HTTP endpoint — it is live on :443 with public signup and an admin console
 
 **Severity:** high &nbsp;·&nbsp; **estimated effort:** hours
@@ -702,20 +667,6 @@ children.push(child);            /
 
 Track children in a mutable per-shard slot: replace `children.push(child)` with an index assignment that `spawn()` updates on every respawn, so `stop()` always kills the live pid. Separately, register `process.on('disconnect', () => process.exit(0))` at the top of `shardWorker.ts` (before `runShard`
 
-### 64. Rust classifies the entire NetworkError subtree as outcome-unknown, so every rate-limit rejection is reported as a possibly-live order
-
-**Severity:** medium &nbsp;·&nbsp; **estimated effort:** minutes
-
-**Claimed evidence**
-
-```
-rust/ccxt-base/src/order_router.rs:1517 `fn is_outcome_unknown_error(&self, error: &ExchangeError) -> bool { error.is("NetworkError") }`, and rust/ccxt-base/src/error.rs:30 `pub fn is(&self, kind: &str) -> bool` walks the hierarchy at error.rs:83-89, where `"DDoSProtection" => "NetworkError"`, `"Rat
-```
-
-**Suggested fix** — a suggestion, not a verdict; verify before following it.
-
-Replace the hierarchy walk at rust/ccxt-base/src/order_router.rs:1517 with the same explicit four-name match the other five use: `matches!(error.kind.as_str(), "RequestTimeout" | "ExchangeNotAvailable" | "NetworkError" | "OnMaintenance")`.
-
 ### 65. Go cannot read per-trade fees and carries the gross amount forward; the code comment claims this is conservative, and it is the opposite
 
 **Severity:** medium &nbsp;·&nbsp; **estimated effort:** hours
@@ -743,20 +694,6 @@ ts/src/test/base/test.orderRouter.ts:1016 `test ('a fee charged in the acquired 
 **Suggested fix** — a suggestion, not a verdict; verify before following it.
 
 Port ts/src/test/base/test.orderRouter.ts:1016 and :1031 into python/ccxt/test/base/test_order_router.py, php/test/base/test_order_router.php, cs/tests/OrderRouterTest.cs, go/v4/exchange_order_router_test.go and rust/ccxt-base/src/order_router_selftest.rs, and add a stub-order section to ts/src/test
-
-### 67. Rust adds a price_unconfirmed halt branch that no other port has, halting routes the other five complete
-
-**Severity:** medium &nbsp;·&nbsp; **estimated effort:** minutes
-
-**Claimed evidence**
-
-```
-rust/ccxt-base/src/order_router.rs:1916 `if (!average_known || !cost_known) && filled > 0.0 { // A fill with no price is a fill whose proceeds are a guess.  Self::put(result, "status", Value::Str("outcome_unknown".into())); self.record_open_order(report, exchange_id, symbol, &self.string_at(result,
-```
-
-**Suggested fix** — a suggestion, not a verdict; verify before following it.
-
-Either delete the branch at rust/ccxt-base/src/order_router.rs:1916 to match the other five, or — if the caution is wanted — add it to all six and to the shared fixture so the halt is a documented, tested contract rather than a Rust-only surprise.
 
 ### 68. buildUnwindPlan's buy-side recovery order spends more quote than the residual holds — the fixture locks the unfundable number in across all six ports
 
@@ -983,20 +920,6 @@ go/v4/exchange_order_router.go:443 goes to the trouble of implementing JavaScrip
 
 Either port Go's routerToFixed12 (go/v4/exchange_order_router.go:443) into Python, PHP and Rust, or drop the JS-tie requirement and change Go to plain half-to-even so all six agree on the simpler rule. Add tie values (0.0001220703125, -0.0001220703125) to a formatNumber section of ts/src/test/base/f
 
-### 81. C# assigns inAsset/outAsset and the fee fields before the outcome-unknown early return, so an unknown-fill result carries assets the other ports leave blank
-
-**Severity:** low &nbsp;·&nbsp; **estimated effort:** minutes
-
-**Claimed evidence**
-
-```
-cs/ccxt/base/OrderRouter.cs:2180-2213 runs the side assignment (`result["inAsset"]`, `result["inAmount"]`, `result["outAsset"]`, `result["outAmount"]`) and then the fee netting, and only afterwards, at :2214, does `if (!filledKnown) { result["status"] = "outcome_unknown"; ... return result; }`. Type
-```
-
-**Suggested fix** — a suggestion, not a verdict; verify before following it.
-
-Move the `if (!filledKnown)` block at cs/ccxt/base/OrderRouter.cs:2214 up to sit immediately after the filledKnown/averageKnown/costKnown assignments at :2178, ahead of the side assignment and the fee netting, matching ts/src/base/OrderRouter.ts:1841.
-
 ### 82. placeProtectedLimit spins forever with a live order resting when pollIntervalMs is 0
 
 **Severity:** low &nbsp;·&nbsp; **estimated effort:** minutes
@@ -1129,6 +1052,11 @@ Kept so the same ground is not re-covered, and so a `wontfix` is not silently re
 | 22 | high | A projection against an empty/restored database silently overwrites the router's key snapshot with zero keys, de-authenticating every customer | **fixed** — a drain to zero is now checked one level down before it is written: revocation is a soft UPDATE, so a real revocation leaves its row in api_keys, while zero rows in the whole table under a populated snapshot is a lost or wrong database. That one is refused and logged at error level, keeping the previous file. A legitimately empty first run still writes an empty snapshot, and revoking the last key still takes effect. |
 | 29 | high | API key creation and user-initiated revocation through the dashboard are not logged at all | **fixed** — with 79, below: mint, self-revoke and admin-revoke write to admin_audit through src/db/adminAudit.ts. Only a revocation that changed a row is recorded, an unparseable client address is stored NULL rather than handed to `inet`, and a failed audit write logs but never fails the action — a revocation that 500s leaves a compromised key live. |
 | 79 | low | admin_audit is created but never written — admin actions leave no durable audit trail | **fixed** — same change as 29. Note the resolution taken was to write the table, not to delete it. |
+| 38 | high | README describes authentication as a single shared secret with no revocation in three places; the shipped system is per-user named keys with revocation, per-key limits and live socket termination | **fixed** — the Security §API keys intro, the "Still not an identity system" paragraph (which also claimed there is no self-serve signup) and the readiness-table row now describe the shipped model. The residual gap is stated accurately: no scopes, no expiry, no quotas. |
+| 39 | high | The documented key-management commands (npm run keys:create/list/revoke/delete) do not exist — including the revoke command an operator would run on a leaked key | **fixed** — replaced with the real procedure: `admin create-admin` / `create-key` for bootstrap and break-glass, the dashboard for day-to-day, `admin project` for debugging, and an explicit note that there is deliberately no revoke command (two writers to the Postgres rows is a lost-update problem) plus what to do without a browser. src/docs.test.ts now fails on any `npm run` the README names and package.json lacks, on any documented `admin` subcommand the CLI does not handle, and on a usage line that omits a handled command — `create-key` was missing from it. |
+| 64 | medium | Rust classifies the entire NetworkError subtree as outcome-unknown, so every rate-limit rejection is reported as a possibly-live order | **fixed** — `error.is("NetworkError")` walked the hierarchy, where DDoSProtection, RateLimitExceeded and InvalidNonce are children of NetworkError. Replaced with the same exact four-name match the other five ports use, with a selftest that pins both directions: those three are plain failures, and the four ambiguous ones stay outcome-unknown. |
+| 67 | medium | Rust adds a price_unconfirmed halt branch that no other port has, halting routes the other five complete | **refuted on current source** — the branch is gone; what remains at rust/ccxt-base/src/order_router.rs:2019 is a comment recording that it was removed and why (the reference halts on an unknown FILL, and reports an estimated price as an estimate). Nothing to change. |
+| 81 | low | C# assigns inAsset/outAsset and the fee fields before the outcome-unknown early return, so an unknown-fill result carries assets the other ports leave blank | **refuted** — written against the pre-item-34 reference. Closing 34 moved the TypeScript early return to sit AFTER the asset/amount assignment, precisely because inAmount is what buildUnwindPlan subtracts. C# at :2203-2242 already matches that reference; "fixing" it would reintroduce the divergence 34 closed. |
 | 14 | high | Attacker-controlled request.ip is inserted into an `inet` column inside the ingest transaction; one crafted header wedges audit ingestion permanently | **fixed** — 6f88bfb3 same fix as blocker 4 |
 | 15 | high | The published dev API key `dev-local-key-change-me` is enabled in production whenever NODE_ENV is unset, and the documented systemd unit never sets it | **fixed** — 6f88bfb3 same fix as blocker 0 |
 | 25 | high | /stream/route produces zero audit records and zero HTTP metrics — streaming usage is invisible to billing and to Prometheus | **fixed** — cc1501bf audit emission shared by GET/POST /route and every pushed frame; unroutable counter with it |

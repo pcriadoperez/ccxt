@@ -926,6 +926,7 @@ pub fn run() -> Result<usize, String> {
         ("execute: a failure BEFORE dispatch records no open order", Box::new(|| a_failure_before_dispatch_records_no_open_order(&router()?))),
         ("execute: a createOrder that times out is outcome-unknown, not a plain failure", Box::new(|| a_timeout_is_outcome_unknown_not_a_plain_failure(&router()?))),
         ("execute: a definite rejection stays a plain failure and reports no open order", Box::new(|| a_definite_rejection_stays_a_plain_failure(&router()?))),
+        ("execute: a throttled request is a plain failure, not a possibly-live order", Box::new(|| a_rate_limit_rejection_is_a_plain_failure(&router()?))),
         ("execute: a fill that stays unknown after the re-read halts instead of guessing", Box::new(|| a_fill_that_stays_unknown_halts_instead_of_guessing(&router()?))),
         ("execute: refuses to go live above a cap the caller set", Box::new(|| execute_refuses_to_go_live_above_the_cap(&router()?))),
         ("execute: the same trade goes through when nobody asked for a cap", Box::new(|| execute_places_the_same_trade_with_no_cap(&router()?))),
@@ -1261,6 +1262,48 @@ fn a_definite_rejection_stays_a_plain_failure(r: &OrderRouter) -> Result<(), Str
     }
     if !r.list_at(&report, "openOrders").is_empty() {
         return Err("a definite rejection leaves no open order".to_string());
+    }
+    Ok(())
+}
+
+fn a_rate_limit_rejection_is_a_plain_failure(r: &OrderRouter) -> Result<(), String> {
+    // The classifier used to walk the error hierarchy, where DDoSProtection,
+    // RateLimitExceeded and InvalidNonce all sit UNDER NetworkError — so every
+    // throttled request was reported as a possibly-live order, halting a route
+    // the other five ports complete and sending an operator hunting for an
+    // order that was never accepted. The other five match four names exactly;
+    // this pins Rust to the same list.
+    for kind in ["RateLimitExceeded", "DDoSProtection", "InvalidNonce"] {
+        let plan = one_leg_plan(r)?;
+        let mut venue = StubVenue::new("stub");
+        venue.fail_with = Some(kind);
+        let mut venues: BTreeMap<String, Box<dyn RouterVenue>> = BTreeMap::new();
+        venues.insert("stub".to_string(), Box::new(venue));
+        let report = block_on(r.execute(&plan, &venues, &execute_options(true, "sequential")))
+            .map_err(|e| e.to_string())?;
+        let results = r.list_at(&report, "steps");
+        let status = r.string_at(&results[0], "status", "");
+        if status != "failed" {
+            return Err(format!("{kind} is the venue answering; expected failed, got {status}"));
+        }
+        if !r.list_at(&report, "openOrders").is_empty() {
+            return Err(format!("{kind} left an open order behind"));
+        }
+    }
+    // The four that genuinely are ambiguous still are.
+    for kind in ["RequestTimeout", "ExchangeNotAvailable", "NetworkError", "OnMaintenance"] {
+        let plan = one_leg_plan(r)?;
+        let mut venue = StubVenue::new("stub");
+        venue.fail_with = Some(kind);
+        let mut venues: BTreeMap<String, Box<dyn RouterVenue>> = BTreeMap::new();
+        venues.insert("stub".to_string(), Box::new(venue));
+        let report = block_on(r.execute(&plan, &venues, &execute_options(true, "sequential")))
+            .map_err(|e| e.to_string())?;
+        let results = r.list_at(&report, "steps");
+        let status = r.string_at(&results[0], "status", "");
+        if status != "outcome_unknown" {
+            return Err(format!("{kind} may still have reached the venue; got {status}"));
+        }
     }
     Ok(())
 }
