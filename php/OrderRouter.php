@@ -64,9 +64,16 @@ class OrderRouter {
     const DEFAULT_SLIPPAGE_BPS = 25;
     const DEFAULT_RECONCILE_TOLERANCE = 0.02;
 
-    //  CLAUDE.md: never risk more than 25 USD equivalent per trade. This is a
-    //  ceiling, not a default — the constructor refuses to raise it.
-    const MAX_NOTIONAL_USD = 25;
+    //  NO_CAP is the default: this class does not decide how much of your money you
+    //  may trade. $maxNotionalUsd is an OPT-IN guardrail — set it and it is honoured
+    //  exactly, at whatever value you choose; leave it unset and no notional check runs
+    //  at all.
+    //
+    //  It used to be a hard 25 USD ceiling that could be lowered but never raised. That
+    //  number came from CLAUDE.md §5.5, which governs THIS REPOSITORY'S live tests
+    //  against real exchanges — not the people using the library. A client that refuses
+    //  a 30 USD order because its own test suite is cautious is broken as a product.
+    const NO_CAP = 0;
 
     //  router-side caps on the `balances` query parameter; both REJECT rather
     //  than truncate server-side, so the client trims before sending
@@ -114,7 +121,7 @@ class OrderRouter {
      *     string  apiKey          the router API key, sent as the x-api-key header (required)
      *     string  baseUrl         router base url, defaults to https://docs.ccxt.com/router/api
      *     int     timeoutMs       request timeout in milliseconds, defaults to 30000
-     *     float   maxNotionalUsd  per-trade USD notional cap, defaults to 25 and may only be LOWERED
+     *     float   maxNotionalUsd  per-trade USD notional cap, an OPT-IN guardrail; defaults to 0, which is NO CAP
      */
     public function __construct($config = array()) {
         $apiKey = $this->stringAt($config, 'apiKey', '');
@@ -128,14 +135,14 @@ class OrderRouter {
         }
         $this->baseUrl = $baseUrl;
         $this->timeoutMs = $this->numberAt($config, 'timeoutMs', self::DEFAULT_TIMEOUT_MS);
-        $maxNotionalUsd = $this->numberAt($config, 'maxNotionalUsd', self::MAX_NOTIONAL_USD);
-        if ($maxNotionalUsd > self::MAX_NOTIONAL_USD) {
-            //  the cap is a hard rule, not a preference; raising it is refused
-            throw new BadRequest('OrderRouter maxNotionalUsd may not exceed the hard 25 USD per-trade cap');
+        $maxNotionalUsd = $this->numberAt($config, 'maxNotionalUsd', self::NO_CAP);
+        if ($maxNotionalUsd < 0) {
+            //  a negative cap is a typo, not a policy, and silently ignoring it would
+            //  leave the caller believing a guardrail is in place
+            throw new BadRequest('OrderRouter maxNotionalUsd must not be negative; omit it, or pass 0, for no cap');
         }
-        if ($maxNotionalUsd <= 0) {
-            throw new BadRequest('OrderRouter maxNotionalUsd must be positive');
-        }
+        //  0 means NO CAP. Any positive value is honoured exactly — it is not clamped,
+        //  because the caller is the one who knows the size of their own trade.
         $this->maxNotionalUsd = $maxNotionalUsd;
     }
 
@@ -845,27 +852,21 @@ class OrderRouter {
     //  -----------------------------------------------------------------------
 
     /**
-     * checks a plan against per-venue market rules and the hard per-trade USD notional cap. PURE — no I/O. A step that cannot be valued in USD BLOCKS; it is never skipped, because a cap that silently disappears when a rate is missing is not a cap
+     * checks a plan against per-venue market rules and, when one is set, the opt-in per-trade USD notional cap. PURE — no I/O. A step that cannot be valued in USD BLOCKS; it is never skipped, because a cap that silently disappears when a rate is missing is not a cap
      * @param array $plan a plan from buildExecutionPlan
      * @param array $markets a dictionary of exchangeId to that exchange's markets dictionary, i.e. markets[exchangeId][symbol]
      * @param array $options check options
      *     array  usdRates       a dictionary of currency code to its USD price. USD itself is 1 implicitly; nothing else is assumed
-     *     float  maxNotionalUsd per-trade cap, clamped to the client's own cap, which is clamped to 25
+     *     float  maxNotionalUsd per-trade cap, honoured exactly; 0 — the default — means no notional check runs at all
      *     string precisionMode  tick_size (default) or decimal_places, matching the venue's precisionMode
      * @return array the violations, each with stepIndex, code, blocking, actual, limit and a constant message. An empty array means the plan passed
      */
     public function checkExecutionPlanSafety($plan, $markets, $options = array()) {
         $violations = array();
+        //  Honoured exactly as given, per call or per client. No clamping: a caller
+        //  trading thousands and a caller trading cents are both using this correctly.
         $maxNotionalUsd = $this->numberAt($options, 'maxNotionalUsd', $this->maxNotionalUsd);
-        if ($maxNotionalUsd > $this->maxNotionalUsd) {
-            $maxNotionalUsd = $this->maxNotionalUsd;
-        }
-        if ($maxNotionalUsd > self::MAX_NOTIONAL_USD) {
-            //  $maxNotionalUsd is a public property, so the constructor's refusal
-            //  is not the last word on it. The hard 25 USD ceiling is re-imposed
-            //  HERE, where the number is used.
-            $maxNotionalUsd = self::MAX_NOTIONAL_USD;
-        }
+        $capInForce = $maxNotionalUsd > 0;
         $usdRates = $this->dictAt($options, 'usdRates');
         $precisionMode = $this->stringAt($options, 'precisionMode', 'tick_size');
         $steps = $this->listAt($plan, 'steps');
@@ -951,14 +952,19 @@ class OrderRouter {
             if ($limitPrice > $worstPrice) {
                 $worstPrice = $limitPrice;
             }
-            $worstNotional = $amount * $worstPrice;
-            $usdValue = $this->notionalUsd($step, $worstNotional, $usdRates);
-            if ($usdValue <= 0) {
-                //  BLOCKING, and deliberately so. Skipping the cap for a step
-                //  whose USD value is unknown defeats the entire safety layer.
-                $violations[] = $this->violation($stepIndex, $exchangeId, $symbol, 'notional_unvaluable', true, $worstNotional, $maxNotionalUsd);
-            } elseif ($usdValue > $maxNotionalUsd * (1 + self::TOLERANCE)) {
-                $violations[] = $this->violation($stepIndex, $exchangeId, $symbol, 'notional_exceeds_cap', true, $usdValue, $maxNotionalUsd);
+            if ($capInForce) {
+                //  Only when a cap is actually set. With no cap there is nothing to
+                //  enforce, so a missing USD rate is not an error and the caller is not
+                //  made to supply usdRates for a check they did not ask for.
+                $worstNotional = $amount * $worstPrice;
+                $usdValue = $this->notionalUsd($step, $worstNotional, $usdRates);
+                if ($usdValue <= 0) {
+                    //  BLOCKING, and deliberately so. Skipping the cap for a step whose
+                    //  USD value is unknown defeats the cap the caller DID ask for.
+                    $violations[] = $this->violation($stepIndex, $exchangeId, $symbol, 'notional_unvaluable', true, $worstNotional, $maxNotionalUsd);
+                } elseif ($usdValue > $maxNotionalUsd * (1 + self::TOLERANCE)) {
+                    $violations[] = $this->violation($stepIndex, $exchangeId, $symbol, 'notional_exceeds_cap', true, $usdValue, $maxNotionalUsd);
+                }
             }
         }
         return $violations;
@@ -2155,18 +2161,14 @@ class OrderRouter {
      * @param float $amount the snapped amount actually being sent
      * @param float $price the snapped price actually being sent
      * @param array $usdRates currency code to USD price
-     * @param array $options the execute options, read for a lowered maxNotionalUsd
+     * @param array $options the execute options, read for a per-call maxNotionalUsd
      * @return void
      */
     public function assertUnderCap($step, $amount, $price, $usdRates, $options) {
         $cap = $this->numberAt($options, 'maxNotionalUsd', $this->maxNotionalUsd);
-        if ($cap > $this->maxNotionalUsd) {
-            $cap = $this->maxNotionalUsd;
-        }
-        if ($cap > self::MAX_NOTIONAL_USD) {
-            //  same ceiling as checkExecutionPlanSafety, re-imposed at the last
-            //  moment before an order goes out
-            $cap = self::MAX_NOTIONAL_USD;
+        if ($cap <= 0) {
+            //  no cap set, so there is nothing to enforce here
+            return;
         }
         $probe = array(
             'base' => $this->stringAt($step, 'base', ''),

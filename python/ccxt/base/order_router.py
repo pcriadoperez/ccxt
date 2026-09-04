@@ -125,9 +125,16 @@ class OrderRouter:
     DEFAULT_SLIPPAGE_BPS = 25
     DEFAULT_RECONCILE_TOLERANCE = 0.02
 
-    # CLAUDE.md: never risk more than 25 USD equivalent per trade. This is a
-    # ceiling, not a default — the constructor refuses to raise it.
-    MAX_NOTIONAL_USD = 25
+    # NO_CAP is the default: this class does not decide how much of your money you
+    # may trade. `maxNotionalUsd` is an OPT-IN guardrail — set it and it is honoured
+    # exactly, at whatever value you choose; leave it unset and no notional check runs
+    # at all.
+    #
+    # It used to be a hard 25 USD ceiling that could be lowered but never raised. That
+    # number came from CLAUDE.md §5.5, which governs THIS REPOSITORY'S live tests
+    # against real exchanges — not the people using the library. A client that refuses
+    # a 30 USD order because its own test suite is cautious is broken as a product.
+    NO_CAP = 0
 
     # router-side caps on the `balances` query parameter; both REJECT rather
     # than truncate server-side, so the client trims before sending
@@ -146,7 +153,7 @@ class OrderRouter:
         :param str config['apiKey']: the router API key, sent as the x-api-key header(required)
         :param str [config['baseUrl']]: router base url, defaults to https://docs.ccxt.com/router/api
         :param int [config['timeoutMs']]: request timeout in milliseconds, defaults to 30000
-        :param float [config['maxNotionalUsd']]: per-trade USD notional cap, defaults to 25 and may only be LOWERED
+        :param float [config['maxNotionalUsd']]: per-trade USD notional cap, an opt-in guardrail honoured exactly at whatever value you choose; omit it, or pass 0, for no cap
         :returns OrderRouter: a router client
         """
         api_key = self.string_at(config, 'apiKey', '')
@@ -158,12 +165,13 @@ class OrderRouter:
             base_url = base_url[:-1]
         self.base_url = base_url
         self.timeout_ms = self.number_at(config, 'timeoutMs', OrderRouter.DEFAULT_TIMEOUT_MS)
-        max_notional_usd = self.number_at(config, 'maxNotionalUsd', OrderRouter.MAX_NOTIONAL_USD)
-        if max_notional_usd > OrderRouter.MAX_NOTIONAL_USD:
-            # the cap is a hard rule, not a preference; raising it is refused
-            raise BadRequest('OrderRouter maxNotionalUsd may not exceed the hard 25 USD per-trade cap')
-        if max_notional_usd <= 0:
-            raise BadRequest('OrderRouter maxNotionalUsd must be positive')
+        max_notional_usd = self.number_at(config, 'maxNotionalUsd', OrderRouter.NO_CAP)
+        if max_notional_usd < 0:
+            # a negative cap is a typo, not a policy, and silently ignoring it would
+            # leave the caller believing a guardrail is in place
+            raise BadRequest('OrderRouter maxNotionalUsd must not be negative; omit it, or pass 0, for no cap')
+        # 0 means NO CAP. Any positive value is honoured exactly — it is not clamped,
+        # because the caller is the one who knows the size of their own trade.
         self.max_notional_usd = max_notional_usd
         self.session = Session()
         # guards the shared report while parallel_within_hop has legs in flight;
@@ -708,25 +716,21 @@ class OrderRouter:
 
     def check_execution_plan_safety(self, plan, markets, options={}):
         """
-        checks a plan against per-venue market rules and the hard per-trade USD notional cap. PURE — no I/O. A step that cannot be valued in USD BLOCKS; it is never skipped, because a cap that silently disappears when a rate is missing is not a cap
+        checks a plan against per-venue market rules and, when one is set, the per-trade USD notional cap. PURE — no I/O. A step that cannot be valued in USD BLOCKS while a cap is in force; it is never skipped, because a cap that silently disappears when a rate is missing is not a cap
 
         :param dict plan: a plan from build_execution_plan
         :param dict markets: a dictionary of exchangeId to that exchange's markets dictionary, i.e. markets[exchangeId][symbol]
         :param dict [options]: check options
         :param dict [options['usdRates']]: a dictionary of currency code to its USD price. USD itself is 1 implicitly; nothing else is assumed
-        :param float [options['maxNotionalUsd']]: per-trade cap, clamped to the client's own cap, which is clamped to 25
+        :param float [options['maxNotionalUsd']]: per-trade cap, honoured exactly, defaulting to the client's own; 0 or absent on both means no notional check runs
         :param str [options['precisionMode']]: tick_size(default) or decimal_places, matching the venue's precisionMode
         :returns list: the violations, each with stepIndex, code, blocking, actual, limit and a constant message. An empty list means the plan passed
         """
         violations = []
+        # Honoured exactly as given, per call or per client. No clamping: a caller
+        # trading thousands and a caller trading cents are both using this correctly.
         max_notional_usd = self.number_at(options, 'maxNotionalUsd', self.max_notional_usd)
-        if max_notional_usd > self.max_notional_usd:
-            max_notional_usd = self.max_notional_usd
-        if max_notional_usd > OrderRouter.MAX_NOTIONAL_USD:
-            # the instance field stays writable, so the constructor's refusal is
-            # not the last word on it. The hard 25 USD ceiling is re-imposed
-            # HERE, where the number is used.
-            max_notional_usd = OrderRouter.MAX_NOTIONAL_USD
+        cap_in_force = max_notional_usd > 0
         usd_rates = self.dict_at(options, 'usdRates')
         precision_mode = self.string_at(options, 'precisionMode', 'tick_size')
         steps = self.list_at(plan, 'steps')
@@ -799,14 +803,18 @@ class OrderRouter:
             worst_price = expected_price
             if limit_price > worst_price:
                 worst_price = limit_price
-            worst_notional = amount * worst_price
-            usd_value = self.notional_usd(step, worst_notional, usd_rates)
-            if usd_value <= 0:
-                # BLOCKING, and deliberately so. Skipping the cap for a step
-                # whose USD value is unknown defeats the entire safety layer.
-                violations.append(self.violation(step_index, exchange_id, symbol, 'notional_unvaluable', True, worst_notional, max_notional_usd))
-            elif usd_value > max_notional_usd * (1 + OrderRouter.TOLERANCE):
-                violations.append(self.violation(step_index, exchange_id, symbol, 'notional_exceeds_cap', True, usd_value, max_notional_usd))
+            if cap_in_force:
+                # Only when a cap is actually set. With no cap there is nothing to
+                # enforce, so a missing USD rate is not an error and the caller is not
+                # made to supply usdRates for a check they did not ask for.
+                worst_notional = amount * worst_price
+                usd_value = self.notional_usd(step, worst_notional, usd_rates)
+                if usd_value <= 0:
+                    # BLOCKING, and deliberately so. Skipping the cap for a step whose
+                    # USD value is unknown defeats the cap the caller DID ask for.
+                    violations.append(self.violation(step_index, exchange_id, symbol, 'notional_unvaluable', True, worst_notional, max_notional_usd))
+                elif usd_value > max_notional_usd * (1 + OrderRouter.TOLERANCE):
+                    violations.append(self.violation(step_index, exchange_id, symbol, 'notional_exceeds_cap', True, usd_value, max_notional_usd))
         return violations
 
     def violation(self, step_index, exchange_id, symbol, code, blocking, actual, limit):
@@ -1166,7 +1174,7 @@ class OrderRouter:
         :param dict [options]: execution options
         :param str [options['strategy']]: dry_run, sequential, parallel_within_hop, limit_protected, best_effort or atomic_ish
         :param bool [options['live']]: must be exactly True for any order to be placed
-        :param dict [options['usdRates']]: currency code to USD price, required when live because the notional cap cannot be enforced without it
+        :param dict [options['usdRates']]: currency code to USD price, required when live and a notional cap is set, because the cap cannot be enforced without it
         :param bool [options['allowMarketOrders']]: permit a market order when the venue cannot do IOC, default False
         :param int [options['maxOrders']]: hard order-count cap, required by best_effort
         :param bool [options['acknowledgeDispersion']]: required by best_effort, which can leave you holding an unintended asset mix
@@ -1927,16 +1935,13 @@ class OrderRouter:
         :param float amount: the snapped amount actually being sent
         :param float price: the snapped price actually being sent
         :param dict usd_rates: currency code to USD price
-        :param dict options: the execute options, read for a lowered maxNotionalUsd
+        :param dict options: the execute options, read for a per-call maxNotionalUsd
         :returns None:
         """
         cap = self.number_at(options, 'maxNotionalUsd', self.max_notional_usd)
-        if cap > self.max_notional_usd:
-            cap = self.max_notional_usd
-        if cap > OrderRouter.MAX_NOTIONAL_USD:
-            # same ceiling as check_execution_plan_safety, re-imposed at the last
-            # moment before an order goes out
-            cap = OrderRouter.MAX_NOTIONAL_USD
+        if cap <= 0:
+            # no cap set, so there is nothing to enforce here
+            return
         probe = {
             'base': self.string_at(step, 'base', ''),
             'quote': self.string_at(step, 'quote', ''),

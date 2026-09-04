@@ -515,17 +515,24 @@ function order_router_test_constructor_cap($router) {
     order_router_assert_throws(function () {
         new OrderRouter(array());
     }, ArgumentsRequired::class, 'an apiKey is required');
-    order_router_assert_throws(function () {
-        new OrderRouter(array('apiKey' => 'k', 'maxNotionalUsd' => 25.01));
-    }, BadRequest::class, 'the cap may not be raised');
-    order_router_assert_throws(function () {
-        new OrderRouter(array('apiKey' => 'k', 'maxNotionalUsd' => 0));
-    }, BadRequest::class, 'the cap must be positive');
-    $lowered = new OrderRouter(array('apiKey' => 'k', 'maxNotionalUsd' => 5));
-    order_router_assert($lowered->maxNotionalUsd === 5, 'the cap may be lowered');
+    //  No ceiling. A caller trading thousands is using this correctly, and the class
+    //  does not get to decide otherwise — the old hard 25 USD limit came from this
+    //  repository's own live-test safety rule, which is not a rule about anyone's money.
+    $large = new OrderRouter(array('apiKey' => 'k', 'maxNotionalUsd' => 250000));
+    order_router_assert($large->maxNotionalUsd === 250000, 'honoured exactly, not clamped');
+    $small = new OrderRouter(array('apiKey' => 'k', 'maxNotionalUsd' => 0.05));
+    order_router_assert($small->maxNotionalUsd === 0.05, 'cents are a legitimate trade size');
+    //  The default is NO cap.
     $standard = new OrderRouter(array('apiKey' => 'k'));
-    order_router_assert($standard->maxNotionalUsd === 25, 'the default cap is 25');
-    order_router_assert(OrderRouter::MAX_NOTIONAL_USD === 25, 'the hard ceiling is 25');
+    order_router_assert($standard->maxNotionalUsd === OrderRouter::NO_CAP, 'the default is no cap');
+    order_router_assert(OrderRouter::NO_CAP === 0, 'and no cap is spelled 0');
+    //  0 is the explicit spelling of "no cap"; negative is a typo, and silently
+    //  ignoring it would leave the caller believing a guardrail is in place.
+    $explicit = new OrderRouter(array('apiKey' => 'k', 'maxNotionalUsd' => 0));
+    order_router_assert($explicit->maxNotionalUsd === 0, '0 is the explicit spelling of no cap');
+    order_router_assert_throws(function () {
+        new OrderRouter(array('apiKey' => 'k', 'maxNotionalUsd' => -1));
+    }, BadRequest::class, 'a negative cap is a typo, not a policy');
 }
 
 function order_router_test_limit_price_side($router) {
@@ -539,49 +546,67 @@ function order_router_test_limit_price_side($router) {
 
 function order_router_test_notional_cap($router) {
     $markets = order_router_permissive_markets();
+    $capped = array('usdRates' => array('USDT' => 1), 'maxNotionalUsd' => 25);
     //  amount * limitPrice is what is measured, so a 1% slippage on a 24.90 USD
     //  step is what carries it over the line
     $under = $router->buildExecutionPlan(order_router_one_leg_route('buy', 'BTC', 'USDT', 0.24, 100), array('slippageBps' => 0));
-    order_router_assert(count($router->checkExecutionPlanSafety($under, $markets, array('usdRates' => array('USDT' => 1)))) === 0, '24 USD passes');
+    order_router_assert(count($router->checkExecutionPlanSafety($under, $markets, $capped)) === 0, '24 USD passes a 25 USD cap');
     $at = $router->buildExecutionPlan(order_router_one_leg_route('buy', 'BTC', 'USDT', 0.25, 100), array('slippageBps' => 0));
-    order_router_assert(count($router->checkExecutionPlanSafety($at, $markets, array('usdRates' => array('USDT' => 1)))) === 0, 'exactly 25 USD passes');
+    order_router_assert(count($router->checkExecutionPlanSafety($at, $markets, $capped)) === 0, 'exactly at the cap passes');
     $over = $router->buildExecutionPlan(order_router_one_leg_route('buy', 'BTC', 'USDT', 0.2501, 100), array('slippageBps' => 0));
-    $overViolations = $router->checkExecutionPlanSafety($over, $markets, array('usdRates' => array('USDT' => 1)));
+    $overViolations = $router->checkExecutionPlanSafety($over, $markets, $capped);
     order_router_assert(count($overViolations) === 1, 'one violation above the cap');
     order_router_assert($overViolations[0]['code'] === 'notional_exceeds_cap', 'the code names the cap');
     order_router_assert($overViolations[0]['blocking'] === true, 'the cap blocks');
-    //  and the slippage is inside the measurement, not outside it
+    //  the slippage is inside the measurement, not outside it
     $slipped = $router->buildExecutionPlan(order_router_one_leg_route('buy', 'BTC', 'USDT', 0.249, 100), array('slippageBps' => 100));
-    $slippedViolations = $router->checkExecutionPlanSafety($slipped, $markets, array('usdRates' => array('USDT' => 1)));
+    $slippedViolations = $router->checkExecutionPlanSafety($slipped, $markets, $capped);
     order_router_assert(count($slippedViolations) === 1, '24.90 USD at 1% slippage is 25.15 USD of risk');
     order_router_assert($slippedViolations[0]['code'] === 'notional_exceeds_cap', 'the slipped step exceeds the cap');
+    //  A LARGE cap is honoured just as exactly. This is the case the old hard ceiling
+    //  made unreachable: 2,000 USD of BTC under a 5,000 USD guardrail is a normal trade.
+    $large = $router->buildExecutionPlan(order_router_one_leg_route('buy', 'BTC', 'USDT', 20, 100), array('slippageBps' => 0));
+    order_router_assert(count($router->checkExecutionPlanSafety($large, $markets, array('usdRates' => array('USDT' => 1), 'maxNotionalUsd' => 5000))) === 0, '2,000 USD under a 5,000 USD cap');
+    $overLarge = $router->checkExecutionPlanSafety($large, $markets, array('usdRates' => array('USDT' => 1), 'maxNotionalUsd' => 1000));
+    order_router_assert($overLarge[0]['code'] === 'notional_exceeds_cap', 'and the same 2,000 USD trips a 1,000 USD cap');
+}
+
+function order_router_test_no_cap_means_no_check($router) {
+    //  The default. This class does not decide how much of your money you may trade —
+    //  the guardrail is opt-in, so a plan of any size passes untouched, and a caller who
+    //  never asked for a cap is not made to supply usdRates for it.
+    $markets = order_router_permissive_markets();
+    $large = $router->buildExecutionPlan(order_router_one_leg_route('buy', 'BTC', 'USDT', 1000, 100), array('slippageBps' => 0));
+    order_router_assert(count($router->checkExecutionPlanSafety($large, $markets, array('usdRates' => array('USDT' => 1)))) === 0, '100,000 USD passes when no cap is set');
+    order_router_assert(count($router->checkExecutionPlanSafety($large, $markets, array())) === 0, 'and needs no usdRates at all');
 }
 
 function order_router_test_unvaluable_blocks($router) {
     $markets = order_router_permissive_markets();
     $plan = $router->buildExecutionPlan(order_router_one_leg_route('buy', 'BTC', 'USDT', 0.0001, 100), array('slippageBps' => 0));
-    //  0.01 USDT of notional: trivially under any cap, and still refused,
-    //  because the point is that the cap could not be EVALUATED
-    $violations = $router->checkExecutionPlanSafety($plan, $markets, array('usdRates' => array()));
+    //  0.01 USDT of notional: trivially under the cap, and still refused, because the
+    //  point is that the cap the caller ASKED FOR could not be evaluated. With no cap
+    //  set there is nothing to enforce and this same plan passes — see the test above.
+    $violations = $router->checkExecutionPlanSafety($plan, $markets, array('usdRates' => array(), 'maxNotionalUsd' => 25));
     order_router_assert(count($violations) === 1, 'one violation');
     order_router_assert($violations[0]['code'] === 'notional_unvaluable', 'the step cannot be valued');
     order_router_assert($violations[0]['blocking'] === true, 'an unvaluable step must block, or the cap is decorative');
     //  unrelated rates do not help
-    $stillBlocked = $router->checkExecutionPlanSafety($plan, $markets, array('usdRates' => array('ETH' => 3000, 'DOGE' => 0.09)));
+    $stillBlocked = $router->checkExecutionPlanSafety($plan, $markets, array('usdRates' => array('ETH' => 3000, 'DOGE' => 0.09), 'maxNotionalUsd' => 25));
     order_router_assert($stillBlocked[0]['code'] === 'notional_unvaluable', 'unrelated rates do not rescue it');
     //  either side of the market resolves it
-    order_router_assert(count($router->checkExecutionPlanSafety($plan, $markets, array('usdRates' => array('USDT' => 1)))) === 0, 'the quote rate values it');
-    order_router_assert(count($router->checkExecutionPlanSafety($plan, $markets, array('usdRates' => array('BTC' => 100)))) === 0, 'the base rate values it');
+    order_router_assert(count($router->checkExecutionPlanSafety($plan, $markets, array('usdRates' => array('USDT' => 1), 'maxNotionalUsd' => 25))) === 0, 'the quote rate values it');
+    order_router_assert(count($router->checkExecutionPlanSafety($plan, $markets, array('usdRates' => array('BTC' => 100), 'maxNotionalUsd' => 25))) === 0, 'the base rate values it');
 }
 
 function order_router_test_usdt_is_not_a_dollar($router) {
     $markets = order_router_permissive_markets();
     $plan = $router->buildExecutionPlan(order_router_one_leg_route('buy', 'BTC', 'USDT', 0.1, 100), array('slippageBps' => 0));
-    $violations = $router->checkExecutionPlanSafety($plan, $markets, array('usdRates' => array('USD' => 1)));
+    $violations = $router->checkExecutionPlanSafety($plan, $markets, array('usdRates' => array('USD' => 1), 'maxNotionalUsd' => 25));
     order_router_assert(count($violations) === 1, 'USDT is not USD');
     order_router_assert($violations[0]['code'] === 'notional_unvaluable', 'a stablecoin peg is an observation, not a definition');
     //  a depegged rate is respected: 10 USDT at 0.40 is 4 USD
-    $depegged = $router->checkExecutionPlanSafety($plan, $markets, array('usdRates' => array('USDT' => 0.4)));
+    $depegged = $router->checkExecutionPlanSafety($plan, $markets, array('usdRates' => array('USDT' => 0.4), 'maxNotionalUsd' => 25));
     order_router_assert(count($depegged) === 0, 'a depegged rate is respected');
 }
 
@@ -674,22 +699,35 @@ function order_router_test_execute_refuses_unvaluable($router) {
     $plan = $router->buildExecutionPlan(order_router_one_leg_route('buy', 'BTC', 'USDT', 0.2, 100), array());
     $venue = new OrderRouterStubVenue('stub');
     order_router_assert_throws(function () use ($router, $plan, $venue) {
-        $router->execute($plan, array('stub' => $venue), array('strategy' => 'sequential', 'live' => true));
-    }, ExchangeError::class, 'a live run without usdRates is refused');
+        $router->execute($plan, array('stub' => $venue), array('strategy' => 'sequential', 'live' => true, 'maxNotionalUsd' => 25));
+    }, ExchangeError::class, 'a live run under a cap it cannot evaluate is refused');
     for ($i = 0; $i < count($venue->calls); $i++) {
         order_router_assert(strpos($venue->calls[$i], 'createOrder') === false, 'no order was placed');
     }
+    //  and with NO cap asked for, usdRates is not required: there is no cap to evaluate,
+    //  so demanding the inputs for one would be asking for something nobody wanted.
+    $uncapped = new OrderRouterStubVenue('stub');
+    $report = $router->execute($plan, array('stub' => $uncapped), array('strategy' => 'sequential', 'live' => true));
+    order_router_assert($report['steps'][0]['status'] === 'filled', 'no cap asked for, no usdRates needed');
 }
 
 function order_router_test_execute_refuses_above_cap($router) {
+    //  500 USD against a 25 USD guardrail. The refusal happens BEFORE any order goes
+    //  out, which is the property worth asserting — a cap checked after the fact is
+    //  an incident report, not a guardrail.
     $plan = $router->buildExecutionPlan(order_router_one_leg_route('buy', 'BTC', 'USDT', 5, 100), array());
     $venue = new OrderRouterStubVenue('stub');
     order_router_assert_throws(function () use ($router, $plan, $venue) {
-        $router->execute($plan, array('stub' => $venue), array('strategy' => 'sequential', 'live' => true, 'usdRates' => array('USDT' => 1)));
+        $router->execute($plan, array('stub' => $venue), array('strategy' => 'sequential', 'live' => true, 'usdRates' => array('USDT' => 1), 'maxNotionalUsd' => 25));
     }, ExchangeError::class, 'a 500 USD step is refused');
     for ($i = 0; $i < count($venue->calls); $i++) {
         order_router_assert(strpos($venue->calls[$i], 'createOrder') === false, 'no order was placed');
     }
+    //  the same 500 USD trade with no cap set goes through: that is the point of the
+    //  guardrail being opt-in
+    $uncapped = new OrderRouterStubVenue('stub');
+    $report = $router->execute($plan, array('stub' => $uncapped), array('strategy' => 'sequential', 'live' => true, 'usdRates' => array('USDT' => 1)));
+    order_router_assert($report['steps'][0]['status'] === 'filled', '500 USD is a normal trade when nobody asked for a cap');
 }
 
 function order_router_test_sequential_places_ioc($router) {
@@ -894,21 +932,29 @@ function order_router_test_format_number($router) {
 //  the runner
 //  ---------------------------------------------------------------------------
 
-function order_router_test_cap_survives_tampering($router) {
-    //  the constructor refuses to be built above 25, but $maxNotionalUsd is a
-    //  public property. A ceiling that one assignment removes is not a ceiling,
-    //  so both clamp sites re-impose the constant.
-    $tampered = new OrderRouter(array('apiKey' => 'k'));
-    $tampered->maxNotionalUsd = 1000;
+function order_router_test_per_call_cap_overrides($router) {
+    //  The cap is a guardrail the CALLER sets, so the per-call value wins — there is no
+    //  ceiling re-imposed behind their back. Both directions are asserted because the
+    //  old implementation clamped one way only, and a guardrail that silently refuses to
+    //  loosen is as surprising as one that silently refuses to tighten.
+    $client = new OrderRouter(array('apiKey' => 'k', 'maxNotionalUsd' => 100));
+    $markets = order_router_permissive_markets();
     //  0.005 BTC at 100000 USDT is 500 USD
-    $plan = $tampered->buildExecutionPlan(order_router_one_leg_route('buy', 'BTC', 'USDT', 0.005, 100000), array('slippageBps' => 0));
-    $violations = $tampered->checkExecutionPlanSafety($plan, order_router_permissive_markets(), array('usdRates' => array('USDT' => 1), 'maxNotionalUsd' => 1000));
-    order_router_assert(count($violations) === 1, 'a 500 USD step must still be refused');
-    order_router_assert($violations[0]['code'] === 'notional_exceeds_cap', 'and refused for the right reason');
-    order_router_assert(order_router_numbers_match(floatval($violations[0]['limit']), 25), 'the limit reported is the constant, not the tampered property');
-    order_router_assert_throws(function () use ($tampered, $plan) {
-        $tampered->assertUnderCap($plan['steps'][0], 0.005, 100000, array('USDT' => 1), array('maxNotionalUsd' => 1000));
-    }, ExchangeError::class, 'the last check before an order goes out refuses too');
+    $plan = $client->buildExecutionPlan(order_router_one_leg_route('buy', 'BTC', 'USDT', 0.005, 100000), array('slippageBps' => 0));
+    $underClientCap = $client->checkExecutionPlanSafety($plan, $markets, array('usdRates' => array('USDT' => 1)));
+    order_router_assert(count($underClientCap) === 1, '500 USD trips the client cap of 100');
+    order_router_assert($underClientCap[0]['code'] === 'notional_exceeds_cap', 'and refused for the right reason');
+    order_router_assert(order_router_numbers_match(floatval($underClientCap[0]['limit']), 100), 'the limit reported is the client cap');
+    //  raised for this call
+    order_router_assert(count($client->checkExecutionPlanSafety($plan, $markets, array('usdRates' => array('USDT' => 1), 'maxNotionalUsd' => 1000))) === 0, 'a per-call cap of 1000 lets it through');
+    //  lowered for this call
+    $tightened = $client->checkExecutionPlanSafety($plan, $markets, array('usdRates' => array('USDT' => 1), 'maxNotionalUsd' => 10));
+    order_router_assert(order_router_numbers_match(floatval($tightened[0]['limit']), 10), 'and a per-call cap of 10 tightens it');
+    //  and the last check before an order goes out honours the same value
+    order_router_assert_throws(function () use ($client, $plan) {
+        $client->assertUnderCap($plan['steps'][0], 0.005, 100000, array('USDT' => 1), array('maxNotionalUsd' => 100));
+    }, ExchangeError::class, 'assertUnderCap refuses 500 USD against a cap of 100');
+    $client->assertUnderCap($plan['steps'][0], 0.005, 100000, array('USDT' => 1), array('maxNotionalUsd' => 1000));
 }
 
 function order_router_test_best_effort_derives_hop_count($router) {
@@ -1044,25 +1090,26 @@ function test_order_router() {
         'a well-formed route still plans normally' => 'ccxt\order_router_test_route_well_formed_still_plans',
         'fixture: buildUnwindPlan' => 'ccxt\order_router_test_fixture_build_unwind_plan',
         'fixture: numberAt reads one number grammar in all five languages' => 'ccxt\order_router_test_fixture_number_at',
-        'constructor: apiKey is required and the 25 USD cap may be lowered but never raised' => 'ccxt\order_router_test_constructor_cap',
+        'constructor: apiKey is required, and maxNotionalUsd is an opt-in guardrail at any size' => 'ccxt\order_router_test_constructor_cap',
         'the limit price sits on the side that costs you, and only there' => 'ccxt\order_router_test_limit_price_side',
-        'the notional cap blocks at 25 USD and passes below it' => 'ccxt\order_router_test_notional_cap',
-        'a step that cannot be valued in USD BLOCKS — it is never skipped' => 'ccxt\order_router_test_unvaluable_blocks',
+        'a cap that IS set binds exactly, at whatever size, and includes the slippage' => 'ccxt\order_router_test_notional_cap',
+        'with no cap set, no notional check runs at all' => 'ccxt\order_router_test_no_cap_means_no_check',
+        'a step that cannot be valued in USD BLOCKS when a cap is in force — it is never skipped' => 'ccxt\order_router_test_unvaluable_blocks',
         'USDT is not assumed to be one dollar; USD is' => 'ccxt\order_router_test_usdt_is_not_a_dollar',
         'an empty plan is not a safe plan' => 'ccxt\order_router_test_empty_plan_is_not_safe',
         'reconcileExecutionStep never scales a downstream order UP' => 'ccxt\order_router_test_reconcile_never_scales_up',
         'reconcileExecutionStep halts on a total miss and on an over-tolerance shortfall' => 'ccxt\order_router_test_reconcile_halts',
         'buildUnwindPlan is never automatic and never nets across venues' => 'ccxt\order_router_test_unwind_is_never_automatic',
         'dry_run is the default: a live-looking call with live unset places nothing' => 'ccxt\order_router_test_dry_run_is_the_default',
-        'execute refuses to go live without a way to value the trade in USD' => 'ccxt\order_router_test_execute_refuses_unvaluable',
-        'execute refuses to go live above the cap' => 'ccxt\order_router_test_execute_refuses_above_cap',
+        'execute refuses to go live without a way to value the trade in USD — when a cap is set' => 'ccxt\order_router_test_execute_refuses_unvaluable',
+        'execute refuses to go live above a cap the caller set' => 'ccxt\order_router_test_execute_refuses_above_cap',
         'sequential places IOC limit orders in plan order' => 'ccxt\order_router_test_sequential_places_ioc',
         'sequential obeys the halt verdict and never starts the next hop' => 'ccxt\order_router_test_sequential_obeys_halt',
         'a market order needs BOTH a venue that cannot do IOC and an explicit opt-in' => 'ccxt\order_router_test_market_orders_need_both',
         'parallel_within_hop contains a failing leg instead of abandoning its siblings' => 'ccxt\order_router_test_parallel_contains_a_failing_leg',
         'best_effort refuses multi-hop and demands both of its acknowledgements' => 'ccxt\order_router_test_best_effort_refuses_multi_hop',
         'best_effort stops at maxOrders and never halts' => 'ccxt\order_router_test_best_effort_stops_at_max_orders',
-        'the hard 25 USD cap survives a writable maxNotionalUsd' => 'ccxt\order_router_test_cap_survives_tampering',
+        'a per-call cap overrides the client-level one, in both directions' => 'ccxt\order_router_test_per_call_cap_overrides',
         'best_effort derives the hop count from the steps, not from a key the plan may not carry' => 'ccxt\order_router_test_best_effort_derives_hop_count',
         'venueSupportsIoc reads the dictionary of booleans every real exchange declares' => 'ccxt\order_router_test_venue_supports_ioc_dictionary',
         'limit_protected keeps the fill from an order the venue canceled on the last poll' => 'ccxt\order_router_test_limit_protected_keeps_a_venue_side_cancel_fill',

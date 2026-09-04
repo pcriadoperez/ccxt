@@ -311,16 +311,24 @@ PERMISSIVE_STUB_MARKETS = {
 }
 
 
-@test('constructor: apiKey is required and the 25 USD cap may be lowered but never raised')
+@test('constructor: apiKey is required, and maxNotionalUsd is an opt-in guardrail at any size')
 def test_constructor():
     assert_raises(ArgumentsRequired, lambda: OrderRouter({}), 'an apiKey is required')
-    assert_raises(BadRequest, lambda: OrderRouter({'apiKey': 'k', 'maxNotionalUsd': 25.01}), 'the cap may not be raised')
-    assert_raises(BadRequest, lambda: OrderRouter({'apiKey': 'k', 'maxNotionalUsd': 0}), 'the cap must be positive')
-    lowered = OrderRouter({'apiKey': 'k', 'maxNotionalUsd': 5})
-    assert lowered.max_notional_usd == 5
+    # No ceiling. A caller trading thousands is using this correctly, and the class
+    # does not get to decide otherwise — the old hard 25 USD limit came from this
+    # repository's own live-test safety rule, which is not a rule about anyone's money.
+    large = OrderRouter({'apiKey': 'k', 'maxNotionalUsd': 250000})
+    assert large.max_notional_usd == 250000, 'honoured exactly, not clamped'
+    small = OrderRouter({'apiKey': 'k', 'maxNotionalUsd': 0.05})
+    assert small.max_notional_usd == 0.05, 'cents are a legitimate trade size'
+    # The default is NO cap.
     standard = OrderRouter({'apiKey': 'k'})
-    assert standard.max_notional_usd == 25
-    assert OrderRouter.MAX_NOTIONAL_USD == 25
+    assert standard.max_notional_usd == OrderRouter.NO_CAP
+    assert OrderRouter.NO_CAP == 0
+    # 0 is the explicit spelling of "no cap"; negative is a typo, and silently
+    # ignoring it would leave the caller believing a guardrail is in place.
+    assert OrderRouter({'apiKey': 'k', 'maxNotionalUsd': 0}).max_notional_usd == 0
+    assert_raises(BadRequest, lambda: OrderRouter({'apiKey': 'k', 'maxNotionalUsd': -1}), 'a negative cap is a typo, not a policy')
 
 
 @test('the limit price sits on the side that costs you, and only there')
@@ -333,51 +341,69 @@ def test_limit_price_side():
     assert none['steps'][0]['limitPrice'] == 100, 'zero slippage means the expected price'
 
 
-@test('the notional cap blocks at 25 USD and passes below it')
+@test('a cap that IS set binds exactly, at whatever size, and includes the slippage')
 def test_notional_cap():
     # amount * limitPrice is what is measured, so a 1% slippage on a 24.90 USD
     # step is what carries it over the line
+    capped = {'usdRates': {'USDT': 1}, 'maxNotionalUsd': 25}
     under = router.build_execution_plan(one_leg_route('buy', 'BTC', 'USDT', 0.24, 100), {'slippageBps': 0})
-    assert router.check_execution_plan_safety(under, PERMISSIVE_STUB_MARKETS, {'usdRates': {'USDT': 1}}) == [], '24 USD passes'
+    assert router.check_execution_plan_safety(under, PERMISSIVE_STUB_MARKETS, capped) == [], '24 USD passes a 25 USD cap'
     at = router.build_execution_plan(one_leg_route('buy', 'BTC', 'USDT', 0.25, 100), {'slippageBps': 0})
-    assert router.check_execution_plan_safety(at, PERMISSIVE_STUB_MARKETS, {'usdRates': {'USDT': 1}}) == [], 'exactly 25 USD passes'
+    assert router.check_execution_plan_safety(at, PERMISSIVE_STUB_MARKETS, capped) == [], 'exactly at the cap passes'
     over = router.build_execution_plan(one_leg_route('buy', 'BTC', 'USDT', 0.2501, 100), {'slippageBps': 0})
-    over_violations = router.check_execution_plan_safety(over, PERMISSIVE_STUB_MARKETS, {'usdRates': {'USDT': 1}})
+    over_violations = router.check_execution_plan_safety(over, PERMISSIVE_STUB_MARKETS, capped)
     assert len(over_violations) == 1
     assert over_violations[0]['code'] == 'notional_exceeds_cap'
     assert over_violations[0]['blocking'] is True
     # and the slippage is inside the measurement, not outside it
     slipped = router.build_execution_plan(one_leg_route('buy', 'BTC', 'USDT', 0.249, 100), {'slippageBps': 100})
-    slipped_violations = router.check_execution_plan_safety(slipped, PERMISSIVE_STUB_MARKETS, {'usdRates': {'USDT': 1}})
+    slipped_violations = router.check_execution_plan_safety(slipped, PERMISSIVE_STUB_MARKETS, capped)
     assert len(slipped_violations) == 1, '24.90 USD at 1% slippage is 25.15 USD of risk'
     assert slipped_violations[0]['code'] == 'notional_exceeds_cap'
+    # A LARGE cap is honoured just as exactly. This is the case the old hard ceiling
+    # made unreachable: 2,000 USD of BTC under a 5,000 USD guardrail is a normal trade.
+    large = router.build_execution_plan(one_leg_route('buy', 'BTC', 'USDT', 20, 100), {'slippageBps': 0})
+    assert router.check_execution_plan_safety(large, PERMISSIVE_STUB_MARKETS, {'usdRates': {'USDT': 1}, 'maxNotionalUsd': 5000}) == [], '2,000 USD under a 5,000 USD cap'
+    over_large = router.check_execution_plan_safety(large, PERMISSIVE_STUB_MARKETS, {'usdRates': {'USDT': 1}, 'maxNotionalUsd': 1000})
+    assert over_large[0]['code'] == 'notional_exceeds_cap', 'and the same 2,000 USD trips a 1,000 USD cap'
 
 
-@test('a step that cannot be valued in USD BLOCKS — it is never skipped')
+@test('with no cap set, no notional check runs at all')
+def test_no_cap_runs_no_notional_check():
+    # The default. This class does not decide how much of your money you may trade —
+    # the guardrail is opt-in, so a plan of any size passes untouched, and a caller who
+    # never asked for a cap is not made to supply usdRates for it.
+    large = router.build_execution_plan(one_leg_route('buy', 'BTC', 'USDT', 1000, 100), {'slippageBps': 0})
+    assert router.check_execution_plan_safety(large, PERMISSIVE_STUB_MARKETS, {'usdRates': {'USDT': 1}}) == [], '100,000 USD passes when no cap is set'
+    assert router.check_execution_plan_safety(large, PERMISSIVE_STUB_MARKETS, {}) == [], 'and needs no usdRates at all'
+
+
+@test('a step that cannot be valued in USD BLOCKS when a cap is in force — it is never skipped')
 def test_unvaluable_blocks():
     plan = router.build_execution_plan(one_leg_route('buy', 'BTC', 'USDT', 0.0001, 100), {'slippageBps': 0})
-    # 0.01 USDT of notional: trivially under any cap, and still refused, because
-    # the point is that the cap could not be EVALUATED
-    violations = router.check_execution_plan_safety(plan, PERMISSIVE_STUB_MARKETS, {'usdRates': {}})
+    # 0.01 USDT of notional: trivially under the cap, and still refused, because the
+    # point is that the cap the caller ASKED FOR could not be evaluated. With no cap
+    # set there is nothing to enforce and this same plan passes — see the test above.
+    violations = router.check_execution_plan_safety(plan, PERMISSIVE_STUB_MARKETS, {'usdRates': {}, 'maxNotionalUsd': 25})
     assert len(violations) == 1
     assert violations[0]['code'] == 'notional_unvaluable'
     assert violations[0]['blocking'] is True, 'an unvaluable step must block, or the cap is decorative'
     # unrelated rates do not help
-    still_blocked = router.check_execution_plan_safety(plan, PERMISSIVE_STUB_MARKETS, {'usdRates': {'ETH': 3000, 'DOGE': 0.09}})
+    still_blocked = router.check_execution_plan_safety(plan, PERMISSIVE_STUB_MARKETS, {'usdRates': {'ETH': 3000, 'DOGE': 0.09}, 'maxNotionalUsd': 25})
     assert still_blocked[0]['code'] == 'notional_unvaluable'
     # either side of the market resolves it
-    assert router.check_execution_plan_safety(plan, PERMISSIVE_STUB_MARKETS, {'usdRates': {'USDT': 1}}) == []
-    assert router.check_execution_plan_safety(plan, PERMISSIVE_STUB_MARKETS, {'usdRates': {'BTC': 100}}) == []
+    assert router.check_execution_plan_safety(plan, PERMISSIVE_STUB_MARKETS, {'usdRates': {'USDT': 1}, 'maxNotionalUsd': 25}) == []
+    assert router.check_execution_plan_safety(plan, PERMISSIVE_STUB_MARKETS, {'usdRates': {'BTC': 100}, 'maxNotionalUsd': 25}) == []
 
 
 @test('USDT is not assumed to be one dollar; USD is')
 def test_usdt_is_not_usd():
     usdt_plan = router.build_execution_plan(one_leg_route('buy', 'BTC', 'USDT', 0.1, 100), {'slippageBps': 0})
-    usdt_violations = router.check_execution_plan_safety(usdt_plan, PERMISSIVE_STUB_MARKETS, {'usdRates': {'USD': 1}})
+    usdt_violations = router.check_execution_plan_safety(usdt_plan, PERMISSIVE_STUB_MARKETS, {'usdRates': {'USD': 1}, 'maxNotionalUsd': 25})
     assert len(usdt_violations) == 1
     assert usdt_violations[0]['code'] == 'notional_unvaluable', 'a stablecoin peg is an observation, not a definition'
     # a depegged rate is respected: 10 USDT at 0.40 is 4 USD
-    assert router.check_execution_plan_safety(usdt_plan, PERMISSIVE_STUB_MARKETS, {'usdRates': {'USDT': 0.4}}) == []
+    assert router.check_execution_plan_safety(usdt_plan, PERMISSIVE_STUB_MARKETS, {'usdRates': {'USDT': 0.4}, 'maxNotionalUsd': 25}) == []
 
 
 @test('an empty plan is not a safe plan')
@@ -563,21 +589,34 @@ def test_dry_run_is_the_default():
         assert other.calls == []
 
 
-@test('execute refuses to go live without a way to value the trade in USD')
+@test('execute refuses to go live without a way to value the trade in USD — when a cap is set')
 def test_live_needs_usd_rates():
     plan = router.build_execution_plan(one_leg_route('buy', 'BTC', 'USDT', 0.2, 100), {})
     venue = StubVenue('stub')
-    assert_raises(ExchangeError, lambda: router.execute(plan, {'stub': venue}, {'strategy': 'sequential', 'live': True}), 'an unvaluable plan')
+    assert_raises(ExchangeError, lambda: router.execute(plan, {'stub': venue}, {'strategy': 'sequential', 'live': True, 'maxNotionalUsd': 25}), 'an unvaluable plan')
     assert 'createOrder:limit:buy:0.2' not in venue.calls, 'no order was placed'
+    # and with NO cap asked for, usdRates is not required: there is no cap to evaluate,
+    # so demanding the inputs for one would be asking for something nobody wanted.
+    uncapped = StubVenue('stub')
+    report = router.execute(plan, {'stub': uncapped}, {'strategy': 'sequential', 'live': True})
+    assert report['steps'][0]['status'] == 'filled'
 
 
-@test('execute refuses to go live above the cap')
+@test('execute refuses to go live above a cap the caller set')
 def test_live_refuses_above_the_cap():
+    # 500 USD against a 25 USD guardrail. The refusal happens BEFORE any order goes
+    # out, which is the property worth asserting — a cap checked after the fact is
+    # an incident report, not a guardrail.
     plan = router.build_execution_plan(one_leg_route('buy', 'BTC', 'USDT', 5, 100), {})
     venue = StubVenue('stub')
-    assert_raises(ExchangeError, lambda: router.execute(plan, {'stub': venue}, {'strategy': 'sequential', 'live': True, 'usdRates': {'USDT': 1}}), 'a 500 USD step')
+    assert_raises(ExchangeError, lambda: router.execute(plan, {'stub': venue}, {'strategy': 'sequential', 'live': True, 'usdRates': {'USDT': 1}, 'maxNotionalUsd': 25}), 'a 500 USD step')
     for call in venue.calls:
         assert call.find('createOrder') < 0, 'no order was placed'
+    # the same 500 USD trade with no cap set goes through: that is the point of the
+    # guardrail being opt-in
+    uncapped = StubVenue('stub')
+    report = router.execute(plan, {'stub': uncapped}, {'strategy': 'sequential', 'live': True, 'usdRates': {'USDT': 1}})
+    assert report['steps'][0]['status'] == 'filled', '500 USD is a normal trade when nobody asked for a cap'
 
 
 @test('sequential places IOC limit orders in plan order')
@@ -689,20 +728,26 @@ def test_best_effort_max_orders():
     assert venues['c'].calls == []
 
 
-@test('the hard 25 USD cap survives a writable max_notional_usd')
-def test_cap_survives_tampering():
-    # the constructor refuses to be built above 25, but the field stays writable
-    # in TypeScript, Python, PHP and Go. A ceiling that one assignment removes is
-    # not a ceiling, so both clamp sites re-impose the constant.
-    tampered = OrderRouter({'apiKey': 'k'})
-    tampered.max_notional_usd = 1000
+@test('a per-call cap overrides the client-level one, in both directions')
+def test_per_call_cap_overrides():
+    # The cap is a guardrail the CALLER sets, so the per-call value wins — there is no
+    # ceiling re-imposed behind their back. Both directions are asserted because the
+    # old implementation clamped one way only, and a guardrail that silently refuses to
+    # loosen is as surprising as one that silently refuses to tighten.
+    client = OrderRouter({'apiKey': 'k', 'maxNotionalUsd': 100})
     # 0.005 BTC at 100000 USDT is 500 USD
-    plan = tampered.build_execution_plan(one_leg_route('buy', 'BTC', 'USDT', 0.005, 100000), {'slippageBps': 0})
-    violations = tampered.check_execution_plan_safety(plan, PERMISSIVE_STUB_MARKETS, {'usdRates': {'USDT': 1}, 'maxNotionalUsd': 1000})
-    assert len(violations) == 1, 'a 500 USD step must still be refused'
-    assert violations[0]['code'] == 'notional_exceeds_cap'
-    assert violations[0]['limit'] == 25, 'the limit reported is the constant, not the tampered field'
-    assert_raises(ExchangeError, lambda: tampered.assert_under_cap(plan['steps'][0], 0.005, 100000, {'USDT': 1}, {'maxNotionalUsd': 1000}), 'the last check before an order goes out refuses too')
+    plan = client.build_execution_plan(one_leg_route('buy', 'BTC', 'USDT', 0.005, 100000), {'slippageBps': 0})
+    under_client_cap = client.check_execution_plan_safety(plan, PERMISSIVE_STUB_MARKETS, {'usdRates': {'USDT': 1}})
+    assert under_client_cap[0]['code'] == 'notional_exceeds_cap', '500 USD trips the client cap of 100'
+    assert under_client_cap[0]['limit'] == 100
+    # raised for this call
+    assert client.check_execution_plan_safety(plan, PERMISSIVE_STUB_MARKETS, {'usdRates': {'USDT': 1}, 'maxNotionalUsd': 1000}) == [], 'a per-call cap of 1000 lets it through'
+    # lowered for this call
+    tightened = client.check_execution_plan_safety(plan, PERMISSIVE_STUB_MARKETS, {'usdRates': {'USDT': 1}, 'maxNotionalUsd': 10})
+    assert tightened[0]['limit'] == 10
+    # and the last check before an order goes out honours the same value
+    assert_raises(ExchangeError, lambda: client.assert_under_cap(plan['steps'][0], 0.005, 100000, {'USDT': 1}, {'maxNotionalUsd': 100}), 'the last check before an order goes out refuses too')
+    client.assert_under_cap(plan['steps'][0], 0.005, 100000, {'USDT': 1}, {'maxNotionalUsd': 1000})
 
 
 @test('best_effort derives the hop count from the steps, not from a key the plan may not carry')
