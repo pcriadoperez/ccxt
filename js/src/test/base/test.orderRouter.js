@@ -886,6 +886,33 @@ test('a fill that stays unknown after the re-read halts instead of reconciling o
     assert.strictEqual(report['haltReason'], 'outcome_unknown', 'never nothing_filled: that is the one thing we do not know');
     assert.strictEqual(report['openOrders'][0]['reason'], 'fill_unconfirmed');
 });
+test('a spend the venue DID report survives an unknown fill, and reaches the unwind plan', async () => {
+    //  This return used to come before the asset/amount assignment, so the step was recorded with
+    //  inAsset '' and inAmount 0 — and inAmount is what buildUnwindPlan SUBTRACTS. A buy whose
+    //  venue reported a `cost` but no `filled` spent that quote for certain; dropping it left the
+    //  unwind plan believing the money was still sitting on the venue, and planning to route home
+    //  funds that were already gone. TypeScript was the only one of the six that did this.
+    const plan = router.buildExecutionPlan(oneLegRoute('buy', 'BTC', 'USDT', 0.1, 100), {});
+    const venue = new StubVenue('stub');
+    venue.omitFillFields = true;
+    //  the re-read still has no `filled`, but the venue is certain about what it charged
+    venue.fetchOrderResults = [{ 'id': 'stub-order', 'status': 'closed', 'cost': 10.5, 'average': 105 }];
+    const report = await router.execute(plan, { 'stub': venue }, { 'strategy': 'sequential', 'live': true, 'usdRates': { 'USDT': 1 } });
+    const step = report['steps'][0];
+    assert.strictEqual(step['status'], 'outcome_unknown', 'the fill is still unknown');
+    assert.strictEqual(step['filledKnown'], false);
+    //  The facts the venue gave are kept.
+    assert.strictEqual(step['inAsset'], 'USDT', 'the asset actually spent is named');
+    assert.strictEqual(step['inAmount'], 10.5, 'and the amount the venue reported spending');
+    assert.strictEqual(step['costKnown'], true, 'because the venue really did report it');
+    //  The fill is not invented: outAmount stays 0 rather than being guessed at.
+    assert.strictEqual(step['outAsset'], 'BTC');
+    assert.strictEqual(step['outAmount'], 0, 'an unknown fill is never turned into a number');
+    //  Nothing downstream is sized from any of it — the halt, not the missing fields, is what
+    //  protects the next hop.
+    assert.strictEqual(report['halted'], true);
+    assert.strictEqual(report['haltReason'], 'outcome_unknown');
+});
 test('a venue that reports a genuine zero fill is still nothing_filled', async () => {
     //  The counterpart: zero IS an answer, and must not be relabelled as unknown.
     const plan = router.buildExecutionPlan(oneLegRoute('buy', 'BTC', 'USDT', 0.1, 100), {});

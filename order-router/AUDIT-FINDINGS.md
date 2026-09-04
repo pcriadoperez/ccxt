@@ -1,0 +1,1262 @@
+# order-router — open audit findings
+
+> **This file is scaffolding, not documentation. Delete it in the commit that closes the last
+> open item, before this PR merges.** It exists so the remaining work is pickup-able by someone
+> other than whoever started it.
+
+An adversarial audit of this directory and of the six-language `OrderRouter` client produced 87
+findings. Each one below was re-verified against the source before being acted on — a meaningful
+fraction did not survive that, and those are recorded as `refuted` rather than deleted, so nobody
+re-files them.
+
+## How to work an item
+
+1. **Verify it first.** Roughly one in three of these did not survive contact with the code. Read
+   the cited file and decide for yourself; the evidence block is a claim, not a finding of fact.
+2. **Write the test before the fix, and check it fails without the fix.** Every fix already landed
+   was mutation-checked that way, and it caught two that only looked right.
+3. **`OrderRouter` changes land in all six ports.** `ts/src/base/OrderRouter.ts` is the reference;
+   `python/ccxt/base/order_router.py`, `php/OrderRouter.php`, `cs/ccxt/base/OrderRouter.cs`,
+   `go/v4/exchange_order_router.go` and `rust/ccxt-base/src/order_router.rs` are hand-written
+   ports, not transpiler output. They drift independently — six of the closed items below were
+   single-port divergences nobody had noticed, and the shared fixture cannot see them because it
+   covers the pure functions and these were all on the `execute` path. Run all six:
+   `npm run test-order-router`.
+4. **Service changes** live in `order-router/`; `npm test` from that directory.
+5. When you close an item, move it to the Closed table with the commit sha. When the Open section
+   is empty, delete this file.
+
+## Open
+
+Ordered by severity. The number is the item's index in the original audit set — keep it, so
+that a reference in a commit message stays meaningful.
+
+### 10. Docker image cannot build: the Dockerfile never COPYs openapi/ or scripts/, yet the README documents `docker compose up --build` as a way to run the service
+
+**Severity:** high &nbsp;·&nbsp; **estimated effort:** minutes
+
+**Claimed evidence**
+
+```
+order-router/Dockerfile:3-7 copies only `package.json package-lock.json`, `tsconfig.json` and `src`:
+```
+COPY package.json package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY tsconfig.json ./
+COPY src ./src
+RUN npm run build
+```
+`npm run build` is `tsc -p tsconfig.json && npm run copy-assets &
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Add `COPY openapi ./openapi` and `COPY scripts ./scripts` to the build stage, add a `.dockerignore` (node_modules, dist), add `USER node` to the runtime stage and a `HEALTHCHECK` hitting `/ready`. If containers are genuinely not the deployment path, delete Dockerfile/docker-compose.yml and the READM
+
+### 11. A missing ORDER_ROUTER_AUDIT_LOG_FILE kills the key projector, so dashboard-minted keys never authenticate and revocations never take effect
+
+**Severity:** high &nbsp;·&nbsp; **estimated effort:** hours
+
+**Claimed evidence**
+
+```
+order-router/src/db/ingestRunner.ts:15-19 exits before the projector is ever started:
+```
+const auditPath = config.auditLogFile;
+if (auditPath === undefined) {
+    logger.error('ORDER_ROUTER_AUDIT_LOG_FILE is not set; nothing to ingest');
+    process.exit(1);
+}
+```
+`startKeyProjection(pool, config.k
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Split `startKeyProjection` out of ingestRunner into its own process/unit, or make the missing audit path a warning that skips ingest while still starting the projector. Either way add an alert on projector liveness; a projector that has not written in N intervals is a security incident, not a data-p
+
+### 12. Everything that actually makes the box work — systemd units, env file, nginx/TLS, logrotate — is unversioned and outside the deploy, so a rollback restores code but not config
+
+**Severity:** high &nbsp;·&nbsp; **estimated effort:** days
+
+**Claimed evidence**
+
+```
+The release tarball is code only: `.github/workflows/order-router.yml:286` — `tar czf /tmp/order-router.tgz dist node_modules scripts package.json package-lock.json`. `find order-router -name '*.service' -o -name '*.conf' -o -name '*nginx*'` returns nothing. The documented unit (README.md:751-755) i
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Commit the unit files (router, web, ingest, mcp), an env-file template and the real nginx server block into order-router/deploy/, ship them in the tarball, and have the activate step install them and `systemctl daemon-reload`. Add a boot-time assertion in src/index.ts that refuses to start when `con
+
+### 13. The documented nginx config does not match the live path layout, and the real reverse-proxy config exists only on a VM shared with two other deploy pipelines
+
+**Severity:** high &nbsp;·&nbsp; **estimated effort:** hours
+
+**Claimed evidence**
+
+```
+README.md:610-650 documents `server_name router.example.com;` with `location / { proxy_pass http://order_router; }` and a separate `location /stream/ { ... proxy_set_header Upgrade $http_upgrade; }`. Production is not that shape: order-router/docs/product-plan.md:78-80 gives `docs.ccxt.com/router/`
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Commit the actual production server block (with the `/router/`, `/router/api/`, `/router/api/stream/` and `/metrics` locations and the `proxy_read_timeout` that ORDER_ROUTER_WS_IDLE_TIMEOUT_MS is calibrated against) into order-router/deploy/nginx/, and have live-integration.mjs open a real WS to `/r
+
+### 16. The one-time API-key reveal page and every authenticated console page are served with no Cache-Control, so a live `or_live_…` key is cacheable
+
+**Severity:** high &nbsp;·&nbsp; **estimated effort:** minutes
+
+**Claimed evidence**
+
+```
+`src/web/server.ts:114-130` is the only response-header hook and it sets CSP, `x-content-type-options`, `x-frame-options` and `referrer-policy` — and nothing about caching:
+
+    app.addHook('onSend', async (_request, reply, payload) => {
+        void reply.header('content-security-policy', [...].joi
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Add `Cache-Control: no-store` (plus `Pragma: no-cache` and `Vary: Cookie`) in the same onSend hook for every response that is not a static asset — at minimum for any request carrying a session cookie and for the reveal redirect target.
+
+### 17. The documented way to revoke the shared ORDER_ROUTER_API_KEY cannot work: the key file is a projection that never contains revoked rows and is rewritten every 5 s
+
+**Severity:** high &nbsp;·&nbsp; **estimated effort:** hours
+
+**Claimed evidence**
+
+```
+`src/api/keyStore.ts:142` builds the suppression set only from rows that carry a revocation: `const tombstoned = new Set(all.filter((r) => r.revokedAt !== null).map((r) => r.id));`, consumed at `:170` `} else if (envKey !== undefined && !tombstoned.has(LEGACY_KEY_ID)) {`. The comment at `:148-151` p
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Either have `projectKeys` emit revoked rows with their real `revoked_at` (so the tombstone mechanism has data to work with, and revocation stays a load-time filter), or delete the env-key bridge and its documentation entirely and make `ORDER_ROUTER_API_KEY` a boot-time-only credential with that stat
+
+### 18. A resync closes every socket on a venue and all its watch loops re-subscribe within 500ms — 20x denser than the startup stagger the same file says exists to prevent a reconnect storm
+
+**Severity:** high &nbsp;·&nbsp; **estimated effort:** hours
+
+**Claimed evidence**
+
+```
+order-router/src/connectors/exchangeConnector.ts:440-443 tears down every client at once:
+```
+        for (const client of Object.values(this.exchange.clients ?? {})) {
+            try { await (client as any)?.close?.(); } catch { /* already closing */ }
+        }
+```
+Every loop then retries after o
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Re-apply `LOOP_START_STAGGER_MS` on the reconnect path, not just at start: give each loop a stable index and sleep `index * LOOP_START_STAGGER_MS` (or scale the jitter window by loop count) before resubscribing, so post-resync re-entry is spread over the same interval the initial subscribe used.
+
+### 19. Single-process mode (`shardCount: 1`, the default) has none of the memory protections the shard path has: unbounded startup concurrency, no heap ceiling, and `maxBookDepth` silently ignored
+
+**Severity:** high &nbsp;·&nbsp; **estimated effort:** hours
+
+**Claimed evidence**
+
+```
+order-router/src/index.ts:38-47 starts every exchange at once:
+```
+    await Promise.all(
+        assignments.map(async ({ exchangeId, symbols }, i) => {
+            try {
+                await connectors[i]!.start(symbols);
+```
+The shard path does the opposite, under a comment naming this exact fai
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Extract the shard's bounded-concurrency start loop into a shared helper and use it from `startConnectors`; pass `config.maxBookDepth` as the 8th argument in index.ts:28-36; if single-process discovery mode is meant to be supported at 76-exchange scale, refuse to boot (or warn loudly) when `discoverA
+
+### 20. IPC backpressure covers only `book` messages; health messages bypass it and their rate is proportional to the failure rate
+
+**Severity:** high &nbsp;·&nbsp; **estimated effort:** minutes
+
+**Claimed evidence**
+
+```
+order-router/src/sharding/shardWorker.ts:28-41:
+```
+function send (message: ShardToParentMessage): void {
+    if (process.send === undefined) return;
+    if (message.type === 'book' && pipeFull) {
+        droppedBooks += 1;
+        return;
+    }
+    const accepted = process.send(message, undefined,
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Apply the same `pipeFull` gate to `health` (it is also an idempotent snapshot — the 2s flush at shardWorker.ts:62-66 resends it anyway), or coalesce health into the existing timer instead of emitting per record-call. At minimum stop resending the whole `abandonedSymbols` array on every error.
+
+### 21. Partitions are only ever created for the current and next month — replaying any older audit line hard-fails the batch and stalls ingestion forever
+
+**Severity:** high &nbsp;·&nbsp; **estimated effort:** hours
+
+**Claimed evidence**
+
+```
+/home/user/ccxt/order-router/src/db/pool.ts:61-78 only ever creates two partitions: `const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)); for (const when of [now, next]) { ... CREATE TABLE IF NOT EXISTS ${table}_${name} PARTITION OF ${table} FOR VALUES FROM ('${from}') TO
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+In ensurePartitions, also create partitions for the months already present in the backlog (e.g. from min(ts) of the pending window, or simply the trailing N months), and/or attach a DEFAULT partition to requests/request_hops/request_legs so an out-of-range ts lands somewhere instead of aborting the
+
+### 22. A projection against an empty/restored database silently overwrites the router's key snapshot with zero keys, de-authenticating every customer
+
+**Severity:** high &nbsp;·&nbsp; **estimated effort:** minutes
+
+**Claimed evidence**
+
+```
+/home/user/ccxt/order-router/src/db/keyProjection.ts:40-68 takes whatever the SELECT returns and writes it unconditionally: `const file: KeyFile = { version: 1, keys: rows.map(...) }; const changed = writeKeyFile(path, file);`. There is no guard for an empty result — /home/user/ccxt/order-router/src
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Refuse to project a snapshot that drops to zero keys (or that removes more than a configured fraction of the current set) unless an explicit override flag is passed; log an error and keep the previous file instead. Assert row-count sanity before calling writeKeyFile, and alert on `keys: 0`.
+
+### 23. No migration mechanism beyond CREATE IF NOT EXISTS, and the deploy never runs it — a schema change ships code without the schema
+
+**Severity:** high &nbsp;·&nbsp; **estimated effort:** days
+
+**Claimed evidence**
+
+```
+/home/user/ccxt/order-router/src/db/schema.sql is entirely `CREATE TABLE/INDEX IF NOT EXISTS`, and /home/user/ccxt/order-router/src/db/pool.ts:42-47 applies it wholesale: `const sql = readFileSync(SCHEMA_PATH, 'utf8'); await pool.query(sql);`. On an existing database every statement is a no-op, so a
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Add a schema_migrations table and numbered, ALTER-capable migration files; have migrate.js fail loudly when the applied version is behind the binary's expected version, and have every process assert that version at boot. Run db:migrate as an explicit step in the remote activate script before the res
+
+### 24. No backup or restore procedure for the only copy of users, api_keys and all usage history
+
+**Severity:** high &nbsp;·&nbsp; **estimated effort:** hours
+
+**Claimed evidence**
+
+```
+`grep -rn "DELETE FROM|pg_dump|backup|retention|DROP TABLE"` over /home/user/ccxt/order-router/src, /home/user/ccxt/order-router/scripts and /home/user/ccxt/.github/workflows/order-router.yml returns only comments — /home/user/ccxt/order-router/src/db/schema.sql:81 ("adding retention later then mean
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Add a scheduled `pg_dump` (or WAL archiving) to durable off-box storage, document and rehearse the restore, and gate it: a restore runbook step that stops the ingest runner and key projection before repointing DATABASE_URL, so a partially restored database cannot rewrite the key snapshot.
+
+### 26. Audit-log rotation silently discards every record the ingester had not yet read from the old file
+
+**Severity:** high &nbsp;·&nbsp; **estimated effort:** hours
+
+**Claimed evidence**
+
+```
+`src/db/ingest.ts:197-202`:
+```ts
+// Rotation with `create` gives the new file a different inode; start it from the beginning
+// rather than from an offset that belonged to a file we no longer have.
+if (knownInode !== null && knownInode !== undefined && Number(knownInode) !== inode) {
+    logger.inf
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+On inode change, first drain the old fd to EOF (hold the descriptor open across passes, or glob for `<path>.1` / `<path>-*`) and commit those rows before switching to the new inode. At minimum, raise the message to `warn`, include `skippedBytes: oldSize - offset`, and export an `order_router_ingest_
+
+### 27. The billing ingest process has no health endpoint, no metrics, and no signal when it stops writing
+
+**Severity:** high &nbsp;·&nbsp; **estimated effort:** hours
+
+**Claimed evidence**
+
+```
+`src/db/ingestRunner.ts` is a standalone process (lines 1-38) with no HTTP listener at all — no `/health`, no `/ready`, no `/metrics`. Its only failure signal is a log line, `src/db/ingest.ts:393-394`:
+```ts
+} catch (err) {
+    logger.error({ err }, 'audit ingest failed; the cursor did not advance')
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Give the ingest runner and the web app a tiny `/health` + `/metrics` listener. Export `order_router_ingest_last_success_timestamp_seconds`, `order_router_ingest_cursor_lag_bytes` (file size minus committed offset) and `order_router_ingest_errors_total`, and alert on cursor lag growing or last-succes
+
+### 28. Nothing scrapes /metrics and no alerts exist; the one documented alert threshold is contradicted by the same README section
+
+**Severity:** high &nbsp;·&nbsp; **estimated effort:** days
+
+**Claimed evidence**
+
+```
+README.md:1004: "| No metrics/alerting | **Closed for instrumentation** — Prometheus `/metrics` ... **Still open:** nothing scrapes it and no alerts are wired up; the suggested rules above are untested. |"
+The three suggested rules (README.md:863-865) include:
+```
+`order_router_stale_books / order_r
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Ship a `prometheus/order-router.rules.yml` in the repo with tested thresholds, and correct the stale_books rule to compare against the observed baseline (e.g. `> 0.9` or a deviation from a 6h rolling median) rather than 0.2. Add rules for `up{job="order-router"} == 0`, `absent(order_router_shard_eve
+
+### 29. API key creation and user-initiated revocation through the dashboard are not logged at all
+
+**Severity:** high &nbsp;·&nbsp; **estimated effort:** minutes
+
+**Claimed evidence**
+
+```
+`src/web/server.ts:291-300`, the key-mint route, logs nothing:
+```ts
+const name = (request.body.name ?? '').trim().slice(0, 40) || 'default';
+const plaintext = await mintKey(pool, keysFile, user.id, name, logger);
+void reply.redirect(`${base}/dashboard?reveal=${stashReveal(plaintext, token!)}`);
+```
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Emit `audit.info({ event: 'key_created' | 'key_revoked', userId, displayId, actor, ip, userAgent })` from `mintKey` and both revoke handlers, route the web app's audit records to the same `ORDER_ROUTER_AUDIT_LOG_FILE` stream, and extend `src/db/ingest.ts`'s event filter and schema to persist them.
+
+### 35. execute() has no idempotency of any kind — re-running it on the same plan re-places every order, including ones already filled
+
+**Severity:** high &nbsp;·&nbsp; **estimated effort:** days
+
+**Claimed evidence**
+
+```
+ts/src/base/OrderRouter.ts:1354-1355 builds fresh state on every call and never consults anything persistent:
+```
+1354:        const steps = this.cloneSteps (plan);
+1355:        const report = this.emptyReport (plan, strategy, requestedStrategy, live, steps);
+```
+`grep -rn "clientOrderId\|idempot\|d
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Derive a deterministic client order id per step — e.g. `clientOrderId = requestId + '-' + stepIndex` (plus an execute-call attempt number) — and inject it into orderParams in placeStep, so a re-run is rejected by the venue as a duplicate rather than filled. At minimum, refuse to execute a plan whose
+
+### 36. The 25 USD cap is computed entirely from route-supplied prices with no freshness check, and on the allowMarketOrders path the order is sent with no price at all
+
+**Severity:** high &nbsp;·&nbsp; **estimated effort:** hours
+
+**Claimed evidence**
+
+```
+assertUnderCap values the order from the plan's own numbers, ts/src/base/OrderRouter.ts:2270-2281:
+```
+        const usdValue = this.notionalUsd (probe, amount * price, usdRates);
+        if (usdValue <= 0) { throw ... }
+        if (usdValue > cap * (1 + OrderRouter.TOLERANCE)) { throw ... }
+```
+whe
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Refuse to execute a plan whose `calculatedAt` is older than a small explicit maxPlanAgeMs (e.g. 30s) — the field is already carried, just unread. For the market-order path, compute the cap against a freshly fetched ticker rather than the plan's expectedPrice, or drop the market fallback entirely and
+
+### 38. README describes authentication as a single shared secret with no revocation in three places; the shipped system is per-user named keys with revocation, per-key limits and live socket termination
+
+**Severity:** high &nbsp;·&nbsp; **estimated effort:** minutes
+
+**Claimed evidence**
+
+```
+Three false statements:
+
+1. order-router/README.md:996 — "| No authentication | **Partly closed** — shared-key auth exists and is tested, but it's a stopgap: no rotation, no per-client keys, no revocation, no scopes (see Security) |"
+2. order-router/README.md:1012 — "- Replace shared-key auth with s
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Rewrite README.md:996 and delete README.md:1012 to match the shipped model (per-user named keys in Postgres, projected to keys.json, revocable from the dashboard, per-key rate and WS caps). Replace README.md:652-653 with the real residual gap (no scopes, no expiry, no quotas — the accurate statement
+
+### 39. The documented key-management commands (npm run keys:create/list/revoke/delete) do not exist — including the revoke command an operator would run on a leaked key
+
+**Severity:** high &nbsp;·&nbsp; **estimated effort:** minutes
+
+**Claimed evidence**
+
+```
+order-router/README.md:371-381 documents an interactive procedure:
+```
+npm run keys:create -- --name acme-desk --note "issued 2026-08-23"
+npm run keys:list                      # never prints a key, only its identity and last4
+npm run keys:revoke -- acme-desk        # by id or name; takes effect wit
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Replace order-router/README.md:371-381 with the real procedure: `npm run admin -- create-admin --email … --password …` for bootstrap, the `/router/dashboard` key create/revoke flow for day-to-day, `npm run admin -- create-key --email … --name …` for break-glass, and `npm run admin -- project` to for
+
+### 40. README states the service is not publicly exposed, has no self-serve signup, and deliberately has no admin HTTP endpoint — it is live on :443 with public signup and an admin console
+
+**Severity:** high &nbsp;·&nbsp; **estimated effort:** hours
+
+**Claimed evidence**
+
+```
+order-router/README.md:992 — "Not ready to expose publicly. Honest status of the blockers:"
+order-router/README.md:454 — "No scopes, no expiry, no quotas, no self-serve signup. Every endpoint is read-only, so there is nothing to separate yet"
+order-router/README.md:404-408 — "**Why a CLI and not an
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Rewrite README.md:990-1006 to describe the actual public beta posture, delete or invert the "Why a CLI and not an admin endpoint" rationale at README.md:404-408 (it argues against something that shipped), and correct README.md:454 — signup is self-serve and the console's endpoints are not read-only.
+
+### 42. The only pre-deploy gate hard-requires a live Kraken order book, so a third-party exchange outage blocks all deploys — including a fix for an in-progress incident
+
+**Severity:** high &nbsp;·&nbsp; **estimated effort:** hours
+
+**Claimed evidence**
+
+```
+.github/workflows/order-router.yml:118-134, inside the `build-and-test` smoke step:
+```bash
+          echo "--- /route must answer with a route once a book has arrived ---"
+          for i in $(seq 1 30); do
+            body=$(curl -s -H 'x-api-key: ci-smoke-key' \
+              'http://localhost:80
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Split the step: keep the deterministic assertions (401/200/401 auth, the 400/400/404 request-shape cases at :137-146, MCP auth) as the hard gate, and drive the `/route` assertion from a seeded in-memory book rather than a live venue — the offline suite already does exactly this (`src/api/server.test
+
+### 43. No CI job ever runs the service and the six-language OrderRouter clients together; the two suites are path-exclusive by construction and the shared fixture is a hand-written snapshot nothing regenerates
+
+**Severity:** high &nbsp;·&nbsp; **estimated effort:** days
+
+**Claimed evidence**
+
+```
+The clients call the live service by default — ts/src/base/OrderRouter.ts:75:
+```ts
+    static DEFAULT_BASE_URL = 'https://docs.ccxt.com/router/api';
+```
+The service workflow only fires on the service (.github/workflows/order-router.yml:13-16):
+```yaml
+  pull_request:
+    paths:
+      - 'order-route
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Add a contract job that runs on BOTH path sets: boot `order-router` from source, hit `/route` with the fixture's inputs, and diff the live response's field set against `ts/src/test/base/fixtures/orderRouter.json` (shape, not values). Failing that, at minimum add `ts/src/base/OrderRouter.ts` + the fi
+
+### 44. Every deploy degrades /route for minutes with live traffic still being routed to the restarting process; /ready exists but nothing consumes it
+
+**Severity:** medium &nbsp;·&nbsp; **estimated effort:** hours
+
+**Claimed evidence**
+
+```
+The deploy's own smoke allows five minutes for recovery: .github/workflows/order-router.yml:403 — `for i in $(seq 1 60); do   # up to 5 min for the book cache to warm`, preceded by the comment at line 374 "A restart rebuilds the entire order-book cache and degrades /route for minutes". `activate()`
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Have nginx (or a tiny second instance) gate on `/ready` and return 503 while the cache is cold, so callers see an unambiguous 'not ready' instead of a confident wrong answer; at minimum make `/route` return 503 with a distinct reason while `freshCount < minFreshBooksForReady` rather than a 200.
+
+### 45. The deploy job is hard-pinned to the fork `pcriadoperez/ccxt`, so merged upstream nothing deploys and no owner or alternative procedure is defined
+
+**Severity:** medium &nbsp;·&nbsp; **estimated effort:** hours
+
+**Claimed evidence**
+
+```
+.github/workflows/order-router.yml:241, :462 and :496 all gate on `github.repository == 'pcriadoperez/ccxt' &&`. `git remote -v` in this checkout shows `origin https://github.com/pcriadoperez/ccxt` and `upstream https://github.com/ccxt/ccxt`. order-router/docs/adr-001-repository-layout.md:53-55 reco
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Decide where the service is owned before merging: either move the secrets and the guard to the repository the PR lands in, or split the service into its own repo per the ADR. Record a named deploy owner and a manual-deploy runbook in the README either way.
+
+### 46. No scraper, no alerts and no log rotation on a 7.5 GB box shared with two other production deploys
+
+**Severity:** medium &nbsp;·&nbsp; **estimated effort:** days
+
+**Claimed evidence**
+
+```
+README.md:1004 — "No metrics/alerting | **Closed for instrumentation** ... **Still open:** nothing scrapes it and no alerts are wired up; the suggested rules above are untested", against README.md:848 which calls `order_router_exchange_last_update_age_seconds` "**The most important alert.** An excha
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Ship a logrotate config (with `create`, not `copytruncate`, per src/logger.ts:27-29) in the release, add a disk-usage and `order_router_exchange_last_update_age_seconds` alert with an actual delivery target, and point something at /metrics before the next deploy rather than after the first incident.
+
+### 47. The anonymous CSRF token is a fixed public constant, so /signup and /login are defended by the Origin header alone — and a missing Origin is treated as valid
+
+**Severity:** medium &nbsp;·&nbsp; **estimated effort:** hours
+
+**Claimed evidence**
+
+```
+`src/web/server.ts:187` `return signupPage(base, csrfToken(token ?? 'anon', csrfSecret));`, `:193` the same for the login page, and `:204` / `:247` verify against the identical literal: `const bad = guard(request.body.csrf, token ?? 'anon', request as never);`. The token is `src/web/auth.ts:122-124`
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Issue a pre-session cookie on GET /signup and GET /login and derive the anonymous token from it, so the value differs per visitor. Separately, treat a state-changing POST with no Origin as a failure (or fall back to `Sec-Fetch-Site: same-origin`) rather than as allowed.
+
+### 48. The non-prefixed `router_session` cookie is accepted in the secure deployment, defeating the __Host- prefix
+
+**Severity:** medium &nbsp;·&nbsp; **estimated effort:** minutes
+
+**Claimed evidence**
+
+```
+`src/web/server.ts:138-139` reads both names unconditionally:
+
+    const token = readCookie(request as never, SESSION_COOKIE)
+        ?? readCookie(request as never, 'router_session');
+
+while `src/web/auth.ts:87-91` only ever *sets* the fallback name in the insecure case:
+
+    const name = secure ?
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Make the accepted cookie name depend on `secureCookies` exactly as the setter does: read only `SESSION_COOKIE` when secure, only `router_session` when not.
+
+### 49. Caller-controlled unbounded `bridges` / `exchanges` on POST /route are written verbatim into the audit log and re-walked on every stream push
+
+**Severity:** medium &nbsp;·&nbsp; **estimated effort:** minutes
+
+**Claimed evidence**
+
+```
+`src/api/routeQuery.ts:141-143` splits the parameter with no length or count bound:
+
+    const bridges = query.bridges === undefined
+        ? DEFAULT_BRIDGES
+        : query.bridges.split(',').map((b) => b.trim().toUpperCase()).filter((b) => b.length > 0);
+
+(`exchanges` at `:136-138` is the same sh
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Bound both parameters the way `balances` already is — a character cap and an entry cap, rejecting rather than truncating — in `parseRouteQuery`, and cap what the audit record echoes.
+
+### 50. Signup discloses whether an email already has an account, re-opening the enumeration oracle login deliberately closes
+
+**Severity:** medium &nbsp;·&nbsp; **estimated effort:** hours
+
+**Claimed evidence**
+
+```
+`src/web/server.ts:218-223`:
+
+    } catch (err) {
+        if ((err as { code?: string }).code === '23505') {
+            return fail('An account with that email already exists.');
+        }
+
+against the deliberate choice ten lines later at `src/web/server.ts:242-245`:
+
+    const fail = () => loginPa
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+On a 23505 conflict, render the same neutral outcome as a successful signup (an "if this address is new, check your inbox / your key is on your dashboard" page) rather than confirming the account, or move key issuance behind a verification step so the distinction is not observable.
+
+### 51. Shard workers retain a full second copy of every order book they will never read, inside the process with the hard heap ceiling
+
+**Severity:** medium &nbsp;·&nbsp; **estimated effort:** hours
+
+**Claimed evidence**
+
+```
+order-router/src/sharding/shardWorker.ts:49 `const cache = new OrderBookCache();` — used only as an event bus (`cache.on('book', ...)` :55, `cache.on('health', ...)` :56, `cache.getHealth()` :63). But `setBook` stores unconditionally, in two maps (order-router/src/cache/orderBookCache.ts:41-51):
+```
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Give the shard a write-through emitter that does not retain (a thin `EventEmitter` implementing the `setBook`/`record*` surface), or add a `retain: boolean` constructor flag to `OrderBookCache` that the shard sets to false so `setBook` only emits.
+
+### 52. A shard whose module is missing (stale or half-unpacked deploy) crash-loops forever while `/health` keeps answering 200
+
+**Severity:** medium &nbsp;·&nbsp; **estimated effort:** hours
+
+**Claimed evidence**
+
+```
+order-router/src/sharding/orchestrator.ts:10 `const SHARD_WORKER_PATH = fileURLToPath(new URL('./shardWorker.js', import.meta.url));` and :116-130:
+```
+            proc.on('exit', (code) => {
+                if (shuttingDown) { ... return; }
+                const delay = Math.min(30_000, 1000 * 2 **
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+After N consecutive respawns with no successful `init` acknowledgement, log fatal and exit the parent so the supervisor restarts (or the deploy rolls back), and factor shard liveness into `/ready` rather than counting only fresh books.
+
+### 53. Discovery runs once at boot and its failures are non-fatal, so a transient network blip silently pins the router to a junk symbol universe for the process lifetime
+
+**Severity:** medium &nbsp;·&nbsp; **estimated effort:** hours
+
+**Claimed evidence**
+
+```
+order-router/src/discovery/liquidity.ts:57-61 swallows a reference-venue failure:
+```
+        } catch (err) {
+            logger.warn({ exchange: id, err: String(err) }, 'liquidity reference failed, continuing');
+        } finally {
+```
+With `volume` empty, the sort at liquidity.ts:66 `return [...ca
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Treat a failed liquidity ranking as fatal at boot (exit non-zero and let the supervisor retry) rather than continuing with an unranked list, or retry the reference fetch with backoff before falling through. Do the same for `assignments.length === 0`. If long-lived processes are expected, add a perio
+
+### 54. `AuthenticationError` is classified as permanent and irreversibly removes a venue, including the okx clock-drift failure the file's own comment lists as recoverable
+
+**Severity:** medium &nbsp;·&nbsp; **estimated effort:** minutes
+
+**Claimed evidence**
+
+```
+order-router/src/connectors/exchangeConnector.ts:189-194:
+```
+    if (err instanceof ccxt.NotSupported
+        || err instanceof ccxt.BadSymbol
+        || err instanceof ccxt.ArgumentsRequired
+        || err instanceof ccxt.AuthenticationError) {
+        return true;
+    }
+```
+The comment above it,
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Drop `AuthenticationError` from the permanent set and rely on the credential-shaped `PERMANENT_ERROR_PATTERNS` (:175-181) for the genuinely unrecoverable "requires apiKey" case, or make abandonment recoverable — retry an abandoned subscription once on the hourly periodic-resync tick instead of never
+
+### 55. A shard orphaned during startup never exits: the `disconnect` handler is installed only after every connector has started
+
+**Severity:** medium &nbsp;·&nbsp; **estimated effort:** minutes
+
+**Claimed evidence**
+
+```
+order-router/src/sharding/shardWorker.ts:105-121 — the handler is the last statement of `runShard`, after the bounded-concurrency start loop completes:
+```
+    await Promise.all(Array.from({ length: Math.min(limit, queue.length) }, async () => {
+        for (;;) {
+            const next = queue.shif
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Register `process.on('disconnect', () => process.exit(0))` at module load, next to `installCrashHandlers` at shardWorker.ts:10, rather than at the end of `runShard`.
+
+### 56. The crash strategy explicitly depends on a supervisor restart, but the documented systemd unit has no `Restart=` directive
+
+**Severity:** medium &nbsp;·&nbsp; **estimated effort:** minutes
+
+**Claimed evidence**
+
+```
+order-router/src/crashHandlers.ts:51-53 states the contract:
+```
+// These handlers keep the action and fix the record: log through pino, flush, then exit non-zero
+// so the supervisor restarts. They deliberately do NOT swallow.
+```
+implemented at :65 `const timer = setTimeout(() => process.exit(1),
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Add `Restart=always` and `RestartSec=2` to the documented unit (and verify the deployed one), and drop the `unref()` on the exit timer so the non-zero exit is guaranteed.
+
+### 57. The cursor hold-back path re-reads already-written lines, producing duplicate requests rows and double-counted usage_hour
+
+**Severity:** medium &nbsp;·&nbsp; **estimated effort:** hours
+
+**Claimed evidence**
+
+```
+When the tail contains an unpaired routing record, /home/user/ccxt/order-router/src/db/ingest.ts:282-291 rewinds the cursor to that record's offset while still writing every record that started before it: `nextOffset = holdAt; for (const [id, r] of byReq) { const at = firstOffset.get(id); if (r.stat
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Give the row a deterministic identity derived from the audit record — e.g. PRIMARY KEY (ts, request_id) using the caller-independent reqId, or a UNIQUE (ts, request_id) index — so the existing ON CONFLICT DO NOTHING actually dedups, and make the usage_hour increment conditional on the requests inser
+
+### 58. Personal data is retained forever and the documented "delete my data is one statement" erasure does not work
+
+**Severity:** medium &nbsp;·&nbsp; **estimated effort:** hours
+
+**Claimed evidence**
+
+```
+IPs are stored in three places — /home/user/ccxt/order-router/src/db/schema.sql:118 `ip inet,` in requests, schema.sql:39 `ip inet,` in sessions, schema.sql:216 `ip inet` in admin_audit — with retention explicitly forever (schema.sql:82 "Retention during the beta is FOREVER"; /home/user/ccxt/order-r
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Add `ON DELETE CASCADE` (or an explicit multi-statement erasure function) for api_keys.user_id and sessions, provide a tested `erase_user(uuid)` that also nulls ip/user_agent on requests rows matched by that user's key_ids, and add a retention job that drops partitions older than the documented wind
+
+### 59. A shard that never starts is completely absent from /metrics — no exchange series, no shard series, no restart counter
+
+**Severity:** medium &nbsp;·&nbsp; **estimated effort:** hours
+
+**Claimed evidence**
+
+```
+`src/cache/orderBookCache.ts:175-177` returns only exchanges the parent has heard about: `getHealth (): ExchangeHealth[] { return Array.from(this.health.values()); }`, populated in the parent solely via `setHealth` from IPC (`src/sharding/orchestrator.ts:79-81`). `src/cache/loopRegistry.ts:9-15` lik
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Add `order_router_shards_expected` (from `config.shardCount`) and `order_router_shards_reporting` so `expected - reporting > 0` is alertable, plus an `order_router_shard_restarts_total{shard}` counter incremented in the `exit` handler. Seed `loopRegistry` with an entry per configured shard index at
+
+### 60. WebSocket frames dropped for slow consumers are silently discarded — no metric, no log, no client signal
+
+**Severity:** medium &nbsp;·&nbsp; **estimated effort:** minutes
+
+**Claimed evidence**
+
+```
+`src/api/server.ts:671-675`:
+```ts
+// Drop this frame if the peer is not keeping up. Coalescing bounds how often we
+// COMPUTE, not how fast the client drains, so without this a slow consumer grows
+// the send buffer without limit ...
+if (socket.bufferedAmount > WS_MAX_BUFFERED_BYTES) return;
+```
+Th
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Add `order_router_stream_frames_dropped_total` incremented at that return, and send the client a `{ "warning": "frames_dropped", "since": ... }` marker (or set a `stale: true` flag on the next successful frame) so a consumer can detect it. Log once per socket at `warn` on first drop, not per frame.
+
+### 61. Crossed-book rejection logs a warn per update while resync backs off to 30 minutes — unbounded log volume at the production log level
+
+**Severity:** medium &nbsp;·&nbsp; **estimated effort:** minutes
+
+**Claimed evidence**
+
+```
+`src/connectors/exchangeConnector.ts:387-394`:
+```ts
+if (isCrossedBook(bids, asks)) {
+    this.cache.recordCrossed(this.exchangeId);
+    this.logger.warn(
+        { symbol, bestBid: bids[0]?.price, bestAsk: asks[0]?.price },
+        'crossed order book, rejecting update and scheduling resync',
+    )
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Throttle the log to the resync cadence: log the first crossed book per exchange/symbol, then suppress until the next successful resync, emitting a periodic summary line with the suppressed count. `cache.recordCrossed()` already feeds `order_router_exchange_crossed_books_total` (metrics.ts:59-69), so
+
+### 62. The README's forensic log queries return zero rows against the production configuration
+
+**Severity:** medium &nbsp;·&nbsp; **estimated effort:** minutes
+
+**Claimed evidence**
+
+```
+README.md:437-444 gives the two "who called what" runbook queries:
+```bash
+# every request a key made, last 7 days
+zcat -f /var/log/order-router/router.log* \
+  | jq -c 'select(.keyId=="k_7f3a91c2" and .event=="request")'
+```
+But when `ORDER_ROUTER_AUDIT_LOG_FILE` is set — which README.md:528 says i
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Update README.md:437-444 to read from `$ORDER_ROUTER_AUDIT_LOG_FILE*`, and correct the event table at 431-436 to state which stream each event lands in (`request`/`route_recommendation` → audit file; `stream_open`/`stream_close` → diagnostic log, until finding #2 is fixed).
+
+### 63. Respawned shard processes are never added to the handle, so stop() cannot kill them
+
+**Severity:** medium &nbsp;·&nbsp; **estimated effort:** minutes
+
+**Claimed evidence**
+
+```
+`src/sharding/orchestrator.ts:125-136` — the replacement is created but never tracked:
+```ts
+setTimeout(() => {
+    if (shuttingDown) return;
+    const replacement = spawn();
+    replacement.send({ type: 'init', assignments });
+}, delay);
+...
+const child = spawn();
+children.push(child);            /
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Track children in a mutable per-shard slot: replace `children.push(child)` with an index assignment that `spawn()` updates on every respawn, so `stop()` always kills the live pid. Separately, register `process.on('disconnect', () => process.exit(0))` at the top of `shardWorker.ts` (before `runShard`
+
+### 64. Rust classifies the entire NetworkError subtree as outcome-unknown, so every rate-limit rejection is reported as a possibly-live order
+
+**Severity:** medium &nbsp;·&nbsp; **estimated effort:** minutes
+
+**Claimed evidence**
+
+```
+rust/ccxt-base/src/order_router.rs:1517 `fn is_outcome_unknown_error(&self, error: &ExchangeError) -> bool { error.is("NetworkError") }`, and rust/ccxt-base/src/error.rs:30 `pub fn is(&self, kind: &str) -> bool` walks the hierarchy at error.rs:83-89, where `"DDoSProtection" => "NetworkError"`, `"Rat
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Replace the hierarchy walk at rust/ccxt-base/src/order_router.rs:1517 with the same explicit four-name match the other five use: `matches!(error.kind.as_str(), "RequestTimeout" | "ExchangeNotAvailable" | "NetworkError" | "OnMaintenance")`.
+
+### 65. Go cannot read per-trade fees and carries the gross amount forward; the code comment claims this is conservative, and it is the opposite
+
+**Severity:** medium &nbsp;·&nbsp; **estimated effort:** hours
+
+**Claimed evidence**
+
+```
+go/v4/exchange_order_router.go:2120 `func routerOrderFeeInAsset(order Order, asset string) float64 { ... // DIVERGENCE ... the Go typed Order carries a single Fee and no Fees list, so unlike the other four ports this cannot sum per-trade fees. On a venue that reports fees only in that list, Go under
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Either add a `Fees []Fee` field to the Order struct in go/v4/exchange_types.go (regenerating from ts/src/base/types.ts per CLAUDE.md §3) and sum it in routerOrderFeeInAsset, or fall back to summing `order.Trades[i].Fee` — Trades is already on the struct at exchange_types.go:446. Correct the comment
+
+### 66. Fee netting — the one placeStep behaviour that resizes the next hop's order — is asserted only in the TypeScript suite
+
+**Severity:** medium &nbsp;·&nbsp; **estimated effort:** days
+
+**Claimed evidence**
+
+```
+ts/src/test/base/test.orderRouter.ts:1016 `test ('a fee charged in the acquired asset is netted out of what the next hop is sized on', ...)` asserts `step['grossOutAmount'] === 0.1`, `outAmount ≈ 0.099`, `step['feeCost'] === 0.001`, plus the counterpart at :1031. Grepping `feeCost|grossOutAmount` in
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Port ts/src/test/base/test.orderRouter.ts:1016 and :1031 into python/ccxt/test/base/test_order_router.py, php/test/base/test_order_router.php, cs/tests/OrderRouterTest.cs, go/v4/exchange_order_router_test.go and rust/ccxt-base/src/order_router_selftest.rs, and add a stub-order section to ts/src/test
+
+### 67. Rust adds a price_unconfirmed halt branch that no other port has, halting routes the other five complete
+
+**Severity:** medium &nbsp;·&nbsp; **estimated effort:** minutes
+
+**Claimed evidence**
+
+```
+rust/ccxt-base/src/order_router.rs:1916 `if (!average_known || !cost_known) && filled > 0.0 { // A fill with no price is a fill whose proceeds are a guess.  Self::put(result, "status", Value::Str("outcome_unknown".into())); self.record_open_order(report, exchange_id, symbol, &self.string_at(result,
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Either delete the branch at rust/ccxt-base/src/order_router.rs:1916 to match the other five, or — if the caution is wanted — add it to all six and to the shared fixture so the halt is a documented, tested contract rather than a Rust-only surprise.
+
+### 68. buildUnwindPlan's buy-side recovery order spends more quote than the residual holds — the fixture locks the unfundable number in across all six ports
+
+**Severity:** medium &nbsp;·&nbsp; **estimated effort:** minutes
+
+**Claimed evidence**
+
+```
+ts/src/base/OrderRouter.ts:1244-1257 — the size is computed at the expected price, then the order is priced above it:
+```
+1247:                side = 'buy';
+1248:                unwindAmount = amount / price;
+...
+1253:            if (side === 'buy') {
+1254:                limitPrice = price * (1 + s
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Compute `unwindAmount = amount / limitPrice` (derive limitPrice first), so the order spends at most the residual. Update the expected values in ts/src/test/base/fixtures/orderRouter.json and set `notionalQuote = unwindAmount * limitPrice`.
+
+### 69. A resting order detected on the sequential / parallel / best_effort paths is recorded but never cancelled, and execution continues on top of it
+
+**Severity:** medium &nbsp;·&nbsp; **estimated effort:** hours
+
+**Claimed evidence**
+
+```
+ts/src/base/OrderRouter.ts:1887-1897 — detection with no action:
+```
+1887:            if (this.stringAt (order, 'status', '') === 'open') {
+...
+1894:                this.recordOpenOrder (report, exchangeId, symbol, ..., 'still_open');
+1895:            }
+1896:            report['ordersPlaced'] = ...
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+When an order comes back `status === 'open'` on a non-limit_protected path, cancel it and re-read before returning, exactly as placeProtectedLimit does; treat a failed cancel as outcome_unknown. Separately, when the venue reports no timeInForce capability, either refuse the step or verify the placed
+
+### 70. The design docs the README points operators to are marked "plan, not shipped" and prescribe an architecture that was replaced; one explicitly forbids the deployment that shipped
+
+**Severity:** medium &nbsp;·&nbsp; **estimated effort:** hours
+
+**Claimed evidence**
+
+```
+order-router/README.md:456 sends operators there: "See `docs/auth-plan.md` for the full design and the ordered v2 list."
+
+order-router/docs/auth-plan.md:3 — "Status: **plan, not shipped.**" and auth-plan.md:30 — "| Lifecycle | **CLI only** (`npm run keys:create|list|revoke|delete`). No admin HTTP en
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Restamp the three docs with accurate status headers (auth-plan.md: shipped then superseded by product-plan §3; dashboard-plan.md: superseded, and its :443 prohibition no longer holds; product-plan.md: shipped). Repoint README.md:456 at whichever document describes the shipped Postgres/dashboard mode
+
+### 71. The `limit_protected` execution strategy is implemented but absent from every document, including the Manual table that presents itself as the complete list
+
+**Severity:** medium &nbsp;·&nbsp; **estimated effort:** minutes
+
+**Claimed evidence**
+
+```
+Implemented and reachable: ts/src/base/OrderRouter.ts:69
+```
+const KNOWN_STRATEGIES = [ 'dry_run', 'sequential', 'parallel_within_hop', 'limit_protected', 'best_effort', 'atomic_ish' ];
+```
+validated at OrderRouter.ts:1348, dispatched at OrderRouter.ts:1804-1806 (`if (strategy === 'limit_protected')
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Add a `limit_protected` row to wiki/Manual.md:8595-8601 with its `orderTimeoutMs` / `pollIntervalMs` options and its resting/cancel semantics, and add it to the strategy line in all five `.claude/skills/ccxt-*/SKILL.md` files.
+
+### 72. OpenAPI's POST /route omits the 404 and 501 responses the shared handler returns, on the verb the spec itself tells callers to use for balances
+
+**Severity:** medium &nbsp;·&nbsp; **estimated effort:** minutes
+
+**Claimed evidence**
+
+```
+Both verbs run the same handler — order-router/src/api/server.ts:509-525:
+```
+app.get<{ Querystring: RouteQuery }>('/route', async (request, reply) => handleRoute(request.query, request, reply));
+...
+app.post<{ Body: RouteQuery }>('/route', async (request, reply) => handleRoute(request.body ?? ({} a
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Copy the `'404'` and `'501'` response blocks from openapi/openapi.yaml:210-229 into the `post:` responses at openapi.yaml:265-268.
+
+### 73. rust.yml is the one language workflow with no order-router paths-ignore, so every order-router change spins the 120-minute Rust job and can push spurious [Automated changes] commits to master
+
+**Severity:** medium &nbsp;·&nbsp; **estimated effort:** minutes
+
+**Claimed evidence**
+
+```
+.github/workflows/rust.yml:10-15 — the entire trigger block, with no `paths` or `paths-ignore`:
+```yaml
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+```
+Every other language workflow has the filter (js.yml:16-19, python.yml:17-19, php
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Add the same `paths-ignore: ['order-router/**', '.github/workflows/order-router.yml']` block to both the `push` and `pull_request` triggers in rust.yml, matching the other six workflows.
+
+### 74. The artifact CI tested is not the artifact deployed: the shipped arm64 tree is rebuilt in the deploy job and never runs a single test before it reaches production
+
+**Severity:** medium &nbsp;·&nbsp; **estimated effort:** hours
+
+**Claimed evidence**
+
+```
+`build-and-test` runs on x64 (.github/workflows/order-router.yml:33 `runs-on: ubuntu-latest`) and is the only job that runs `npm test` (:70). `deploy` runs on a different architecture and rebuilds from scratch (:244, :268-286):
+```yaml
+    runs-on: ubuntu-24.04-arm        # arm64 — same box as docs.
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Run `npm test` (and a short boot+/health check) in the `deploy` job after `npm run build`, before the prune and pack — it is the same suite, ~18s, on the tree that actually ships. Alternatively build once in `build-and-test` on arm64 and pass the tarball to `deploy` via `actions/upload-artifact`, so
+
+### 75. A missing, rotated or revoked ORDER_ROUTER_SMOKE_API_KEY causes CI to roll back and double-restart a perfectly healthy production release
+
+**Severity:** medium &nbsp;·&nbsp; **estimated effort:** hours
+
+**Claimed evidence**
+
+```
+The post-deploy job passes the secret straight through (.github/workflows/order-router.yml:479-485):
+```yaml
+          ROUTER_BASE_URL: https://docs.ccxt.com/router/api
+          ROUTER_API_KEY: ${{ secrets.ORDER_ROUTER_SMOKE_API_KEY }}
+          ROUTER_EXPECT_COMMIT: ${{ github.sha }}
+        run:
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Distinguish misconfiguration from failure: have live-integration.mjs's exit code 2 (documented at scripts/live-integration.mjs:24 as "misconfigured") be handled explicitly in the workflow so it fails the run WITHOUT satisfying the rollback condition, and assert the secret is non-empty in a cheap pre
+
+### 76. The service pins ccxt 4.5.64 inside a repo at 4.5.77 and nothing in CI detects the drift, so library fixes never reach the deployed router
+
+**Severity:** medium &nbsp;·&nbsp; **estimated effort:** hours
+
+**Claimed evidence**
+
+```
+order-router/package.json:32 pins an exact published version:
+```json
+    "ccxt": "4.5.64",
+```
+The repo it lives in is thirteen versions ahead — /home/user/ccxt/package.json:3:
+```json
+  "version": "4.5.77",
+```
+Nothing reconciles the two: order-router.yml only ever runs `npm ci` against order-rout
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Add a cheap check to `build-and-test` that compares `order-router/package.json`'s ccxt pin against the root `package.json` version and fails (or warns with an annotation) beyond a configured lag; and add a scheduled job that runs the service's offline suite against the current workspace ccxt so a br
+
+### 77. POST /route body fields are never type-checked, so a non-string value returns 500 with the internal error text
+
+**Severity:** low &nbsp;·&nbsp; **estimated effort:** minutes
+
+**Claimed evidence**
+
+```
+`src/api/server.ts:524-525` binds the JSON body straight to the shared parser with no schema:
+
+    app.post<{ Body: RouteQuery }>('/route', async (request, reply) =>
+        handleRoute(request.body ?? ({} as RouteQuery), request, reply));
+
+`src/api/routeQuery.ts:46-51` only rejects arrays (`if (Arr
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Attach a Fastify JSON schema to the POST /route body (all properties `type: string`, `additionalProperties: false`), or coerce/reject non-strings inside `parseRouteQuery` alongside the existing `rejectRepeated` check, so the answer is a 400 naming the offending field.
+
+### 78. `ORDER_ROUTER_SHARD_START_CONCURRENCY` is documented as controlling something it does not control, and raising it on that basis rebuilds the memory peak the heap ceiling exists to hold
+
+**Severity:** low &nbsp;·&nbsp; **estimated effort:** minutes
+
+**Claimed evidence**
+
+```
+README.md:526:
+```
+| `ORDER_ROUTER_SHARD_START_CONCURRENCY` | `2` | How many shards boot at once. |
+```
+The code uses it as how many *exchanges within one shard* start concurrently — order-router/src/sharding/shardWorker.ts:103-105:
+```
+    const queue = assignments.map((a, i) => ({ ...a, connector:
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Correct README.md:526 to "How many exchanges within one shard start concurrently; raising it rebuilds the startup memory peak the shard heap ceiling must hold."
+
+### 79. admin_audit is created but never written — admin actions leave no durable audit trail
+
+**Severity:** low &nbsp;·&nbsp; **estimated effort:** hours
+
+**Claimed evidence**
+
+```
+/home/user/ccxt/order-router/src/db/schema.sql:209-218 defines `CREATE TABLE IF NOT EXISTS admin_audit (id bigserial PRIMARY KEY, ts ..., actor_user_id uuid REFERENCES users(id), action text NOT NULL, subject text, detail jsonb, ip inet);` under the heading "Admin audit". `grep -rn "admin_audit" --i
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Insert into admin_audit from the admin mutation handlers in src/web/server.ts (revoke, plan change, admin creation) in the same transaction as the change, or delete the table so its absence is honest.
+
+### 80. formatNumber tie-rounding differs between ports, so the balances query string is not byte-identical as the file claims
+
+**Severity:** low &nbsp;·&nbsp; **estimated effort:** hours
+
+**Claimed evidence**
+
+```
+go/v4/exchange_order_router.go:443 goes to the trouble of implementing JavaScript's rule exactly with big.Rat: `// ECMA-262 strips the sign BEFORE choosing n, so a tie rounds AWAY FROM ZERO on the magnitude: (-0.0001220703125).toFixed(12) is -0.000122070313, not -…312. strconv would round half to ev
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Either port Go's routerToFixed12 (go/v4/exchange_order_router.go:443) into Python, PHP and Rust, or drop the JS-tie requirement and change Go to plain half-to-even so all six agree on the simpler rule. Add tie values (0.0001220703125, -0.0001220703125) to a formatNumber section of ts/src/test/base/f
+
+### 81. C# assigns inAsset/outAsset and the fee fields before the outcome-unknown early return, so an unknown-fill result carries assets the other ports leave blank
+
+**Severity:** low &nbsp;·&nbsp; **estimated effort:** minutes
+
+**Claimed evidence**
+
+```
+cs/ccxt/base/OrderRouter.cs:2180-2213 runs the side assignment (`result["inAsset"]`, `result["inAmount"]`, `result["outAsset"]`, `result["outAmount"]`) and then the fee netting, and only afterwards, at :2214, does `if (!filledKnown) { result["status"] = "outcome_unknown"; ... return result; }`. Type
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Move the `if (!filledKnown)` block at cs/ccxt/base/OrderRouter.cs:2214 up to sit immediately after the filledKnown/averageKnown/costKnown assignments at :2178, ahead of the side assignment and the fee netting, matching ts/src/base/OrderRouter.ts:1841.
+
+### 82. placeProtectedLimit spins forever with a live order resting when pollIntervalMs is 0
+
+**Severity:** low &nbsp;·&nbsp; **estimated effort:** minutes
+
+**Claimed evidence**
+
+```
+ts/src/base/OrderRouter.ts:2161-2177 — the loop counter advances by the caller-supplied interval, unvalidated:
+```
+2162:        const pollIntervalMs = this.numberAt (options, 'pollIntervalMs', 1000);
+...
+2170:        while (waited < timeoutMs) {
+2174:            await this.sleep (pollIntervalMs);
+21
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Clamp in placeProtectedLimit: if `pollIntervalMs <= 0`, use the 1000ms default (and reject a non-positive orderTimeoutMs the same way), in all six ports.
+
+### 83. OpenAPI describes /health as "the only unauthenticated route" while the next path in the same file is also unauthenticated
+
+**Severity:** low &nbsp;·&nbsp; **estimated effort:** minutes
+
+**Claimed evidence**
+
+```
+openapi/openapi.yaml:101 — "description: The only unauthenticated route, so orchestrator probes work before credentials are injectable."
+openapi/openapi.yaml:127 (`/ready`) — "`503` until then. Unauthenticated like `/health`", with `security: []` at openapi.yaml:129.
+Code agrees with `/ready` being
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Change openapi/openapi.yaml:101 to name both: "/health and /ready are the only unauthenticated routes."
+
+### 84. README documents `systemctl reload order-router` for instant key reload, but the systemd unit it also documents has no ExecReload
+
+**Severity:** low &nbsp;·&nbsp; **estimated effort:** minutes
+
+**Claimed evidence**
+
+```
+order-router/README.md:390-392 — "A change is picked up within 10 seconds by an mtime poll, or instantly with `systemctl reload order-router` — creating or killing a key never costs a restart, which at discovery scale would rebuild the whole book cache and degrade `/route` for minutes."
+
+The handler
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Add `ExecReload=/bin/kill -HUP $MAINPID` to the unit at README.md:751-755, and correct the worst-case revocation latency at README.md:380/390 to account for the projection interval plus the mtime poll.
+
+### 85. build-and-test has no timeout-minutes while every other job in the file does, so a hung step holds a runner for the 6-hour default
+
+**Severity:** low &nbsp;·&nbsp; **estimated effort:** minutes
+
+**Claimed evidence**
+
+```
+.github/workflows/order-router.yml:32-38 — the job header, with `runs-on` and `services` but no timeout:
+```yaml
+  build-and-test:
+    runs-on: ubuntu-latest
+    # The key-lifecycle smoke test needs a database: Postgres is the source of truth for
+...
+    services:
+      postgres:
+```
+Every other job
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Add `timeout-minutes: 20` (or similar) to the `build-and-test` job header, consistent with the other three jobs in the file.
+
+### 86. The README's test-coverage table is stale in a way that overstates verification — it names a test file that does not exist and undercounts the suite by 6x, while the readiness table reports CI as "Closed"
+
+**Severity:** low &nbsp;·&nbsp; **estimated effort:** minutes
+
+**Claimed evidence**
+
+```
+order-router/README.md:563 and :569:
+```
+49 tests, all offline — no live exchange connections, no mocked `fetch` ...
+| Book-walking / fee ranking | `src/routing/bestPrice.test.ts` | VWAP across levels, fee-adjusted ranking beats raw-price ranking, partial fills, buy vs. sell side, stale-book exclusi
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Either delete the per-file coverage table and print the count from the suite, or extend the existing drift test in src/config.docs.test.ts to assert that every path named in the README's coverage table exists on disk — the same technique already used there for env vars, applied to the one table that
+
+## Started, not finished
+
+### 41. Deployment docs and the deploy workflow cover only the router process; the web console, ingester and key projector are undocumented and never started, so a box built from the README can never authenticate a request
+
+**Severity:** high &nbsp;·&nbsp; **estimated effort:** hours
+
+**Claimed evidence**
+
+```
+The shipped system needs four processes. package.json:20-23 exposes them: `"db:migrate"`, `"admin"`, `"ingest": "node dist/db/ingestRunner.js"`, `"web": "node dist/web/index.js"`. src/db/ingestRunner.ts:26-27 is the only thing that writes the key file the API reads:
+```
+const stopIngest = startInges
+```
+
+**Suggested fix** — a suggestion, not a verdict; verify before following it.
+
+Add the missing units and their bootstrap order to README.md:735-763 (`npm run db:migrate`, `npm run admin -- create-admin`, `order-router-web.service`, `order-router-ingest.service`, the shared `EnvironmentFile` so `ORDER_ROUTER_KEYS_FILE` matches across router/web/ingest, and `DATABASE_URL` on web
+
+## Closed
+
+Kept so the same ground is not re-covered, and so a `wontfix` is not silently re-litigated.
+
+| # | Sev | Finding | Resolution |
+|---|---|---|---|
+| 0 | blocker | Nothing in the deployed path sets NODE_ENV=production, which arms the published dev API key as a live credential | **fixed** — 6f88bfb3 dev key is opt-in via ORDER_ROUTER_ALLOW_DEV_KEY, never inferred from NODE_ENV |
+| 1 | blocker | The deploy restarts only order-router.service; the public web console, ingest runner and key projector are never redeployed and their release trees are later deleted underneath them | **fixed** — 6f88bfb3 EXTRA_SERVICES names order-router-web and order-router-ingest |
+| 2 | blocker | trustProxy: true trusts the whole X-Forwarded-For chain, so request.ip is attacker-chosen and every IP rate limit (including /login brute-force) is bypassable | **fixed** — 6f88bfb3 trustProxy is a hop count; nonsense values refuse to start |
+| 3 | blocker | Respawned shards are never added to `children`, so `stop()` can never kill them — a rebalance forks a second generation alongside the survivors | **fixed** — 6f88bfb3 children.push moved inside spawn(); exit handler splices the corpse |
+| 4 | blocker | Any caller can permanently wedge audit/usage ingestion with one header: X-Forwarded-For garbage → inet insert error → infinite rollback loop | **fixed** — 6f88bfb3 ipOrNull() validates with node:net, writes NULL for anything unparseable |
+| 5 | blocker | The ingest runner exits with status 0 when Postgres is unreachable — systemd Restart=on-failure never restarts it, and key revocation stops working | **fixed** — 6f88bfb3 ref'd heartbeat + partition retry instead of a fatal boot |
+| 6 | blocker | LOG_LEVEL cannot reduce per-request log volume — 507 bytes/request goes to the diagnostic log even at LOG_LEVEL=warn | **fixed** — 885afe73 child logger no longer levelled up; stream_open/close moved to the audit stream |
+| 7 | blocker | Rust accepts the atomic_ish strategy, never checks pre-funding, and then skips the downstream resize on the strength of that unperformed check | **fixed** — 36e144bf assert_prefunded ported to Rust with a selftest |
+| 8 | blocker | limit_protected: any throw after createOrder reports the step as `failed` with zero fill, leaves the order live and uncancelled, and makes the residual invisible to buildUnwindPlan | **fixed** — de933e55 known orderId -> status outcome_unknown, all six ports |
+| 9 | blocker | Every production deploy job is gated on a fork's repo name — merging this PR upstream silently and permanently stops deploys to the live service | **wontfix** — af4ac591 deliberate: a fork must not deploy to this box. Recorded in README Known gaps so a future upstream merge changes the gate in the same commit. |
+| 14 | high | Attacker-controlled request.ip is inserted into an `inet` column inside the ingest transaction; one crafted header wedges audit ingestion permanently | **fixed** — 6f88bfb3 same fix as blocker 4 |
+| 15 | high | The published dev API key `dev-local-key-change-me` is enabled in production whenever NODE_ENV is unset, and the documented systemd unit never sets it | **fixed** — 6f88bfb3 same fix as blocker 0 |
+| 25 | high | /stream/route produces zero audit records and zero HTTP metrics — streaming usage is invisible to billing and to Prometheus | **fixed** — cc1501bf audit emission shared by GET/POST /route and every pushed frame; unroutable counter with it |
+| 30 | high | C# OrderToDict discards fee and fees, so OrderFeeInAsset always returns 0 and the taker fee is never netted out of what the next hop is sized on | **fixed** — 3f795f91 OrderToDict maps fee and fees via FeeToDict |
+| 31 | high | Rust summarise_report sums inAmount/outAmount across every hop, mixing currencies, because Rust step results never carry hopIndex | **fixed** — 3f795f91 summarise_report scoped to first/last hop; hopIndex+legIndex added to results |
+| 32 | high | Rust place_step never records a known orderId into openOrders when a post-createOrder call fails, so a resting order can vanish from the operator-facing list | **fixed** — 3f795f91 known-id branch added to the Rust catch path |
+| 33 | high | C# mutates the shared execution report from concurrent tasks without the lock it defines for exactly that purpose | **fixed** — a6f995a9 RecordUnconfirmedPlacement and the fill_unconfirmed increment now take reportLock |
+| 34 | high | TypeScript alone returns from placeStep before setting inAsset/outAsset/amounts and fee netting on the outcome_unknown path — the other five ports set them first, so the same execution yields a different unwind plan per language | **fixed** — TS block moved after the asset/amount assignment to match the other five; pinned in TS and Rust, still unpinned in Python/PHP/C#/Go (they already behave correctly) |
+| 37 | high | README "Known gaps" claims there is no /metrics endpoint; the endpoint exists, is documented 200 lines earlier, and is the primary alerting surface | **fixed** — af4ac591 Known gaps rewritten; the three completed entries kept as a 'done since' note |

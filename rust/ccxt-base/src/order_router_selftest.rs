@@ -930,6 +930,7 @@ pub fn run() -> Result<usize, String> {
         ("execute: refuses to go live above a cap the caller set", Box::new(|| execute_refuses_to_go_live_above_the_cap(&router()?))),
         ("execute: the same trade goes through when nobody asked for a cap", Box::new(|| execute_places_the_same_trade_with_no_cap(&router()?))),
         ("execute: a throw after createOrder still reports the id and an open order", Box::new(|| a_known_order_id_survives_a_throw_after_create(&router()?))),
+        ("execute: a spend the venue DID report survives an unknown fill", Box::new(|| a_reported_spend_survives_an_unknown_fill(&router()?))),
         ("execute: a report is summarised in the assets it names, not across currencies", Box::new(|| a_report_is_summarised_in_the_assets_it_names(&router()?))),
         ("execute: atomic_ish demands the whole route pre-funded", Box::new(|| atomic_ish_demands_the_whole_route_prefunded(&router()?))),
         ("execute: best_effort demands both of its acknowledgements", Box::new(|| best_effort_demands_its_acknowledgements(&router()?))),
@@ -992,6 +993,10 @@ struct StubVenue {
     /// When true createOrder returns a RESTING order, so limit_protected enters
     /// its poll loop and the fetch_order failure below is reached.
     created_open: bool,
+    /// When set, the re-read still has no `filled` but DOES carry these
+    /// (cost, average) — the venue is certain what it charged and silent about
+    /// what it bought.
+    reread_cost: Option<(f64, f64)>,
     /// The `free` map fetch_balance reports. `None` means "richly funded", so a
     /// prefunding check passes without every other test having to declare
     /// balances it does not care about.
@@ -1007,6 +1012,7 @@ impl StubVenue {
             fail_with: None,
             omit_filled: false,
             created_open: false,
+            reread_cost: None,
             free_balances: None,
         }
     }
@@ -1059,6 +1065,10 @@ impl RouterVenue for StubVenue {
             let mut order = HashMap::new();
             order.insert("id".to_string(), Value::Str("stub-1".to_string()));
             order.insert("status".to_string(), Value::Str("closed".to_string()));
+            if let Some((cost, average)) = self.reread_cost {
+                order.insert("cost".to_string(), Value::Float(cost));
+                order.insert("average".to_string(), Value::Float(average));
+            }
             return Ok(Value::Map(order));
         }
         Err(crate::error::ExchangeError::new("ExchangeError", "stub cannot read the order back"))
@@ -1416,6 +1426,51 @@ fn atomic_ish_demands_the_whole_route_prefunded(r: &OrderRouter) -> Result<(), S
     // traded is not a refusal.
     if broke_counter.load(Ordering::SeqCst) != 0 {
         return Err("the refusal must come before the first createOrder".to_string());
+    }
+    Ok(())
+}
+
+fn a_reported_spend_survives_an_unknown_fill(r: &OrderRouter) -> Result<(), String> {
+    // The `if !filled_known` early return must come AFTER the assets and amounts
+    // are filled in, not before. inAmount is what build_unwind_plan SUBTRACTS: a
+    // buy whose venue reported a `cost` but no `filled` spent that quote for
+    // certain, and dropping it leaves the unwind plan believing the money is
+    // still on the venue and planning to route home funds that are already gone.
+    // TypeScript was the outlier here; this pins the ordering in Rust too, since
+    // the drift went unnoticed precisely because only one port had it covered.
+    let plan = one_leg_plan(r)?;
+    let mut venue = StubVenue::new("stub");
+    venue.omit_filled = true;
+    venue.reread_cost = Some((10.5, 105.0));
+    let mut venues: BTreeMap<String, Box<dyn RouterVenue>> = BTreeMap::new();
+    venues.insert("stub".to_string(), Box::new(venue));
+    let report = block_on(r.execute(&plan, &venues, &execute_options(true, "sequential")))
+        .map_err(|e| e.to_string())?;
+    let results = r.list_at(&report, "steps");
+    let step = &results[0];
+    if r.string_at(step, "status", "") != "outcome_unknown" {
+        return Err(format!("the fill is still unknown, got {step:?}"));
+    }
+    if r.bool_at(step, "filledKnown", true) {
+        return Err("filledKnown must be false".to_string());
+    }
+    // The facts the venue gave are kept.
+    if r.string_at(step, "inAsset", "") != "USDT" {
+        return Err(format!("the asset actually spent must be named, got {step:?}"));
+    }
+    if (r.number_at(step, "inAmount", 0.0) - 10.5).abs() > 1e-9 {
+        return Err(format!("the amount the venue reported spending must survive, got {step:?}"));
+    }
+    if !r.bool_at(step, "costKnown", false) {
+        return Err("costKnown must be true: the venue really did report it".to_string());
+    }
+    // The fill itself is never invented.
+    if r.number_at(step, "outAmount", -1.0) != 0.0 {
+        return Err(format!("an unknown fill must not become a number, got {step:?}"));
+    }
+    // And the halt, not the missing fields, is what protects the next hop.
+    if !r.bool_at(&report, "halted", false) || r.string_at(&report, "haltReason", "") != "outcome_unknown" {
+        return Err(format!("the route must halt on the ambiguity, got {report:?}"));
     }
     Ok(())
 }

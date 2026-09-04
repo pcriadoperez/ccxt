@@ -1846,15 +1846,6 @@ class OrderRouter {
             result['filledKnown'] = filledKnown;
             result['averageKnown'] = averageKnown;
             result['costKnown'] = costKnown;
-            if (!filledKnown) {
-                //  Refuse to reconcile on a fabricated fill. Halting on an unknown quantity is
-                //  recoverable — an operator reads the order back and resumes; sizing the next hop
-                //  from an invented number is not.
-                result['status'] = 'outcome_unknown';
-                this.recordOpenOrder (report, exchangeId, symbol, this.stringAt (result, 'orderId', ''), 'fill_unconfirmed');
-                report['ordersPlaced'] = this.numberAt (report, 'ordersPlaced', 0) + 1;
-                return result;
-            }
             if (side === 'buy') {
                 result['inAsset'] = this.stringAt (step, 'quote', '');
                 result['inAmount'] = cost;
@@ -1882,6 +1873,25 @@ class OrderRouter {
                 }
                 result['grossOutAmount'] = this.numberAt (result, 'outAmount', 0);
                 result['outAmount'] = net;
+            }
+            if (!filledKnown) {
+                //  Refuse to reconcile on a fabricated fill. Halting on an unknown quantity is
+                //  recoverable — an operator reads the order back and resumes; sizing the next hop
+                //  from an invented number is not. The halt is what prevents that, not this
+                //  return: executeSequential stops on an outcome_unknown status, so nothing
+                //  downstream is ever sized from what is recorded here.
+                //
+                //  Which is why the assets and amounts above are filled in FIRST. This block used
+                //  to return before them, leaving inAsset/inAmount empty — and inAmount is what
+                //  buildUnwindPlan SUBTRACTS. A buy whose venue reported a `cost` but no `filled`
+                //  spent that quote for certain; dropping it left the unwind plan believing the
+                //  money was still sitting on the venue and planning to route it home. "The venue
+                //  said zero" and "the venue said nothing" are different facts — the same rule the
+                //  refetch above exists for — and a cost the venue DID report is a fact.
+                result['status'] = 'outcome_unknown';
+                this.recordOpenOrder (report, exchangeId, symbol, this.stringAt (result, 'orderId', ''), 'fill_unconfirmed');
+                report['ordersPlaced'] = this.numberAt (report, 'ordersPlaced', 0) + 1;
+                return result;
             }
             if (filled <= 0) {
                 result['status'] = 'unfilled';
