@@ -111,7 +111,7 @@ export async function buildWebServer (opts: WebOptions) {
     // appeared. They are now data-confirm attributes handled in app.js, so the policy holds.
     // style-src keeps 'unsafe-inline' for now: the views carry inline style attributes, and a
     // policy that lies about what the page does is worse than one that admits it.
-    app.addHook('onSend', async (_request, reply, payload) => {
+    app.addHook('onSend', async (request, reply, payload) => {
         void reply.header('content-security-policy', [
             "default-src 'self'",
             "script-src 'self'",
@@ -126,6 +126,16 @@ export async function buildWebServer (opts: WebOptions) {
         // Redundant with frame-ancestors on a modern browser, kept for the ones without it.
         void reply.header('x-frame-options', 'DENY');
         void reply.header('referrer-policy', 'same-origin');
+        // Console pages are personalised by the session cookie, and one of them renders a
+        // freshly-minted plaintext API key. With no Cache-Control a shared proxy or the browser's
+        // own disk cache is free to keep that response and replay it — including to another user,
+        // which is what Vary: Cookie closes. Static assets are public and hot, so they keep the
+        // caching @fastify/static gives them.
+        if (request.url.indexOf(`${base}/static/`) !== 0) {
+            void reply.header('cache-control', 'no-store, no-cache, must-revalidate, private');
+            void reply.header('pragma', 'no-cache');
+            void reply.header('vary', 'Cookie');
+        }
         return payload;
     });
     await app.register(fastifyStatic, { root: STATIC_DIR, prefix: `${base}/static/` });

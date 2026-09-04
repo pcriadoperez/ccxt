@@ -241,6 +241,20 @@ export function buildMetricsRegistry (deps: MetricsDeps): Registry {
         },
     });
 
+    // Health snapshots drop for a different reason than books do: a flapping venue emits one per
+    // error, so this rising while books are steady points at an exchange, not at capacity.
+    new Gauge({
+        name: 'order_router_shard_health_dropped_total',
+        help: 'Health snapshots dropped because the IPC pipe was full. Rising means a venue is flapping.',
+        labelNames: ['shard'],
+        registers: [registry],
+        collect () {
+            for (const [shard, h] of deps.loopRegistry.entries()) {
+                if (h.droppedHealth !== undefined) this.set({ shard }, h.droppedHealth);
+            }
+        },
+    });
+
     new Gauge({
         name: 'order_router_shard_event_loop_lag_p99_ms',
         help: 'p99 event loop delay per shard, milliseconds.',

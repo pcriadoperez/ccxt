@@ -31,28 +31,6 @@ re-files them.
 Ordered by severity. The number is the item's index in the original audit set — keep it, so
 that a reference in a commit message stays meaningful.
 
-### 10. Docker image cannot build: the Dockerfile never COPYs openapi/ or scripts/, yet the README documents `docker compose up --build` as a way to run the service
-
-**Severity:** high &nbsp;·&nbsp; **estimated effort:** minutes
-
-**Claimed evidence**
-
-```
-order-router/Dockerfile:3-7 copies only `package.json package-lock.json`, `tsconfig.json` and `src`:
-```
-COPY package.json package-lock.json ./
-RUN npm ci --no-audit --no-fund
-COPY tsconfig.json ./
-COPY src ./src
-RUN npm run build
-```
-`npm run build` is `tsc -p tsconfig.json && npm run copy-assets &
-```
-
-**Suggested fix** — a suggestion, not a verdict; verify before following it.
-
-Add `COPY openapi ./openapi` and `COPY scripts ./scripts` to the build stage, add a `.dockerignore` (node_modules, dist), add `USER node` to the runtime stage and a `HEALTHCHECK` hitting `/ready`. If containers are genuinely not the deployment path, delete Dockerfile/docker-compose.yml and the READM
-
 ### 11. A missing ORDER_ROUTER_AUDIT_LOG_FILE kills the key projector, so dashboard-minted keys never authenticate and revocations never take effect
 
 **Severity:** high &nbsp;·&nbsp; **estimated effort:** hours
@@ -102,23 +80,6 @@ README.md:610-650 documents `server_name router.example.com;` with `location / {
 **Suggested fix** — a suggestion, not a verdict; verify before following it.
 
 Commit the actual production server block (with the `/router/`, `/router/api/`, `/router/api/stream/` and `/metrics` locations and the `proxy_read_timeout` that ORDER_ROUTER_WS_IDLE_TIMEOUT_MS is calibrated against) into order-router/deploy/nginx/, and have live-integration.mjs open a real WS to `/r
-
-### 16. The one-time API-key reveal page and every authenticated console page are served with no Cache-Control, so a live `or_live_…` key is cacheable
-
-**Severity:** high &nbsp;·&nbsp; **estimated effort:** minutes
-
-**Claimed evidence**
-
-```
-`src/web/server.ts:114-130` is the only response-header hook and it sets CSP, `x-content-type-options`, `x-frame-options` and `referrer-policy` — and nothing about caching:
-
-    app.addHook('onSend', async (_request, reply, payload) => {
-        void reply.header('content-security-policy', [...].joi
-```
-
-**Suggested fix** — a suggestion, not a verdict; verify before following it.
-
-Add `Cache-Control: no-store` (plus `Pragma: no-cache` and `Vary: Cookie`) in the same onSend hook for every response that is not a static asset — at minimum for any request carrying a session cookie and for the reveal redirect target.
 
 ### 17. The documented way to revoke the shared ORDER_ROUTER_API_KEY cannot work: the key file is a projection that never contains revoked rows and is rewritten every 5 s
 
@@ -174,28 +135,6 @@ The shard path does the opposite, under a comment naming this exact fai
 **Suggested fix** — a suggestion, not a verdict; verify before following it.
 
 Extract the shard's bounded-concurrency start loop into a shared helper and use it from `startConnectors`; pass `config.maxBookDepth` as the 8th argument in index.ts:28-36; if single-process discovery mode is meant to be supported at 76-exchange scale, refuse to boot (or warn loudly) when `discoverA
-
-### 20. IPC backpressure covers only `book` messages; health messages bypass it and their rate is proportional to the failure rate
-
-**Severity:** high &nbsp;·&nbsp; **estimated effort:** minutes
-
-**Claimed evidence**
-
-```
-order-router/src/sharding/shardWorker.ts:28-41:
-```
-function send (message: ShardToParentMessage): void {
-    if (process.send === undefined) return;
-    if (message.type === 'book' && pipeFull) {
-        droppedBooks += 1;
-        return;
-    }
-    const accepted = process.send(message, undefined,
-```
-
-**Suggested fix** — a suggestion, not a verdict; verify before following it.
-
-Apply the same `pipeFull` gate to `health` (it is also an idempotent snapshot — the 2s flush at shardWorker.ts:62-66 resends it anyway), or coalesce health into the existing timer instead of emitting per record-call. At minimum stop resending the whole `abandonedSymbols` array on every error.
 
 ### 21. Partitions are only ever created for the current and next month — replaying any older audit line hard-fails the batch and stalls ingestion forever
 
@@ -1231,6 +1170,9 @@ Kept so the same ground is not re-covered, and so a `wontfix` is not silently re
 | 7 | blocker | Rust accepts the atomic_ish strategy, never checks pre-funding, and then skips the downstream resize on the strength of that unperformed check | **fixed** — 36e144bf assert_prefunded ported to Rust with a selftest |
 | 8 | blocker | limit_protected: any throw after createOrder reports the step as `failed` with zero fill, leaves the order live and uncancelled, and makes the residual invisible to buildUnwindPlan | **fixed** — de933e55 known orderId -> status outcome_unknown, all six ports |
 | 9 | blocker | Every production deploy job is gated on a fork's repo name — merging this PR upstream silently and permanently stops deploys to the live service | **wontfix** — af4ac591 deliberate: a fork must not deploy to this box. Recorded in README Known gaps so a future upstream merge changes the gate in the same commit. |
+| 10 | high | Docker image cannot build: the Dockerfile never COPYs openapi/ or scripts/, yet the README documents `docker compose up --build` as a way to run the service | **fixed** — build stage COPYs openapi/ and scripts/, takes the commit as a build arg, drops to USER node and probes /ready; a .dockerignore added. src/packaging.test.ts derives the required dirs from the build script itself, so a new asset dir fails there rather than in a terminal. |
+| 16 | high | The one-time API-key reveal page and every authenticated console page are served with no Cache-Control, so a live `or_live_…` key is cacheable | **fixed** — the onSend hook now sets `no-store, no-cache, must-revalidate, private`, `Pragma: no-cache` and `Vary: Cookie` on everything outside `/static/`, which keeps its own caching. |
+| 20 | high | IPC backpressure covers only `book` messages; health messages bypass it and their rate is proportional to the failure rate | **fixed** — the send path moved to src/sharding/ipcSend.ts (testable without forking) and the pipeFull gate now covers `health`, which is an idempotent snapshot re-flushed every 2s. Drops are counted separately and exported as order_router_shard_health_dropped_total: a rising figure points at a flapping venue, not at capacity. |
 | 14 | high | Attacker-controlled request.ip is inserted into an `inet` column inside the ingest transaction; one crafted header wedges audit ingestion permanently | **fixed** — 6f88bfb3 same fix as blocker 4 |
 | 15 | high | The published dev API key `dev-local-key-change-me` is enabled in production whenever NODE_ENV is unset, and the documented systemd unit never sets it | **fixed** — 6f88bfb3 same fix as blocker 0 |
 | 25 | high | /stream/route produces zero audit records and zero HTTP metrics — streaming usage is invisible to billing and to Prometheus | **fixed** — cc1501bf audit emission shared by GET/POST /route and every pushed frame; unroutable counter with it |

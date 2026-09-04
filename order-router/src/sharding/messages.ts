@@ -49,6 +49,10 @@ export interface ShardLoopMessage {
     // Books dropped because the IPC pipe was full. A steadily climbing figure means the shard is
     // producing faster than the parent can drain — which is a capacity signal, not an error.
     droppedBooks: number;
+    // Health snapshots dropped for the same reason. Split from droppedBooks because they mean
+    // different things: books drop when the shard out-produces the parent, health drops when a
+    // venue is flapping, and confusing one for the other misreads the incident.
+    droppedHealth: number;
 }
 
 export type ShardToParentMessage =

@@ -97,6 +97,7 @@ export function startShards (
                         externalBytes: message.externalBytes,
                         sentBooks: message.sentBooks,
                         droppedBooks: message.droppedBooks,
+                        droppedHealth: message.droppedHealth,
                     });
                     break;
             }

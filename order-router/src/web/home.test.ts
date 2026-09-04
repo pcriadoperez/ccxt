@@ -158,3 +158,27 @@ test('X-Forwarded-For is only believed when the deployment says to believe it', 
     assert.equal(trusting.lastIp(), '9.9.9.9', 'behind a real proxy the header is the client');
     await trusting.app.close();
 });
+
+test('console responses are not cacheable, static assets still are', async () => {
+    // A console page can carry a freshly-minted `or_live_…` key in its body, and every
+    // authenticated page is personalised by the session cookie. With no Cache-Control at all, a
+    // shared proxy — or the browser's own back/forward cache and disk cache — is free to store
+    // that response and hand it to the next request. `Vary: Cookie` is the second half: without
+    // it a cache may serve one user's console page to another.
+    const { app } = await buildTestConsole();
+    for (const url of [ '/', '/login', '/signup' ]) {
+        const response = await app.inject({ method: 'GET', url });
+        const cc = String(response.headers['cache-control']);
+        assert.ok(cc.indexOf('no-store') !== -1, `${url} is cacheable: ${cc}`);
+        assert.equal(response.headers['pragma'], 'no-cache', url);
+        assert.ok(String(response.headers['vary']).toLowerCase().indexOf('cookie') !== -1,
+            `${url} does not vary on the session cookie: ${String(response.headers['vary'])}`);
+    }
+    // Static assets are public, immutable-ish and hot: making them uncacheable would be a
+    // self-inflicted performance regression, so the rule has to be scoped.
+    const asset = await app.inject({ method: 'GET', url: '/static/styles.css' });
+    assert.equal(asset.statusCode, 200);
+    assert.equal(String(asset.headers['cache-control'] ?? '').indexOf('no-store'), -1,
+        'static assets should stay cacheable');
+    await app.close();
+});
