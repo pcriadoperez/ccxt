@@ -8,6 +8,7 @@ import { auditLogger as moduleAuditLogger } from '../logger.js';
 import type { OrderBookCache } from '../cache/orderBookCache.js';
 import type { FeeRegistry } from '../cache/feeRegistry.js';
 import { computeRoute } from '../routing/route.js';
+import type { RouteRequest, RouteOptions } from '../routing/route.js';
 import { candidatePairs } from '../routing/market.js';
 import { parseRouteQuery, type RouteQuery } from './routeQuery.js';
 import { createHash, randomUUID } from 'node:crypto';
@@ -409,6 +410,78 @@ export async function buildServer (
     // pair, which is the single most error-prone part of the old symbol+side contract.
     // The handler is shared by GET /route and POST /route. They differ in exactly one thing: where
     // the parameters came from.
+    // Emits the route audit record. Shared by GET/POST /route and by every frame the
+    // /stream/route socket pushes: a streamed recommendation is a recommendation, and it used to
+    // reach the caller without ever reaching the audit trail — so a dispute over a route a client
+    // acted on was answerable only if they had happened to use the REST endpoint. `requestId` is
+    // per-frame on the streaming path, which is what keeps two pushes on one socket distinguishable.
+    const auditRouteRecommendation = (
+        result: ReturnType<typeof computeRoute>,
+        req: RouteRequest,
+        opts: RouteOptions,
+        record: ReturnType<typeof resolveKey>,
+        requestId: string,
+    ): void => {
+        // Audit record: one line per recommendation, keyed by requestId. This is the trail
+        // that makes a future billing dispute or "why did you route it there?" answerable
+        // after the fact, so it logs the decision and its inputs, not just the outcome.
+        audit.info({
+            // A stable event name so queries grep on a field rather than a message string.
+            event: 'route_recommendation',
+            // reqId, under exactly the name the access line uses. The two events describe one
+            // request and the ingester pairs them on this field; naming it differently here
+            // silently produced request rows with no routing detail at all.
+            reqId: requestId,
+            keyUuid: record?.keyUuid ?? null,
+            userId: record?.userId ?? null,
+            // Restated explicitly rather than relying on the child bindings: this is the record
+            // a billing or "why did you route it there?" dispute is settled from, and it should
+            // be self-contained.
+            keyId: record?.id ?? null,
+            keyName: record?.name ?? null,
+            requestId,
+            calculatedAt: result.calculatedAt,
+            from: result.from, to: result.to, exactSide: result.exactSide,
+            requestedAmount: result.requestedAmount,
+            strategy: result.strategy, includeFees: result.includeFees,
+            maxVenues: opts.maxVenues, minLegNotional: opts.minLegNotional,
+            exchangesFilter: result.exchangesFilter, certifiedOnly: result.certifiedOnly,
+            bridges: req.bridges,
+            hops: result.hops.map((h) => ({
+                pair: h.pair, side: h.side, in: h.amountIn, out: h.amountOut,
+                legs: h.legs.map((l) => ({ ex: l.exchangeId, amt: l.amount, eff: l.effectivePrice })),
+                fee: h.feeCost, feeCcy: h.feeCurrency, fresh: h.freshVenueCount, impactBps: h.impactBps,
+            })),
+            // The losing candidates, so "why this market?" is answerable after the fact — the
+            // same reason quotes[] makes "why this venue?" answerable.
+            pathsConsidered: result.pathsConsidered.map((p) => ({
+                pairs: p.pairs, out: p.amountOut, score: p.score, chosen: p.chosen,
+            })),
+            amountIn: result.amountIn, amountOut: result.amountOut,
+            effectiveRate: result.effectiveRate, referenceRate: result.referenceRate,
+            impactBps: result.impactBps,
+            fullyFillable: result.fullyFillable, fillRatio: result.fillRatio,
+            savingVsBestSingleBps: result.savingVsBestSingleBps,
+            unroutableReason: result.unroutableReason,
+            unroutableHopIndex: result.unroutableHopIndex,
+            requireFullFill: opts.requireFullFill,
+            // The COUNT, the MODE and a fingerprint — never the amounts. What a dispute needs
+            // to answer is "was this route computed against a wallet, which one, and how big",
+            // and the fingerprint settles the middle question without the record itself
+            // becoming a copy of the caller's portfolio.
+            balancesApplied: result.balancesApplied !== null,
+            balancesHash: balancesFingerprint(result.balancesApplied),
+            balanceEntryCount: result.balanceEntryCount,
+            balanceMode: result.balanceMode,
+            stalenessPenaltyBps: result.stalenessPenaltyBps,
+            hopPenaltyBps: result.hopPenaltyBps,
+            staleBookMs: result.staleBookMs,
+        }, 'route recommendation');
+        if (result.unroutableReason !== null && result.unroutableReason !== undefined) {
+            unroutable.inc({ reason: result.unroutableReason });
+        }
+    };
+
     const handleRoute = async (
         params: RouteQuery,
         request: FastifyRequest,
@@ -431,65 +504,7 @@ export async function buildServer (
 
             const result = computeRoute(cache, feeRegistry, parsed.req, parsed.opts);
 
-            // Audit record: one line per recommendation, keyed by requestId. This is the trail
-            // that makes a future billing dispute or "why did you route it there?" answerable
-            // after the fact, so it logs the decision and its inputs, not just the outcome.
-            audit.info({
-                // A stable event name so queries grep on a field rather than a message string.
-                event: 'route_recommendation',
-                // reqId, under exactly the name the access line uses. The two events describe one
-                // request and the ingester pairs them on this field; naming it differently here
-                // silently produced request rows with no routing detail at all.
-                reqId: requestId,
-                keyUuid: resolveKey(store, request)?.keyUuid ?? null,
-                userId: resolveKey(store, request)?.userId ?? null,
-                // Restated explicitly rather than relying on the child bindings: this is the record
-                // a billing or "why did you route it there?" dispute is settled from, and it should
-                // be self-contained.
-                keyId: resolveKey(store, request)?.id ?? null,
-                keyName: resolveKey(store, request)?.name ?? null,
-                requestId,
-                calculatedAt: result.calculatedAt,
-                from: result.from, to: result.to, exactSide: result.exactSide,
-                requestedAmount: result.requestedAmount,
-                strategy: result.strategy, includeFees: result.includeFees,
-                maxVenues: parsed.opts.maxVenues, minLegNotional: parsed.opts.minLegNotional,
-                exchangesFilter: result.exchangesFilter, certifiedOnly: result.certifiedOnly,
-                bridges: parsed.req.bridges,
-                hops: result.hops.map((h) => ({
-                    pair: h.pair, side: h.side, in: h.amountIn, out: h.amountOut,
-                    legs: h.legs.map((l) => ({ ex: l.exchangeId, amt: l.amount, eff: l.effectivePrice })),
-                    fee: h.feeCost, feeCcy: h.feeCurrency, fresh: h.freshVenueCount, impactBps: h.impactBps,
-                })),
-                // The losing candidates, so "why this market?" is answerable after the fact — the
-                // same reason quotes[] makes "why this venue?" answerable.
-                pathsConsidered: result.pathsConsidered.map((p) => ({
-                    pairs: p.pairs, out: p.amountOut, score: p.score, chosen: p.chosen,
-                })),
-                amountIn: result.amountIn, amountOut: result.amountOut,
-                effectiveRate: result.effectiveRate, referenceRate: result.referenceRate,
-                impactBps: result.impactBps,
-                fullyFillable: result.fullyFillable, fillRatio: result.fillRatio,
-                savingVsBestSingleBps: result.savingVsBestSingleBps,
-                unroutableReason: result.unroutableReason,
-                unroutableHopIndex: result.unroutableHopIndex,
-                requireFullFill: parsed.opts.requireFullFill,
-                // The COUNT, the MODE and a fingerprint — never the amounts. What a dispute needs
-                // to answer is "was this route computed against a wallet, which one, and how big",
-                // and the fingerprint settles the middle question without the record itself
-                // becoming a copy of the caller's portfolio.
-                balancesApplied: result.balancesApplied !== null,
-                balancesHash: balancesFingerprint(result.balancesApplied),
-                balanceEntryCount: result.balanceEntryCount,
-                balanceMode: result.balanceMode,
-                stalenessPenaltyBps: result.stalenessPenaltyBps,
-                hopPenaltyBps: result.hopPenaltyBps,
-                staleBookMs: result.staleBookMs,
-            }, 'route recommendation');
-
-            if (result.unroutableReason !== null && result.unroutableReason !== undefined) {
-                unroutable.inc({ reason: result.unroutableReason });
-            }
+            auditRouteRecommendation(result, parsed.req, parsed.opts, resolveKey(store, request), requestId);
 
             if (result.unroutableReason === 'no_market') {
                 // No pair and no bridge path exists at all — that is a request-level problem the
@@ -675,8 +690,16 @@ export async function buildServer (
                 if (socket.bufferedAmount > WS_MAX_BUFFERED_BYTES) return;
                 // A fresh id per push: each frame is its own recommendation, and an audit trail
                 // that reused one id across a long-lived stream could not distinguish them.
-                socket.send(JSON.stringify(
-                    computeRoute(cache, feeRegistry, req, { ...opts, requestId: randomUUID() })));
+                const frameId = randomUUID();
+                const pushed = computeRoute(cache, feeRegistry, req, { ...opts, requestId: frameId });
+                socket.send(JSON.stringify(pushed));
+                // Audited on the same terms as a REST recommendation. A streamed answer is an
+                // answer the caller can act on, and it used to reach them without ever reaching
+                // the audit trail or the unroutable counter — so a dispute over a streamed route
+                // had no record to settle it, and a streaming-only outage was invisible on the
+                // dashboards. One record per PUSHED frame, not per book update: pushes are already
+                // floored by wsMinPushIntervalMs, so this is bounded at 1/floor per socket.
+                auditRouteRecommendation(pushed, req, opts, record, frameId);
                 syncWatched();
             }
 

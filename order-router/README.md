@@ -430,7 +430,7 @@ makes failed auth greppable as a first-class thing rather than as an absent fiel
 | Event | Emitted on |
 |---|---|
 | `request` | every request, including `/health`, 401s and 404s |
-| `route_recommendation` | every `/route` answer, self-contained for a billing or "why there?" dispute |
+| `route_recommendation` | every `/route` answer **and every frame `/stream/route` pushes**, self-contained for a billing or "why there?" dispute. On a stream each pushed frame is its own record under its own `requestId`, matching the `requestId` in the frame the caller received; pushes are floored by `ORDER_ROUTER_WS_MIN_PUSH_INTERVAL_MS`, so the rate is bounded at 1/floor per socket |
 | `stream_open` / `stream_close` | WS lifecycle, with `durationMs` |
 
 ```bash

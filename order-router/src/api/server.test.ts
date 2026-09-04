@@ -1372,3 +1372,66 @@ test('balances sent in the body appear in no log line, because they are in no UR
     assert.equal(response.raw.req.url, '/route', 'the request line carries no parameters at all');
     await app.close();
 });
+
+test('a streamed recommendation reaches the audit trail and the unroutable counter', async () => {
+    // The audit record is what settles "why did you route it there?" after the fact, and it was
+    // written only by the REST handler. A caller on /stream/route got recommendations it could act
+    // on that left no record at all, and a streaming-only outage never touched the unroutable
+    // counter either — so the dashboards read healthy while every pushed frame said it could not
+    // route. Asserted on the serialised log lines, since that is the artefact the ingester reads.
+    const { WebSocket } = await import('ws');
+    const lines: string[] = [];
+    const capturing = pino({ level: 'info' }, { write: (line: string) => { lines.push(line); } });
+    const previous = process.env['ORDER_ROUTER_API_KEY'];
+    process.env['ORDER_ROUTER_API_KEY'] = TEST_API_KEY;
+    const cache = new OrderBookCache();
+    cache.setBook(book());
+    const app = await buildServer(cache, new FeeRegistry(), capturing, { rateLimitMax: 100000 });
+    try {
+        await app.listen({ port: 0, host: '127.0.0.1' });
+        const address = app.server.address();
+        const port = typeof address === 'object' && address ? address.port : 0;
+
+        const frames: Record<string, unknown>[] = [];
+        const ws = new WebSocket(`ws://127.0.0.1:${port}/stream/route?from=USDT&to=BTC&amountIn=300`, {
+            headers: { 'x-api-key': TEST_API_KEY },
+        });
+        ws.on('message', (d: Buffer) => frames.push(JSON.parse(d.toString())));
+        await new Promise<void>((resolve, reject) => {
+            ws.on('open', () => resolve());
+            ws.on('error', reject);
+            setTimeout(() => reject(new Error('never opened')), 3000);
+        });
+        await new Promise((r) => setTimeout(r, 250));
+        assert.ok(frames.length >= 1, 'a first frame must arrive on connect');
+
+        const records = lines.map((l) => JSON.parse(l)).filter((l) => l.event === 'route_recommendation');
+        assert.ok(records.length >= 1, `a pushed frame must be audited, got ${lines.join('\n')}`);
+        const record = records[0];
+        //  Self-contained, exactly like the REST record: the decision AND its inputs.
+        assert.equal(record.from, 'USDT');
+        assert.equal(record.to, 'BTC');
+        assert.equal(record.requestedAmount, 300);
+        assert.ok(Array.isArray(record.hops), 'the chosen path is recorded');
+        assert.ok(Array.isArray(record.pathsConsidered), 'and the losing candidates with it');
+        //  The frame the caller received and the record written about it must name the same
+        //  recommendation, or the trail cannot be joined back to what was actually served.
+        assert.equal(record.requestId, frames[0]!['requestId'],
+            'the audit record carries the id of the frame it describes');
+
+        //  A second push gets its own record under its own id — a stream is many recommendations,
+        //  not one.
+        const before = records.length;
+        cache.setBook(book({ bids: [{ price: 90, amount: 1000 }], asks: [{ price: 91, amount: 1000 }] }));
+        await new Promise((r) => setTimeout(r, 300));
+        const after = lines.map((l) => JSON.parse(l)).filter((l) => l.event === 'route_recommendation');
+        assert.ok(after.length > before, 'each pushed frame is its own audited recommendation');
+        assert.notEqual(after[after.length - 1].requestId, record.requestId,
+            'and carries a distinct id, so two pushes on one socket stay distinguishable');
+        ws.terminate();
+    } finally {
+        await app.close();
+        if (previous === undefined) delete process.env['ORDER_ROUTER_API_KEY'];
+        else process.env['ORDER_ROUTER_API_KEY'] = previous;
+    }
+});
