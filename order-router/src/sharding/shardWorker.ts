@@ -10,6 +10,13 @@ import { createIpcSender, type IpcStats } from './ipcSend.js';
 
 installCrashHandlers(logger, 'shard');
 
+// Registered at module load, NOT at the end of runShard. A shard orphaned DURING startup — the
+// parent died, or rebalanced away, while connectors were still coming up — used to have no
+// disconnect handler yet, so it never exited: it kept its sockets, kept its heap, and answered to
+// nobody for the life of the box. Startup is the longest window in the process's life and was the
+// only one unprotected.
+process.on('disconnect', () => process.exit(0));
+
 const HEALTH_FLUSH_MS = 2000;
 
 // Backpressure and the drop rules for idempotent snapshots live in ipcSend.ts, where they can be
@@ -98,7 +105,6 @@ async function runShard (assignments: ShardInitMessage['assignments']): Promise<
         }
     }));
 
-    process.on('disconnect', () => process.exit(0));
 }
 
 process.on('message', (message: ShardInitMessage) => {

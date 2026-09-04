@@ -146,8 +146,15 @@ export async function buildWebServer (opts: WebOptions) {
     const sessionOf = async (request: { headers: Record<string, unknown> }): Promise<{
         token: string | undefined; user: SessionUser | undefined;
     }> => {
-        const token = readCookie(request as never, SESSION_COOKIE)
-            ?? readCookie(request as never, 'router_session');
+        // Accept exactly the cookie the setter writes for this deployment. Accepting the
+        // non-prefixed `router_session` in a secure deployment defeats the whole point of the
+        // __Host- prefix: the prefix is what a browser enforces (Secure, Path=/, no Domain), so a
+        // sibling subdomain that can set a plain cookie could otherwise hand this app a session
+        // name it honours. In a plain-http deployment the prefix cannot be used at all, so there
+        // the fallback name IS the name.
+        const token = secureCookies
+            ? readCookie(request as never, SESSION_COOKIE)
+            : readCookie(request as never, 'router_session');
         return { token, user: await loadSession(pool, token) };
     };
 

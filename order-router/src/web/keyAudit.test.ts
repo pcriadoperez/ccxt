@@ -154,3 +154,32 @@ test('the fixture really is authenticated', async () => {
     assert.equal(lookup!.params[0], createHash('sha256').update(SESSION, 'utf8').digest('hex'));
     await app.close();
 });
+
+test('a secure deployment honours only the __Host- cookie', async () => {
+    // The non-prefixed name was accepted in both modes, which defeats the prefix: the browser
+    // enforces Secure/Path=/no-Domain on `__Host-` cookies, so a sibling subdomain that can set a
+    // plain `router_session` could hand this app a session name it honoured.
+    const { pool, calls } = scriptedPool();
+    const app = await buildWebServer({
+        pool: pool as never, logger: silent, base: '', keysFile: tmpKeysFile(),
+        csrfSecret: CSRF_SECRET, secureCookies: true, allowedOrigins: [],
+    });
+    await app.inject({ method: 'GET', url: '/dashboard', headers: { cookie: `router_session=${SESSION}` } });
+    assert.equal(calls.some((c) => c.sql.indexOf('FROM sessions s JOIN users u') !== -1), false,
+        'the plain cookie must not even be looked up under secure cookies');
+
+    await app.inject({ method: 'GET', url: '/dashboard', headers: { cookie: `__Host-router_session=${SESSION}` } });
+    assert.ok(calls.some((c) => c.sql.indexOf('FROM sessions s JOIN users u') !== -1),
+        'the prefixed cookie is the session in a secure deployment');
+    await app.close();
+});
+
+test('a plain-http deployment honours only the un-prefixed cookie', async () => {
+    // The prefix cannot be used without TLS, so there the fallback name IS the name — and the
+    // prefixed one, which no browser would have set here, is not a session.
+    const { pool, calls } = scriptedPool();
+    const app = await console_(pool);
+    await app.inject({ method: 'GET', url: '/dashboard', headers: { cookie: `__Host-router_session=${SESSION}` } });
+    assert.equal(calls.some((c) => c.sql.indexOf('FROM sessions s JOIN users u') !== -1), false);
+    await app.close();
+});

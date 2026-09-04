@@ -172,10 +172,16 @@ function jittered (ms: number): number {
 // RateLimitExceeded and, importantly, InvalidNonce — is by definition retryable. The message
 // patterns survive only as a fallback for errors thrown before ccxt wraps them, and no longer
 // carry the two that produced every false positive above (/authentication/ and /is invalid/).
-const PERMANENT_ERROR_PATTERNS = [
+// Credential-shaped: the venue is telling us it has no way to serve this caller, ever, and no
+// amount of retrying supplies a key that was never configured.
+const MISSING_CREDENTIAL_PATTERNS = [
     /requires .*credential/i,
     /requires .*apiKey/i,
     /apiKey.*required/i,
+];
+
+const PERMANENT_ERROR_PATTERNS = [
+    ...MISSING_CREDENTIAL_PATTERNS,
     /not supported/i,
     /does not have/i,
 ];
@@ -188,15 +194,26 @@ export function isPermanentError (err: unknown): boolean {
     }
     if (err instanceof ccxt.NotSupported
         || err instanceof ccxt.BadSymbol
-        || err instanceof ccxt.ArgumentsRequired
-        || err instanceof ccxt.AuthenticationError) {
+        || err instanceof ccxt.ArgumentsRequired) {
         return true;
+    }
+    const message = err instanceof Error ? err.message : String(err);
+    if (err instanceof ccxt.AuthenticationError) {
+        // NOT permanent by class. AuthenticationError is where the two failures this function was
+        // rewritten to stop mis-classifying actually land: okx answers clock drift with
+        // {"code":"50113","msg":"Invalid Sign"}, and a handshake that lost a race reads the same
+        // way — both recover on the next attempt. Classifying the whole class as permanent
+        // reinstated exactly the false positive that dropping /authentication/ from the message
+        // patterns removed, and the cost is the venue leaving routing for the life of the process.
+        //
+        // A missing credential is the one genuinely unrecoverable case, and it says so in the
+        // message: no retry conjures a key that was never configured.
+        return MISSING_CREDENTIAL_PATTERNS.some((re) => re.test(message));
     }
     if (err instanceof ccxt.BaseError) {
         // A plain ExchangeError or BadRequest is not proof of anything permanent; retry it.
         return false;
     }
-    const message = err instanceof Error ? err.message : String(err);
     return PERMANENT_ERROR_PATTERNS.some((re) => re.test(message));
 }
 

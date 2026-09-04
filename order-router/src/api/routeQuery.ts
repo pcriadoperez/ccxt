@@ -27,6 +27,19 @@ export interface RouteQuery {
     balanceMode?: string;
 }
 
+// Caps for the two caller-supplied lists, matching the shape `balances` uses. Generous enough that
+// no real caller meets them: there are ~76 exchanges, and a bridge list beyond a handful of assets
+// is a search-space explosion rather than a query.
+const MAX_LIST_CHARS = 1024;
+const MAX_LIST_ENTRIES = 128;
+
+function listTooBig (name: string, raw: string): string | undefined {
+    if (raw.length > MAX_LIST_CHARS) return `${name} must not exceed ${MAX_LIST_CHARS} characters`;
+    const count = raw.split(',').filter((e) => e.trim().length > 0).length;
+    if (count > MAX_LIST_ENTRIES) return `${name} must not exceed ${MAX_LIST_ENTRIES} entries`;
+    return undefined;
+}
+
 // Refusing balances on a socket is honest; silently pricing holdings the caller traded away half an
 // hour ago is not. A stream is held open for minutes and there is no message channel on it to
 // update them — /stream/route registers no socket.on('message') — so there is no version of this
@@ -132,12 +145,27 @@ export function parseRouteQuery (
 
     // An explicitly empty list (`exchanges=`) is treated as "no venues", not "all venues".
     // Silently widening an empty allowlist would be the opposite of what the caller asked.
+    //
+    // Both lists are bounded the way `balances` already is, and for the same reason: they are
+    // caller-controlled, they are echoed verbatim into the audit record, and `bridges` is re-walked
+    // on every push of a stream that can live for minutes. Nothing capped either one, so a single
+    // request could pin a megabyte of caller-chosen text into every audit line it produced and make
+    // each streamed update proportional to it. Rejected rather than truncated: silently routing
+    // against a different list than the one asked for is the failure mode this file exists to
+    // avoid. The caps are far above any real request — there are ~76 exchanges and a handful of
+    // sensible bridge assets.
     let exchanges: Set<string> | undefined;
     if (query.exchanges !== undefined) {
+        const bad = listTooBig('exchanges', query.exchanges);
+        if (bad !== undefined) return fail(bad);
         exchanges = new Set(query.exchanges.split(',').map((e) => e.trim()).filter((e) => e.length > 0));
     }
 
     // `bridges=` (explicitly empty) disables bridging entirely — direct markets only.
+    if (query.bridges !== undefined) {
+        const bad = listTooBig('bridges', query.bridges);
+        if (bad !== undefined) return fail(bad);
+    }
     const bridges = query.bridges === undefined
         ? DEFAULT_BRIDGES
         : query.bridges.split(',').map((b) => b.trim().toUpperCase()).filter((b) => b.length > 0);

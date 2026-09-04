@@ -123,3 +123,34 @@ test('balances rides alongside the existing options rather than replacing any', 
     assert.equal(opts.balanceMode, 'require');
     assert.equal(opts.balances!.entryCount, 1);
 });
+
+test('exchanges and bridges are bounded, rejecting rather than truncating', () => {
+    // Both are caller-controlled, both are echoed verbatim into the audit record, and `bridges` is
+    // re-walked on every push of a stream that can live for minutes. Neither was capped, so one
+    // request could pin a megabyte of caller-chosen text into every audit line it produced.
+    const list = (n: number, prefix: string) =>
+        Array.from({ length: n }, (_, i) => `${prefix}${i}`).join(',');
+
+    assert.ok(parse({ ...BASE, exchanges: list(128, 'ex') }).ok, '128 entries is within the cap');
+    assert.equal(errorFor({ ...BASE, exchanges: list(129, 'ex') }),
+        'exchanges must not exceed 128 entries');
+    assert.equal(errorFor({ ...BASE, bridges: list(129, 'B') }),
+        'bridges must not exceed 128 entries');
+
+    // The character cap catches the other shape: few entries, each enormous.
+    assert.equal(errorFor({ ...BASE, exchanges: 'x'.repeat(1025) }),
+        'exchanges must not exceed 1024 characters');
+    assert.equal(errorFor({ ...BASE, bridges: 'B'.repeat(1025) }),
+        'bridges must not exceed 1024 characters');
+});
+
+test('the ordinary lists still parse, and the empty forms keep their meanings', () => {
+    // The caps must not disturb what these parameters mean: an empty allowlist is "no venues", and
+    // an empty bridge list is "direct markets only".
+    assert.deepEqual([ ...optsFor({ ...BASE, exchanges: 'binance,kraken' }).exchanges! ],
+        [ 'binance', 'kraken' ]);
+    assert.equal(optsFor({ ...BASE, exchanges: '' }).exchanges!.size, 0);
+    const parsed = parse({ ...BASE, bridges: '' });
+    assert.ok(parsed.ok);
+    assert.deepEqual(parsed.req.bridges, []);
+});

@@ -75,7 +75,8 @@ test('permanent failures are recognised so they are abandoned, not retried forev
     assert.equal(isPermanentError(new Error('cex requires "apiKey" credential')), true);
     assert.equal(isPermanentError(new Error('luno requires "apiKey" credential')), true);
     assert.equal(isPermanentError(new Error('someex watchOrderBook() is not supported yet')), true);
-    assert.equal(isPermanentError(new ccxt.AuthenticationError('authentication failed')), true);
+    // AuthenticationError is permanent only when the message says a credential is MISSING.
+    assert.equal(isPermanentError(new ccxt.AuthenticationError('cex requires "apiKey" credential')), true);
     assert.equal(isPermanentError(new ccxt.NotSupported('watchOrderBook')), true);
     assert.equal(isPermanentError(new ccxt.BadSymbol('no such market')), true);
     assert.equal(isPermanentError(new ccxt.ArgumentsRequired('symbol is required')), true);
@@ -92,6 +93,12 @@ test('a recoverable failure is never mistaken for a permanent one', () => {
     assert.equal(isPermanentError(new ccxt.ExchangeNotAvailable('bybit authentication in progress, please retry')), false);
     assert.equal(isPermanentError(new ccxt.RateLimitExceeded('too many requests')), false);
     assert.equal(isPermanentError(new ccxt.OnMaintenance('scheduled maintenance')), false);
+    // AuthenticationError is where the two remaining false positives landed. okx answers clock
+    // drift with an invalid-signature error, and a handshake that lost a race reads the same way;
+    // both recover on the next attempt. Classifying the class as permanent reinstated exactly the
+    // mistake that dropping /authentication/ from the message patterns removed.
+    assert.equal(isPermanentError(new ccxt.AuthenticationError('okx {"code":"50113","msg":"Invalid Sign"} signature is invalid')), false);
+    assert.equal(isPermanentError(new ccxt.AuthenticationError('authentication failed')), false);
     // A plain ExchangeError proves nothing permanent, so it retries rather than abandoning.
     assert.equal(isPermanentError(new ccxt.ExchangeError('okx {"code":"50113","msg":"Invalid Sign"} signature is invalid')), false);
     assert.equal(isPermanentError(new ccxt.BadRequest('malformed subscribe frame')), false);
