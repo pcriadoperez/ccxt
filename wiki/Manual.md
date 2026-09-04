@@ -8605,18 +8605,28 @@ an ordering guarantee, not a performance promise — it is what lets five very d
 honour the same words. Two legs of one hop that land on the same exchange instance never have two
 orders in flight against that instance's throttle and nonce state.
 
-### The 25 USD cap
+### The notional cap is opt-in
 
-`checkExecutionPlanSafety` and `execute` both enforce a hard per-trade notional cap, and the
+There is **no cap by default**. This class does not decide how much of your money you may trade:
+trade cents or trade thousands. `maxNotionalUsd` is a guardrail you ask for — pass it to the
+constructor, or per call in `options`, and it is honoured exactly at whatever value you choose, in
+either direction. Omit it, or pass `0`, and no notional check runs at all. Only a negative value is
+refused.
+
+(An earlier version enforced a hard 25 USD ceiling that could be lowered but never raised. That
+number came from this repository's rule for its own live tests against real exchanges — it was
+never meant to govern the people using the library.)
+
+When a cap **is** in force, `checkExecutionPlanSafety` and `execute` both enforce it, and the
 notional is recomputed immediately before **every** `createOrder` — the plan-level check already
 ran, but a reconciliation may have resized the plan since, and the snapped price is not the one
 that was checked.
 
-A step that cannot be valued in USD **blocks**. It is never skipped: a cap that silently
-disappears when a rate is missing is not a cap. Supply `options.usdRates` for every quote asset in
-the plan.
-
-`maxNotionalUsd` may be lowered in the constructor, never raised.
+Under a cap, a step that cannot be valued in USD **blocks**. It is never skipped: a cap that
+silently disappears when a rate is missing is not a cap. Supply `options.usdRates` for every quote
+asset in the plan. With no cap set there is nothing to evaluate, so `usdRates` is not required
+either — demanding the inputs for a check nobody asked for would be asking for something nobody
+wanted.
 
 ## Reading the report
 

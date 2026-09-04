@@ -1019,8 +1019,6 @@ Not ready to expose publicly. Honest status of the blockers:
 
 - Re-run the benchmark from unrestricted, NTP-synced infra, including Binance/Bybit/OKX, and at
   full discovery scale (76 exchanges) rather than the 5-exchange subset reachable from this sandbox.
-- Replace shared-key auth with something real (per-client keys + rotation + revocation) before any
-  public exposure, and put TLS termination in front.
 - Soak test: hours-to-days continuous run with `process.memoryUsage()` tracked, to find leaks and
   slow connection drift that a 75-second test can't.
 - `ORDER_ROUTER_MAX_SYMBOLS_PER_EXCHANGE` needs real per-exchange tuning under production load —
@@ -1029,11 +1027,23 @@ Not ready to expose publicly. Honest status of the blockers:
   before the fixes) reconnect rate at ~680 routable symbols that wasn't fully root-caused.
 - Shard load-balancing is by symbol count only (a proxy for message rate) — no real per-symbol
   throughput data exists yet to balance more precisely; revisit once shards are under real load.
-- Order *execution* routing (actually placing orders) is out of scope for this milestone — see
-  the repo's live-trading safety rules (25 USD/trade cap, no live `withdraw()` testing) before
-  building that; it needs API keys, risk limits, and per-exchange cleanup logic.
+- Order *execution* is client-side, in the `OrderRouter` class, and the service itself never holds
+  a trading credential or places an order. `execute()` has no live coverage against a real venue
+  yet: every strategy is exercised against stub venues in all six languages, which is not the same
+  as having placed one order on one exchange.
 - No Redis/cross-host story yet — sharding today is same-host via IPC only (see Architecture).
-- No Prometheus `/metrics` endpoint yet — `/exchanges/status` covers health for now.
 - Depth-limited exchanges (Kraken, Gate, others with capped WS depth) should fall back to REST
   `fetchOrderBook` snapshots when a requested `amount` exceeds cached depth, rather than silently
   reporting `fullyFillable: false`.
+- The companion units (`order-router-web`, `order-router-ingest`) are restarted by the deploy but
+  are not covered by its smoke test — only the router's `/health`, `/version` and `/route` are
+  asserted before the release is promoted.
+- Every deploy job is gated on `github.repository == 'pcriadoperez/ccxt'` (see "Why the deploy job
+  is gated"). That is deliberate — a fork must not deploy to this box — but it means merging this
+  directory upstream stops deploys with no failure to notice. Change the gate in the same commit as
+  any such move.
+
+**Done since this list was first written**, kept here because the entries described the service
+people were reading about: per-client API keys with rotation and revocation replaced the shared key
+(see "Authentication"), TLS termination in front is documented under "Deploying behind nginx", and
+`/metrics` is a real Prometheus endpoint rather than the `/exchanges/status` stand-in.

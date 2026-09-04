@@ -1006,10 +1006,15 @@ Strategies: `dry_run` (default), `sequential`, `parallel_within_hop` (concurrent
 serialised within a venue), `atomic_ish` (requires the route pre-funded), `best_effort`
 (single-hop, never halts).
 
-A hard per-trade USD notional cap is enforced immediately before **every** order — not just at
-plan time, because a reconciliation may have resized the plan since. A step that cannot be valued
-in USD **blocks**; supply a USD rate for every quote asset in the plan. The cap may be lowered in
-the constructor, never raised.
+There is **no notional cap by default** — trade cents or trade thousands. `maxNotionalUsd` is an
+opt-in guardrail: pass it to the constructor, or per call in the options, and it is honoured
+exactly at whatever value you choose, in either direction; omit it (or pass 0) and no notional
+check runs. Only a negative value is refused.
+
+When a cap IS set it is enforced immediately before **every** order — not just at plan time,
+because a reconciliation may have resized the plan since — and a step that cannot be valued in USD
+**blocks**, so supply a USD rate for every quote asset in the plan. With no cap set there is
+nothing to evaluate and USD rates are not required either.
 
 In the report, `status: 'outcome_unknown'` means the request may or may not have reached the venue
 — execution halts rather than reconciling, because reconciling would read the fill as 0 and report
