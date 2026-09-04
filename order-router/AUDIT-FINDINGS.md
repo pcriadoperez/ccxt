@@ -792,26 +792,6 @@ go/v4/exchange_order_router.go:443 goes to the trouble of implementing JavaScrip
 
 Either port Go's routerToFixed12 (go/v4/exchange_order_router.go:443) into Python, PHP and Rust, or drop the JS-tie requirement and change Go to plain half-to-even so all six agree on the simpler rule. Add tie values (0.0001220703125, -0.0001220703125) to a formatNumber section of ts/src/test/base/f
 
-### 82. placeProtectedLimit spins forever with a live order resting when pollIntervalMs is 0
-
-**Severity:** low &nbsp;·&nbsp; **estimated effort:** minutes
-
-**Claimed evidence**
-
-```
-ts/src/base/OrderRouter.ts:2161-2177 — the loop counter advances by the caller-supplied interval, unvalidated:
-```
-2162:        const pollIntervalMs = this.numberAt (options, 'pollIntervalMs', 1000);
-...
-2170:        while (waited < timeoutMs) {
-2174:            await this.sleep (pollIntervalMs);
-21
-```
-
-**Suggested fix** — a suggestion, not a verdict; verify before following it.
-
-Clamp in placeProtectedLimit: if `pollIntervalMs <= 0`, use the 1000ms default (and reject a non-positive orderTimeoutMs the same way), in all six ports.
-
 ### 83. OpenAPI describes /health as "the only unauthenticated route" while the next path in the same file is also unauthenticated
 
 **Severity:** low &nbsp;·&nbsp; **estimated effort:** minutes
@@ -935,6 +915,7 @@ Kept so the same ground is not re-covered, and so a `wontfix` is not silently re
 | 55 | medium | A shard orphaned during startup never exits: the `disconnect` handler is installed only after every connector has started | **fixed** — registered at module load, beside installCrashHandlers. Startup is the longest window in the process's life and was the only one with no handler. |
 | 63 | medium | Respawned shard processes are never added to the handle, so stop() cannot kill them | **refuted — already closed as blocker 3** (6f88bfb3). `children.push` sits inside `spawn()`, so every process it creates is tracked, and the exit handler splices the corpse out. Duplicate filing. |
 | 73 | medium | rust.yml is the one language workflow with no order-router paths-ignore, so every order-router change spins the 120-minute Rust job and can push spurious [Automated changes] commits to master | **fixed** — the same paths-ignore block the other five workflows carry, on both push and pull_request. Confirmed by the audit trail on this PR: order-router-only pushes were spinning the Rust job and failing its live-tests step. |
+| 82 | low | placeProtectedLimit spins forever with a live order resting when pollIntervalMs is 0 | **fixed in all six ports** — refused in execute(), beside the other strategy-option checks, so nothing is placed at all: the poll loop advances its clock by this value, so a zero or negative interval never reaches the timeout and spins on fetchOrder forever with a real order resting. Refusing inside placeProtectedLimit would have left the very order the loop could not clean up. Tested in TS/JS, Python, PHP, Go and Rust; the C# test is written but UNRUN — no dotnet in this environment. |
 | 14 | high | Attacker-controlled request.ip is inserted into an `inet` column inside the ingest transaction; one crafted header wedges audit ingestion permanently | **fixed** — 6f88bfb3 same fix as blocker 4 |
 | 15 | high | The published dev API key `dev-local-key-change-me` is enabled in production whenever NODE_ENV is unset, and the documented systemd unit never sets it | **fixed** — 6f88bfb3 same fix as blocker 0 |
 | 25 | high | /stream/route produces zero audit records and zero HTTP metrics — streaming usage is invisible to billing and to Prometheus | **fixed** — cc1501bf audit emission shared by GET/POST /route and every pushed frame; unroutable counter with it |

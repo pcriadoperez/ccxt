@@ -927,6 +927,7 @@ pub fn run() -> Result<usize, String> {
         ("execute: a createOrder that times out is outcome-unknown, not a plain failure", Box::new(|| a_timeout_is_outcome_unknown_not_a_plain_failure(&router()?))),
         ("execute: a definite rejection stays a plain failure and reports no open order", Box::new(|| a_definite_rejection_stays_a_plain_failure(&router()?))),
         ("execute: a throttled request is a plain failure, not a possibly-live order", Box::new(|| a_rate_limit_rejection_is_a_plain_failure(&router()?))),
+        ("execute: limit_protected refuses a non-positive pollIntervalMs before placing anything", Box::new(|| limit_protected_refuses_a_zero_poll_interval(&router()?))),
         ("execute: a fill that stays unknown after the re-read halts instead of guessing", Box::new(|| a_fill_that_stays_unknown_halts_instead_of_guessing(&router()?))),
         ("execute: refuses to go live above a cap the caller set", Box::new(|| execute_refuses_to_go_live_above_the_cap(&router()?))),
         ("execute: the same trade goes through when nobody asked for a cap", Box::new(|| execute_places_the_same_trade_with_no_cap(&router()?))),
@@ -1262,6 +1263,32 @@ fn a_definite_rejection_stays_a_plain_failure(r: &OrderRouter) -> Result<(), Str
     }
     if !r.list_at(&report, "openOrders").is_empty() {
         return Err("a definite rejection leaves no open order".to_string());
+    }
+    Ok(())
+}
+
+fn limit_protected_refuses_a_zero_poll_interval(r: &OrderRouter) -> Result<(), String> {
+    // The poll loop advances its clock by pollIntervalMs, so 0 never reaches
+    // the timeout: it spins on fetch_order forever with a real order resting on
+    // a real venue, and the timeout that exists to cancel that order never
+    // arrives. Refused BEFORE create_order — refusing afterwards would leave
+    // the very order the loop could not clean up.
+    for interval in [0.0_f64, -1.0_f64] {
+        let plan = one_leg_plan(r)?;
+        let mut venue = StubVenue::new("stub");
+        venue.created_open = true;
+        let placed = StdArc::clone(&venue.orders_placed);
+        let mut venues: BTreeMap<String, Box<dyn RouterVenue>> = BTreeMap::new();
+        venues.insert("stub".to_string(), Box::new(venue));
+        let mut options = execute_options(true, "limit_protected");
+        OrderRouter::set_key(&mut options, "orderTimeoutMs", Value::Float(4.0));
+        OrderRouter::set_key(&mut options, "pollIntervalMs", Value::Float(interval));
+        if block_on(r.execute(&plan, &venues, &options)).is_ok() {
+            return Err(format!("pollIntervalMs {interval} must be refused"));
+        }
+        if placed.load(Ordering::SeqCst) != 0 {
+            return Err("nothing may reach the venue".to_string());
+        }
     }
     Ok(())
 }

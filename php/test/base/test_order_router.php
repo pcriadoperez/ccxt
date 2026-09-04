@@ -1057,6 +1057,29 @@ function order_router_test_venue_supports_ioc_dictionary($router) {
     order_router_assert($allowed->calls === array('createOrder:market:buy:0.2'), 'and it is a market order');
 }
 
+function order_router_test_limit_protected_refuses_a_zero_poll_interval($router) {
+    //  The poll loop advances its clock by pollIntervalMs, so 0 never reaches the timeout: it
+    //  spins on fetchOrder forever with a real order resting on a real venue, and the timeout
+    //  that exists to cancel that order never arrives. Refused BEFORE createOrder — refusing
+    //  afterwards would leave the very order the loop could not clean up.
+    $plan = $router->buildExecutionPlan(order_router_one_leg_route('buy', 'BTC', 'USDT', 0.0002, 100000), array('slippageBps' => 0));
+    foreach (array(0, -1) as $interval) {
+        $venue = new OrderRouterStubVenue('stub');
+        $venue->createdStatus = 'open';
+        order_router_assert_throws(function () use ($router, $plan, $venue, $interval) {
+            $router->execute($plan, array('stub' => $venue), array('strategy' => 'limit_protected', 'live' => true, 'usdRates' => array('USDT' => 1), 'orderTimeoutMs' => 4, 'pollIntervalMs' => $interval));
+        }, BadRequest::class, 'pollIntervalMs ' . $interval . ' must be refused');
+        order_router_assert(count($venue->calls) === 0, 'nothing may reach the venue');
+    }
+    $ok = new OrderRouterStubVenue('stub');
+    $ok->createdStatus = 'open';
+    $ok->fetchOrderResults = array(
+        array('id' => 'stub-order', 'status' => 'closed', 'filled' => 0.0002, 'average' => 100000, 'cost' => 20),
+    );
+    $report = $router->execute($plan, array('stub' => $ok), array('strategy' => 'limit_protected', 'live' => true, 'usdRates' => array('USDT' => 1), 'orderTimeoutMs' => 4, 'pollIntervalMs' => 1));
+    order_router_assert($report['steps'][0]['status'] === 'filled', 'an ordinary interval still works');
+}
+
 function order_router_test_limit_protected_keeps_a_venue_side_cancel_fill($router) {
     $plan = $router->buildExecutionPlan(order_router_one_leg_route('buy', 'BTC', 'USDT', 0.0002, 100000), array('slippageBps' => 0));
     $venue = new OrderRouterStubVenue('stub');
@@ -1167,6 +1190,7 @@ function test_order_router() {
         'a per-call cap overrides the client-level one, in both directions' => 'ccxt\order_router_test_per_call_cap_overrides',
         'best_effort derives the hop count from the steps, not from a key the plan may not carry' => 'ccxt\order_router_test_best_effort_derives_hop_count',
         'venueSupportsIoc reads the dictionary of booleans every real exchange declares' => 'ccxt\order_router_test_venue_supports_ioc_dictionary',
+        'limit_protected refuses a non-positive pollIntervalMs before placing anything' => 'ccxt\order_router_test_limit_protected_refuses_a_zero_poll_interval',
         'limit_protected keeps the fill from an order the venue canceled on the last poll' => 'ccxt\order_router_test_limit_protected_keeps_a_venue_side_cancel_fill',
         'a failure after createOrder still reports the order id and an open order' => 'ccxt\order_router_test_order_id_survives_a_failure_after_create',
         'an unknown strategy is refused even in dry run' => 'ccxt\order_router_test_unknown_strategy_is_refused',

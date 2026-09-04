@@ -1751,6 +1751,17 @@ public class OrderRouter
                 throw new BadRequest("OrderRouter: best_effort requires a positive maxOrders");
             }
         }
+        if (strategy == "limit_protected")
+        {
+            //  Refused HERE, before a single order is placed, because the alternative is worse than a
+            //  bad interval: the poll loop advances its clock by this value, so a zero or negative one
+            //  never reaches the timeout. It spins on fetchOrder forever with a real order resting on a
+            //  real venue, and the timeout that exists to cancel that order never arrives.
+            if (this.HasNumberAt(options, "pollIntervalMs") && this.NumberAt(options, "pollIntervalMs", 0) <= 0)
+            {
+                throw new BadRequest("OrderRouter: pollIntervalMs must be positive, a resting order is polled on that clock");
+            }
+        }
         //  markets are needed for the safety check and for precision snapping
         var markets = new dict();
         var exchangeIds = this.SortedKeys(venues);

@@ -1474,6 +1474,15 @@ func (this *OrderRouter) Execute(plan map[string]any, venues map[string]IExchang
 			return nil, BadRequest("OrderRouter: best_effort requires a positive maxOrders")
 		}
 	}
+	if strategy == "limit_protected" {
+		// Refused HERE, before a single order is placed, because the alternative is worse than a
+		// bad interval: the poll loop advances its clock by this value, so a zero or negative one
+		// never reaches the timeout. It spins on fetchOrder forever with a real order resting on a
+		// real venue, and the timeout that exists to cancel that order never arrives.
+		if routerHasNumberAt(options, "pollIntervalMs") && routerNumberAt(options, "pollIntervalMs", 0) <= 0 {
+			return nil, BadRequest("OrderRouter: pollIntervalMs must be positive, a resting order is polled on that clock")
+		}
+	}
 	// markets are needed for the safety check and for precision snapping
 	markets := map[string]any{}
 	exchangeIds := routerSortedVenueIds(venues)

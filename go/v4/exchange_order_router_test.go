@@ -1233,6 +1233,36 @@ func TestOrderRouterVenueSupportsIocReadsADictionary(t *testing.T) {
 // A venue that cancels an order itself on the last poll — expiry, self-trade
 // prevention, a post-only rejection of the remainder — has ENDED it, and the
 // partial fill it carries is real.
+// The poll loop advances its clock by pollIntervalMs, so 0 never reaches the timeout: it spins on
+// FetchOrder forever with a real order resting on a real venue, and the timeout that exists to
+// cancel that order never arrives. Refused BEFORE CreateOrder — refusing afterwards would leave the
+// very order the loop could not clean up.
+func TestOrderRouterLimitProtectedRefusesAZeroPollInterval(t *testing.T) {
+	router := routerTestRouter(t)
+	plan := routerMustPlan(router.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 0.0002, 100000), map[string]any{"slippageBps": 0.0}))
+	for _, interval := range []float64{0.0, -1.0} {
+		venue := newOrderRouterStubVenue(1, false)
+		venue.createdStatus = "open"
+		_, err := router.Execute(plan, routerStubVenues(map[string]*orderRouterStubVenue{"stub": venue}), map[string]any{"strategy": "limit_protected", "live": true, "usdRates": map[string]any{"USDT": 1.0}, "orderTimeoutMs": 4.0, "pollIntervalMs": interval})
+		if err == nil {
+			t.Fatalf("pollIntervalMs %v must be refused", interval)
+		}
+		if len(venue.callLog()) != 0 {
+			t.Fatalf("nothing may reach the venue, got %v", venue.callLog())
+		}
+	}
+	ok := newOrderRouterStubVenue(1, false)
+	ok.createdStatus = "open"
+	ok.fetchOrderResults = []Order{routerStubOrder("stub-order", "closed", 0.0002, 100000, 20)}
+	report, err := router.Execute(plan, routerStubVenues(map[string]*orderRouterStubVenue{"stub": ok}), map[string]any{"strategy": "limit_protected", "live": true, "usdRates": map[string]any{"USDT": 1.0}, "orderTimeoutMs": 4.0, "pollIntervalMs": 1.0})
+	if err != nil {
+		t.Fatalf("an ordinary interval still works: %v", err)
+	}
+	if routerStringAt(report["steps"].([]map[string]any)[0], "status", "") != "filled" {
+		t.Fatalf("an ordinary interval still fills, got %v", report["steps"])
+	}
+}
+
 func TestOrderRouterLimitProtectedKeepsAVenueSideCancelFill(t *testing.T) {
 	router := routerTestRouter(t)
 	plan := routerMustPlan(router.BuildExecutionPlan(routerOneLegRoute("buy", "BTC", "USDT", 0.0002, 100000), map[string]any{"slippageBps": 0.0}))

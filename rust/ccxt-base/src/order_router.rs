@@ -2296,6 +2296,17 @@ impl OrderRouter {
                 return Err(bad_request("OrderRouter: best_effort requires a positive maxOrders"));
             }
         }
+        if strategy == "limit_protected" {
+            // Refused HERE, before a single order is placed, because the alternative is worse than a
+            // bad interval: the poll loop advances its clock by this value, so a zero or negative one
+            // never reaches the timeout. It spins on fetchOrder forever with a real order resting on a
+            // real venue, and the timeout that exists to cancel that order never arrives.
+            if self.has_number_at(options, "pollIntervalMs")
+                && self.number_at(options, "pollIntervalMs", 0.0) <= 0.0
+            {
+                return Err(bad_request("OrderRouter: pollIntervalMs must be positive, a resting order is polled on that clock"));
+            }
+        }
         // Markets are needed for the safety check and for precision snapping.
         // The caller supplies them: unlike the other five ports, this one cannot
         // call loadMarkets() through the venue trait — adding it there would put

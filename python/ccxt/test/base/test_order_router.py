@@ -806,6 +806,25 @@ def test_venue_supports_ioc_dictionary():
     assert allowed.calls == ['createOrder:market:buy:0.2']
 
 
+@test('limit_protected refuses a non-positive pollIntervalMs before placing anything')
+def test_limit_protected_refuses_a_zero_poll_interval():
+    # The poll loop advances its clock by pollIntervalMs, so 0 never reaches the timeout: it spins
+    # on fetch_order forever with a real order resting on a real venue, and the timeout that exists
+    # to cancel that order never arrives. Refused BEFORE create_order — refusing afterwards would
+    # leave the very order the loop could not clean up.
+    plan = router.build_execution_plan(one_leg_route('buy', 'BTC', 'USDT', 0.0002, 100000), {'slippageBps': 0})
+    for interval in [0, -1]:
+        venue = StubVenue('stub')
+        venue.created_status = 'open'
+        assert_raises(BadRequest, lambda: router.execute(plan, {'stub': venue}, {'strategy': 'limit_protected', 'live': True, 'usdRates': {'USDT': 1}, 'orderTimeoutMs': 4, 'pollIntervalMs': interval}), 'pollIntervalMs ' + str(interval))
+        assert venue.calls == [], 'nothing may reach the venue'
+    ok = StubVenue('stub')
+    ok.created_status = 'open'
+    ok.fetch_order_results = [{'id': 'stub-order', 'status': 'closed', 'filled': 0.0002, 'average': 100000, 'cost': 20}]
+    report = router.execute(plan, {'stub': ok}, {'strategy': 'limit_protected', 'live': True, 'usdRates': {'USDT': 1}, 'orderTimeoutMs': 4, 'pollIntervalMs': 1})
+    assert report['steps'][0]['status'] == 'filled'
+
+
 @test('limit_protected keeps the fill from an order the venue canceled on the last poll')
 def test_limit_protected_keeps_a_venue_side_cancel_fill():
     plan = router.build_execution_plan(one_leg_route('buy', 'BTC', 'USDT', 0.0002, 100000), {'slippageBps': 0})

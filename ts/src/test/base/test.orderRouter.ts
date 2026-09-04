@@ -785,6 +785,33 @@ test ('limit_protected keeps the fill from an order the venue canceled on the la
     assert.strictEqual (unwind['steps'][0]['amount'], 0.0001);
 });
 
+test ('limit_protected refuses a non-positive pollIntervalMs before placing anything', async () => {
+    //  The poll loop advances its clock by pollIntervalMs, so 0 never reaches the timeout: it
+    //  spins on fetchOrder forever with a real order resting on a real venue, and the timeout
+    //  that exists to cancel that order never arrives. Refused BEFORE createOrder — refusing
+    //  afterwards would leave the very order the loop could not clean up.
+    const plan = router.buildExecutionPlan (oneLegRoute ('buy', 'BTC', 'USDT', 0.0002, 100000), { 'slippageBps': 0 });
+    for (let i = 0; i < 2; i++) {
+        const interval = (i === 0) ? 0 : -1;
+        const venue = new StubVenue ('stub');
+        venue.createdStatus = 'open';
+        let threw = false;
+        try {
+            await router.execute (plan, { 'stub': venue }, { 'strategy': 'limit_protected', 'live': true, 'usdRates': { 'USDT': 1 }, 'orderTimeoutMs': 4, 'pollIntervalMs': interval });
+        } catch (e) {
+            threw = true;
+        }
+        assert.strictEqual (threw, true, 'pollIntervalMs ' + interval.toString () + ' must be refused');
+        assert.deepStrictEqual (venue.calls, [], 'and nothing may reach the venue');
+    }
+    //  the ordinary interval still works, and the default still applies when none is given
+    const ok = new StubVenue ('stub');
+    ok.createdStatus = 'open';
+    ok.fetchOrderResults = [ { 'id': 'stub-order', 'status': 'closed', 'filled': 0.0002, 'average': 100000, 'cost': 20 } ];
+    const report = await router.execute (plan, { 'stub': ok }, { 'strategy': 'limit_protected', 'live': true, 'usdRates': { 'USDT': 1 }, 'orderTimeoutMs': 4, 'pollIntervalMs': 1 });
+    assert.strictEqual (report['steps'][0]['status'], 'filled');
+});
+
 test ('a failure after createOrder still reports the order id and an open order', async () => {
     const plan = router.buildExecutionPlan (oneLegRoute ('buy', 'BTC', 'USDT', 0.0002, 100000), { 'slippageBps': 0 });
     const venue = new StubVenue ('stub');

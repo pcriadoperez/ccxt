@@ -99,6 +99,7 @@ public class OrderRouterTest
         RunAsync("best_effort derives the hop count from the steps, not from a key the plan may not carry", BestEffortDerivesHopCount);
         RunAsync("venueSupportsIoc reads the dictionary of booleans every real exchange declares", VenueSupportsIocReadsADictionary);
         RunAsync("limit_protected keeps the fill from an order the venue canceled on the last poll", LimitProtectedKeepsAVenueSideCancelFill);
+        RunAsync("limit_protected refuses a non-positive pollIntervalMs before placing anything", LimitProtectedRefusesAZeroPollInterval);
         RunAsync("a failure after createOrder still reports the order id and an open order", OrderIdSurvivesAFailureAfterCreate);
         RunAsync("an unknown strategy is refused even in dry run", UnknownStrategyRefused);
         RunAsync("a plan carries its age, and a stale one is refused only when asked", PlanAgeIsReportedAndRefusedOnlyWhenAsked);
@@ -1360,6 +1361,38 @@ public class OrderRouterTest
     /// prevention, a post-only rejection of the remainder — has ENDED it, and the
     /// partial fill it carries is real.
     /// </summary>
+    private static async Task LimitProtectedRefusesAZeroPollInterval()
+    {
+        //  The poll loop advances its clock by pollIntervalMs, so 0 never reaches the timeout: it
+        //  spins on FetchOrder forever with a real order resting on a real venue, and the timeout
+        //  that exists to cancel that order never arrives. Refused BEFORE CreateOrder — refusing
+        //  afterwards would leave the very order the loop could not clean up.
+        var router = NewRouter();
+        var plan = router.BuildExecutionPlan(OneLegRoute("buy", "BTC", "USDT", 0.0002, 100000), new dict() { { "slippageBps", 0.0 } });
+        foreach (var interval in new double[] { 0.0, -1.0 })
+        {
+            var venue = new StubVenue("stub");
+            venue.createdStatus = "open";
+            await Rejects<BadRequest>(async () => await router.Execute(plan, Venues(venue), new dict() {
+                { "strategy", "limit_protected" }, { "live", true },
+                { "usdRates", new dict() { { "USDT", 1.0 } } },
+                { "orderTimeoutMs", 4.0 }, { "pollIntervalMs", interval },
+            }), "pollIntervalMs " + interval.ToString() + " must be refused");
+            Ok(venue.calls.Count == 0, "nothing may reach the venue");
+        }
+        var ok = new StubVenue("stub");
+        ok.createdStatus = "open";
+        ok.fetchOrderResults = new List<dict>() {
+            new dict() { { "id", "stub-order" }, { "status", "closed" }, { "filled", 0.0002 }, { "average", 100000.0 }, { "cost", 20.0 } },
+        };
+        var report = await router.Execute(plan, Venues(ok), new dict() {
+            { "strategy", "limit_protected" }, { "live", true },
+            { "usdRates", new dict() { { "USDT", 1.0 } } },
+            { "orderTimeoutMs", 4.0 }, { "pollIntervalMs", 1.0 },
+        });
+        EqualString((string)ToDict(ToList(report["steps"])[0])["status"], "filled", "an ordinary interval still works");
+    }
+
     private static async Task LimitProtectedKeepsAVenueSideCancelFill()
     {
         var router = NewRouter();
