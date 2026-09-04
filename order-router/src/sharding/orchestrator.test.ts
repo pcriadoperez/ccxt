@@ -2,6 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { partitionAssignments } from './orchestrator.js';
 import type { ShardAssignment } from './messages.js';
+import { fileURLToPath } from 'node:url';
+import { mkdtempSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 function assignment (exchangeId: string, symbolCount: number): ShardAssignment {
     return { exchangeId, symbols: Array.from({ length: symbolCount }, (_, i) => `SYM${i}/USDT`) };
@@ -52,4 +56,43 @@ test('shard workers are forked with a heap ceiling', async () => {
     // The peak scales with startup concurrency, so the default must actually bound it.
     assert.ok(config.shardStartConcurrency < 8,
         'starting many exchanges at once rebuilds the peak the ceiling has to hold');
+});
+
+test('a respawned shard is tracked, so stop() can actually kill it', async () => {
+    // The original fork was pushed into `children`; the replacement created by the exit handler
+    // was not. After one crash-and-respawn, stop() iterated a list holding only a dead pid: it
+    // reported success while the live replacement kept running, still holding its exchange
+    // websockets open, to compete with the next start for the same subscriptions.
+    const { startShards } = await import('./orchestrator.js');
+    const stubPath = fileURLToPath(new URL('./__fixtures__/exitingWorker.mjs', import.meta.url));
+    const marker = join(mkdtempSync(join(tmpdir(), 'shard-stub-')), 'crashed');
+    process.env['ORCHESTRATOR_STUB_MARKER'] = marker;
+
+    const cache = { setBook () {}, setHealth () {} } as never;
+    const fees = { setFee () {} } as never;
+    const loops = { set () {} } as never;
+    const quiet = { child: () => quiet, info () {}, error () {}, warn () {}, debug () {} } as never;
+
+    const handle = startShards([[assignment('a', 1)]], cache, fees, quiet, loops, stubPath);
+    try {
+        const first = handle.children[0];
+        assert.ok(first, 'the original fork is registered');
+        const firstPid = first.pid;
+
+        // The stub crashes once; the first respawn backoff is 1s, and the replacement then stays up.
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+
+        assert.equal(handle.children.length, 1, 'exactly one live child is tracked after a respawn');
+        const replacement = handle.children[0];
+        assert.ok(replacement, 'the replacement is registered, not just the dead original');
+        assert.notEqual(replacement.pid, firstPid, 'and it is a different process');
+
+        // The point of tracking it: stop() must reach it.
+        handle.stop();
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        assert.equal(replacement.killed, true, 'stop() signalled the replacement, not just the corpse');
+    } finally {
+        handle.stop();
+        delete process.env['ORCHESTRATOR_STUB_MARKER'];
+    }
 });

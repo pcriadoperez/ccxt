@@ -98,7 +98,7 @@ export interface ServerOptions {
     wsMaxConnectionsPerKey?: number;
     wsIdleTimeoutMs?: number;
     wsMinPushIntervalMs?: number;
-    trustProxy?: boolean;
+    trustProxy?: number | boolean;
     // Injected so tests can drive a real multi-key store without touching the filesystem. In
     // production src/index.ts builds it, loads it, and starts its reload poll.
     keyStore?: ApiKeyStore;
@@ -128,7 +128,7 @@ export async function buildServer (
             ? logger.child({}, { level: config.auditLogLevel })
             : moduleAuditLogger);
     const store = options.keyStore ?? new ApiKeyStore(
-        config.keysFile, logger, process.env['NODE_ENV'] !== 'production');
+        config.keysFile, logger, config.allowDevKey);
     if (options.keyStore === undefined) store.load();
 
     const app = Fastify({

@@ -168,3 +168,50 @@ test('an access line whose partner never arrived is written rather than wedging 
     assert.equal(insertedRequests(queries)[0]?.params[4], '/symbols');
     assert.equal(committedOffset(queries), stat(path).size, 'and the cursor clears the orphan');
 });
+
+test('a malformed X-Forwarded-For cannot wedge the ingester', async () => {
+    // requests.ip is an `inet` column fed from a header. Postgres rejects a malformed address, and
+    // that rejection lands INSIDE the batch transaction — so the batch rolls back, the cursor never
+    // advances, and the next pass replays the same poisoned line forever. One crafted header stopped
+    // audit and usage ingestion permanently, and nothing surfaced it: no throw the runner survives,
+    // no metric, and requestsInserted stays 0 so even the info log is suppressed.
+    const { statSync: stat } = await import('node:fs');
+    const poisoned = [
+        'not-an-ip',
+        '1.2.3.4, evil',           // a chain, which is what trustProxy: true used to hand through
+        '"; DROP TABLE requests;--',
+        '999.999.999.999',
+        '',
+    ].map((ip, i) => JSON.stringify({
+        event: 'request', reqId: `poison-${i}`, method: 'GET', route: '/route',
+        statusCode: 200, ip, time: Date.now(),
+    }));
+    const path = writeLog(poisoned);
+
+    const { pool, queries } = fakePool(0, stat(path).ino);
+    const stats = await ingestOnce(pool, path, 'audit', silent);
+
+    assert.equal(stats.requestsInserted, poisoned.length, 'every row is still written');
+    for (const row of insertedRequests(queries)) {
+        // params[22] is `ip` in the INSERT INTO requests column list.
+        assert.equal(row.params[22], null, `unparseable address written as NULL, got ${String(row.params[22])}`);
+    }
+    assert.equal(committedOffset(queries), stat(path).size, 'and the cursor clears the whole batch');
+});
+
+test('a real address still reaches the column', async () => {
+    // The guard must not throw the baby out: a NULL for every row would lose the forensic trail
+    // the audit table exists for.
+    const { statSync: stat } = await import('node:fs');
+    const path = writeLog([
+        JSON.stringify({ event: 'request', reqId: 'v4', method: 'GET', route: '/route', statusCode: 200, ip: '203.0.113.7', time: Date.now() }),
+        JSON.stringify({ event: 'request', reqId: 'v6', method: 'GET', route: '/route', statusCode: 200, ip: '2001:db8::1', time: Date.now() }),
+        JSON.stringify({ event: 'request', reqId: 'zone', method: 'GET', route: '/route', statusCode: 200, ip: 'fe80::1%eth0', time: Date.now() }),
+    ]);
+    const { pool, queries } = fakePool(0, stat(path).ino);
+    await ingestOnce(pool, path, 'audit', silent);
+    const rows = insertedRequests(queries);
+    assert.equal(rows[0]?.params[22], '203.0.113.7');
+    assert.equal(rows[1]?.params[22], '2001:db8::1');
+    assert.equal(rows[2]?.params[22], 'fe80::1', 'a zone id is stripped, not rejected');
+});

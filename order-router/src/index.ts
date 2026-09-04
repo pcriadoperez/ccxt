@@ -178,7 +178,7 @@ async function main () {
     // never serves HTTP and never sees a request header, and having the rebalance path restart
     // processes that re-read and re-poll a secrets file is pure downside — more file handles, more
     // surface, and a second place a stale snapshot could hide.
-    const keyStore = new ApiKeyStore(config.keysFile, logger, process.env['NODE_ENV'] !== 'production');
+    const keyStore = new ApiKeyStore(config.keysFile, logger, config.allowDevKey);
     // Deliberately NOT caught: a malformed key file at boot must refuse to start, because running
     // with an unknown key set is worse than not running. A MISSING file is fine and non-fatal —
     // see ApiKeyStore.load() — or deploying the code before creating the file would brick startup.

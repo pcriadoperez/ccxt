@@ -36,7 +36,7 @@ export interface WebOptions {
     secureCookies: boolean;
     allowedOrigins: string[];
     // Overrides config.trustProxy, for tests. Unset means "whatever the deployment configured".
-    trustProxy?: boolean;
+    trustProxy?: number | boolean;
     signupsPerHour?: number;
 }
 

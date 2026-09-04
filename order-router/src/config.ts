@@ -43,6 +43,20 @@ function numberFromEnv (name: string, fallback: number): number {
     return parsed;
 }
 
+// Reads ORDER_ROUTER_TRUST_PROXY as a hop count. Accepts a number, or the legacy `true`/`false`
+// spellings, which map to 1 and 0 — `true` used to mean "trust the whole chain", and one hop is
+// what almost every `true` deployment actually meant.
+function trustProxyFromEnv (): number {
+    const raw = process.env['ORDER_ROUTER_TRUST_PROXY'];
+    if (raw === undefined || raw === '' || raw === 'false') return 0;
+    if (raw === 'true') return 1;
+    const hops = Number(raw);
+    if (!Number.isInteger(hops) || hops < 0) {
+        throw new Error(`ORDER_ROUTER_TRUST_PROXY must be a non-negative integer hop count (or true/false); got ${JSON.stringify(raw)}`);
+    }
+    return hops;
+}
+
 export const config = {
     port: numberFromEnv('PORT', 8080),
     host: process.env['HOST'] ?? '0.0.0.0',
@@ -233,5 +247,25 @@ export const config = {
     //   - true when NOT behind a proxy -> any client can set X-Forwarded-For itself, mint a fresh
     //     bucket per request, and bypass rate limiting entirely. That is strictly worse: it hands
     //     back the exact brute-force hole the limiter exists to close.
-    trustProxy: process.env['ORDER_ROUTER_TRUST_PROXY'] === 'true',
+    //
+    // The value is a HOP COUNT, not a boolean, and that distinction is the whole point.
+    // Fastify's `trustProxy: true` trusts the ENTIRE X-Forwarded-For chain and returns its
+    // leftmost entry — which the client writes. Behind nginx, where this must be enabled, that
+    // handed every caller the ability to choose their own request.ip: rate-limit buckets became
+    // client-selectable (so /login brute-force was unthrottled), and the value flowed into an
+    // `inet` column in the audit ingester, where one malformed header wedged ingestion for good.
+    //
+    // A count of N means "walk back exactly N proxies from the socket", so with nginx appending
+    // $remote_addr the answer is the real client and nothing the client sent can change it. Set it
+    // to the number of proxies actually in front of this service. `true` and `false` are still
+    // accepted and mean 1 and 0.
+    trustProxy: trustProxyFromEnv(),
+
+    // Whether the published dev key `dev-local-key-change-me` is accepted. EXPLICIT, and default
+    // OFF — it used to be derived from `NODE_ENV !== 'production'`, which meant every deployment
+    // that did not set NODE_ENV (including the documented systemd unit) silently armed a key
+    // printed in the README as a live credential. A security control must not depend on a variable
+    // nobody remembered to set: the safe state is the default, and turning it off must not require
+    // an action.
+    allowDevKey: process.env['ORDER_ROUTER_ALLOW_DEV_KEY'] === 'true',
 };

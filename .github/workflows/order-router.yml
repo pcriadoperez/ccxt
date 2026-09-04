@@ -253,9 +253,16 @@ jobs:
       # mask a dead upstream (and a broken nginx cannot fail an otherwise good deploy).
       PORT: '8080'
       SERVICE: order-router
-      # Stateless companions to restart after the router, space separated, skipped when not
-      # installed. Only the router's restart costs anything (it rebuilds the whole book cache).
-      EXTRA_SERVICES: ''
+      # Companion units that run out of the SAME `current` symlink, space separated, skipped when
+      # not installed. They must be listed here or the deploy is only half a deploy: the symlink
+      # swap changes what `current` points at but does not change what an already-running process
+      # has open, so an unrestarted companion keeps executing the OLD release — and the retention
+      # prune below deletes that tree after five more deploys, at which point the next lazy
+      # `require` in it fails on a directory that no longer exists. Only the router's restart costs
+      # anything (it rebuilds the whole book cache); these two are cheap.
+      #   order-router-web    -> dist/web/index.js      (the console at /router)
+      #   order-router-ingest -> dist/db/ingestRunner.js (audit ingest + key projection)
+      EXTRA_SERVICES: 'order-router-web order-router-ingest'
     steps:
       - uses: actions/checkout@v4
 

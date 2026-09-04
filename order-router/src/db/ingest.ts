@@ -1,5 +1,6 @@
 import { openSync, readSync, closeSync, statSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
+import { isIP } from 'node:net';
 import type { Logger } from 'pino';
 import type { Pool } from './pool.js';
 
@@ -176,6 +177,24 @@ async function commitCursor (pool: Pool, stream: string, nextOffset: number, ino
     );
 }
 
+// `requests.ip` is an `inet` column and the value arrives from a header. Postgres REJECTS a
+// malformed address, and that rejection lands inside the batch transaction — so the whole batch
+// rolls back, the cursor never advances, and the next pass replays the same poisoned line forever.
+// One crafted X-Forwarded-For was enough to stop audit and usage ingestion permanently.
+//
+// The trustProxy hop count now stops the header reaching request.ip at all, but this is the layer
+// that must not be able to fail: anything that cannot be parsed as an address is written as NULL
+// rather than allowed to wedge the pipeline. A missing IP on one row is a rounding error; a stalled
+// ingester is silent data loss for every row after it.
+function ipOrNull (value: string | null | undefined): string | null {
+    if (typeof value !== 'string' || value === '') return null;
+    // Strip a zone id (fe80::1%eth0) and an IPv4-mapped prefix, both of which isIP rejects but
+    // Postgres accepts in other spellings; simpler to normalise than to argue about.
+    const bare = value.split('%')[0] ?? '';
+    if (isIP(bare) === 0) return null;
+    return bare;
+}
+
 export async function ingestOnce (
     pool: Pool, path: string, stream: string, logger: Logger,
 ): Promise<IngestStats> {
@@ -320,7 +339,7 @@ export async function ingestOnce (
                         r.effectiveRate ?? null, r.referenceRate ?? null, r.impactBps ?? null,
                         r.fillRatio ?? null, r.fullyFillable ?? null, r.unroutableReason ?? null,
                         r.hops?.length ?? null,
-                        r.ip ?? null, r.userAgent ?? null, r.origin ?? null, reqId,
+                        ipOrNull(r.ip), r.userAgent ?? null, r.origin ?? null, reqId,
                     ],
                 );
                 for (const [hopIndex, hop] of (r.hops ?? []).entries()) {

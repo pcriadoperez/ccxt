@@ -63,6 +63,10 @@ export function startShards (
     feeRegistry: FeeRegistry,
     logger: Logger,
     loopRegistry: LoopRegistry,
+    // Test seam. The real worker opens live exchange websockets on `init`, so the respawn and
+    // shutdown bookkeeping below — which is process lifecycle, not routing — can only be exercised
+    // against a stub. Production never passes this.
+    workerPath: string = SHARD_WORKER_PATH,
 ): ShardHandle {
     const children: ChildProcess[] = [];
     let shuttingDown = false;
@@ -108,12 +112,23 @@ export function startShards (
             // A heap ceiling, because V8 without one grows to the startup peak and keeps it. The
             // ceiling is well above the live working set; a shard that genuinely needs more will
             // OOM loudly, which is a far better failure than silently swapping the whole box.
-            const proc = fork(SHARD_WORKER_PATH, [], {
+            const proc = fork(workerPath, [], {
                 execArgv: [`--max-old-space-size=${config.shardMaxOldSpaceMb}`],
             });
             proc.on('message', onMessage);
             proc.on('error', (err) => shardLogger.error({ err, pid: proc.pid }, 'shard process error'));
+            // Registered here rather than at the call site so that EVERY process this function
+            // ever creates is in `children`, not just the first one. Previously only the original
+            // fork was pushed: after a single crash-and-respawn, `stop()` iterated a list holding
+            // a dead pid and never touched the live replacement, so shutdown left orphaned shard
+            // processes still holding their exchange websockets open — and the next start found
+            // them competing for the same subscriptions.
+            children.push(proc);
             proc.on('exit', (code) => {
+                // Drop it immediately: a dead pid in the list is a kill() that does nothing while
+                // reading as success.
+                const index = children.indexOf(proc);
+                if (index !== -1) children.splice(index, 1);
                 if (shuttingDown) {
                     shardLogger.info({ pid: proc.pid }, 'shard stopped intentionally');
                     return;
@@ -132,7 +147,6 @@ export function startShards (
         };
 
         const child = spawn();
-        children.push(child);
         child.send({ type: 'init', assignments });
         shardLogger.info(
             { pid: child.pid, exchanges: assignments.map((a) => a.exchangeId), exchangeCount: assignments.length },

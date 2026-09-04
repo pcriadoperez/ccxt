@@ -514,7 +514,8 @@ against a running router with live exchange data) during development — not jus
 | `ORDER_ROUTER_KEYS_RELOAD_POLL_MS` | `10000` | How often to stat the key file for changes. |
 | `ORDER_ROUTER_AUDIT_LOG_LEVEL` | `info` | Level for the per-request audit records, set independently of `LOG_LEVEL`. |
 | `ORDER_ROUTER_WS_IDLE_TIMEOUT_MS` | `30000` | Heartbeat interval; a socket that misses two beats is terminated. Must stay below the reverse proxy's `proxy_read_timeout`. |
-| `ORDER_ROUTER_TRUST_PROXY` | `false` | Derive client IP from `X-Forwarded-For`. Enable **only** behind a trusted proxy — see "Deploying behind nginx". Applies to the web console as well as the API: with it on and no proxy in front, a client picks its own rate-limit bucket. |
+| `ORDER_ROUTER_TRUST_PROXY` | `0` | How many reverse-proxy hops sit in front of this service. `0` trusts no `X-Forwarded-For` at all; `1` (also spelled `true`) believes only the address your own edge appended; `2` for a CDN in front of nginx. Never set it higher than the number of proxies you actually control — each extra hop hands one more entry of a client-written header to the rate limiter and the audit log. See "Deploying behind nginx". |
+| `ORDER_ROUTER_ALLOW_DEV_KEY` | `false` | Arms the built-in development API key (`dev-key`). Off unless set to `true`, on every host, regardless of `NODE_ENV` — a deployment that forgets to set `NODE_ENV=production` must not thereby publish an unauthenticated door. Local development only. |
 | `ORDER_ROUTER_MIN_FRESH_BOOKS_FOR_READY` | `1` | Fresh books `/ready` insists on before reporting the process able to route. `1` rather than `0` because `0` makes it a second liveness probe; raise it if "ready" should mean most of your coverage. |
 | `ORDER_ROUTER_MAX_BOOK_DEPTH` | `500` | Levels kept per side. Also what the connector asks the VENUE for, so on venues with a depth-limited channel the rest is never sent. A venue that refuses the limit is subscribed to without one. |
 | `ORDER_ROUTER_TOP_SYMBOLS` | `50` | Discovery mode only — how many symbols to keep, ranked by the liquidity reference below. |
@@ -591,14 +592,23 @@ in this codebase. Three things must be configured or the deployment is subtly br
 reachable directly on port 8080, bypassing nginx and therefore bypassing TLS — the API key would
 cross the wire in cleartext to anyone who skips the proxy.
 
-**2. Set `ORDER_ROUTER_TRUST_PROXY=true`.** The rate limiter buckets failed-auth attempts by client
+**2. Set `ORDER_ROUTER_TRUST_PROXY=1`.** The rate limiter buckets failed-auth attempts by client
 IP. Behind a proxy every request arrives from nginx's address, so without this **all
 unauthenticated traffic shares one bucket** and one abuser throttles every other client's
-legitimate retries. The flag is opt-in rather than automatic because the opposite mistake is worse:
-turning it on with no proxy in front lets any client set `X-Forwarded-For` itself, mint a fresh
-bucket per request, and bypass rate limiting completely. Only enable it when nginx really is in
-front **and** overwrites the header (`proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for`,
-as below — never pass a client-supplied value through).
+legitimate retries.
+
+The value is a **hop count, not a boolean**, and that distinction is the whole security property.
+`X-Forwarded-For` is a list, appended to left-to-right, so its leftmost entry is whatever the
+original client wrote and its rightmost entries are what each proxy observed. Trusting the list as
+a whole — which is what Fastify's `trustProxy: true` does — returns that leftmost, client-authored
+entry as `request.ip`, so a caller sending `X-Forwarded-For: 1.2.3.4` mints a fresh rate-limit
+bucket per request and writes its own identity into the audit log. A hop count instead walks back
+exactly N entries from the right, landing on the address *your own edge* appended. Set it to the
+number of proxies you actually control: `1` for nginx alone, `2` for a CDN in front of nginx, `0`
+(the default) when nothing is in front. `true` is still accepted and means `1`.
+
+nginx must also overwrite the header rather than pass a client value through
+(`proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for`, as below).
 
 **3. Keep the WS heartbeat under `proxy_read_timeout`.** nginx closes an idle upstream connection
 on its own timer (default 60s). `ORDER_ROUTER_WS_IDLE_TIMEOUT_MS` now defaults to 30s for that
