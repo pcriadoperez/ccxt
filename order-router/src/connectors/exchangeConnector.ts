@@ -97,6 +97,16 @@ const BACKOFF_MAX_MS = 30_000;
 // against a 400+-symbol exchange.
 const LOOP_START_STAGGER_MS = 25;
 
+// Reconnect delay for one watch loop. A resync (or any venue-wide disconnect) fails EVERY loop on
+// the venue in the same tick, and jittered backoff alone spreads them over a single backoff window
+// — 400 per-symbol loops all re-subscribing inside 500ms, which is 20x denser than the staggered
+// start above and hits exactly the exchange-side rate limiting that stagger exists to avoid. So the
+// same per-loop stagger is applied here: the index orders the loops, the jitter keeps two
+// connectors that resync at the same moment from lining up with each other.
+export function reconnectDelayMs (backoffMs: number, loopIndex: number, random: () => number = Math.random): number {
+    return random() * backoffMs + loopIndex * LOOP_START_STAGGER_MS;
+}
+
 function sleep (ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -145,10 +155,6 @@ export function reapOrphanedSockets (
 // WS connection dropping, which fails every per-symbol watchOrderBook call on that exchange at
 // once) don't all retry in lockstep and repeat the thundering-herd rate-limit hit every backoff
 // cycle.
-function jittered (ms: number): number {
-    return Math.random() * ms;
-}
-
 // Some failures can never succeed on retry: missing credentials, an unsupported method, a symbol
 // the venue does not list. Retrying them is not resilience, it is a busy loop — one such exchange
 // generated 22M log lines and ~930MB of disk while burning CPU that working venues needed. These
@@ -360,7 +366,7 @@ export class ExchangeConnector {
                 'using batched watchOrderBookForSymbols, chunked',
             );
             chunks.forEach((chunk, i) => {
-                void sleep(i * LOOP_START_STAGGER_MS).then(() => this.batchWatchLoop(chunk));
+                void sleep(i * LOOP_START_STAGGER_MS).then(() => this.batchWatchLoop(chunk, i));
             });
         } else {
             this.logger.info(
@@ -368,7 +374,7 @@ export class ExchangeConnector {
                 'watchOrderBookForSymbols not supported here, using per-symbol loops (staggered start)',
             );
             this.symbols.forEach((symbol, i) => {
-                void sleep(i * LOOP_START_STAGGER_MS).then(() => this.singleSymbolWatchLoop(symbol));
+                void sleep(i * LOOP_START_STAGGER_MS).then(() => this.singleSymbolWatchLoop(symbol, i));
             });
         }
     }
@@ -484,7 +490,10 @@ export class ExchangeConnector {
         }
     }
 
-    private async batchWatchLoop (symbols: string[]): Promise<void> {
+    // loopIndex is stable for the life of the connector: it is the loop's position in the
+    // startup stagger, reused so the reconnect path re-enters in the same order and at the same
+    // density rather than all at once.
+    private async batchWatchLoop (symbols: string[], loopIndex: number): Promise<void> {
         let backoff = BACKOFF_START_MS;
         let sequence = 0;
         const seen = new Set<unknown>();
@@ -511,13 +520,13 @@ export class ExchangeConnector {
                 this.cache.recordError(this.exchangeId, message);
                 this.cache.recordReconnect(this.exchangeId);
                 reapOrphanedSockets(this.exchange, seen, this.logger);
-                await sleep(jittered(backoff));
+                await sleep(reconnectDelayMs(backoff, loopIndex));
                 backoff = Math.min(backoff * 2, BACKOFF_MAX_MS);
             }
         }
     }
 
-    private async singleSymbolWatchLoop (symbol: string): Promise<void> {
+    private async singleSymbolWatchLoop (symbol: string, loopIndex: number): Promise<void> {
         let backoff = BACKOFF_START_MS;
         let sequence = 0;
         const seenPerSymbol = new Set<unknown>();
@@ -542,7 +551,7 @@ export class ExchangeConnector {
                 this.cache.recordError(this.exchangeId, message);
                 this.cache.recordReconnect(this.exchangeId);
                 reapOrphanedSockets(this.exchange, seenPerSymbol, this.logger);
-                await sleep(jittered(backoff));
+                await sleep(reconnectDelayMs(backoff, loopIndex));
                 backoff = Math.min(backoff * 2, BACKOFF_MAX_MS);
             }
         }

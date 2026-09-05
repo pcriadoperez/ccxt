@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import pino from 'pino';
 import ccxt from 'ccxt';
-import { chunkSymbols, normalizeLevels, isPermanentError, isLimitRejection, reapOrphanedSockets, isCrossedBook, nextResyncBackoffMs, ExchangeConnector } from './exchangeConnector.js';
+import { chunkSymbols, normalizeLevels, isPermanentError, isLimitRejection, reapOrphanedSockets, isCrossedBook, nextResyncBackoffMs, reconnectDelayMs, ExchangeConnector } from './exchangeConnector.js';
 import { OrderBookCache } from '../cache/orderBookCache.js';
 import { FeeRegistry } from '../cache/feeRegistry.js';
 
@@ -305,3 +305,25 @@ test('a crossed book logs once per episode, not once per update', async () => {
     for (let i = 0; i < 5; i++) apply('BTC/USDT', crossedBook, 100 + i);
     assert.equal(lines.filter((l) => l.msg.indexOf('crossed order book,') === 0).length, 3);
 });
+
+test('reconnects are staggered per loop, at the same density as the initial subscribe', () => {
+    // A resync closes every client on the venue at once, so every watch loop fails in the same
+    // tick and every one of them retries after jittered(500ms). On a 400-symbol venue that is 400
+    // subscribes inside half a second — 20x denser than the staggered start (25ms apart, ~10s for
+    // the same 400 loops) that exists in this file precisely to stop exchange-side rate limiting
+    // and a reconnect storm. The startup stagger was never applied to the reconnect path.
+    const noJitter = () => 0;
+    assert.equal(reconnectDelayMs(500, 0, noJitter), 0, 'the first loop is not delayed');
+    // Loop 400 comes back a full stagger window later, exactly as it would at startup.
+    assert.equal(reconnectDelayMs(500, 400, noJitter) - reconnectDelayMs(500, 0, noJitter), 400 * 25);
+    // The backoff jitter is still there on top of it — the stagger orders the loops, the jitter
+    // keeps two connectors that resync together from lining up.
+    assert.equal(reconnectDelayMs(500, 0, () => 1), 500);
+    assert.ok(reconnectDelayMs(500, 3, () => 0.5) > reconnectDelayMs(500, 2, () => 0.5));
+});
+
+function deferred () {
+    let resolve!: () => void;
+    const promise = new Promise<void>((r) => { resolve = r; });
+    return { promise, resolve };
+}

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { partitionAssignments } from './orchestrator.js';
+import { partitionAssignments, unshardedMemoryRisk, shouldAbortOnCrashLoop, CRASH_LOOP_RESTART_LIMIT, shardRestartCounts } from './orchestrator.js';
 import type { ShardAssignment } from './messages.js';
 import { fileURLToPath } from 'node:url';
 import { mkdtempSync } from 'node:fs';
@@ -86,6 +86,10 @@ test('a respawned shard is tracked, so stop() can actually kill it', async () =>
         const replacement = handle.children[0];
         assert.ok(replacement, 'the replacement is registered, not just the dead original');
         assert.notEqual(replacement.pid, firstPid, 'and it is a different process');
+        // The respawn itself is silent by design; the counter is the only thing that makes a
+        // crash-looping shard visible, since its replacement keeps reporting healthily.
+        assert.ok((shardRestartCounts.get('shard-0') ?? 0) >= 1,
+            'an unexpected exit must be counted for /metrics');
 
         // The point of tracking it: stop() must reach it.
         handle.stop();
@@ -95,4 +99,28 @@ test('a respawned shard is tracked, so stop() can actually kill it', async () =>
         handle.stop();
         delete process.env['ORCHESTRATOR_STUB_MARKER'];
     }
+});
+
+test('single-process mode is flagged once it is asked to carry a sharded-scale workload', () => {
+    // shardCount: 1 is the default, and it is the ONE path with no heap ceiling: the ceiling is an
+    // execArgv on the fork, so a process that never forks cannot have one. That is fine for the
+    // handful of exchanges local dev runs, and not fine at the 76-exchange discovery scale where a
+    // shard already measured 20.54GB RSS with a ceiling in place.
+    assert.equal(unshardedMemoryRisk(1, 4), false, 'a small explicit exchange list is what this mode is for');
+    assert.equal(unshardedMemoryRisk(1, 76), true, 'discovery scale in one unbounded process must be loud');
+    assert.equal(unshardedMemoryRisk(4, 76), false, 'sharded: every worker is forked with a ceiling');
+});
+
+test('a shard that never acknowledges init is a crash loop, not a retry', () => {
+    // A stale or half-unpacked deploy leaves shardWorker.js missing: the fork exits immediately,
+    // every time, and the respawn backoff caps at 30s — so the parent retries forever while
+    // /health keeps answering 200 and every exchange on that shard is offline. The distinguishing
+    // evidence is that the shard has NEVER got far enough to acknowledge its assignments.
+    assert.equal(shouldAbortOnCrashLoop(1, false), false, 'one crash is a crash, not a loop');
+    assert.equal(shouldAbortOnCrashLoop(CRASH_LOOP_RESTART_LIMIT, false), true,
+        'repeated exits with no acknowledgement mean the shard cannot start at all');
+    // A shard that HAS run is a different failure: it can crash and legitimately recover, and
+    // killing the whole router over a flapping venue would be worse than the flap.
+    assert.equal(shouldAbortOnCrashLoop(CRASH_LOOP_RESTART_LIMIT * 10, true), false,
+        'a shard that once worked keeps its unlimited respawn');
 });

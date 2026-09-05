@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { OrderBookCache } from './cache/orderBookCache.js';
-import { buildMetricsRegistry } from './metrics.js';
+import { buildMetricsRegistry, countReportingShards } from './metrics.js';
+import { shardRestartCounts } from './sharding/orchestrator.js';
 import { LoopRegistry } from './cache/loopRegistry.js';
 import type { CachedOrderBook } from './types.js';
 
@@ -160,4 +161,45 @@ test('dropped stream frames are counted and exported', async () => {
     counter.inc();
     counter.inc();
     assert.match(await registry.metrics(), /order_router_stream_frames_dropped_total 2/);
+});
+
+test('a shard that never started is visible as a gap between expected and reporting', async () => {
+    // The whole point: a shard that never came up is ABSENT from every other series. No exchange
+    // series (the parent only learns of an exchange over IPC from the shard that owns it), no shard
+    // series (loopRegistry is populated by the shard's own reports), no restart counter. Silence
+    // reads exactly like health, so the only alertable form is a count of what SHOULD be there.
+    const loopRegistry = new LoopRegistry();
+    loopRegistry.set('shard-0', { utilization: 0.5, lagP50Ms: 1, lagP99Ms: 2, lagMaxMs: 3 });
+    const text = await buildMetricsRegistry({
+        cache: new OrderBookCache(), staleBookMs: 5000, getWsConnectionCount: () => 0, loopRegistry,
+        expectedShards: 4,
+    }).metrics();
+
+    assert.match(text, /order_router_shards_expected 4/);
+    assert.match(text, /order_router_shards_reporting 1/);
+});
+
+test('a shard that has stopped reporting stops counting as present', async () => {
+    // A dead shard's last report lingers in the registry forever, so counting entries would report
+    // a shard that has been gone for an hour as reporting.
+    const now = Date.now();
+    const fresh: [string, { updatedAt: number }][] = [['shard-0', { updatedAt: now - 1000 }]];
+    const stale: [string, { updatedAt: number }][] = [['shard-1', { updatedAt: now - 600_000 }]];
+    assert.equal(countReportingShards([...fresh, ...stale], now), 1);
+    assert.equal(countReportingShards([], now), 0);
+});
+
+test('shard restarts are counted per shard, so a crash-looping shard is alertable', async () => {
+    // Respawn is silent by design (capped backoff, no fatal), which is right for recovery and wrong
+    // for observability: 3 of 4 shards were once running with no alert at all.
+    shardRestartCounts.set('shard-2', 7);
+    try {
+        const text = await buildMetricsRegistry({
+            cache: new OrderBookCache(), staleBookMs: 5000, getWsConnectionCount: () => 0,
+            loopRegistry: new LoopRegistry(),
+        }).metrics();
+        assert.match(text, /order_router_shard_restarts_total\{shard="shard-2"\} 7/);
+    } finally {
+        shardRestartCounts.delete('shard-2');
+    }
 });

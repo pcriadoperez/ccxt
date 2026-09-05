@@ -2,9 +2,10 @@ import { config } from '../config.js';
 import { createLoopMonitor } from '../loopHealth.js';
 import { logger } from '../logger.js';
 import { installCrashHandlers } from '../crashHandlers.js';
-import { OrderBookCache } from '../cache/orderBookCache.js';
+import { RelayOrderBookCache } from './relayCache.js';
 import { FeeRegistry } from '../cache/feeRegistry.js';
 import { ExchangeConnector } from '../connectors/exchangeConnector.js';
+import { startWithConcurrency } from '../connectors/startConcurrently.js';
 import type { ShardInitMessage } from './messages.js';
 import { createIpcSender, type IpcStats } from './ipcSend.js';
 
@@ -33,7 +34,9 @@ const send = ipc.send;
 
 async function runShard (assignments: ShardInitMessage['assignments']): Promise<void> {
     const shardLogger = logger.child({ shard: process.pid });
-    const cache = new OrderBookCache();
+    // Relay, not a cache: the shard never reads a book back, and retaining a second copy of every
+    // one of them is the largest avoidable allocation inside the heap-capped process.
+    const cache = new RelayOrderBookCache();
     const feeRegistry = new FeeRegistry();
 
     // Relay every book write and every fee discovery to the parent immediately — this is the
@@ -82,33 +85,31 @@ async function runShard (assignments: ShardInitMessage['assignments']): Promise<
         ),
     );
 
-    // Bounded concurrency, NOT Promise.all. Starting every exchange at once means N simultaneous
-    // loadMarkets() calls plus N first order-book snapshots, and that peak is what V8 grows the heap
-    // to hold and then never gives back — one shard measured 20.54GB RSS, flat, against siblings at
-    // 0.44-1.07GB. Serialising entirely would make startup unnecessarily slow, so this admits a few
-    // at a time: the peak scales with the limit rather than with the shard's exchange count.
+    // Bounded concurrency, NOT Promise.all — see startConcurrently.ts for the measured reason.
+    // Shared with index.ts so single-process mode cannot drift back to starting everything at once.
     const queue = assignments.map((a, i) => ({ ...a, connector: connectors[i]! }));
-    const limit = Math.max(1, config.shardStartConcurrency);
-    await Promise.all(Array.from({ length: Math.min(limit, queue.length) }, async () => {
-        for (;;) {
-            const next = queue.shift();
-            if (next === undefined) return;
-            try {
-                await next.connector.start(next.symbols);
-                shardLogger.info(
-                    { exchange: next.exchangeId, symbolCount: next.symbols.length, remaining: queue.length },
-                    'shard connector started',
-                );
-            } catch (err) {
-                shardLogger.error({ exchange: next.exchangeId, err }, 'shard connector failed to start');
-            }
+    await startWithConcurrency(queue, config.shardStartConcurrency, async (next, remaining) => {
+        try {
+            await next.connector.start(next.symbols);
+            shardLogger.info(
+                { exchange: next.exchangeId, symbolCount: next.symbols.length, remaining },
+                'shard connector started',
+            );
+        } catch (err) {
+            shardLogger.error({ exchange: next.exchangeId, err }, 'shard connector failed to start');
         }
-    }));
+    });
 
 }
 
 process.on('message', (message: ShardInitMessage) => {
     if (message.type === 'init') {
+        // Acknowledge BEFORE starting, not after: this says "the worker module loaded and accepted
+        // its assignments", which is exactly the fact the parent needs to tell a bad deploy (a
+        // missing shardWorker.js exits before this line is ever reached, every respawn) from a
+        // shard that is merely slow to bring up its connectors. Deferring it until startup
+        // finished would make a slow-but-healthy shard look unstartable.
+        send({ type: 'ready' });
         void runShard(message.assignments);
     }
 });

@@ -1,6 +1,8 @@
 import { Registry, Gauge, Counter, Histogram, collectDefaultMetrics } from 'prom-client';
 import type { OrderBookCache } from './cache/orderBookCache.js';
 import type { LoopRegistry } from './cache/loopRegistry.js';
+import { config } from './config.js';
+import { shardRestartCounts } from './sharding/orchestrator.js';
 
 // Metrics are DERIVED FROM CACHE STATE AT SCRAPE TIME rather than incremented alongside it.
 // The cache already owns the authoritative counters (updateCount, reconnectCount, lastUpdateAt);
@@ -19,6 +21,23 @@ export interface MetricsDeps {
     // connection map and metrics must not hold a reference that could keep sockets alive.
     getWsConnectionCount: () => number;
     loopRegistry: LoopRegistry;
+    // How many shards SHOULD be reporting. Defaults to the configured shard count; injectable so
+    // the gap can be tested without forking anything.
+    expectedShards?: number;
+}
+
+// A shard's last report stays in the registry after the shard dies, so counting entries would
+// report a shard that has been gone for an hour as present. Two flush intervals (2s each) plus
+// slack: a shard that has said nothing for this long is not merely busy.
+const SHARD_REPORT_STALE_MS = 15_000;
+
+// Kept pure and exported so the freshness rule is testable without a metrics registry.
+export function countReportingShards (
+    entries: [string, { updatedAt: number }][],
+    now: number,
+    staleMs = SHARD_REPORT_STALE_MS,
+): number {
+    return entries.filter(([, h]) => now - h.updatedAt <= staleMs).length;
 }
 
 export function buildMetricsRegistry (deps: MetricsDeps): Registry {
@@ -167,6 +186,42 @@ export function buildMetricsRegistry (deps: MetricsDeps): Registry {
         registers: [registry],
         collect () {
             this.set(deps.getWsConnectionCount());
+        },
+    });
+
+    // A shard that never starts is ABSENT from every other series here: no exchange series (the
+    // parent only learns of an exchange from the shard that owns it, over IPC), no shard loop
+    // series (those come from the shard's own reports), no restarts. Silence is indistinguishable
+    // from health, which is how 3 of 4 shards ran in production with no alert. These two make the
+    // missing shard alertable as `expected - reporting > 0`.
+    new Gauge({
+        name: 'order_router_shards_expected',
+        help: 'Shards this process is configured to run. Compare against shards_reporting.',
+        registers: [registry],
+        collect () {
+            this.set(deps.expectedShards ?? config.shardCount);
+        },
+    });
+
+    new Gauge({
+        name: 'order_router_shards_reporting',
+        help: 'Shards that have reported loop health recently. Below shards_expected means one is dead or never started.',
+        registers: [registry],
+        collect () {
+            this.set(countReportingShards(deps.loopRegistry.entries(), Date.now()));
+        },
+    });
+
+    // Respawn is deliberately silent (capped backoff, no fatal) because it is the right recovery.
+    // That makes it invisible: a shard crash-looping every 30s looks identical to a healthy one in
+    // every series above, since its replacement keeps reporting. Alert on a rising rate here.
+    new Gauge({
+        name: 'order_router_shard_restarts_total',
+        help: 'Cumulative unexpected shard exits per shard since process start.',
+        labelNames: ['shard'],
+        registers: [registry],
+        collect () {
+            for (const [shard, count] of shardRestartCounts) this.set({ shard }, count);
         },
     });
 

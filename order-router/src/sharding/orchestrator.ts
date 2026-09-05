@@ -45,6 +45,41 @@ export function imbalanceRatio (loads: number[]): number {
     return Math.max(...active) / Math.min(...active);
 }
 
+// Above this many exchanges, a single process is carrying a workload the sharded path only
+// survives because every worker is forked with `--max-old-space-size`. That ceiling cannot be
+// applied to a process that never forks, so single-process mode at discovery scale (76 exchanges)
+// has nothing between it and the 20.54GB high-water mark a shard reached WITH a ceiling. The
+// threshold is deliberately generous: the explicit-exchange-list default this mode exists for is
+// a handful of venues.
+const SINGLE_PROCESS_EXCHANGE_LIMIT = 8;
+
+// Kept pure so the boot-time warning is testable without starting a router.
+export function unshardedMemoryRisk (shardCount: number, exchangeCount: number): boolean {
+    return shardCount <= 1 && exchangeCount > SINGLE_PROCESS_EXCHANGE_LIMIT;
+}
+
+// How many times a shard may exit WITHOUT ever acknowledging its assignments before the parent
+// treats it as unstartable rather than unlucky. Five, because the backoff is 1s doubling to a 30s
+// cap: five exits is ~31s of evidence, long enough that a slow-but-working start is not caught and
+// short enough that a bad deploy is not left crash-looping behind a 200 /health.
+export const CRASH_LOOP_RESTART_LIMIT = 5;
+
+// Cumulative unexpected exits per shard, exported for /metrics. Module-level rather than passed
+// through, because the metrics registry is built by the HTTP server, which knows nothing about
+// sharding — and a shard that crash-loops is otherwise invisible: its replacement keeps reporting,
+// so every other series looks healthy while assignments are repeatedly dropped and re-subscribed.
+// Keyed the same way loopRegistry is (`shard-<index>`) so the two join in a query.
+export const shardRestartCounts = new Map<string, number>();
+
+// A shard that has never acknowledged an init cannot be fixed by retrying: the usual cause is that
+// shardWorker.js is not on disk (stale or half-unpacked deploy), and every respawn re-runs the same
+// missing file. Left alone, the parent retries forever while /health answers 200 and every exchange
+// assigned to that shard is silently offline. A shard that HAS acknowledged is a different animal:
+// it demonstrably works, so a crash there is a fault to recover from, not a deploy to roll back.
+export function shouldAbortOnCrashLoop (restarts: number, sawReady: boolean): boolean {
+    return !sawReady && restarts >= CRASH_LOOP_RESTART_LIMIT;
+}
+
 // Forks one child process per shard group, each running its own set of ExchangeConnectors, and
 // relays their book/health/fee messages into the parent's cache/feeRegistry. The parent's API
 // server reads from that same cache — still a synchronous in-process Map read on every request;
@@ -67,6 +102,10 @@ export function startShards (
     // shutdown bookkeeping below — which is process lifecycle, not routing — can only be exercised
     // against a stub. Production never passes this.
     workerPath: string = SHARD_WORKER_PATH,
+    // What to do when a shard proves unstartable. Exiting is right in production — the supervisor
+    // restarts us, or the deploy rolls back — but a test must be able to observe the decision
+    // without taking the test runner down with it.
+    onFatal: (reason: string) => void = () => process.exit(1),
 ): ShardHandle {
     const children: ChildProcess[] = [];
     let shuttingDown = false;
@@ -85,6 +124,12 @@ export function startShards (
                     break;
                 case 'fee':
                     feeRegistry.setFee(message.exchangeId, message.symbol, message.takerFeeRate);
+                    break;
+                case 'ready':
+                    // Reset here too: a shard that came back up has proved the deploy is intact,
+                    // so the next crash starts its backoff from the bottom rather than the cap.
+                    sawReady = true;
+                    restarts = 0;
                     break;
                 case 'loop':
                     loopRegistry.set(`shard-${shardIndex}`, {
@@ -108,6 +153,9 @@ export function startShards (
         // Respawn it, with capped backoff so a shard that crashes on startup cannot become its
         // own busy loop.
         let restarts = 0;
+        // Set by the worker's 'ready' message; see shouldAbortOnCrashLoop for why it is the
+        // dividing line between a retry and a rollback.
+        let sawReady = false;
 
         const spawn = (): ChildProcess => {
             // A heap ceiling, because V8 without one grows to the startup peak and keeps it. The
@@ -136,6 +184,18 @@ export function startShards (
                 }
                 const delay = Math.min(30_000, 1000 * 2 ** restarts);
                 restarts += 1;
+                const shardKey = `shard-${shardIndex}`;
+                shardRestartCounts.set(shardKey, (shardRestartCounts.get(shardKey) ?? 0) + 1);
+                if (shouldAbortOnCrashLoop(restarts, sawReady)) {
+                    const reason = `shard ${shardIndex} exited ${restarts} times without ever `
+                        + 'acknowledging init — its worker module is missing or unloadable; '
+                        + 'respawning it again cannot help';
+                    shardLogger.fatal({ code, pid: proc.pid, restarts, workerPath }, reason);
+                    shuttingDown = true;
+                    for (const other of children) other.kill();
+                    onFatal(reason);
+                    return;
+                }
                 shardLogger.error({ code, pid: proc.pid, restarts, delayMs: delay },
                     'shard process exited unexpectedly, respawning');
                 setTimeout(() => {

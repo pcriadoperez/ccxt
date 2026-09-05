@@ -95,47 +95,6 @@ Commit the actual production server block (with the `/router/`, `/router/api/`, 
 
 Either have `projectKeys` emit revoked rows with their real `revoked_at` (so the tombstone mechanism has data to work with, and revocation stays a load-time filter), or delete the env-key bridge and its documentation entirely and make `ORDER_ROUTER_API_KEY` a boot-time-only credential with that stat
 
-### 18. A resync closes every socket on a venue and all its watch loops re-subscribe within 500ms — 20x denser than the startup stagger the same file says exists to prevent a reconnect storm
-
-**Severity:** high &nbsp;·&nbsp; **estimated effort:** hours
-
-**Claimed evidence**
-
-```
-order-router/src/connectors/exchangeConnector.ts:440-443 tears down every client at once:
-```
-        for (const client of Object.values(this.exchange.clients ?? {})) {
-            try { await (client as any)?.close?.(); } catch { /* already closing */ }
-        }
-```
-Every loop then retries after o
-```
-
-**Suggested fix** — a suggestion, not a verdict; verify before following it.
-
-Re-apply `LOOP_START_STAGGER_MS` on the reconnect path, not just at start: give each loop a stable index and sleep `index * LOOP_START_STAGGER_MS` (or scale the jitter window by loop count) before resubscribing, so post-resync re-entry is spread over the same interval the initial subscribe used.
-
-### 19. Single-process mode (`shardCount: 1`, the default) has none of the memory protections the shard path has: unbounded startup concurrency, no heap ceiling, and `maxBookDepth` silently ignored
-
-**Severity:** high &nbsp;·&nbsp; **estimated effort:** hours
-
-**Claimed evidence**
-
-```
-order-router/src/index.ts:38-47 starts every exchange at once:
-```
-    await Promise.all(
-        assignments.map(async ({ exchangeId, symbols }, i) => {
-            try {
-                await connectors[i]!.start(symbols);
-```
-The shard path does the opposite, under a comment naming this exact fai
-```
-
-**Suggested fix** — a suggestion, not a verdict; verify before following it.
-
-Extract the shard's bounded-concurrency start loop into a shared helper and use it from `startConnectors`; pass `config.maxBookDepth` as the 8th argument in index.ts:28-36; if single-process discovery mode is meant to be supported at 76-exchange scale, refuse to boot (or warn loudly) when `discoverA
-
 ### 23. No migration mechanism beyond CREATE IF NOT EXISTS, and the deploy never runs it — a schema change ships code without the schema
 
 **Severity:** high &nbsp;·&nbsp; **estimated effort:** days
@@ -323,59 +282,6 @@ README.md:1004 — "No metrics/alerting | **Closed for instrumentation** ... **S
 
 Ship a logrotate config (with `create`, not `copytruncate`, per src/logger.ts:27-29) in the release, add a disk-usage and `order_router_exchange_last_update_age_seconds` alert with an actual delivery target, and point something at /metrics before the next deploy rather than after the first incident.
 
-### 51. Shard workers retain a full second copy of every order book they will never read, inside the process with the hard heap ceiling
-
-**Severity:** medium &nbsp;·&nbsp; **estimated effort:** hours
-
-**Claimed evidence**
-
-```
-order-router/src/sharding/shardWorker.ts:49 `const cache = new OrderBookCache();` — used only as an event bus (`cache.on('book', ...)` :55, `cache.on('health', ...)` :56, `cache.getHealth()` :63). But `setBook` stores unconditionally, in two maps (order-router/src/cache/orderBookCache.ts:41-51):
-```
-```
-
-**Suggested fix** — a suggestion, not a verdict; verify before following it.
-
-Give the shard a write-through emitter that does not retain (a thin `EventEmitter` implementing the `setBook`/`record*` surface), or add a `retain: boolean` constructor flag to `OrderBookCache` that the shard sets to false so `setBook` only emits.
-
-### 52. A shard whose module is missing (stale or half-unpacked deploy) crash-loops forever while `/health` keeps answering 200
-
-**Severity:** medium &nbsp;·&nbsp; **estimated effort:** hours
-
-**Claimed evidence**
-
-```
-order-router/src/sharding/orchestrator.ts:10 `const SHARD_WORKER_PATH = fileURLToPath(new URL('./shardWorker.js', import.meta.url));` and :116-130:
-```
-            proc.on('exit', (code) => {
-                if (shuttingDown) { ... return; }
-                const delay = Math.min(30_000, 1000 * 2 **
-```
-
-**Suggested fix** — a suggestion, not a verdict; verify before following it.
-
-After N consecutive respawns with no successful `init` acknowledgement, log fatal and exit the parent so the supervisor restarts (or the deploy rolls back), and factor shard liveness into `/ready` rather than counting only fresh books.
-
-### 53. Discovery runs once at boot and its failures are non-fatal, so a transient network blip silently pins the router to a junk symbol universe for the process lifetime
-
-**Severity:** medium &nbsp;·&nbsp; **estimated effort:** hours
-
-**Claimed evidence**
-
-```
-order-router/src/discovery/liquidity.ts:57-61 swallows a reference-venue failure:
-```
-        } catch (err) {
-            logger.warn({ exchange: id, err: String(err) }, 'liquidity reference failed, continuing');
-        } finally {
-```
-With `volume` empty, the sort at liquidity.ts:66 `return [...ca
-```
-
-**Suggested fix** — a suggestion, not a verdict; verify before following it.
-
-Treat a failed liquidity ranking as fatal at boot (exit non-zero and let the supervisor retry) rather than continuing with an unranked list, or retry the reference fetch with backoff before falling through. Do the same for `assignments.length === 0`. If long-lived processes are expected, add a perio
-
 ### 58. Personal data is retained forever and the documented "delete my data is one statement" erasure does not work
 
 **Severity:** medium &nbsp;·&nbsp; **estimated effort:** hours
@@ -389,20 +295,6 @@ IPs are stored in three places — /home/user/ccxt/order-router/src/db/schema.sq
 **Suggested fix** — a suggestion, not a verdict; verify before following it.
 
 Add `ON DELETE CASCADE` (or an explicit multi-statement erasure function) for api_keys.user_id and sessions, provide a tested `erase_user(uuid)` that also nulls ip/user_agent on requests rows matched by that user's key_ids, and add a retention job that drops partitions older than the documented wind
-
-### 59. A shard that never starts is completely absent from /metrics — no exchange series, no shard series, no restart counter
-
-**Severity:** medium &nbsp;·&nbsp; **estimated effort:** hours
-
-**Claimed evidence**
-
-```
-`src/cache/orderBookCache.ts:175-177` returns only exchanges the parent has heard about: `getHealth (): ExchangeHealth[] { return Array.from(this.health.values()); }`, populated in the parent solely via `setHealth` from IPC (`src/sharding/orchestrator.ts:79-81`). `src/cache/loopRegistry.ts:9-15` lik
-```
-
-**Suggested fix** — a suggestion, not a verdict; verify before following it.
-
-Add `order_router_shards_expected` (from `config.shardCount`) and `order_router_shards_reporting` so `expected - reporting > 0` is alertable, plus an `order_router_shard_restarts_total{shard}` counter incremented in the `exit` handler. Seed `loopRegistry` with an entry per configured shard index at
 
 ### 65. Go cannot read per-trade fees and carries the gross amount forward; the code comment claims this is conservative, and it is the opposite
 
@@ -542,6 +434,12 @@ Kept so the same ground is not re-covered, and so a `wontfix` is not silently re
 | 74 | medium | The artifact CI tested is not the artifact deployed: the shipped arm64 tree is rebuilt in the deploy job and never runs a single test before it reaches production | **fixed** — the deploy job runs `npm test` on the arm64 tree it is about to ship, after the build and before the prune and tar. |
 | 75 | medium | A missing, rotated or revoked ORDER_ROUTER_SMOKE_API_KEY causes CI to roll back and double-restart a perfectly healthy production release | **fixed** — live-integration.mjs exits 2 (its documented "misconfigured" code) when the deployment rejects OUR key while correctly 401-ing the no-key and bogus-key probes, and rollback now requires a `failed` verdict rather than merely a non-success. The run still goes red either way. Tradeoff, commented in the workflow: a live-integration job that dies before publishing a verdict no longer auto-rolls-back — the script bounds itself far inside the job timeout, so that case is infrastructure, not a bad release. |
 | 76 | medium | The service pins ccxt 4.5.64 inside a repo at 4.5.77 and nothing in CI detects the drift, so library fixes never reach the deployed router | **fixed as a detector, not a bump** — `check:ccxt-pin` runs in build-and-test and fails when the repo version moves past the lag written into `ccxtPin.acknowledgedRepoVersion` (4.5.77, reason recorded), warns while that lag stands, and rejects a non-exact pin. The pin was left at 4.5.64 on purpose: a version bump is a behaviour change deserving its own review. The gap can now only widen deliberately. |
+| 18 | high | A resync closes every socket on a venue and all its watch loops re-subscribe within 500ms — 20x denser than the startup stagger the same file says exists to prevent a reconnect storm | **fixed** — the reconnect delay now carries the loop's stable startup index (`jitter × backoff + index × stagger`), so the reconnect path spreads exactly as startup does instead of collapsing every loop into one 500ms window. |
+| 19 | high | Single-process mode (`shardCount: 1`, the default) has none of the memory protections the shard path has: unbounded startup concurrency, no heap ceiling, and `maxBookDepth` silently ignored | **fixed for two of the three** — bounded startup admission is now shared code used by both paths, and `maxBookDepth` is passed in single-process mode (it was an 8th argument only shardWorker supplied, so the DEFAULT deployment kept whole books). The heap ceiling genuinely cannot exist in a process that never forks — it is an execArgv on fork() — so instead unsharded mode now warns loudly at boot when handed discovery-scale load, naming the reason. |
+| 51 | medium | Shard workers retain a full second copy of every order book they will never read, inside the process with the hard heap ceiling | **fixed** — the worker uses a relay cache that emits the same events in the same order without storing the books. The shard is a pure forwarder: nothing in it ever reads a book back. Health is still retained deliberately — it is small and re-read on every flush. |
+| 52 | medium | A shard whose module is missing (stale or half-unpacked deploy) crash-loops forever while `/health` keeps answering 200 | **fixed** — a worker acks on receiving its assignment, before starting connectors, so a slow-but-healthy shard is not misjudged. A shard that has never acked and has crashed five times (≈31s of backoff evidence) is fatal: the parent logs, kills its siblings and exits, so a supervisor sees the failure instead of a process that stays up doing nothing. A shard that has ever acked keeps unlimited respawn. |
+| 53 | medium | Discovery runs once at boot and its failures are non-fatal, so a transient network blip silently pins the router to a junk symbol universe for the process lifetime | **fixed** — with every reference venue failing, the volume map is empty and the "trimmed to most-liquid" slice is arbitrary enumeration order presented as a ranking. Boot now fails (and the supervisor retries) both when a ranking has no reference behind it and when no routable assignment survives, rather than serving a junk universe until someone restarts it. |
+| 59 | medium | A shard that never starts is completely absent from /metrics — no exchange series, no shard series, no restart counter | **fixed** — `order_router_shards_expected` (from config, so it counts shards that never reported), `order_router_shards_reporting` (freshness-filtered over a 15s window, so a dead shard's stale entry stops counting) and `order_router_shard_restarts_total{shard}`. The gap between expected and reporting is the alertable signal that did not previously exist. |
 | 14 | high | Attacker-controlled request.ip is inserted into an `inet` column inside the ingest transaction; one crafted header wedges audit ingestion permanently | **fixed** — 6f88bfb3 same fix as blocker 4 |
 | 15 | high | The published dev API key `dev-local-key-change-me` is enabled in production whenever NODE_ENV is unset, and the documented systemd unit never sets it | **fixed** — 6f88bfb3 same fix as blocker 0 |
 | 25 | high | /stream/route produces zero audit records and zero HTTP metrics — streaming usage is invisible to billing and to Prometheus | **fixed** — cc1501bf audit emission shared by GET/POST /route and every pushed frame; unroutable counter with it |

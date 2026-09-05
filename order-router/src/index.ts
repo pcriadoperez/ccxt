@@ -10,8 +10,9 @@ import { buildServer } from './api/server.js';
 import { ApiKeyStore } from './api/keyStore.js';
 import { listWatchOrderBookExchanges } from './discovery/exchangeDiscovery.js';
 import { buildSymbolUniverse } from './discovery/symbolUniverse.js';
-import { rankSymbolsByLiquidity } from './discovery/liquidity.js';
-import { partitionAssignments, imbalanceRatio, startShards, type ShardHandle } from './sharding/orchestrator.js';
+import { rankSymbolsByLiquidity, isUsableRanking } from './discovery/liquidity.js';
+import { partitionAssignments, imbalanceRatio, startShards, unshardedMemoryRisk, type ShardHandle } from './sharding/orchestrator.js';
+import { startWithConcurrency } from './connectors/startConcurrently.js';
 import { LoopRegistry } from './cache/loopRegistry.js';
 import { createLoopMonitor } from './loopHealth.js';
 import type { ShardAssignment } from './sharding/messages.js';
@@ -33,18 +34,24 @@ async function startConnectors (
             existingExchanges.get(exchangeId),
             config.maxSymbolsPerSubscription,
             config.maxSymbolsPerExchangeOverrides.get(exchangeId),
+            // Was omitted here and passed only by the shard worker, so the default (the whole
+            // book) applied in exactly the process with no heap ceiling to absorb it.
+            config.maxBookDepth,
         ),
     );
-    await Promise.all(
-        assignments.map(async ({ exchangeId, symbols }, i) => {
-            try {
-                await connectors[i]!.start(symbols);
-                logger.info({ exchange: exchangeId, symbolCount: symbols.length }, 'connector started');
-            } catch (err) {
-                logger.error({ exchange: exchangeId, err }, 'connector failed to start');
-            }
-        }),
-    );
+    // Bounded, NOT Promise.all — the same rule the shard path has always had, for the same
+    // reason: N simultaneous loadMarkets() calls plus N first snapshots is the peak V8 grows the
+    // heap to and never gives back. This path needs it MORE, not less: a shard is forked with
+    // --max-old-space-size and this process cannot be, so there is nothing here to catch the peak.
+    const queue = assignments.map(({ exchangeId, symbols }, i) => ({ exchangeId, symbols, connector: connectors[i]! }));
+    await startWithConcurrency(queue, config.shardStartConcurrency, async ({ exchangeId, symbols, connector }) => {
+        try {
+            await connector.start(symbols);
+            logger.info({ exchange: exchangeId, symbolCount: symbols.length }, 'connector started');
+        } catch (err) {
+            logger.error({ exchange: exchangeId, err }, 'connector failed to start');
+        }
+    });
     return connectors;
 }
 
@@ -91,8 +98,19 @@ async function main () {
         // message volume, and the long tail contributes almost no routing value for its cost.
         if (config.topSymbols > 0) {
             const allSymbols = [...new Set(assignments.flatMap((a) => a.symbols))];
-            const ranked = await rankSymbolsByLiquidity(allSymbols, config.liquidityReferenceExchanges, logger);
-            const keep = new Set(ranked.slice(0, config.topSymbols));
+            const ranking = await rankSymbolsByLiquidity(allSymbols, config.liquidityReferenceExchanges, logger);
+            // Fatal, deliberately. Discovery runs once at boot and never again, so continuing with
+            // an unranked list does not degrade for a few seconds — it pins the router to whatever
+            // arbitrary slice of the universe enumeration order produced, for the process lifetime,
+            // under a log line claiming it kept the most-liquid symbols. Exiting non-zero lets the
+            // supervisor retry, which is the only thing that actually recovers from a network blip.
+            if (!isUsableRanking(ranking)) {
+                throw new Error(
+                    `every liquidity reference venue failed (${ranking.referencesAttempted} attempted); `
+                    + 'refusing to trim the symbol universe on an unranked list',
+                );
+            }
+            const keep = new Set(ranking.ranked.slice(0, config.topSymbols));
             assignments = assignments
                 .map((a) => ({ exchangeId: a.exchangeId, symbols: a.symbols.filter((sym) => keep.has(sym)) }))
                 .filter((a) => a.symbols.length > 0);
@@ -102,8 +120,11 @@ async function main () {
             );
         }
 
+        // Also fatal, and for the same reason: a router with no assignments answers every route
+        // request as unroutable, with a 200, forever. Logging an error and listening anyway is the
+        // shape of outage that looks healthy from the outside.
         if (assignments.length === 0) {
-            logger.error('no exchanges have any routable symbols (>= minExchangesPerSymbol) — nothing to do');
+            throw new Error('no exchanges have any routable symbols (>= minExchangesPerSymbol) — nothing to do');
         }
 
         // Discovery instances only exist to compute the symbol universe. In single-process mode
@@ -167,6 +188,14 @@ async function main () {
             }, config.rebalanceAfterMs).unref();
         }
     } else {
+        if (unshardedMemoryRisk(config.shardCount, assignments.length)) {
+            logger.warn(
+                { exchanges: assignments.length, shardCount: config.shardCount },
+                'running many exchanges in a single process: the --max-old-space-size ceiling only '
+                + 'exists on forked shards, so this process has nothing bounding its heap. Set '
+                + 'ORDER_ROUTER_SHARD_COUNT > 1.',
+            );
+        }
         connectors = await startConnectors(assignments, cache, feeRegistry, existingExchanges);
         // Unsharded: this process runs the connectors, so instrument its own loop under the same
         // label scheme the sharded path uses.

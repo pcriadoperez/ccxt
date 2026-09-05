@@ -55,5 +55,13 @@ export interface ShardLoopMessage {
     droppedHealth: number;
 }
 
+// Sent once, as soon as the worker has accepted its assignments. Its only job is to tell the
+// parent that this shard got far enough to run: a shard whose module is missing (a stale or
+// half-unpacked deploy) exits before it can ever send one, which is what separates "cannot start
+// at all" from "crashed and will recover".
+export interface ShardReadyMessage {
+    type: 'ready';
+}
+
 export type ShardToParentMessage =
-    | ShardBookMessage | ShardHealthMessage | ShardFeeMessage | ShardLoopMessage;
+    | ShardBookMessage | ShardHealthMessage | ShardFeeMessage | ShardLoopMessage | ShardReadyMessage;
