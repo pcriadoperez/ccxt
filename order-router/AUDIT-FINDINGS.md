@@ -481,26 +481,6 @@ Add `ON DELETE CASCADE` (or an explicit multi-statement erasure function) for ap
 
 Add `order_router_shards_expected` (from `config.shardCount`) and `order_router_shards_reporting` so `expected - reporting > 0` is alertable, plus an `order_router_shard_restarts_total{shard}` counter incremented in the `exit` handler. Seed `loopRegistry` with an entry per configured shard index at
 
-### 62. The README's forensic log queries return zero rows against the production configuration
-
-**Severity:** medium &nbsp;·&nbsp; **estimated effort:** minutes
-
-**Claimed evidence**
-
-```
-README.md:437-444 gives the two "who called what" runbook queries:
-```bash
-# every request a key made, last 7 days
-zcat -f /var/log/order-router/router.log* \
-  | jq -c 'select(.keyId=="k_7f3a91c2" and .event=="request")'
-```
-But when `ORDER_ROUTER_AUDIT_LOG_FILE` is set — which README.md:528 says i
-```
-
-**Suggested fix** — a suggestion, not a verdict; verify before following it.
-
-Update README.md:437-444 to read from `$ORDER_ROUTER_AUDIT_LOG_FILE*`, and correct the event table at 431-436 to state which stream each event lands in (`request`/`route_recommendation` → audit file; `stream_open`/`stream_close` → diagnostic log, until finding #2 is fixed).
-
 ### 65. Go cannot read per-trade fees and carries the gross amount forward; the code comment claims this is conservative, and it is the opposite
 
 **Severity:** medium &nbsp;·&nbsp; **estimated effort:** hours
@@ -584,24 +564,6 @@ order-router/docs/auth-plan.md:3 — "Status: **plan, not shipped.**" and auth-p
 **Suggested fix** — a suggestion, not a verdict; verify before following it.
 
 Restamp the three docs with accurate status headers (auth-plan.md: shipped then superseded by product-plan §3; dashboard-plan.md: superseded, and its :443 prohibition no longer holds; product-plan.md: shipped). Repoint README.md:456 at whichever document describes the shipped Postgres/dashboard mode
-
-### 71. The `limit_protected` execution strategy is implemented but absent from every document, including the Manual table that presents itself as the complete list
-
-**Severity:** medium &nbsp;·&nbsp; **estimated effort:** minutes
-
-**Claimed evidence**
-
-```
-Implemented and reachable: ts/src/base/OrderRouter.ts:69
-```
-const KNOWN_STRATEGIES = [ 'dry_run', 'sequential', 'parallel_within_hop', 'limit_protected', 'best_effort', 'atomic_ish' ];
-```
-validated at OrderRouter.ts:1348, dispatched at OrderRouter.ts:1804-1806 (`if (strategy === 'limit_protected')
-```
-
-**Suggested fix** — a suggestion, not a verdict; verify before following it.
-
-Add a `limit_protected` row to wiki/Manual.md:8595-8601 with its `orderTimeoutMs` / `pollIntervalMs` options and its resting/cancel semantics, and add it to the strategy line in all five `.claude/skills/ccxt-*/SKILL.md` files.
 
 ### 74. The artifact CI tested is not the artifact deployed: the shipped arm64 tree is rebuilt in the deploy job and never runs a single test before it reaches production
 
@@ -736,6 +698,8 @@ Kept so the same ground is not re-covered, and so a `wontfix` is not silently re
 | 72 | medium | OpenAPI's POST /route omits the 404 and 501 responses the shared handler returns, on the verb the spec itself tells callers to use for balances | **fixed** — both copied onto the `post:` responses, and src/openapi.test.ts now asserts the two verbs document identical status sets, since one handler serves both. |
 | 83 | low | OpenAPI describes /health as "the only unauthenticated route" while the next path in the same file is also unauthenticated | **fixed** — the description names both. The claim mattered: a caller who believes it wires their orchestrator to the probe that answers 200 while the cache is still filling, thinking it is the only one they can reach. |
 | 86 | low | The README's test-coverage table is stale in a way that overstates verification — it names a test file that does not exist and undercounts the suite by 6x, while the readiness table reports CI as "Closed" | **fixed** — the fixed count is gone (`npm test` prints the real one), the phantom `bestPrice.test.ts` row is corrected, and every test file on disk now has a row. src/docs.test.ts asserts both directions, so a new area cannot be added without one. |
+| 62 | medium | The README's forensic log queries return zero rows against the production configuration | **fixed** — the two runbook queries now read `$ORDER_ROUTER_AUDIT_LOG_FILE*`, with a line stating that every event in the table above lands in the audit stream and a note on the no-audit-file fallback. Pointed at router.log with the audit file configured, they returned nothing and read as "this key made no requests" — the most misleading answer available. |
+| 71 | medium | The `limit_protected` execution strategy is implemented but absent from every document, including the Manual table that presents itself as the complete list | **fixed** — a row in wiki/Manual.md with its `orderTimeoutMs` / `pollIntervalMs` options and its resting/cancel semantics, plus the strategy sentence in the five user-facing skills that carry one (ccxt-typescript, -python, -php, -csharp, -go; ccxt-cli, -java and -mcp document no strategies at all). **No automated guard**: the order-router suite is the only drift-testing harness in this change and has no business reading the library's wiki, while the six-language OrderRouter suite is transpiled and cannot read the filesystem. A future divergence needs a repo-level docs check. |
 | 14 | high | Attacker-controlled request.ip is inserted into an `inet` column inside the ingest transaction; one crafted header wedges audit ingestion permanently | **fixed** — 6f88bfb3 same fix as blocker 4 |
 | 15 | high | The published dev API key `dev-local-key-change-me` is enabled in production whenever NODE_ENV is unset, and the documented systemd unit never sets it | **fixed** — 6f88bfb3 same fix as blocker 0 |
 | 25 | high | /stream/route produces zero audit records and zero HTTP metrics — streaming usage is invisible to billing and to Prometheus | **fixed** — cc1501bf audit emission shared by GET/POST /route and every pushed frame; unroutable counter with it |
