@@ -14,6 +14,7 @@ import { recordAdminAction } from '../db/adminAudit.js';
 import {
     hashPassword, verifyPassword, createSession, loadSession, destroySession,
     setSessionCookie, clearSessionCookie, readCookie, csrfToken, csrfOk, originOk,
+    csrfCookieName, newCsrfSeed, setCsrfCookie,
     SESSION_COOKIE, type SessionUser,
 } from './auth.js';
 import { page, esc } from './views/layout.js';
@@ -158,6 +159,25 @@ export async function buildWebServer (opts: WebOptions) {
         return { token, user: await loadSession(pool, token) };
     };
 
+    // The value the anonymous CSRF token is derived from. Before there is a session there is
+    // nothing per-visitor to bind a token to, and the previous answer was the literal string
+    // 'anon' — one public constant, the same for everybody, which meant /signup and /login carried
+    // no CSRF token at all and were defended by the Origin header alone. `read` is the value that
+    // came in with the request; `mint` is for a page that is about to render a form and needs the
+    // visitor to have one.
+    const anonCsrfCookie = csrfCookieName(secureCookies);
+    const readAnonSeed = (request: FastifyRequest): string | undefined => {
+        const seed = readCookie(request, anonCsrfCookie);
+        return seed === undefined || seed.length === 0 ? undefined : seed;
+    };
+    const mintAnonSeed = (request: FastifyRequest, reply: FastifyReply): string => {
+        const existing = readAnonSeed(request);
+        if (existing !== undefined) return existing;
+        const seed = newCsrfSeed();
+        setCsrfCookie(reply, seed, secureCookies);
+        return seed;
+    };
+
     const guard = (supplied: unknown, token: string | undefined, request: never): string | undefined => {
         if (!originOk(request, opts.allowedOrigins)) return 'Request origin not allowed.';
         if (!csrfOk(supplied, token, csrfSecret)) return 'Your session expired. Please try again.';
@@ -202,13 +222,13 @@ export async function buildWebServer (opts: WebOptions) {
     app.get(`${base}/signup`, async (request, reply) => {
         const { token } = await sessionOf(request as never);
         void reply.type('text/html');
-        return signupPage(base, csrfToken(token ?? 'anon', csrfSecret));
+        return signupPage(base, csrfToken(token ?? mintAnonSeed(request, reply), csrfSecret));
     });
 
     app.get(`${base}/login`, async (request, reply) => {
         const { token } = await sessionOf(request as never);
         void reply.type('text/html');
-        return loginPage(base, csrfToken(token ?? 'anon', csrfSecret));
+        return loginPage(base, csrfToken(token ?? mintAnonSeed(request, reply), csrfSecret));
     });
 
     app.post<{ Body: { email?: string; password?: string; csrf?: string } }>(
@@ -217,9 +237,11 @@ export async function buildWebServer (opts: WebOptions) {
         async (request, reply) => {
             const { token } = await sessionOf(request as never);
             void reply.type('text/html');
-            const fail = (msg: string) => signupPage(base, csrfToken(token ?? 'anon', csrfSecret), msg);
+            // The re-rendered form gets a token the visitor can actually submit: their existing
+            // seed if the cookie survived, a fresh one if it did not.
+            const fail = (msg: string) => signupPage(base, csrfToken(token ?? mintAnonSeed(request, reply), csrfSecret), msg);
 
-            const bad = guard(request.body.csrf, token ?? 'anon', request as never);
+            const bad = guard(request.body.csrf, token ?? readAnonSeed(request), request as never);
             if (bad !== undefined) return fail(bad);
 
             const email = (request.body.email ?? '').trim().toLowerCase();
@@ -234,10 +256,40 @@ export async function buildWebServer (opts: WebOptions) {
                     [userId, email, hashPassword(password)],
                 );
             } catch (err) {
-                if ((err as { code?: string }).code === '23505') {
-                    return fail('An account with that email already exists.');
+                if ((err as { code?: string }).code !== '23505') throw err;
+                // The address is already registered. Saying so — "an account with that email
+                // already exists" — turns this form into the account-enumeration oracle that
+                // /login goes out of its way to deny ten lines below: one unauthenticated POST per
+                // address, no password required, and the beta's rate limit of ten signups an hour
+                // is not a defence against a list.
+                //
+                // So a conflict is answered as a sign-in instead. Someone who forgot they already
+                // had an account is the overwhelmingly common case, and they get exactly what they
+                // came for: with the right password they land on the dashboard with a session,
+                // which is the same outcome and the same redirect a brand-new signup produces.
+                // With a wrong password they get the words /login uses for every failure, so the
+                // two forms cannot be played against each other either. No key is minted here —
+                // the account already has its own, and re-posting the form should not grow the
+                // key list.
+                //
+                // What this does NOT do is make the two cases indistinguishable to someone holding
+                // no password: a new address still ends in an authenticated dashboard and a taken
+                // one does not. Closing that last gap means not issuing the account until a
+                // verification mail is answered, and during the beta there is no mailer — this is
+                // the strongest version available without one, chosen deliberately, and it should
+                // be revisited the day email verification lands.
+                const { rows } = await pool.query<{ id: string; password_hash: string }>(
+                    'SELECT id, password_hash FROM users WHERE email = $1', [email],
+                );
+                const existing = rows[0];
+                if (existing === undefined || !verifyPassword(password, existing.password_hash)) {
+                    return fail('Email or password is incorrect.');
                 }
-                throw err;
+                const resumed = await createSession(pool, existing.id, request.ip, request.headers['user-agent']);
+                await pool.query('UPDATE users SET last_login_at = now() WHERE id = $1', [existing.id]);
+                setSessionCookie(reply, resumed, secureCookies);
+                void reply.redirect(`${base}/dashboard`);
+                return reply;
             }
 
             // Issue the first key immediately. The whole point of the funnel is landing page to a
@@ -261,13 +313,15 @@ export async function buildWebServer (opts: WebOptions) {
         async (request, reply) => {
             const { token } = await sessionOf(request as never);
             void reply.type('text/html');
-            const fail = () => loginPage(base, csrfToken(token ?? 'anon', csrfSecret),
+            const fail = () => loginPage(base, csrfToken(token ?? mintAnonSeed(request, reply), csrfSecret),
                 // One message for every failure: distinguishing "no such account" from "wrong
                 // password" hands an attacker a free account-enumeration oracle.
                 'Email or password is incorrect.');
 
-            const bad = guard(request.body.csrf, token ?? 'anon', request as never);
-            if (bad !== undefined) return loginPage(base, csrfToken(token ?? 'anon', csrfSecret), bad);
+            const bad = guard(request.body.csrf, token ?? readAnonSeed(request), request as never);
+            if (bad !== undefined) {
+                return loginPage(base, csrfToken(token ?? mintAnonSeed(request, reply), csrfSecret), bad);
+            }
 
             const email = (request.body.email ?? '').trim().toLowerCase();
             const { rows } = await pool.query<{ id: string; password_hash: string }>(

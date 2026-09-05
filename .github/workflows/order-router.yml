@@ -68,6 +68,14 @@ jobs:
       - name: Type-check and build
         run: npm run build
 
+      - name: Check the ccxt pin against the repository it lives in
+        # The service depends on the PUBLISHED ccxt at an exact version, and nothing reconciled that
+        # pin with the repo around it: it sat thirteen patch releases behind, so fixes landed in
+        # ts/src never reached the deployed router and no job could see it. This does not bump the
+        # pin (that is a behaviour change with its own review) — it fails when the lag grows past
+        # the one written down in order-router/package.json, so drift is never invisible again.
+        run: npm run check:ccxt-pin
+
       - name: Unit tests
         # Offline by design: no live exchange connections, no network. Anything needing a real
         # exchange lives in benchmark/ and is run manually (see order-router/README.md).
@@ -286,6 +294,14 @@ jobs:
           grep -q "\"commit\": \"${GITHUB_SHA}\"" dist/build-info.json \
             || { echo "::error::dist/build-info.json does not carry ${GITHUB_SHA}"; cat dist/build-info.json; exit 1; }
 
+      - name: Unit tests on the tree that ships
+        # build-and-test runs on x64; this job rebuilds from scratch on arm64 and it is THIS tree,
+        # not the tested one, that is packed and unpacked onto the box. Nothing had ever run a
+        # single assertion against it, so an arm64-only failure — a native dependency, a differing
+        # engine build — reached production and was first observed by the on-box smoke test, after
+        # the symlink had already moved. Same suite, ~18s, before anything is packed.
+        run: npm test
+
       - name: Prune to production dependencies
         # The box gets a ready-to-run tree: no npm install there, no network needed at deploy time,
         # and no build toolchain on a 7.5 GB host shared with the docs and playground containers.
@@ -398,6 +414,22 @@ jobs:
             echo "$body" | grep -qE '"uptimeSec":[0-9]{1,3}(\.|,|})' \
               || { echo "smoke: the service did not restart ($body)"; return 1; }
 
+            # LIVENESS is not READINESS. /health answers 200 from the first millisecond of boot,
+            # so the loop above proves only that a process exists; /route is unanswerable until the
+            # book cache has warmed, and until then live traffic reaching this process gets a
+            # confident 200 that says "no route". /ready is the endpoint that knows the difference
+            # (503 while freshCount < minFreshBooksForReady) and nothing consumed it. Gate here, so
+            # the degraded window is a state the deploy waits out rather than one it serves through.
+            for i in $(seq 1 60); do   # up to 5 min for the book cache to warm
+              curl -fsS --max-time 5 "http://127.0.0.1:${PORT}/ready" 2>/dev/null \
+                | grep -q '"status":"ready"' && break
+              sleep 5
+            done
+            curl -fsS --max-time 5 "http://127.0.0.1:${PORT}/ready" 2>/dev/null \
+              | grep -q '"status":"ready"' \
+              || { echo "smoke: /ready never reported ready — the process is up but cannot route"; \
+                   return 1; }
+
             code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${PORT}/symbols")
             [ "$code" = 401 ] || { echo "smoke: unauthenticated /symbols gave $code, want 401"; return 1; }
             code=$(curl -s -o /dev/null -w '%{http_code}' -H "x-api-key: $SMOKE_KEY" \
@@ -475,6 +507,13 @@ jobs:
        (github.event_name == 'push' && github.ref == 'refs/heads/master'))
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # What this job learned, as distinct from whether it passed. `rollback` keys on this rather than
+    # on the job result: a missing, rotated or revoked ORDER_ROUTER_SMOKE_API_KEY fails every
+    # authenticated assertion here, which looked identical to "the release is bad" and cost a
+    # healthy production release a rollback and a second restart — two full book-cache rebuilds —
+    # because a secret had expired.
+    outputs:
+      verdict: ${{ steps.live.outputs.verdict }}
     steps:
       - uses: actions/checkout@v4
 
@@ -485,6 +524,7 @@ jobs:
       - name: Live integration tests against the deployed service
         # No `npm ci`: the script uses nothing but Node built-ins, on purpose — a post-deploy check
         # that needs a dependency tree can fail for reasons that have nothing to do with the deploy.
+        id: live
         env:
           # Public URL, not a secret: this is the address customers use. Deliberately NOT the
           # loopback port — going through nginx is what makes a broken proxy config a failed deploy.
@@ -493,12 +533,48 @@ jobs:
           # The whole point. A deploy that silently no-ops answers every other assertion here
           # exactly like a successful one; only this fails.
           ROUTER_EXPECT_COMMIT: ${{ github.sha }}
-        run: node scripts/live-integration.mjs
+        # Exit 2 is the script's documented "misconfigured" code (see scripts/live-integration.mjs):
+        # no URL/key, or a key the deployment rejects while authenticating everything else
+        # correctly. The run still goes red — a check that cannot run is not a pass — but it is
+        # recorded as `misconfigured`, and `rollback` refuses to touch the box on that verdict.
+        # The empty-secret case is caught before the script runs so the failure names the secret.
+        run: |
+          if [ -z "$ROUTER_API_KEY" ]; then
+            echo "verdict=misconfigured" >> "$GITHUB_OUTPUT"
+            echo "::error::ORDER_ROUTER_SMOKE_API_KEY is empty — the post-deploy checks cannot run."
+            echo "::error::This says NOTHING about the release just deployed; it is not rolled back."
+            exit 1
+          fi
+          set +e
+          node scripts/live-integration.mjs
+          code=$?
+          set -e
+          case "$code" in
+            0) verdict=passed ;;
+            2) verdict=misconfigured ;;
+            *) verdict=failed ;;
+          esac
+          echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
+          if [ "$verdict" = misconfigured ]; then
+            echo "::error::the post-deploy checks were misconfigured (exit 2), not failed — the"
+            echo "::error::deployed release is left in place. Check ORDER_ROUTER_SMOKE_API_KEY."
+          fi
+          exit $code
 
   # ---------------------------------------------------------------------------------------------
   # The deployed build is wrong even though it started cleanly: put the previous release back.
-  # Runs only when deploy succeeded and live-integration failed — a failed deploy has already rolled
-  # itself back, and a cancelled run must not touch the box at all.
+  # Runs only when deploy succeeded and live-integration failed ON ITS ASSERTIONS — a failed deploy
+  # has already rolled itself back, and a cancelled run must not touch the box at all.
+  #
+  # `verdict == 'failed'`, not `result == 'failure'`: the job also goes red when the checks could
+  # not run at all (missing, rotated or revoked ORDER_ROUTER_SMOKE_API_KEY). Rolling back on that
+  # reverts a release nothing is known to be wrong with and restarts the router twice, each restart
+  # rebuilding the whole book cache — an outage caused entirely by an expired secret.
+  #
+  # The deliberate cost: a live-integration job that dies before publishing a verdict (runner death,
+  # a cancelled run, the 15-minute job timeout) no longer triggers an automatic rollback. The script
+  # bounds itself well inside that timeout, so those are infrastructure failures — the class this
+  # exists to stop rolling back on. The run is still red; roll back by hand if the deploy is suspect.
   # ---------------------------------------------------------------------------------------------
   rollback:
     needs: [ deploy, live-integration ]
@@ -506,7 +582,8 @@ jobs:
       always() &&
       github.repository == 'pcriadoperez/ccxt' &&
       needs.deploy.result == 'success' &&
-      needs.live-integration.result == 'failure'
+      needs.live-integration.result == 'failure' &&
+      needs.live-integration.outputs.verdict == 'failed'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 15
     # Same group as `deploy`: this job repoints the same symlink and restarts the same unit, so it

@@ -1,8 +1,10 @@
-import { openSync, readSync, closeSync, statSync } from 'node:fs';
+import { openSync, readSync, closeSync, statSync, readdirSync } from 'node:fs';
+import { dirname, basename, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { isIP } from 'node:net';
 import type { Logger } from 'pino';
 import type { Pool } from './pool.js';
+import { ensurePartitionsForMonth } from './pool.js';
 
 // Ships the router's audit stream into Postgres.
 //
@@ -195,42 +197,52 @@ function ipOrNull (value: string | null | undefined): string | null {
     return bare;
 }
 
-export async function ingestOnce (
-    pool: Pool, path: string, stream: string, logger: Logger,
-): Promise<IngestStats> {
-    const stats: IngestStats = { linesRead: 0, requestsInserted: 0, batches: 0 };
-
-    let inode: number;
+// Finds the file the ingest cursor was following after logrotate renamed it. `create` rotation
+// moves the old file aside (audit.log.1, audit.log-20250104, ...) and opens a new one at the same
+// path, so everything written between the cursor and the rename is still on disk — under a
+// different name, with the SAME inode. Matching on the inode rather than on the name is what makes
+// this safe: it can only ever return the exact file the cursor's offset belongs to.
+export function findRotatedFile (path: string, knownInode: number): string | undefined {
+    const dir = dirname(path);
+    const base = basename(path);
+    let entries: string[];
     try {
-        inode = statSync(path).ino;
+        entries = readdirSync(dir);
     } catch {
-        return stats;   // the router has not written anything yet
+        return undefined;
     }
-
-    const cursorRes = await pool.query<{ byte_offset: number; inode: string | null }>(
-        'SELECT byte_offset, inode FROM ingest_cursor WHERE stream = $1', [stream],
-    );
-    let offset = cursorRes.rows[0]?.byte_offset ?? 0;
-    const knownInode = cursorRes.rows[0]?.inode;
-
-    // Rotation with `create` gives the new file a different inode; start it from the beginning
-    // rather than from an offset that belonged to a file we no longer have.
-    if (knownInode !== null && knownInode !== undefined && Number(knownInode) !== inode) {
-        logger.info({ stream, from: knownInode, to: inode }, 'audit log rotated, restarting at offset 0');
-        offset = 0;
+    for (const entry of entries) {
+        if (entry === base || entry.indexOf(base) !== 0) continue;
+        // A compressed rotation is not readable as JSON lines and never shares the inode anyway.
+        if (entry.endsWith('.gz') || entry.endsWith('.bz2') || entry.endsWith('.xz')) continue;
+        const candidate = join(dir, entry);
+        try {
+            if (statSync(candidate).ino === knownInode) return candidate;
+        } catch {
+            continue;   // rotated away again between readdir and stat
+        }
     }
-    // Truncation without rotation (copytruncate) shows up as a file shorter than our offset. Data
-    // between the offset and the truncation is gone; say so rather than silently undercounting.
-    const currentSize = statSync(path).size;
-    if (currentSize < offset) {
-        logger.warn({ stream, offset, size: currentSize },
-            'audit log truncated in place — records between the cursor and the truncation are lost. '
-            + 'Rotate this file with `create`, not `copytruncate`.');
-        offset = 0;
-    }
+    return undefined;
+}
 
+// Drains one file from `startOffset` to its end, committing rows and cursor together. Split out
+// of ingestOnce so the SAME code can drain a rotated-away file: the cursor it writes carries that
+// file's inode, so a crash mid-drain resumes on the rotated file rather than skipping to the new
+// one.
+// The first instant of the UTC month a record's ts falls in — the granularity the partitions are
+// cut at, and the dedup key for the DDL issued per batch.
+function monthKeyOf (time: number | undefined): number {
+    const at = new Date(time ?? Date.now());
+    return Date.UTC(at.getUTCFullYear(), at.getUTCMonth(), 1);
+}
+
+async function drainFile (
+    pool: Pool, filePath: string, stream: string, startOffset: number, inode: number,
+    logger: Logger, stats: IngestStats,
+): Promise<void> {
+    let offset = startOffset;
     for (;;) {
-        const read = readLines(path, offset);
+        const read = readLines(filePath, offset);
         const { lines, size } = read;
         let { nextOffset } = read;
         if (read.skippedOversizedLine) {
@@ -256,6 +268,13 @@ export async function ingestOnce (
         // Where each reqId was first seen. An incomplete pair at the tail of a batch holds the
         // cursor back to here so the next pass re-reads it.
         const firstOffset = new Map<string, number>();
+        // And where it was LAST seen. Two requests in flight at once interleave their lines, so a
+        // record's halves can straddle the line the cursor is held at — first offset before it,
+        // access line after. Writing such a record and then rewinding past its access line made
+        // the next pass write a SECOND row for it (new uuid, every routing column NULL) and
+        // increment usage_hour again: a duplicate request in the dashboard and a double-billed
+        // caller. Only records that lie ENTIRELY before the hold point may be written.
+        const lastOffset = new Map<string, number>();
         for (const line of lines) {
             let parsed: AuditLine;
             try {
@@ -267,6 +286,7 @@ export async function ingestOnce (
             const id = parsed.reqId;
             if (id === undefined) continue;
             if (!firstOffset.has(id)) firstOffset.set(id, line.offset);
+            lastOffset.set(id, line.offset);
             byReq.set(id, { ...(byReq.get(id) ?? {}), ...parsed });
         }
 
@@ -303,12 +323,24 @@ export async function ingestOnce (
                     'holding the ingest cursor at an unpaired record so its access line can pair next pass');
                 nextOffset = holdAt;
                 for (const [id, r] of byReq) {
-                    const at = firstOffset.get(id);
+                    const at = lastOffset.get(id);
                     if (r.statusCode === undefined || (at !== undefined && at >= holdAt)) byReq.delete(id);
-                // (records before holdAt keep their rows; the cursor still covers them)
+                // (records ENTIRELY before holdAt keep their rows; the cursor still covers them)
                 }
                 if (byReq.size === 0) break;   // nothing to write and no advance to make
             }
+        }
+
+        // The partitions for a row's month must exist BEFORE the batch transaction opens. A ts
+        // outside every partition does not skip the row: Postgres aborts the INSERT, which aborts
+        // the batch, which leaves the cursor where it was — so the same line replays on every pass
+        // forever. Boot only creates this month and next, so any older ts (a restored log, a
+        // rotation that reset the cursor to 0, a backfill) stalled ingestion permanently. DDL
+        // cannot go inside the batch: its rollback would take the partition with it.
+        for (const key of new Set(Array.from(byReq.values())
+            .filter((r) => r.statusCode !== undefined)
+            .map((r) => monthKeyOf(r.time)))) {
+            await ensurePartitionsForMonth(pool, new Date(key));
         }
 
         const client = await pool.connect();
@@ -392,6 +424,61 @@ export async function ingestOnce (
         }
         offset = nextOffset;
     }
+
+}
+
+export async function ingestOnce (
+    pool: Pool, path: string, stream: string, logger: Logger,
+): Promise<IngestStats> {
+    const stats: IngestStats = { linesRead: 0, requestsInserted: 0, batches: 0 };
+
+    let inode: number;
+    try {
+        inode = statSync(path).ino;
+    } catch {
+        return stats;   // the router has not written anything yet
+    }
+
+    const cursorRes = await pool.query<{ byte_offset: number; inode: string | null }>(
+        'SELECT byte_offset, inode FROM ingest_cursor WHERE stream = $1', [stream],
+    );
+    let offset = cursorRes.rows[0]?.byte_offset ?? 0;
+    const knownInode = cursorRes.rows[0]?.inode;
+
+    // Rotation with `create` gives the new file a different inode. Restarting at offset 0 of the
+    // new file is right — but only AFTER the old one is finished: everything the router wrote
+    // between the cursor and the rename is still on disk under the rotated name, and simply
+    // jumping to the new inode dropped all of it, silently, once per rotation. At the ingest
+    // interval that is up to a full interval of billing and audit data per rotation.
+    if (knownInode !== null && knownInode !== undefined && Number(knownInode) !== inode) {
+        const rotated = findRotatedFile(path, Number(knownInode));
+        if (rotated !== undefined) {
+            const unread = statSync(rotated).size - offset;
+            logger.info({ stream, rotated, offset, unread },
+                'audit log rotated; draining the tail of the rotated file before following the new one');
+            // The cursor written by this drain carries the OLD inode, so a crash part-way through
+            // comes back here and resumes on the rotated file instead of skipping it.
+            await drainFile(pool, rotated, stream, offset, Number(knownInode), logger, stats);
+        } else {
+            const size = statSync(path).size;
+            logger.warn({ stream, from: knownInode, to: inode, offset, newSize: size },
+                'audit log rotated and the previous file is gone — records after the cursor were '
+                + 'never ingested. Rotate with `create` and keep at least one generation next to '
+                + 'the live file so the tail can be drained.');
+        }
+        offset = 0;
+    }
+    // Truncation without rotation (copytruncate) shows up as a file shorter than our offset. Data
+    // between the offset and the truncation is gone; say so rather than silently undercounting.
+    const currentSize = statSync(path).size;
+    if (currentSize < offset) {
+        logger.warn({ stream, offset, size: currentSize },
+            'audit log truncated in place — records between the cursor and the truncation are lost. '
+            + 'Rotate this file with `create`, not `copytruncate`.');
+        offset = 0;
+    }
+
+    await drainFile(pool, path, stream, offset, inode, logger, stats);
 
     return stats;
 }

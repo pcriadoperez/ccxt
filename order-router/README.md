@@ -720,10 +720,21 @@ secret with no rotation or revocation, so per-client identity remains an open ga
 
 | Job | Runs when | What it does |
 |---|---|---|
-| `build-and-test` | every push, PR and dispatch | `npm ci`, `npm run build`, `npm test`, then boots the real router and MCP processes and asserts over HTTP |
-| `deploy` | **only** dispatch, or a push to `master`, and only in the repo that owns the VM | builds an arm64 release, tars it over ssh into a per-run staging directory and renames that into `/opt/order-router/releases/<sha>`, swaps the `current` symlink, restarts the unit, smoke-tests it on loopback, and auto-rolls-back if the smoke fails |
+| `build-and-test` | every push, PR and dispatch | `npm ci`, `npm run build`, `npm run check:ccxt-pin`, `npm test`, then boots the real router and MCP processes and asserts over HTTP |
+| `deploy` | **only** dispatch, or a push to `master`, and only in the repo that owns the VM | builds an arm64 release, **runs `npm test` on that tree**, tars it over ssh into a per-run staging directory and renames that into `/opt/order-router/releases/<sha>`, swaps the `current` symlink, restarts the unit, waits for `/ready`, smoke-tests it on loopback, and auto-rolls-back if the smoke fails |
 | `live-integration` | after `deploy` | runs `scripts/live-integration.mjs` against the **public** URL — through nginx and TLS, exactly as a customer reaches it |
-| `rollback` | only if `deploy` succeeded and `live-integration` failed | puts `/opt/order-router/previous` back, restarts, and fails the run |
+| `rollback` | only if `deploy` succeeded and `live-integration` failed **on its assertions** (`verdict == failed`) | puts `/opt/order-router/previous` back, restarts, and fails the run |
+
+`deploy` runs the suite a second time on purpose. `build-and-test` runs on x64; `deploy` rebuilds
+from scratch on arm64 and it is *that* tree which is packed and shipped, so without it the artifact
+reaching production is one no test has ever touched.
+
+`rollback` keys on the verdict `live-integration` publishes, not on whether that job went red. A
+missing, rotated or revoked `ORDER_ROUTER_SMOKE_API_KEY` fails every authenticated check in the
+script while saying nothing about the release; rolling back on it reverts a healthy deploy and
+restarts the router twice, each restart rebuilding the whole book cache. The script exits **2** for
+that case (see below) and the job records `verdict=misconfigured`; the run still goes red, and the
+box is left alone.
 
 `deploy` and `rollback` share a `concurrency` group so that two runs never mutate the box at once.
 It is declared **on those two jobs**, not on the workflow: a workflow-level group would queue every
@@ -898,6 +909,11 @@ Run it by hand before trusting the pipeline, and after any manual intervention o
 | `ROUTER_WARMUP_MS` | `180000` | how long `/route` may take to answer while the book cache rebuilds after a restart |
 | `ROUTER_TIMEOUT_MS` | `30000` | per-request timeout |
 
+Exit codes: **0** everything passed, **1** at least one assertion failed against the deployment,
+**2** the run was misconfigured — no URL/key, or a key the deployment rejects while authenticating
+everything else correctly. `2` is not a lesser `1`: it means nothing was learned about the release,
+which is why CI rolls back only on `1`.
+
 What it asserts, and why each one earns its place:
 
 1. **`/version` reports the expected commit, and the process is young enough to be that build.**
@@ -983,6 +999,21 @@ assert over HTTP that `/health` is reachable unauthenticated, that a protected r
 without a key and `200` with the right one, that a *wrong* key is still rejected, and that the MCP
 endpoint rejects an unauthenticated JSON-RPC call. Those smoke assertions were verified locally
 before being committed.
+
+### The ccxt pin
+
+`dependencies.ccxt` is an **exact** version, not a range: the box installs nothing at deploy time,
+and a router that silently picks up new exchange implementations on every `npm ci` is not
+reproducible. The cost is that library fixes do not arrive on their own — the pin once sat thirteen
+patch releases behind the ccxt repository this service lives inside, and no job, test or review step
+could see it.
+
+`npm run check:ccxt-pin` (a step in `build-and-test`, and an assertion in the offline suite) closes
+that. It compares `dependencies.ccxt` against the root `package.json` version and fails unless the
+lag currently accepted is written down in `ccxtPin.acknowledgedRepoVersion`, with a reason. It does
+not bump anything: raising the pin is a behaviour change and gets its own reviewed commit. What it
+guarantees is that the gap is never invisible — when the repo moves past the acknowledged version,
+CI goes red until someone either upgrades or consciously re-acknowledges.
 
 On a push to `master` (and on `workflow_dispatch`) the same workflow then deploys and live-tests the
 result — see [Deploying from CI](#deploying-from-ci) for the job graph, the five secrets you must

@@ -215,3 +215,102 @@ test('a real address still reaches the column', async () => {
     assert.equal(rows[1]?.params[22], '2001:db8::1');
     assert.equal(rows[2]?.params[22], 'fe80::1', 'a zone id is stripped, not rejected');
 });
+
+// ---------------------------------------------------------------------------
+// interleaved requests around a held-back cursor
+// ---------------------------------------------------------------------------
+
+test('a record straddling the hold-back point is not written twice', async () => {
+    // Two requests in flight at once interleave their lines: the routing record of A, then the
+    // routing record of B, then A's access line. Holding the cursor at B (its access line has not
+    // been written yet) rewinds it to a point that is BEHIND A's access line — so the pass that
+    // wrote A's row committed a cursor that made the next pass read A's access line again and
+    // write a SECOND row for it, with every routing column NULL, and increment usage_hour twice.
+    // The caller was billed twice and the dashboard showed a request that never happened.
+    const { statSync: stat } = await import('node:fs');
+    const now = Date.now();
+    const recA = JSON.stringify({ event: 'route_recommendation', reqId: 'req-a', from: 'USDT', to: 'BTC', time: now });
+    const recB = JSON.stringify({ event: 'route_recommendation', reqId: 'req-b', from: 'USDT', to: 'ETH', time: now });
+    const accessA = JSON.stringify({ event: 'request', reqId: 'req-a', method: 'GET', route: '/route', statusCode: 200, durationMs: 3, time: now });
+    const path = writeLog([ recA, recB, accessA ]);
+    const inode = stat(path).ino;
+
+    const first = fakePool(0, inode);
+    await ingestOnce(first.pool, path, 'audit', silent);
+    const secondFrom = committedOffset(first.queries) ?? 0;
+
+    // B's access line lands, so the next pass has nothing left to hold the cursor for and reads
+    // straight through whatever the rewind put back in front of it.
+    const { appendFileSync: append } = await import('node:fs');
+    append(path, JSON.stringify({ event: 'request', reqId: 'req-b', method: 'GET', route: '/route', statusCode: 200, durationMs: 4, time: now }) + '\n');
+
+    const second = fakePool(secondFrom, inode);
+    await ingestOnce(second.pool, path, 'audit', silent);
+
+    const rowsForA = [ ...insertedRequests(first.queries), ...insertedRequests(second.queries) ]
+        .filter((q) => q.params[25] === 'req-a');
+    assert.equal(rowsForA.length, 1, 'req-a is written exactly once across both passes');
+    assert.equal(rowsForA[0]?.params[8], 'USDT', 'and it is the complete row, not the access half alone');
+});
+
+// ---------------------------------------------------------------------------
+// partitions for out-of-range timestamps
+// ---------------------------------------------------------------------------
+
+test('a record older than the newest partitions gets its month created before the insert', async () => {
+    // requests/request_hops/request_legs are RANGE-partitioned on ts and only this month's and
+    // next month's partitions are created at boot. An insert whose ts falls outside every
+    // partition does not skip the row — Postgres aborts the statement, which aborts the batch
+    // transaction, which means the cursor never advances and the same line is replayed forever.
+    // Replaying an older log (a restore, a rotation that put the cursor back to 0, a backfill)
+    // is enough to stall ingestion permanently.
+    const { statSync: stat } = await import('node:fs');
+    const old = new Date(Date.UTC(2023, 4, 17, 12));   // May 2023: long past any booted partition
+    const path = writeLog([ JSON.stringify({
+        event: 'request', reqId: 'old', method: 'GET', route: '/route', statusCode: 200,
+        time: old.getTime(),
+    }) ]);
+    const { pool, queries } = fakePool(0, stat(path).ino);
+    await ingestOnce(pool, path, 'audit', silent);
+
+    const ddl = queries.filter((q) => q.sql.indexOf('PARTITION OF') !== -1).map((q) => q.sql);
+    for (const table of [ 'requests', 'request_hops', 'request_legs' ]) {
+        assert.ok(ddl.some((sql) => sql.indexOf(`${table}_2023_05 PARTITION OF ${table}`) !== -1),
+            `${table}_2023_05 is created, got: ${ddl.join(' | ')}`);
+    }
+    const firstInsert = queries.findIndex((q) => q.sql.indexOf('INSERT INTO requests') !== -1);
+    const lastDdl = queries.map((q) => q.sql).lastIndexOf(ddl[ddl.length - 1] ?? '');
+    assert.ok(lastDdl < firstInsert, 'and it is created before the row that needs it');
+});
+
+// ---------------------------------------------------------------------------
+// rotation
+// ---------------------------------------------------------------------------
+
+test('rotation does not discard the tail of the old file', async () => {
+    // logrotate with `create` renames the file the ingester is following and starts a new one at
+    // the same path. Everything written between the cursor and the rename lives on in the renamed
+    // file — but the ingester only ever noticed the inode change and restarted at offset 0 of the
+    // NEW file, so those records were dropped silently, at whatever rate the rotation window
+    // happened to catch. At the ingest interval that is up to a full interval of billing data.
+    const { statSync: stat, renameSync, writeFileSync: write } = await import('node:fs');
+    const now = Date.now();
+    const path = writeLog([
+        JSON.stringify({ event: 'request', reqId: 'read-already', method: 'GET', route: '/a', statusCode: 200, time: now }),
+        JSON.stringify({ event: 'request', reqId: 'in-the-gap', method: 'GET', route: '/b', statusCode: 200, time: now }),
+    ]);
+    const oldInode = stat(path).ino;
+    // The cursor is where a pass that read only the first line would have left it.
+    const readSoFar = readLines(path, 0).lines[1]?.offset ?? 0;
+
+    renameSync(path, path + '.1');
+    write(path, JSON.stringify({ event: 'request', reqId: 'after-rotation', method: 'GET', route: '/c', statusCode: 200, time: now }) + '\n');
+
+    const { pool, queries } = fakePool(readSoFar, oldInode);
+    const stats = await ingestOnce(pool, path, 'audit', silent);
+
+    const ids = insertedRequests(queries).map((q) => q.params[25]);
+    assert.deepEqual(ids, [ 'in-the-gap', 'after-rotation' ],
+        'the tail of the rotated file is drained before the new file is followed');
+    assert.equal(stats.requestsInserted, 2);
+});

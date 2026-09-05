@@ -136,20 +136,6 @@ The shard path does the opposite, under a comment naming this exact fai
 
 Extract the shard's bounded-concurrency start loop into a shared helper and use it from `startConnectors`; pass `config.maxBookDepth` as the 8th argument in index.ts:28-36; if single-process discovery mode is meant to be supported at 76-exchange scale, refuse to boot (or warn loudly) when `discoverA
 
-### 21. Partitions are only ever created for the current and next month — replaying any older audit line hard-fails the batch and stalls ingestion forever
-
-**Severity:** high &nbsp;·&nbsp; **estimated effort:** hours
-
-**Claimed evidence**
-
-```
-/home/user/ccxt/order-router/src/db/pool.ts:61-78 only ever creates two partitions: `const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)); for (const when of [now, next]) { ... CREATE TABLE IF NOT EXISTS ${table}_${name} PARTITION OF ${table} FOR VALUES FROM ('${from}') TO
-```
-
-**Suggested fix** — a suggestion, not a verdict; verify before following it.
-
-In ensurePartitions, also create partitions for the months already present in the backlog (e.g. from min(ts) of the pending window, or simply the trailing N months), and/or attach a DEFAULT partition to requests/request_hops/request_legs so an out-of-range ts lands somewhere instead of aborting the
-
 ### 23. No migration mechanism beyond CREATE IF NOT EXISTS, and the deploy never runs it — a schema change ships code without the schema
 
 **Severity:** high &nbsp;·&nbsp; **estimated effort:** days
@@ -177,25 +163,6 @@ Add a schema_migrations table and numbered, ALTER-capable migration files; have 
 **Suggested fix** — a suggestion, not a verdict; verify before following it.
 
 Add a scheduled `pg_dump` (or WAL archiving) to durable off-box storage, document and rehearse the restore, and gate it: a restore runbook step that stops the ingest runner and key projection before repointing DATABASE_URL, so a partially restored database cannot rewrite the key snapshot.
-
-### 26. Audit-log rotation silently discards every record the ingester had not yet read from the old file
-
-**Severity:** high &nbsp;·&nbsp; **estimated effort:** hours
-
-**Claimed evidence**
-
-```
-`src/db/ingest.ts:197-202`:
-```ts
-// Rotation with `create` gives the new file a different inode; start it from the beginning
-// rather than from an offset that belonged to a file we no longer have.
-if (knownInode !== null && knownInode !== undefined && Number(knownInode) !== inode) {
-    logger.inf
-```
-
-**Suggested fix** — a suggestion, not a verdict; verify before following it.
-
-On inode change, first drain the old fd to EOF (hold the descriptor open across passes, or glob for `<path>.1` / `<path>-*`) and commit those rows before switching to the new inode. At minimum, raise the message to `warn`, include `skippedBytes: oldSize - offset`, and export an `order_router_ingest_
 
 ### 27. The billing ingest process has no health endpoint, no metrics, and no signal when it stops writing
 
@@ -321,6 +288,13 @@ The deploy's own smoke allows five minutes for recovery: .github/workflows/order
 
 Have nginx (or a tiny second instance) gate on `/ready` and return 503 while the cache is cold, so callers see an unambiguous 'not ready' instead of a confident wrong answer; at minimum make `/route` return 503 with a distinct reason while `freshCount < minFreshBooksForReady` rather than a 200.
 
+**Partially fixed.** The deploy-side half is done: the on-box smoke polls `/ready` (up to five
+minutes) and fails if it never reports ready, and `live-integration.mjs` asserts `/ready` before it
+routes — so the degraded window is waited out rather than served through, and `/ready` finally has
+consumers. Still open: the traffic side. nginx does not gate on `/ready` (its config is unversioned,
+see finding 12), and `/route` still answers a confident 200 while the cache is cold rather than a
+503 naming the reason.
+
 ### 45. The deploy job is hard-pinned to the fork `pcriadoperez/ccxt`, so merged upstream nothing deploys and no owner or alternative procedure is defined
 
 **Severity:** medium &nbsp;·&nbsp; **estimated effort:** hours
@@ -348,43 +322,6 @@ README.md:1004 — "No metrics/alerting | **Closed for instrumentation** ... **S
 **Suggested fix** — a suggestion, not a verdict; verify before following it.
 
 Ship a logrotate config (with `create`, not `copytruncate`, per src/logger.ts:27-29) in the release, add a disk-usage and `order_router_exchange_last_update_age_seconds` alert with an actual delivery target, and point something at /metrics before the next deploy rather than after the first incident.
-
-### 47. The anonymous CSRF token is a fixed public constant, so /signup and /login are defended by the Origin header alone — and a missing Origin is treated as valid
-
-**Severity:** medium &nbsp;·&nbsp; **estimated effort:** hours
-
-**Claimed evidence**
-
-```
-`src/web/server.ts:187` `return signupPage(base, csrfToken(token ?? 'anon', csrfSecret));`, `:193` the same for the login page, and `:204` / `:247` verify against the identical literal: `const bad = guard(request.body.csrf, token ?? 'anon', request as never);`. The token is `src/web/auth.ts:122-124`
-```
-
-**Suggested fix** — a suggestion, not a verdict; verify before following it.
-
-Issue a pre-session cookie on GET /signup and GET /login and derive the anonymous token from it, so the value differs per visitor. Separately, treat a state-changing POST with no Origin as a failure (or fall back to `Sec-Fetch-Site: same-origin`) rather than as allowed.
-
-### 50. Signup discloses whether an email already has an account, re-opening the enumeration oracle login deliberately closes
-
-**Severity:** medium &nbsp;·&nbsp; **estimated effort:** hours
-
-**Claimed evidence**
-
-```
-`src/web/server.ts:218-223`:
-
-    } catch (err) {
-        if ((err as { code?: string }).code === '23505') {
-            return fail('An account with that email already exists.');
-        }
-
-against the deliberate choice ten lines later at `src/web/server.ts:242-245`:
-
-    const fail = () => loginPa
-```
-
-**Suggested fix** — a suggestion, not a verdict; verify before following it.
-
-On a 23505 conflict, render the same neutral outcome as a successful signup (an "if this address is new, check your inbox / your key is on your dashboard" page) rather than confirming the account, or move key issuance behind a verification step so the distinction is not observable.
 
 ### 51. Shard workers retain a full second copy of every order book they will never read, inside the process with the hard heap ceiling
 
@@ -438,20 +375,6 @@ With `volume` empty, the sort at liquidity.ts:66 `return [...ca
 **Suggested fix** — a suggestion, not a verdict; verify before following it.
 
 Treat a failed liquidity ranking as fatal at boot (exit non-zero and let the supervisor retry) rather than continuing with an unranked list, or retry the reference fetch with backoff before falling through. Do the same for `assignments.length === 0`. If long-lived processes are expected, add a perio
-
-### 57. The cursor hold-back path re-reads already-written lines, producing duplicate requests rows and double-counted usage_hour
-
-**Severity:** medium &nbsp;·&nbsp; **estimated effort:** hours
-
-**Claimed evidence**
-
-```
-When the tail contains an unpaired routing record, /home/user/ccxt/order-router/src/db/ingest.ts:282-291 rewinds the cursor to that record's offset while still writing every record that started before it: `nextOffset = holdAt; for (const [id, r] of byReq) { const at = firstOffset.get(id); if (r.stat
-```
-
-**Suggested fix** — a suggestion, not a verdict; verify before following it.
-
-Give the row a deterministic identity derived from the audit record — e.g. PRIMARY KEY (ts, request_id) using the caller-independent reqId, or a UNIQUE (ts, request_id) index — so the existing ON CONFLICT DO NOTHING actually dedups, and make the usage_hour increment conditional on the requests inser
 
 ### 58. Personal data is retained forever and the documented "delete my data is one statement" erasure does not work
 
@@ -549,63 +472,6 @@ ts/src/base/OrderRouter.ts:1887-1897 — detection with no action:
 
 When an order comes back `status === 'open'` on a non-limit_protected path, cancel it and re-read before returning, exactly as placeProtectedLimit does; treat a failed cancel as outcome_unknown. Separately, when the venue reports no timeInForce capability, either refuse the step or verify the placed
 
-### 74. The artifact CI tested is not the artifact deployed: the shipped arm64 tree is rebuilt in the deploy job and never runs a single test before it reaches production
-
-**Severity:** medium &nbsp;·&nbsp; **estimated effort:** hours
-
-**Claimed evidence**
-
-```
-`build-and-test` runs on x64 (.github/workflows/order-router.yml:33 `runs-on: ubuntu-latest`) and is the only job that runs `npm test` (:70). `deploy` runs on a different architecture and rebuilds from scratch (:244, :268-286):
-```yaml
-    runs-on: ubuntu-24.04-arm        # arm64 — same box as docs.
-```
-
-**Suggested fix** — a suggestion, not a verdict; verify before following it.
-
-Run `npm test` (and a short boot+/health check) in the `deploy` job after `npm run build`, before the prune and pack — it is the same suite, ~18s, on the tree that actually ships. Alternatively build once in `build-and-test` on arm64 and pass the tarball to `deploy` via `actions/upload-artifact`, so
-
-### 75. A missing, rotated or revoked ORDER_ROUTER_SMOKE_API_KEY causes CI to roll back and double-restart a perfectly healthy production release
-
-**Severity:** medium &nbsp;·&nbsp; **estimated effort:** hours
-
-**Claimed evidence**
-
-```
-The post-deploy job passes the secret straight through (.github/workflows/order-router.yml:479-485):
-```yaml
-          ROUTER_BASE_URL: https://docs.ccxt.com/router/api
-          ROUTER_API_KEY: ${{ secrets.ORDER_ROUTER_SMOKE_API_KEY }}
-          ROUTER_EXPECT_COMMIT: ${{ github.sha }}
-        run:
-```
-
-**Suggested fix** — a suggestion, not a verdict; verify before following it.
-
-Distinguish misconfiguration from failure: have live-integration.mjs's exit code 2 (documented at scripts/live-integration.mjs:24 as "misconfigured") be handled explicitly in the workflow so it fails the run WITHOUT satisfying the rollback condition, and assert the secret is non-empty in a cheap pre
-
-### 76. The service pins ccxt 4.5.64 inside a repo at 4.5.77 and nothing in CI detects the drift, so library fixes never reach the deployed router
-
-**Severity:** medium &nbsp;·&nbsp; **estimated effort:** hours
-
-**Claimed evidence**
-
-```
-order-router/package.json:32 pins an exact published version:
-```json
-    "ccxt": "4.5.64",
-```
-The repo it lives in is thirteen versions ahead — /home/user/ccxt/package.json:3:
-```json
-  "version": "4.5.77",
-```
-Nothing reconciles the two: order-router.yml only ever runs `npm ci` against order-rout
-```
-
-**Suggested fix** — a suggestion, not a verdict; verify before following it.
-
-Add a cheap check to `build-and-test` that compares `order-router/package.json`'s ccxt pin against the root `package.json` version and fails (or warns with an annotation) beyond a configured lag; and add a scheduled job that runs the service's offline suite against the current workspace ccxt so a br
-
 ### 80. formatNumber tie-rounding differs between ports, so the balances query string is not byte-identical as the file claims
 
 **Severity:** low &nbsp;·&nbsp; **estimated effort:** hours
@@ -668,6 +534,14 @@ Kept so the same ground is not re-covered, and so a `wontfix` is not silently re
 | 71 | medium | The `limit_protected` execution strategy is implemented but absent from every document, including the Manual table that presents itself as the complete list | **fixed** — a row in wiki/Manual.md with its `orderTimeoutMs` / `pollIntervalMs` options and its resting/cancel semantics, plus the strategy sentence in the five user-facing skills that carry one (ccxt-typescript, -python, -php, -csharp, -go; ccxt-cli, -java and -mcp document no strategies at all). **No automated guard**: the order-router suite is the only drift-testing harness in this change and has no business reading the library's wiki, while the six-language OrderRouter suite is transpiled and cannot read the filesystem. A future divergence needs a repo-level docs check. |
 | 41 | high | Deployment docs and the deploy workflow cover only the router process; the web console, ingester and key projector are undocumented and never started, so a box built from the README can never authenticate a request | **fixed** — the two companion units are documented with their ExecStart, the shared EnvironmentFile (all three must agree on ORDER_ROUTER_KEYS_FILE or the projector writes a file the router never reads), and a bootstrap order: `db:migrate`, then `create-admin`, then enable all three. src/docs.test.ts derives the expected unit list from the workflow's own `SERVICE`/`EXTRA_SERVICES`, so the deploy and the docs cannot drift apart again. This was the last item in the "Started, not finished" section, which is now gone. |
 | 70 | medium | The design docs the README points operators to are marked "plan, not shipped" and prescribe an architecture that was replaced; one explicitly forbids the deployment that shipped | **fixed** — all three restamped honestly: product-plan is *shipped* and is what the README now points at first; auth-plan is *shipped, then superseded* (its key format and lookup reasoning still hold, its storage decisions and its CLI lifecycle table do not); dashboard-plan is *superseded, kept for its reasoning* — its "never an nginx location on :443" describes a deployment deliberately not taken, and it now says so. A test fails if any design doc calls itself unshipped again. |
+| 21 | high | Partitions are only ever created for the current and next month — replaying any older audit line hard-fails the batch and stalls ingestion forever | **fixed** — a row outside every partition does not get skipped by Postgres, it aborts the INSERT, which aborts the batch transaction, so the cursor never advances and the same line replays forever. `ensurePartitionsForMonth` is now called for every distinct month in the batch, before the transaction opens — DDL inside it would be taken out by the rollback. |
+| 26 | high | Audit-log rotation silently discards every record the ingester had not yet read from the old file | **fixed** — on an inode change the rotated file is located by INODE MATCH (never by name, so it cannot return a file the cursor's offset does not belong to) and drained to EOF first, with the cursor still carrying the old inode so a crash mid-drain resumes there rather than skipping it. When no rotated file is found the line is a warn naming the offset and the loss, not an info. |
+| 47 | medium | The anonymous CSRF token is a fixed public constant, so /signup and /login are defended by the Origin header alone — and a missing Origin is treated as valid | **fixed** — a pre-session CSRF cookie (256 CSPRNG bits, HttpOnly, `__Host-` under TLS) gives the anonymous token something per-visitor to bind to; it is not a session and confers nothing. A missing Origin now falls back to `Sec-Fetch-Site`, refusing `cross-site` and `same-site` (the cross-port case SameSite=Lax does not cover); a request with neither header is not a browser and is covered by the token. |
+| 50 | medium | Signup discloses whether an email already has an account, re-opening the enumeration oracle login deliberately closes | **fixed, with a stated limit** — a 23505 conflict is answered as a sign-in: the password is checked against the existing hash, a match lands on /dashboard exactly as a fresh signup does (no second key minted), a mismatch returns login's neutral wording. The residual gap is commented in the code rather than left implied: with no verification mail, a NEW address still ends in an authenticated dashboard and a taken one does not, so a passwordless attacker can still distinguish them. That closes only when email verification lands. |
+| 57 | medium | The cursor hold-back path re-reads already-written lines, producing duplicate requests rows and double-counted usage_hour | **fixed** — only records lying ENTIRELY before the hold-back point are written (tracking each reqId's last offset, not just its first). Deliberately NOT closed with a `UNIQUE (ts, request_id)`: schema.sql documents request_id as caller-supplied and untrusted, and a caller pinning it to a constant would collapse every request into one row. |
+| 74 | medium | The artifact CI tested is not the artifact deployed: the shipped arm64 tree is rebuilt in the deploy job and never runs a single test before it reaches production | **fixed** — the deploy job runs `npm test` on the arm64 tree it is about to ship, after the build and before the prune and tar. |
+| 75 | medium | A missing, rotated or revoked ORDER_ROUTER_SMOKE_API_KEY causes CI to roll back and double-restart a perfectly healthy production release | **fixed** — live-integration.mjs exits 2 (its documented "misconfigured" code) when the deployment rejects OUR key while correctly 401-ing the no-key and bogus-key probes, and rollback now requires a `failed` verdict rather than merely a non-success. The run still goes red either way. Tradeoff, commented in the workflow: a live-integration job that dies before publishing a verdict no longer auto-rolls-back — the script bounds itself far inside the job timeout, so that case is infrastructure, not a bad release. |
+| 76 | medium | The service pins ccxt 4.5.64 inside a repo at 4.5.77 and nothing in CI detects the drift, so library fixes never reach the deployed router | **fixed as a detector, not a bump** — `check:ccxt-pin` runs in build-and-test and fails when the repo version moves past the lag written into `ccxtPin.acknowledgedRepoVersion` (4.5.77, reason recorded), warns while that lag stands, and rejects a non-exact pin. The pin was left at 4.5.64 on purpose: a version bump is a behaviour change deserving its own review. The gap can now only widen deliberately. |
 | 14 | high | Attacker-controlled request.ip is inserted into an `inet` column inside the ingest transaction; one crafted header wedges audit ingestion permanently | **fixed** — 6f88bfb3 same fix as blocker 4 |
 | 15 | high | The published dev API key `dev-local-key-change-me` is enabled in production whenever NODE_ENV is unset, and the documented systemd unit never sets it | **fixed** — 6f88bfb3 same fix as blocker 0 |
 | 25 | high | /stream/route produces zero audit records and zero HTTP metrics — streaming usage is invisible to billing and to Prometheus | **fixed** — cc1501bf audit emission shared by GET/POST /route and every pushed frame; unroutable counter with it |

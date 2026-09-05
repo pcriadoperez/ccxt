@@ -21,7 +21,11 @@
 //                          minutes after a deploy; /health and auth are asserted immediately.
 //   ROUTER_TIMEOUT_MS      per-request timeout (default 30000).
 //
-// Exit codes: 0 all assertions passed, 1 at least one failed, 2 misconfigured (no URL/key).
+// Exit codes: 0 all assertions passed, 1 at least one failed, 2 misconfigured (no URL/key, or a
+// key the deployment rejects). 2 is not a lesser 1: a caller whose credentials are missing, rotated
+// or revoked has learned NOTHING about the deployment, so a run that exits 2 must never be read as
+// "this release is bad". CI keys its rollback on exit 1 alone — rolling a healthy release back, and
+// restarting it twice, because a secret expired is a self-inflicted outage.
 
 const BASE = (process.env['ROUTER_BASE_URL'] ?? '').replace(/\/+$/, '');
 const KEY = process.env['ROUTER_API_KEY'] ?? '';
@@ -50,6 +54,8 @@ if (BASE === '' || KEY === '') {
 // ---------------------------------------------------------------------------
 const results = [];
 let currentDetail = '';
+// Set when a check proves the fault is on OUR side of the connection rather than the service's.
+let misconfiguration = '';
 
 function detail (text) {
     currentDetail = text;
@@ -184,6 +190,16 @@ await check('a wrong key is rejected with 401', async () => {
 
 await check('the supplied key is accepted with 200', async () => {
     const { status, json, text } = await request('/symbols');
+    // The two checks above have just established that the service authenticates at all — it
+    // rejected no key and a bogus key. So a 401/403 HERE is a statement about ROUTER_API_KEY, not
+    // about the build: the key was never minted, or has been rotated or revoked since. Reporting
+    // that as a failed deployment is what makes CI roll a good release back.
+    if (status === 401 || status === 403) {
+        misconfiguration = `the supplied ROUTER_API_KEY was rejected with ${status} by a service `
+            + 'that is authenticating other requests correctly — the key is missing, rotated or '
+            + 'revoked. This says nothing about the deployed build.';
+        throw new Error(misconfiguration);
+    }
     assert(status === 200, `expected 200, got ${status}: ${short(text)}`);
     assert(Array.isArray(json?.symbols), `expected {symbols:[...]}, got ${short(text)}`);
     assert(json.symbols.length > 0, 'the routable symbol universe is empty');
@@ -191,7 +207,37 @@ await check('the supplied key is accepted with 200', async () => {
 });
 
 // ---------------------------------------------------------------------------
-// 4. Routing. A just-restarted router has an empty book cache and legitimately answers "no route"
+// 4. Readiness, before anything asks the router to price. /ready is the only endpoint that
+//    distinguishes "alive" from "able to route": /health answers 200 from the first millisecond of
+//    boot, so a deploy gated on it hands live traffic to a process whose only possible answer is
+//    unroutable. Gating here means a cold cache shows up as a named, timed readiness failure
+//    instead of as a mysteriously empty /route — and it is the assertion that keeps /ready
+//    working, since nothing else in the system reads it.
+// ---------------------------------------------------------------------------
+await check('GET /ready reports the router able to route', async () => {
+    const deadline = Date.now() + WARMUP_MS;
+    let last = '';
+    for (;;) {
+        const { status, json, text } = await request('/ready', { key: null });
+        last = `status ${status}: ${short(text)}`;
+        if (status === 200 && json?.status === 'ready') {
+            detail(`${json.freshCount}/${json.bookCount} books fresh `
+                + `(needs ${json.minFreshBooksForReady})`);
+            return;
+        }
+        assert(status === 200 || status === 503,
+            `/ready answered ${status}, which is neither ready nor not_ready: ${short(text)}`);
+        if (Date.now() >= deadline) {
+            throw new Error(
+                `still not ready after ${Math.round(WARMUP_MS / 1000)}s — ${last}. The book cache `
+                + 'never warmed: the deployed process is up but cannot price anything.');
+        }
+        await new Promise((resolve) => setTimeout(resolve, 5000));
+    }
+});
+
+// ---------------------------------------------------------------------------
+// 5. Routing. A just-restarted router has an empty book cache and legitimately answers "no route"
 //    for minutes, so this one step polls; every later routing assertion runs once, against the
 //    response this step proved is available.
 // ---------------------------------------------------------------------------
@@ -267,7 +313,7 @@ await check('effectiveRate is sane against referenceRate', async () => {
 });
 
 // ---------------------------------------------------------------------------
-// 5. balances, end to end. The feature is unverifiable from the outside without balancesApplied:
+// 6. balances, end to end. The feature is unverifiable from the outside without balancesApplied:
 //    /route takes an untyped querystring, so a server that predates balances IGNORES the parameter
 //    and answers byte-identically to one that honoured it. Asserting the echo is the whole point.
 // ---------------------------------------------------------------------------
@@ -304,7 +350,7 @@ await check('balances= clamps the route and is echoed back', async () => {
 });
 
 // ---------------------------------------------------------------------------
-// 6. Request-shape contract. Needs no market data, so it asserts deterministically.
+// 7. Request-shape contract. Needs no market data, so it asserts deterministically.
 // ---------------------------------------------------------------------------
 await check('a request with both amountIn and amountOut is rejected with 400', async () => {
     const { status, text } = await request(routePath({ amountIn: '1', amountOut: '1' }));
@@ -312,7 +358,7 @@ await check('a request with both amountIn and amountOut is rejected with 400', a
 });
 
 // ---------------------------------------------------------------------------
-// 7. Crossed-book protection. Presence, not value: the counter is legitimately 0 on a healthy day,
+// 8. Crossed-book protection. Presence, not value: the counter is legitimately 0 on a healthy day,
 //    so a "> 0" assertion would be a coin flip. What presence proves is that the guarded build —
 //    the one that rejects a crossed book instead of ranking on it — is the one deployed.
 // ---------------------------------------------------------------------------
@@ -336,5 +382,9 @@ process.stdout.write(
 );
 if (failed.length > 0) {
     process.stdout.write(`\nFAILED CHECKS:\n${failed.map((r) => `  - ${r.name}: ${r.detail}`).join('\n')}\n`);
+    if (misconfiguration !== '') {
+        process.stdout.write(`\nMISCONFIGURED: ${misconfiguration}\n`);
+        process.exit(2);
+    }
     process.exit(1);
 }

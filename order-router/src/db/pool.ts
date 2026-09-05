@@ -55,26 +55,40 @@ function monthBounds (d: Date): { name: string; from: string; to: string } {
     return { name, from: start.toISOString(), to: end.toISOString() };
 }
 
+// Months whose partitions this process has already created. Only an optimisation: every statement
+// below is IF NOT EXISTS, so a cold cache costs three no-op DDL round trips, not correctness.
+const ensuredMonths = new Set<string>();
+
+// Creates the partitions for ONE month across every partitioned table. Safe to call for any
+// timestamp, including one in the past: a row whose ts falls outside every partition is not
+// skipped by Postgres, the INSERT is aborted — and inside the ingest batch transaction that
+// aborts the batch, so the cursor never advances and the same line replays forever.
+export async function ensurePartitionsForMonth (pool: pg.Pool, when: Date): Promise<void> {
+    const { name, from, to } = monthBounds(when);
+    if (ensuredMonths.has(name)) return;
+    for (const table of PARTITIONED) {
+        // Postgres does not accept bind parameters in DDL, so the bounds are interpolated.
+        // They are derived from a Date, never from user input, and are ISO-8601 by
+        // construction — but assert that rather than trusting it, because an interpolated
+        // string in DDL is exactly where a mistake becomes injection.
+        if (!/^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/.test(from) || !/^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/.test(to)) {
+            throw new Error(`refusing to build DDL from an unexpected bound: ${from} .. ${to}`);
+        }
+        await pool.query(
+            `CREATE TABLE IF NOT EXISTS ${table}_${name} PARTITION OF ${table} `
+            + `FOR VALUES FROM ('${from}') TO ('${to}')`,
+        );
+    }
+    ensuredMonths.add(name);
+}
+
 // Creates this month's and next month's partitions. Called at boot and daily. Without next month's,
 // the first insert after midnight on the 1st fails — which is the classic partitioning outage, and
 // it happens at the worst possible time to be debugging.
 export async function ensurePartitions (pool: pg.Pool, now: Date, logger: Logger): Promise<void> {
     const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
     for (const when of [now, next]) {
-        const { name, from, to } = monthBounds(when);
-        for (const table of PARTITIONED) {
-            // Postgres does not accept bind parameters in DDL, so the bounds are interpolated.
-            // They are derived from a Date, never from user input, and are ISO-8601 by
-            // construction — but assert that rather than trusting it, because an interpolated
-            // string in DDL is exactly where a mistake becomes injection.
-            if (!/^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/.test(from) || !/^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/.test(to)) {
-                throw new Error(`refusing to build DDL from an unexpected bound: ${from} .. ${to}`);
-            }
-            await pool.query(
-                `CREATE TABLE IF NOT EXISTS ${table}_${name} PARTITION OF ${table} `
-                + `FOR VALUES FROM ('${from}') TO ('${to}')`,
-            );
-        }
+        await ensurePartitionsForMonth(pool, when);
     }
     logger.debug('partitions ensured');
 }

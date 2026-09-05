@@ -123,6 +123,38 @@ export function csrfToken (sessionToken: string, secret: string): string {
     return createHash('sha256').update(`${sessionToken}:${secret}`, 'utf8').digest('base64url');
 }
 
+// The pre-session half of the same control. /signup and /login are reached with no session at
+// all, and the token in those two forms used to be derived from the literal string 'anon' — one
+// fixed value, identical for every visitor and computable by anyone who has read this file. That
+// is not a token: it left the Origin header as the only thing standing between a cross-site form
+// post and an account creation or a password guess. So an anonymous visitor gets a cookie with 256
+// CSPRNG bits in it, and the token in the form is derived from that instead.
+//
+// This cookie is not a session and confers nothing: it is only the per-visitor value the token is
+// bound to, which is why it may be minted freely on a GET.
+export const CSRF_COOKIE = 'router_csrf';
+export const CSRF_COOKIE_SECURE = '__Host-router_csrf';
+
+export function csrfCookieName (secure: boolean): string {
+    return secure ? CSRF_COOKIE_SECURE : CSRF_COOKIE;
+}
+
+export function newCsrfSeed (): string {
+    return randomBytes(32).toString('base64url');
+}
+
+export function setCsrfCookie (reply: FastifyReply, seed: string, secure: boolean): void {
+    const attrs = [
+        `${csrfCookieName(secure)}=${seed}`,
+        'Path=/',
+        'HttpOnly',
+        'SameSite=Lax',
+        `Max-Age=${60 * 60}`,
+    ];
+    if (secure) attrs.push('Secure');
+    void reply.header('set-cookie', attrs.join('; '));
+}
+
 export function csrfOk (supplied: unknown, sessionToken: string | undefined, secret: string): boolean {
     if (typeof supplied !== 'string' || sessionToken === undefined) return false;
     const expected = csrfToken(sessionToken, secret);
@@ -135,6 +167,16 @@ export function csrfOk (supplied: unknown, sessionToken: string | undefined, sec
 // and script cannot forge.
 export function originOk (request: FastifyRequest, allowed: string[]): boolean {
     const origin = request.headers.origin;
-    if (typeof origin !== 'string') return true;   // same-origin navigations may omit it
-    return allowed.some((a) => origin === a);
+    if (typeof origin === 'string') return allowed.some((a) => origin === a);
+    // No Origin header. Treating that as "must have been same-origin" was the whole check, so
+    // anything able to suppress the header — a redirect chain, a stripping proxy, a client the
+    // browser does not label — walked past it. Sec-Fetch-Site is the browser's own second opinion
+    // about where the request came from, and unlike a form field script cannot set it: when it
+    // says the initiator was another site (or another port on this host, which is `same-site` and
+    // which SameSite=Lax does nothing about) the request is refused even though Origin is absent.
+    const site = request.headers['sec-fetch-site'];
+    if (typeof site === 'string') return site === 'same-origin' || site === 'none';
+    // Neither header: not a browser, and a non-browser client cannot be steered into making this
+    // request by a page the victim visits. The per-visitor CSRF token above is what covers it.
+    return true;
 }
