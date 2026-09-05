@@ -1,7 +1,12 @@
 # Multi-key API authentication — implementation plan (v1)
 
-Status: **plan, not shipped.** Supersedes the single shared key in `src/api/auth.ts` and the
-"stopgap, not an auth system" note in README § Security.
+Status: **shipped, then superseded.** The multi-key model described here is what runs; its
+STORAGE decisions were replaced by [`product-plan.md`](./product-plan.md) §3, which moved the
+source of truth to Postgres and made `keys.json` a projection. Read this for the reasoning behind
+the key format, the digest choice and the lookup path — all of which still hold — and read
+product-plan §3 for where the rows actually live. The CLI lifecycle table below is HISTORICAL: the
+`keys:create|list|revoke|delete` commands never shipped under those names, and key creation and
+revocation are dashboard operations now (see README § Security).
 
 ## The ask, restated
 

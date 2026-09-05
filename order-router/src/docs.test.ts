@@ -2,6 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, globSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { spawn, spawnSync } from 'node:child_process';
+import { createServer } from 'node:http';
 
 // The README documented an entire key-management CLI — `npm run keys:create/list/revoke/delete` —
 // that had never existed under those names, including the revoke command an operator would reach
@@ -126,4 +128,173 @@ test('the coverage section does not carry a test count that will rot', () => {
         README.indexOf('| Area | File | What\'s covered |'));
     assert.equal(/^\d+ tests,/m.test(section), false,
         'the coverage section should not state a fixed test count');
+});
+
+test('every unit the deploy restarts is a unit the README tells you to create', () => {
+    // The deploy restarts three services; the README documented one. The two it omitted are not
+    // optional extras — the ingest runner is what WRITES the key snapshot the router reads, so a
+    // box built from the README answered 401 to every caller with nothing in the log to explain
+    // it. This reads the workflow's own EXTRA_SERVICES so the two cannot drift apart again.
+    const workflow = readFileSync(
+        fileURLToPath(new URL('.github/workflows/order-router.yml', new URL('../', root))), 'utf8');
+    const service = /^\s*SERVICE: ([a-z-]+)$/m.exec(workflow)?.[1];
+    const extras = /^\s*EXTRA_SERVICES: '([^']*)'$/m.exec(workflow)?.[1] ?? '';
+    assert.ok(service, 'the workflow should name the primary service');
+    const units = [ service!, ...extras.split(/\s+/).filter((u) => u.length > 0) ];
+    assert.ok(units.length >= 3, `expected the companion units, got ${units.join(', ')}`);
+    for (const unit of units) {
+        assert.ok(README.indexOf(`/etc/systemd/system/${unit}.service`) !== -1,
+            `the deploy restarts ${unit} but the README never says how to create it`);
+    }
+});
+
+test('the bootstrap tells an operator to create the schema before starting anything', () => {
+    // create-admin, the console and the ingest runner all read a database that does not exist
+    // until db:migrate has run, and the failure if it has not is an unhandled Postgres error at
+    // boot rather than anything that names the missing step.
+    const setup = README.slice(README.indexOf('### One-time setup on the box'));
+    const migrate = setup.indexOf('npm run db:migrate');
+    const createAdmin = setup.indexOf('admin -- create-admin');
+    assert.notEqual(migrate, -1, 'the bootstrap should run the migration');
+    assert.ok(migrate < createAdmin, 'the schema has to exist before the first admin can be made');
+});
+
+test('no design doc the README points at still calls itself unshipped', () => {
+    // All three plan documents were stamped "plan, not shipped" long after the thing they describe
+    // shipped, and one of them forbids — in bold — the :443 deployment that is running. An
+    // operator sent to a document that disclaims itself cannot tell which parts are true, so the
+    // safest reading (believe none of it) and the dangerous one (believe all of it) are equally
+    // available.
+    const docs = globSync('docs/*.md', { cwd: fileURLToPath(root) });
+    assert.ok(docs.length >= 3, `expected the design docs, found ${docs.join(', ')}`);
+    for (const doc of docs) {
+        const text = readFileSync(fileURLToPath(new URL(doc, root)), 'utf8');
+        const status = /^Status: (.*)$/m.exec(text)?.[0] ?? '';
+        assert.notEqual(status, '', `${doc} has no Status line`);
+        assert.equal(/plan, not shipped/.test(status), false,
+            `${doc} still calls itself unshipped: ${status}`);
+    }
+    // And the pointer in the Security section goes to the document that describes what runs.
+    const pointer = README.slice(README.indexOf('### Still not an identity system'));
+    assert.ok(pointer.indexOf('docs/product-plan.md') !== -1,
+        'the README should send a reader to the shipped design first');
+});
+
+// ---------------------------------------------------------------------------------------------
+// The workflow, read as text: these assert the invariants that only exist in .github/workflows and
+// that no other test in this package can see. Same technique as the timeout-minutes test above —
+// this package has no YAML parser, and the failures being guarded against are all keyword-level.
+// ---------------------------------------------------------------------------------------------
+const WORKFLOW = readFileSync(
+    fileURLToPath(new URL('.github/workflows/order-router.yml', new URL('../', root))), 'utf8');
+
+function jobBlock (name: string): string {
+    const jobs = WORKFLOW.slice(WORKFLOW.indexOf('\njobs:\n'));
+    const header = `\n  ${name}:\n`;
+    const start = jobs.indexOf(header);
+    assert.notEqual(start, -1, `the workflow has no \`${name}\` job`);
+    const body = jobs.slice(start + header.length);
+    const next = body.search(/^ {2}[a-z][a-z0-9-]*:$/m);
+    return (next === -1) ? body : body.slice(0, next);
+}
+
+// The service depends on the PUBLISHED ccxt at an exact version while living inside the ccxt repo,
+// and nothing reconciled the two: the pin sat thirteen patch releases behind the tree around it, so
+// every library fix landed in ts/src stopped at the service boundary and no build, test or review
+// step could see it. The pin is not bumped here — that is a behaviour change with its own review —
+// but the gap is now written down and checked, so it can only widen deliberately.
+test('the ccxt pin has not drifted past the lag on record', () => {
+    const result = spawnSync(process.execPath, ['scripts/check-ccxt-pin.mjs'],
+        { cwd: fileURLToPath(root), encoding: 'utf8' });
+    assert.equal(result.status, 0,
+        `scripts/check-ccxt-pin.mjs failed:\n${result.stderr}${result.stdout}`);
+});
+
+test('CI runs the ccxt pin check', () => {
+    // The check above only guards this checkout. Drift arrives when the REPO moves, in a commit
+    // that need not touch order-router at all, so the check has to be a build step too.
+    assert.match(jobBlock('build-and-test'), /run: npm run check:ccxt-pin/,
+        'build-and-test does not run the ccxt pin check');
+});
+
+test('the deploy job tests the tree it ships', () => {
+    // build-and-test runs on x64; deploy rebuilds from scratch on arm64 and packs THAT tree. For
+    // as long as deploy ran no assertions, the artifact reaching production was one no test had
+    // ever touched, and an arm64-only failure was first observed by the on-box smoke — after the
+    // symlink had moved.
+    const deploy = jobBlock('deploy');
+    const tested = deploy.indexOf('run: npm test');
+    assert.notEqual(tested, -1, 'the deploy job never runs the test suite on the tree it packs');
+    const packed = deploy.indexOf('tar czf');
+    assert.notEqual(packed, -1, 'the deploy job should pack a release');
+    assert.ok(tested < packed, 'the deploy job packs the release before testing it');
+});
+
+test('the on-box smoke test waits for readiness, not just liveness', () => {
+    // /health answers 200 from the first millisecond of boot. A deploy that gates on it alone
+    // declares success while the book cache is still cold and /route is answering "no route" to
+    // live traffic. /ready is the endpoint that knows the difference, and nothing consumed it.
+    const smoke = jobBlock('deploy').split('\n').filter((line) => line.indexOf('curl') !== -1);
+    assert.ok(smoke.some((line) => line.indexOf('/ready') !== -1),
+        'the deploy smoke test never REQUESTS /ready (a comment about it is not a gate), so it '
+        + 'cannot tell a warm router from a cold one');
+});
+
+test('rollback fires on failed assertions, not on an unusable smoke key', () => {
+    // A missing, rotated or revoked ORDER_ROUTER_SMOKE_API_KEY fails every authenticated check in
+    // live-integration.mjs, which is indistinguishable from "the release is bad" if the rollback
+    // keys on the job result. It rolled a healthy release back and restarted the router twice —
+    // two full book-cache rebuilds — over an expired secret.
+    assert.match(jobBlock('live-integration'), /^ {4}outputs:$/m,
+        'live-integration must publish what it learned, not just whether it passed');
+    assert.match(jobBlock('live-integration'), /verdict=misconfigured/,
+        'live-integration must be able to report that its own configuration, not the release, was wrong');
+    assert.match(jobBlock('rollback'),
+        /needs\.live-integration\.outputs\.verdict == 'failed'/,
+        'rollback still fires on any live-integration failure, including one that says nothing '
+        + 'about the deployed release');
+});
+
+test('live-integration.mjs exits 2, not 1, when the deployment rejects the supplied key', async () => {
+    // Exit 2 is what the workflow reads as "misconfigured" and refuses to roll back on, so the
+    // script has to actually produce it: a service that rejects no-key and a bogus key correctly,
+    // and then rejects OURS, has told us about our credentials and nothing about itself.
+    const server = createServer((req, res) => {
+        const url = req.url ?? '';
+        if (url.startsWith('/health')) {
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ status: 'ok', uptimeSec: 1 }));
+            return;
+        }
+        // Every authenticated path 401s, including with the key we were handed — a revoked key.
+        res.writeHead(401, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'unauthorized' }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    try {
+        const port = (server.address() as { port: number }).port;
+        // spawn, not spawnSync: the stub server is served by THIS event loop, which spawnSync
+        // would block for the child's whole lifetime — every request would time out and the exit
+        // code would be 1 for reasons that have nothing to do with what is being asserted.
+        const child = spawn(process.execPath, ['scripts/live-integration.mjs'], {
+            cwd: fileURLToPath(root),
+            env: {
+                ...process.env,
+                ROUTER_BASE_URL: `http://127.0.0.1:${port}`,
+                ROUTER_API_KEY: 'or_live_revoked',
+                ROUTER_WARMUP_MS: '1',
+                ROUTER_TIMEOUT_MS: '3000',
+            },
+        });
+        let stdout = '';
+        child.stdout.on('data', (chunk) => { stdout += String(chunk); });
+        child.stderr.on('data', () => {});
+        const status = await new Promise<number | null>((resolve) => {
+            child.on('close', (code) => resolve(code));
+        });
+        assert.equal(status, 2, `expected exit 2 (misconfigured), got ${status}:\n${stdout}`);
+        assert.match(stdout, /MISCONFIGURED/);
+    } finally {
+        server.close();
+    }
 });

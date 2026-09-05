@@ -480,8 +480,9 @@ cardinality trap the codebase already avoids for `/orderbook/:exchange/:symbol`.
 No scopes, no expiry, no quotas. (Signup *is* self-serve — see the web console — but an account
 is still one undifferentiated level of access.) Every endpoint is read-only, so there is
 nothing to separate yet; a stored-but-unenforced `scopes` field would be worse than none, and the
-loader rejects one outright rather than ignoring it. See `docs/auth-plan.md` for the full design
-and the ordered v2 list.
+loader rejects one outright rather than ignoring it. See `docs/product-plan.md` for the design the
+service actually implements, and `docs/auth-plan.md` for the reasoning behind the key format and
+the lookup path — its storage decisions were replaced by product-plan §3, and its header says so.
 
 ## MCP server (`src/mcp/`)
 
@@ -607,7 +608,9 @@ file that exists — so a new area cannot be added without a row.
 | Symbol universe filtering | `src/discovery/symbolUniverse.test.ts` | the ≥N-exchange routability rule, threshold edge cases, empty input |
 | Connector helpers | `src/connectors/exchangeConnector.test.ts` | `chunkSymbols`/`normalizeLevels`, permanent vs. recoverable errors, crossed books, resync backoff, orphan reaping |
 | Shard load-balancing | `src/sharding/orchestrator.test.ts` | every exchange assigned exactly once, greedy balance, shard-count edge cases |
+| Bounded connector startup | `src/connectors/startConcurrently.test.ts` | the admission limit that bounds the startup memory peak, in both single-process and shard mode |
 | Shard IPC backpressure | `src/sharding/ipcSend.test.ts` | idempotent snapshots dropped on a full pipe, rare messages never dropped, flush recovery |
+| Single-process startup | `src/index.startup.test.ts` | that the default (unsharded) path applies the same startup-concurrency and depth limits the shard path has |
 | Shard lifecycle | `src/sharding/shardWorker.lifecycle.test.ts` | the disconnect handler is registered before any connector starts |
 | REST API | `src/api/server.test.ts` | every HTTP route via Fastify `inject()` against a real in-memory cache |
 | Query parsing | `src/api/routeQuery.test.ts` | the parser both /route verbs share: types, caps, repeated parameters, enum flags |
@@ -617,7 +620,7 @@ file that exists — so a new area cannot be added without a row.
 | Key projection | `src/db/keyProjection.test.ts` | revocation vs. a lost database, Postgres outages leaving the snapshot intact |
 | Usage ingest | `src/db/ingest.test.ts` | cursor handling, unparseable addresses, partition rollover, paired records |
 | Admin audit | `src/db/adminAudit.test.ts` | what is written, `inet` safety, a failed write never failing the action |
-| Web console | `src/web/home.test.ts`, `src/web/reveal.test.ts`, `src/web/keyAudit.test.ts` | security and cache headers, the one-time key reveal, key-lifecycle audit rows, cookie prefixes |
+| Web console | `src/web/home.test.ts`, `src/web/reveal.test.ts`, `src/web/keyAudit.test.ts`, `src/web/authGuards.test.ts` | security and cache headers, the one-time key reveal, key-lifecycle audit rows, cookie prefixes |
 | Metrics | `src/metrics.test.ts` | every gauge's label set and collect path |
 | Config | `src/config.test.ts`, `src/config.docs.test.ts` | parsing and defaults, and that every env var is documented |
 | Docs and packaging | `src/docs.test.ts`, `src/openapi.test.ts`, `src/packaging.test.ts` | README/CLI/systemd/workflow drift, the OpenAPI spec's two /route verbs, the Dockerfile's COPY set |
@@ -822,12 +825,52 @@ ExecReload=/bin/kill -HUP $MAINPID
 ```
 
 ```bash
-# /opt/order-router/env — keys.json defaults to ./data/keys.json, i.e. inside the release. Pin it.
+# /opt/order-router/env — SHARED by all three units. keys.json defaults to ./data/keys.json, i.e.
+# inside the release, so it is pinned outside; and the three processes have to agree on the path or
+# the projector writes a file the router never reads.
 ORDER_ROUTER_KEYS_FILE=/opt/order-router/keys.json
+ORDER_ROUTER_AUDIT_LOG_FILE=/var/log/order-router/audit.log
+DATABASE_URL=postgres://order_router@localhost/order_router
 ```
 
-`systemctl daemon-reload && systemctl restart order-router`, then confirm
-`curl -H "x-api-key: …" localhost:8080/version` answers. The deploy keeps the last five releases, so
+### The other two units
+
+The shipped system is **three** processes, not one, and the deploy restarts all three
+(`EXTRA_SERVICES` in the workflow). The router alone cannot authenticate a single request: it reads
+a projected key snapshot, and the process that WRITES that snapshot is the ingest runner. A box
+built from the router unit alone answers 401 to every caller and nothing in the logs explains why.
+
+```ini
+# /etc/systemd/system/order-router-web.service — the console at /router: signup, login, key
+# minting and revocation. Needs DATABASE_URL; the router deliberately does not have it.
+WorkingDirectory=/opt/order-router/current
+ExecStart=/usr/bin/node /opt/order-router/current/dist/web/index.js
+EnvironmentFile=/opt/order-router/env
+Restart=on-failure
+RestartSec=2
+```
+
+```ini
+# /etc/systemd/system/order-router-ingest.service — audit ingest AND key projection. This is the
+# one that makes a minted key work and a revoked key stop working; without it the router's snapshot
+# is whatever it was when the file was last written by hand.
+WorkingDirectory=/opt/order-router/current
+ExecStart=/usr/bin/node /opt/order-router/current/dist/db/ingestRunner.js
+EnvironmentFile=/opt/order-router/env
+Restart=on-failure
+RestartSec=2
+```
+
+Bootstrap order matters — each step needs the one before it:
+
+```bash
+npm run db:migrate                 # creates the schema; every other step reads or writes it
+npm run admin -- create-admin --email ops@example.com --password '<at least 12 chars>'
+systemctl daemon-reload
+systemctl enable --now order-router order-router-web order-router-ingest
+```
+
+Then confirm `curl -H "x-api-key: …" localhost:8080/version` answers. The deploy keeps the last five releases, so
 a manual rollback is `ln -sfn /opt/order-router/releases/<sha> /opt/order-router/current && systemctl restart order-router`.
 
 ### Post-deploy live tests

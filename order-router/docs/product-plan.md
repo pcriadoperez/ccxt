@@ -1,9 +1,10 @@
 # Router beta — product plan
 
-Status: **plan, not shipped.** Supersedes [`dashboard-plan.md`](./dashboard-plan.md) and the earlier
-draft of this file. [`auth-plan.md`](./auth-plan.md) shipped, but §3 below replaces most of its
-storage decisions — **nothing in this codebase is in use yet, so no design here is preserved out of
-deference to what already exists.**
+Status: **shipped.** This is the design the running service implements, and the document to read
+first. It supersedes [`dashboard-plan.md`](./dashboard-plan.md) entirely, and replaces the storage
+decisions in [`auth-plan.md`](./auth-plan.md) §3 — Postgres is the source of truth and `keys.json`
+is a projection of it. The line the earlier draft carried, that nothing here is in use yet, is no
+longer true of anything below.
 
 ## The goal, concretely
 

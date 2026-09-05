@@ -549,22 +549,6 @@ ts/src/base/OrderRouter.ts:1887-1897 — detection with no action:
 
 When an order comes back `status === 'open'` on a non-limit_protected path, cancel it and re-read before returning, exactly as placeProtectedLimit does; treat a failed cancel as outcome_unknown. Separately, when the venue reports no timeInForce capability, either refuse the step or verify the placed
 
-### 70. The design docs the README points operators to are marked "plan, not shipped" and prescribe an architecture that was replaced; one explicitly forbids the deployment that shipped
-
-**Severity:** medium &nbsp;·&nbsp; **estimated effort:** hours
-
-**Claimed evidence**
-
-```
-order-router/README.md:456 sends operators there: "See `docs/auth-plan.md` for the full design and the ordered v2 list."
-
-order-router/docs/auth-plan.md:3 — "Status: **plan, not shipped.**" and auth-plan.md:30 — "| Lifecycle | **CLI only** (`npm run keys:create|list|revoke|delete`). No admin HTTP en
-```
-
-**Suggested fix** — a suggestion, not a verdict; verify before following it.
-
-Restamp the three docs with accurate status headers (auth-plan.md: shipped then superseded by product-plan §3; dashboard-plan.md: superseded, and its :443 prohibition no longer holds; product-plan.md: shipped). Repoint README.md:456 at whichever document describes the shipped Postgres/dashboard mode
-
 ### 74. The artifact CI tested is not the artifact deployed: the shipped arm64 tree is rebuilt in the deploy job and never runs a single test before it reaches production
 
 **Severity:** medium &nbsp;·&nbsp; **estimated effort:** hours
@@ -636,24 +620,6 @@ go/v4/exchange_order_router.go:443 goes to the trouble of implementing JavaScrip
 
 Either port Go's routerToFixed12 (go/v4/exchange_order_router.go:443) into Python, PHP and Rust, or drop the JS-tie requirement and change Go to plain half-to-even so all six agree on the simpler rule. Add tie values (0.0001220703125, -0.0001220703125) to a formatNumber section of ts/src/test/base/f
 
-## Started, not finished
-
-### 41. Deployment docs and the deploy workflow cover only the router process; the web console, ingester and key projector are undocumented and never started, so a box built from the README can never authenticate a request
-
-**Severity:** high &nbsp;·&nbsp; **estimated effort:** hours
-
-**Claimed evidence**
-
-```
-The shipped system needs four processes. package.json:20-23 exposes them: `"db:migrate"`, `"admin"`, `"ingest": "node dist/db/ingestRunner.js"`, `"web": "node dist/web/index.js"`. src/db/ingestRunner.ts:26-27 is the only thing that writes the key file the API reads:
-```
-const stopIngest = startInges
-```
-
-**Suggested fix** — a suggestion, not a verdict; verify before following it.
-
-Add the missing units and their bootstrap order to README.md:735-763 (`npm run db:migrate`, `npm run admin -- create-admin`, `order-router-web.service`, `order-router-ingest.service`, the shared `EnvironmentFile` so `ORDER_ROUTER_KEYS_FILE` matches across router/web/ingest, and `DATABASE_URL` on web
-
 ## Closed
 
 Kept so the same ground is not re-covered, and so a `wontfix` is not silently re-litigated.
@@ -700,6 +666,8 @@ Kept so the same ground is not re-covered, and so a `wontfix` is not silently re
 | 86 | low | The README's test-coverage table is stale in a way that overstates verification — it names a test file that does not exist and undercounts the suite by 6x, while the readiness table reports CI as "Closed" | **fixed** — the fixed count is gone (`npm test` prints the real one), the phantom `bestPrice.test.ts` row is corrected, and every test file on disk now has a row. src/docs.test.ts asserts both directions, so a new area cannot be added without one. |
 | 62 | medium | The README's forensic log queries return zero rows against the production configuration | **fixed** — the two runbook queries now read `$ORDER_ROUTER_AUDIT_LOG_FILE*`, with a line stating that every event in the table above lands in the audit stream and a note on the no-audit-file fallback. Pointed at router.log with the audit file configured, they returned nothing and read as "this key made no requests" — the most misleading answer available. |
 | 71 | medium | The `limit_protected` execution strategy is implemented but absent from every document, including the Manual table that presents itself as the complete list | **fixed** — a row in wiki/Manual.md with its `orderTimeoutMs` / `pollIntervalMs` options and its resting/cancel semantics, plus the strategy sentence in the five user-facing skills that carry one (ccxt-typescript, -python, -php, -csharp, -go; ccxt-cli, -java and -mcp document no strategies at all). **No automated guard**: the order-router suite is the only drift-testing harness in this change and has no business reading the library's wiki, while the six-language OrderRouter suite is transpiled and cannot read the filesystem. A future divergence needs a repo-level docs check. |
+| 41 | high | Deployment docs and the deploy workflow cover only the router process; the web console, ingester and key projector are undocumented and never started, so a box built from the README can never authenticate a request | **fixed** — the two companion units are documented with their ExecStart, the shared EnvironmentFile (all three must agree on ORDER_ROUTER_KEYS_FILE or the projector writes a file the router never reads), and a bootstrap order: `db:migrate`, then `create-admin`, then enable all three. src/docs.test.ts derives the expected unit list from the workflow's own `SERVICE`/`EXTRA_SERVICES`, so the deploy and the docs cannot drift apart again. This was the last item in the "Started, not finished" section, which is now gone. |
+| 70 | medium | The design docs the README points operators to are marked "plan, not shipped" and prescribe an architecture that was replaced; one explicitly forbids the deployment that shipped | **fixed** — all three restamped honestly: product-plan is *shipped* and is what the README now points at first; auth-plan is *shipped, then superseded* (its key format and lookup reasoning still hold, its storage decisions and its CLI lifecycle table do not); dashboard-plan is *superseded, kept for its reasoning* — its "never an nginx location on :443" describes a deployment deliberately not taken, and it now says so. A test fails if any design doc calls itself unshipped again. |
 | 14 | high | Attacker-controlled request.ip is inserted into an `inet` column inside the ingest transaction; one crafted header wedges audit ingestion permanently | **fixed** — 6f88bfb3 same fix as blocker 4 |
 | 15 | high | The published dev API key `dev-local-key-change-me` is enabled in production whenever NODE_ENV is unset, and the documented systemd unit never sets it | **fixed** — 6f88bfb3 same fix as blocker 0 |
 | 25 | high | /stream/route produces zero audit records and zero HTTP metrics — streaming usage is invisible to billing and to Prometheus | **fixed** — cc1501bf audit emission shared by GET/POST /route and every pushed frame; unroutable counter with it |

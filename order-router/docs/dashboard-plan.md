@@ -1,6 +1,11 @@
 # Admin dashboard + usage storage — implementation plan (v1)
 
-Status: **plan, not shipped.** Companion to [`auth-plan.md`](./auth-plan.md), which shipped.
+Status: **superseded, kept for its reasoning.** The dashboard shipped, but NOT in the shape
+described here: it is served at `/router` on `:443` behind nginx, with self-serve signup and
+session cookies, per [`product-plan.md`](./product-plan.md). The loopback-plus-`ssh -L` model below
+— and the "**never** an nginx location on `:443`" line in the table — describe a deployment that
+was deliberately not taken. What survives is the threat reasoning: read it as the argument the
+shipped design had to answer, not as a constraint on it.
 
 ## The ask
 
