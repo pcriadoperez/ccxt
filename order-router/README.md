@@ -451,15 +451,23 @@ makes failed auth greppable as a first-class thing rather than as an absent fiel
 | `route_recommendation` | every `/route` answer **and every frame `/stream/route` pushes**, self-contained for a billing or "why there?" dispute. On a stream each pushed frame is its own record under its own `requestId`, matching the `requestId` in the frame the caller received; pushes are floored by `ORDER_ROUTER_WS_MIN_PUSH_INTERVAL_MS`, so the rate is bounded at 1/floor per socket |
 | `stream_open` / `stream_close` | WS lifecycle, with `durationMs` |
 
+Every row above goes to the **audit** file, `ORDER_ROUTER_AUDIT_LOG_FILE`. Read the queries below
+against that path, not the diagnostic log: with the audit file configured — which the deployment
+sets — none of these events is in `router.log` at all, so the same commands pointed there return
+nothing and read as "this key made no requests", which is the most misleading answer available.
+
 ```bash
 # every request a key made, last 7 days
-zcat -f /var/log/order-router/router.log* \
+zcat -f "$ORDER_ROUTER_AUDIT_LOG_FILE"* \
   | jq -c 'select(.keyId=="k_7f3a91c2" and .event=="request")'
 
 # who is hammering us
-zcat -f /var/log/order-router/router.log* \
+zcat -f "$ORDER_ROUTER_AUDIT_LOG_FILE"* \
   | jq -r 'select(.event=="request") | .keyName // "unauthenticated"' | sort | uniq -c | sort -rn
 ```
+
+With no audit file set the router falls back to the single diagnostic stream, and the same queries
+work against `/var/log/order-router/router.log*` instead.
 
 The raw key never reaches the logs. That's enforced four ways: nothing retains the plaintext past
 the digest, pino redacts `x-api-key` and `authorization`, 401 bodies never echo what was presented,

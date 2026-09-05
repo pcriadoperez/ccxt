@@ -1077,8 +1077,9 @@ if not violations:
 regardless of the strategy requested** — a call that looks live but forgot the flag places nothing.
 
 Strategies: `dry_run` (default), `sequential`, `parallel_within_hop` (concurrent across venues,
-serialised within a venue), `atomic_ish` (requires the route pre-funded), `best_effort`
-(single-hop, never halts).
+serialised within a venue), `limit_protected` (rests a limit order and cancels it at
+`orderTimeoutMs`, polling every `pollIntervalMs`), `atomic_ish` (requires the route pre-funded),
+`best_effort` (single-hop, never halts).
 
 Every report carries `planAgeMs` — how old the plan's prices were when `execute` was called (`-1`
 when the route carried no `calculatedAt`, which means unknown, not fresh). Pass

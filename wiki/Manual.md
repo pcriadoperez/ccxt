@@ -8597,6 +8597,7 @@ if (violations.length === 0) {
 | `dry_run` | the default; places nothing and returns the report it would have produced |
 | `sequential` | one order at a time in plan order, reconciling after each and obeying the halt verdict |
 | `parallel_within_hop` | the legs of a hop concurrently, the hops strictly in order |
+| `limit_protected` | rests a limit order instead of taking, polling it every `pollIntervalMs` (default 1000, must be positive) until it fills or `orderTimeoutMs` (default 20000) elapses, then cancels. A partial fill is kept and reconciled; an order the venue already closed is not cancelled again; a cancel that fails is recorded in `openOrders` rather than assumed |
 | `atomic_ish` | sequential, but requires the whole route pre-funded so a hop's shortfall does not resize the next |
 | `best_effort` | places what it can and never halts; single-hop only, and demands explicit acknowledgements |
 
