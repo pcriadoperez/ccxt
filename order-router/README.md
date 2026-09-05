@@ -580,19 +580,40 @@ Sharding (`ORDER_ROUTER_SHARD_COUNT>1`) forks compiled `dist/sharding/shardWorke
 npm test    # node:test via tsx, no network required
 ```
 
-49 tests, all offline — no live exchange connections, no mocked `fetch` (HTTP-touching code is
-tested against real local fixtures: `node:http` servers for the MCP proxy layer, Fastify's
-`inject()` for the REST API, `node:child_process`-free logic-only tests for sharding). Coverage:
+All offline — no live exchange connections, no mocked `fetch` (HTTP-touching code is tested
+against real local fixtures: `node:http` servers for the MCP proxy layer, Fastify's `inject()` for
+the REST API, a scripted pool for the console's database reads). `npm test` prints the count; a
+number written down here would be wrong within a week, and the one that used to be here was wrong
+by 6x. What matters is the coverage, and `src/docs.test.ts` asserts this table names every test
+file that exists — so a new area cannot be added without a row.
 
 | Area | File | What's covered |
 |---|---|---|
-| Book-walking / fee ranking | `src/routing/bestPrice.test.ts` | VWAP across levels, fee-adjusted ranking beats raw-price ranking, partial fills, buy vs. sell side, stale-book exclusion |
+| Book-walking / fee ranking | `src/routing/route.test.ts` | VWAP across levels, fee-adjusted ranking beats raw-price ranking, partial fills, buy vs. sell side, stale-book exclusion |
+| Path selection | `src/routing/pathSelection.test.ts` | direct vs. bridged routes, hop penalties, unroutable pairs |
+| Price impact | `src/routing/impact.test.ts` | impact in bps against the reference price, per-hop and whole-route |
+| Balance-capped routing | `src/routing/balances.test.ts` | the balances grammar, entry/character caps, cap vs. require modes |
+| Market resolution | `src/routing/market.test.ts` | symbol parsing, market lookup, base/quote orientation |
 | In-memory cache | `src/cache/orderBookCache.test.ts` | get/set, per-symbol event scoping, health lifecycle, unknown-exchange no-ops |
 | Fee registry | `src/cache/feeRegistry.test.ts` | fallback, per-(exchange,symbol) scoping, event emission (used for shard IPC) |
 | Symbol universe filtering | `src/discovery/symbolUniverse.test.ts` | the ≥N-exchange routability rule, threshold edge cases, empty input |
-| Subscription chunking | `src/connectors/exchangeConnector.test.ts` | `chunkSymbols`/`normalizeLevels` pure helpers extracted from the connector |
+| Connector helpers | `src/connectors/exchangeConnector.test.ts` | `chunkSymbols`/`normalizeLevels`, permanent vs. recoverable errors, crossed books, resync backoff, orphan reaping |
 | Shard load-balancing | `src/sharding/orchestrator.test.ts` | every exchange assigned exactly once, greedy balance, shard-count edge cases |
-| REST API | `src/api/server.test.ts` | all 5 HTTP routes via Fastify `inject()` against a real in-memory cache |
+| Shard IPC backpressure | `src/sharding/ipcSend.test.ts` | idempotent snapshots dropped on a full pipe, rare messages never dropped, flush recovery |
+| Shard lifecycle | `src/sharding/shardWorker.lifecycle.test.ts` | the disconnect handler is registered before any connector starts |
+| REST API | `src/api/server.test.ts` | every HTTP route via Fastify `inject()` against a real in-memory cache |
+| Query parsing | `src/api/routeQuery.test.ts` | the parser both /route verbs share: types, caps, repeated parameters, enum flags |
+| Authentication | `src/api/auth.test.ts`, `src/api/auth.integration.test.ts` | key lookup, 401 shapes, no key or hash in any log line |
+| Key store | `src/api/keyStore.test.ts` | the snapshot file: atomic writes, digests only, mtime reload |
+| Rate limiting | `src/api/rateLimiter.test.ts` | per-key buckets, `/health` exemption |
+| Key projection | `src/db/keyProjection.test.ts` | revocation vs. a lost database, Postgres outages leaving the snapshot intact |
+| Usage ingest | `src/db/ingest.test.ts` | cursor handling, unparseable addresses, partition rollover, paired records |
+| Admin audit | `src/db/adminAudit.test.ts` | what is written, `inet` safety, a failed write never failing the action |
+| Web console | `src/web/home.test.ts`, `src/web/reveal.test.ts`, `src/web/keyAudit.test.ts` | security and cache headers, the one-time key reveal, key-lifecycle audit rows, cookie prefixes |
+| Metrics | `src/metrics.test.ts` | every gauge's label set and collect path |
+| Config | `src/config.test.ts`, `src/config.docs.test.ts` | parsing and defaults, and that every env var is documented |
+| Docs and packaging | `src/docs.test.ts`, `src/openapi.test.ts`, `src/packaging.test.ts` | README/CLI/systemd/workflow drift, the OpenAPI spec's two /route verbs, the Dockerfile's COPY set |
+| Exchange metadata | `src/exchangeMeta.test.ts` | the certified-venue list and its shape |
 | MCP proxy layer | `src/mcp/tools.test.ts` | URL construction, error propagation, against a real local HTTP fixture |
 | MCP protocol | `src/mcp/server.test.ts` | real `Client`/`McpServer` over `InMemoryTransport` — tool listing, tool calls, Zod input validation surfacing as MCP tool errors |
 

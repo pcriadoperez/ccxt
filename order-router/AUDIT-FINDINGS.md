@@ -481,48 +481,6 @@ Add `ON DELETE CASCADE` (or an explicit multi-statement erasure function) for ap
 
 Add `order_router_shards_expected` (from `config.shardCount`) and `order_router_shards_reporting` so `expected - reporting > 0` is alertable, plus an `order_router_shard_restarts_total{shard}` counter incremented in the `exit` handler. Seed `loopRegistry` with an entry per configured shard index at
 
-### 60. WebSocket frames dropped for slow consumers are silently discarded — no metric, no log, no client signal
-
-**Severity:** medium &nbsp;·&nbsp; **estimated effort:** minutes
-
-**Claimed evidence**
-
-```
-`src/api/server.ts:671-675`:
-```ts
-// Drop this frame if the peer is not keeping up. Coalescing bounds how often we
-// COMPUTE, not how fast the client drains, so without this a slow consumer grows
-// the send buffer without limit ...
-if (socket.bufferedAmount > WS_MAX_BUFFERED_BYTES) return;
-```
-Th
-```
-
-**Suggested fix** — a suggestion, not a verdict; verify before following it.
-
-Add `order_router_stream_frames_dropped_total` incremented at that return, and send the client a `{ "warning": "frames_dropped", "since": ... }` marker (or set a `stale: true` flag on the next successful frame) so a consumer can detect it. Log once per socket at `warn` on first drop, not per frame.
-
-### 61. Crossed-book rejection logs a warn per update while resync backs off to 30 minutes — unbounded log volume at the production log level
-
-**Severity:** medium &nbsp;·&nbsp; **estimated effort:** minutes
-
-**Claimed evidence**
-
-```
-`src/connectors/exchangeConnector.ts:387-394`:
-```ts
-if (isCrossedBook(bids, asks)) {
-    this.cache.recordCrossed(this.exchangeId);
-    this.logger.warn(
-        { symbol, bestBid: bids[0]?.price, bestAsk: asks[0]?.price },
-        'crossed order book, rejecting update and scheduling resync',
-    )
-```
-
-**Suggested fix** — a suggestion, not a verdict; verify before following it.
-
-Throttle the log to the resync cadence: log the first crossed book per exchange/symbol, then suppress until the next successful resync, emitting a periodic summary line with the suppressed count. `cache.recordCrossed()` already feeds `order_router_exchange_crossed_books_total` (metrics.ts:59-69), so
-
 ### 62. The README's forensic log queries return zero rows against the production configuration
 
 **Severity:** medium &nbsp;·&nbsp; **estimated effort:** minutes
@@ -645,24 +603,6 @@ validated at OrderRouter.ts:1348, dispatched at OrderRouter.ts:1804-1806 (`if (s
 
 Add a `limit_protected` row to wiki/Manual.md:8595-8601 with its `orderTimeoutMs` / `pollIntervalMs` options and its resting/cancel semantics, and add it to the strategy line in all five `.claude/skills/ccxt-*/SKILL.md` files.
 
-### 72. OpenAPI's POST /route omits the 404 and 501 responses the shared handler returns, on the verb the spec itself tells callers to use for balances
-
-**Severity:** medium &nbsp;·&nbsp; **estimated effort:** minutes
-
-**Claimed evidence**
-
-```
-Both verbs run the same handler — order-router/src/api/server.ts:509-525:
-```
-app.get<{ Querystring: RouteQuery }>('/route', async (request, reply) => handleRoute(request.query, request, reply));
-...
-app.post<{ Body: RouteQuery }>('/route', async (request, reply) => handleRoute(request.body ?? ({} a
-```
-
-**Suggested fix** — a suggestion, not a verdict; verify before following it.
-
-Copy the `'404'` and `'501'` response blocks from openapi/openapi.yaml:210-229 into the `post:` responses at openapi.yaml:265-268.
-
 ### 74. The artifact CI tested is not the artifact deployed: the shipped arm64 tree is rebuilt in the deploy job and never runs a single test before it reaches production
 
 **Severity:** medium &nbsp;·&nbsp; **estimated effort:** hours
@@ -734,39 +674,6 @@ go/v4/exchange_order_router.go:443 goes to the trouble of implementing JavaScrip
 
 Either port Go's routerToFixed12 (go/v4/exchange_order_router.go:443) into Python, PHP and Rust, or drop the JS-tie requirement and change Go to plain half-to-even so all six agree on the simpler rule. Add tie values (0.0001220703125, -0.0001220703125) to a formatNumber section of ts/src/test/base/f
 
-### 83. OpenAPI describes /health as "the only unauthenticated route" while the next path in the same file is also unauthenticated
-
-**Severity:** low &nbsp;·&nbsp; **estimated effort:** minutes
-
-**Claimed evidence**
-
-```
-openapi/openapi.yaml:101 — "description: The only unauthenticated route, so orchestrator probes work before credentials are injectable."
-openapi/openapi.yaml:127 (`/ready`) — "`503` until then. Unauthenticated like `/health`", with `security: []` at openapi.yaml:129.
-Code agrees with `/ready` being
-```
-
-**Suggested fix** — a suggestion, not a verdict; verify before following it.
-
-Change openapi/openapi.yaml:101 to name both: "/health and /ready are the only unauthenticated routes."
-
-### 86. The README's test-coverage table is stale in a way that overstates verification — it names a test file that does not exist and undercounts the suite by 6x, while the readiness table reports CI as "Closed"
-
-**Severity:** low &nbsp;·&nbsp; **estimated effort:** minutes
-
-**Claimed evidence**
-
-```
-order-router/README.md:563 and :569:
-```
-49 tests, all offline — no live exchange connections, no mocked `fetch` ...
-| Book-walking / fee ranking | `src/routing/bestPrice.test.ts` | VWAP across levels, fee-adjusted ranking beats raw-price ranking, partial fills, buy vs. sell side, stale-book exclusi
-```
-
-**Suggested fix** — a suggestion, not a verdict; verify before following it.
-
-Either delete the per-file coverage table and print the count from the suite, or extend the existing drift test in src/config.docs.test.ts to assert that every path named in the README's coverage table exists on disk — the same technique already used there for env vars, applied to the one table that
-
 ## Started, not finished
 
 ### 41. Deployment docs and the deploy workflow cover only the router process; the web console, ingester and key projector are undocumented and never started, so a box built from the README can never authenticate a request
@@ -824,6 +731,11 @@ Kept so the same ground is not re-covered, and so a `wontfix` is not silently re
 | 78 | low | `ORDER_ROUTER_SHARD_START_CONCURRENCY` is documented as controlling something it does not control, and raising it on that basis rebuilds the memory peak the heap ceiling exists to hold | **fixed** — the README row now says what the code does (exchanges started concurrently within one shard) and names `ORDER_ROUTER_SHARD_COUNT` as the knob it was being confused with. |
 | 84 | low | README documents `systemctl reload order-router` for instant key reload, but the systemd unit it also documents has no ExecReload | **fixed** — `ExecReload=/bin/kill -HUP $MAINPID` added; the process already handles SIGHUP (src/index.ts). The test checks the signal the unit sends is one index.ts handles, since a reload that succeeds and does nothing is the worst of the three outcomes. |
 | 85 | low | build-and-test has no timeout-minutes while every other job in the file does, so a hung step holds a runner for the 6-hour default | **fixed** — `timeout-minutes: 20`, and src/docs.test.ts now asserts every job in the workflow bounds itself. |
+| 60 | medium | WebSocket frames dropped for slow consumers are silently discarded — no metric, no log, no client signal | **fixed** — all three directions answered: `order_router_stream_frames_dropped_total` for the operator, one warn per socket (not per frame — a saturated socket drops continuously at the production log level), and a `droppedFrames` count on the next frame that gets through, the only signal the client can see. A consumer that fell behind can now tell "the market did not move" from "I missed the frames where it did". |
+| 61 | medium | Crossed-book rejection logs a warn per update while resync backs off to 30 minutes — unbounded log volume at the production log level | **fixed** — one line per symbol per crossed episode, with a closing line reporting how long it lasted and how many updates it rejected, so the suppressed window is accounted for rather than lost. Per symbol, because one venue can cross on one market and be fine on the rest; per episode, because a venue that crosses twice must be reported twice. |
+| 72 | medium | OpenAPI's POST /route omits the 404 and 501 responses the shared handler returns, on the verb the spec itself tells callers to use for balances | **fixed** — both copied onto the `post:` responses, and src/openapi.test.ts now asserts the two verbs document identical status sets, since one handler serves both. |
+| 83 | low | OpenAPI describes /health as "the only unauthenticated route" while the next path in the same file is also unauthenticated | **fixed** — the description names both. The claim mattered: a caller who believes it wires their orchestrator to the probe that answers 200 while the cache is still filling, thinking it is the only one they can reach. |
+| 86 | low | The README's test-coverage table is stale in a way that overstates verification — it names a test file that does not exist and undercounts the suite by 6x, while the readiness table reports CI as "Closed" | **fixed** — the fixed count is gone (`npm test` prints the real one), the phantom `bestPrice.test.ts` row is corrected, and every test file on disk now has a row. src/docs.test.ts asserts both directions, so a new area cannot be added without one. |
 | 14 | high | Attacker-controlled request.ip is inserted into an `inet` column inside the ingest transaction; one crafted header wedges audit ingestion permanently | **fixed** — 6f88bfb3 same fix as blocker 4 |
 | 15 | high | The published dev API key `dev-local-key-change-me` is enabled in production whenever NODE_ENV is unset, and the documented systemd unit never sets it | **fixed** — 6f88bfb3 same fix as blocker 0 |
 | 25 | high | /stream/route produces zero audit records and zero HTTP metrics — streaming usage is invisible to billing and to Prometheus | **fixed** — cc1501bf audit emission shared by GET/POST /route and every pushed frame; unroutable counter with it |

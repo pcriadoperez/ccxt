@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, globSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 // The README documented an entire key-management CLI — `npm run keys:create/list/revoke/delete` —
@@ -99,4 +99,31 @@ test('every job in the order-router workflow bounds its own runtime', () => {
         const block = (next === -1) ? body : body.slice(0, next);
         assert.match(block, /^ {4}timeout-minutes:/m, `job ${job} has no timeout-minutes`);
     }
+});
+
+test('the README test-coverage table names every test file, and no file that does not exist', () => {
+    // The table named `src/routing/bestPrice.test.ts`, which has never existed, and undercounted
+    // the suite by 6x — while the readiness table two sections down reported CI as "Closed". A
+    // stale coverage table does not just misinform, it overstates verification.
+    const listed = new Set(
+        [...README.matchAll(/`(src\/[A-Za-z0-9/._-]+\.test\.ts)`/g)].map((m) => m[1]!),
+    );
+    assert.ok(listed.size > 10, `expected the coverage table, found ${listed.size} files`);
+    for (const file of listed) {
+        assert.ok(existsSync(fileURLToPath(new URL(file, root))),
+            `the coverage table names ${file}, which does not exist`);
+    }
+    const onDisk = globSync('src/**/*.test.ts', { cwd: fileURLToPath(root) }).sort();
+    assert.ok(onDisk.length > 10, 'expected to find the suite on disk');
+    const missing = onDisk.filter((f) => !listed.has(f));
+    assert.deepEqual(missing, [], 'test files with no row in the README coverage table');
+});
+
+test('the coverage section does not carry a test count that will rot', () => {
+    // A number written down goes stale the next time anyone adds a test, and the one that was
+    // here had. `npm test` prints the real count.
+    const section = README.slice(README.indexOf('| Area | File | What\'s covered |') - 800,
+        README.indexOf('| Area | File | What\'s covered |'));
+    assert.equal(/^\d+ tests,/m.test(section), false,
+        'the coverage section should not state a fixed test count');
 });

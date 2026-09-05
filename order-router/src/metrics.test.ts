@@ -147,3 +147,17 @@ test('an exchange that has never resynced reports -1 rather than 0', async () =>
     const text = await makeRegistry(cache).metrics();
     assert.match(text, /order_router_exchange_last_resync_seconds\{exchange="kraken"\} -1/);
 });
+
+test('dropped stream frames are counted and exported', async () => {
+    // A frame dropped for a slow consumer used to be invisible in every direction at once — no
+    // metric, no log, nothing on the wire — so a saturated socket looked exactly like a quiet
+    // market. This is the operator's half of that signal.
+    const { Registry } = await import('prom-client');
+    const { buildStreamDropCounter } = await import('./metrics.js');
+    const registry = new Registry();
+    const counter = buildStreamDropCounter(registry);
+    assert.match(await registry.metrics(), /order_router_stream_frames_dropped_total 0/);
+    counter.inc();
+    counter.inc();
+    assert.match(await registry.metrics(), /order_router_stream_frames_dropped_total 2/);
+});

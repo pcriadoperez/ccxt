@@ -2,7 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import pino from 'pino';
 import ccxt from 'ccxt';
-import { chunkSymbols, normalizeLevels, isPermanentError, isLimitRejection, reapOrphanedSockets, isCrossedBook, nextResyncBackoffMs } from './exchangeConnector.js';
+import { chunkSymbols, normalizeLevels, isPermanentError, isLimitRejection, reapOrphanedSockets, isCrossedBook, nextResyncBackoffMs, ExchangeConnector } from './exchangeConnector.js';
+import { OrderBookCache } from '../cache/orderBookCache.js';
+import { FeeRegistry } from '../cache/feeRegistry.js';
 
 const silentLogger = pino({ level: 'silent' });
 
@@ -257,4 +259,49 @@ test('a venue refusing the depth limit drops the limit instead of the venue', ()
     // And once the limit has already been dropped, nothing is a limit rejection any more —
     // otherwise the loop would retry with no backoff forever.
     assert.equal(isLimitRejection(new ccxt.NotSupported('watchOrderBook() does not accept a limit'), undefined), false);
+});
+
+test('a crossed book logs once per episode, not once per update', async () => {
+    // A venue that crosses usually crosses on EVERY update — hundreds a second on a fast symbol —
+    // while the resync that would clear it backs off to as much as 30 minutes. One warn per update
+    // at the production log level is unbounded volume from a condition already counted in
+    // order_router_exchange_crossed_books_total, and this box has been buried by exactly that kind
+    // of retry chatter before.
+    const lines: { level: string; msg: string; obj: Record<string, unknown> }[] = [];
+    const capture = {
+        warn: (obj: Record<string, unknown>, msg: string) => lines.push({ level: 'warn', msg, obj }),
+        info: () => {}, error: () => {}, debug: () => {}, trace: () => {}, fatal: () => {},
+        child: () => capture,
+    };
+    const cache = new OrderBookCache();
+    const exchange = { id: 'stub', markets: {}, loadMarkets: async () => ({}) };
+    const connector = new ExchangeConnector(
+        'stub', cache, new FeeRegistry(), capture as never, exchange as never);
+    // resync() would reach for the venue's orderbooks; the crossed path only needs it not to throw.
+    (connector as never as { resync: () => Promise<void> }).resync = async () => {};
+    const apply = (connector as never as {
+        applyOrderBook: (s: string, ob: unknown, seq: number) => void;
+    }).applyOrderBook.bind(connector);
+
+    const crossedBook = { bids: [[ 101, 1 ]], asks: [[ 100, 1 ]], timestamp: Date.now() };
+    for (let i = 0; i < 50; i++) apply('BTC/USDT', crossedBook, i);
+    const crossedWarns = lines.filter((l) => l.msg.indexOf('crossed order book,') === 0);
+    assert.equal(crossedWarns.length, 1, `50 crossed updates should log once, logged ${crossedWarns.length}`);
+
+    // A different symbol is a different episode: one venue can cross on one market and be fine on
+    // the rest, and suppressing the second would hide it entirely.
+    for (let i = 0; i < 10; i++) apply('ETH/USDT', crossedBook, i);
+    assert.equal(lines.filter((l) => l.msg.indexOf('crossed order book,') === 0).length, 2);
+
+    // Clearing reports what the suppressed window cost, so nothing is silently lost.
+    apply('BTC/USDT', { bids: [[ 100, 1 ]], asks: [[ 101, 1 ]], timestamp: Date.now() }, 99);
+    const cleared = lines.find((l) => l.msg === 'crossed order book cleared');
+    assert.ok(cleared, 'the end of an episode is reported');
+    assert.equal(cleared!.obj['updatesRejected'], 50);
+    assert.equal(cleared!.obj['symbol'], 'BTC/USDT');
+
+    // And a fresh episode on the same symbol logs again — the suppression is per episode, not
+    // permanent, or a venue that crosses twice would be reported once.
+    for (let i = 0; i < 5; i++) apply('BTC/USDT', crossedBook, 100 + i);
+    assert.equal(lines.filter((l) => l.msg.indexOf('crossed order book,') === 0).length, 3);
 });

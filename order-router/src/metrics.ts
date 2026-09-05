@@ -297,6 +297,19 @@ export function buildUnroutableCounter (registry: Registry): Counter<'reason'> {
     });
 }
 
+// Stream frames dropped because the peer was not draining. Same reasoning as the counter above:
+// this is a property of what was sent, not of any cached state, so there is no second source of
+// truth. A frame dropped for a slow consumer used to be invisible in every direction at once — no
+// metric, no log, and nothing on the wire — so a client could sit on a quote it believed was
+// current while the router had newer ones it never managed to hand over.
+export function buildStreamDropCounter (registry: Registry): Counter<never> {
+    return new Counter({
+        name: 'order_router_stream_frames_dropped_total',
+        help: 'Route frames dropped because the client socket was not draining. Rising means consumers are slower than the market.',
+        registers: [registry],
+    });
+}
+
 // Separate from the registry builder so the server can record into it from an onResponse hook.
 export function buildHttpHistogram (registry: Registry): Histogram<'method' | 'route' | 'status_code'> {
     return new Histogram({

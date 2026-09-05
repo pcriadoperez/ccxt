@@ -14,7 +14,7 @@ import { parseRouteQuery, type RouteQuery } from './routeQuery.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { extractApiKey, isPublicPath, makeAuthHook, resolveKey } from './auth.js';
 import { ApiKeyStore } from './keyStore.js';
-import { buildHttpHistogram, buildMetricsRegistry, buildUnroutableCounter } from '../metrics.js';
+import { buildHttpHistogram, buildMetricsRegistry, buildStreamDropCounter, buildUnroutableCounter } from '../metrics.js';
 import { LoopRegistry } from '../cache/loopRegistry.js';
 import { buildInfo } from '../buildInfo.js';
 
@@ -292,6 +292,7 @@ export async function buildServer (
     });
     const httpDuration = buildHttpHistogram(metricsRegistry);
     const unroutable = buildUnroutableCounter(metricsRegistry);
+    const streamDrops = buildStreamDropCounter(metricsRegistry);
 
     app.addHook('onResponse', async (request, reply) => {
         // Label with the ROUTE TEMPLATE, never the raw URL: /orderbook/:exchange/:symbol has tens
@@ -623,6 +624,8 @@ export async function buildServer (
 
             const watched = new Set<string>();
             let flushPending = false;
+            //  Frames discarded for this socket since the last one that got through.
+            let droppedFrames = 0;
             let lastPushAt = 0;
             let pushTimer: NodeJS.Timeout | undefined;
             // Coalescing per event-loop tick is NOT a rate bound — BTC/USDT alone updates from
@@ -692,12 +695,34 @@ export async function buildServer (
                 // COMPUTE, not how fast the client drains, so without this a slow consumer grows
                 // the send buffer without limit — the socket-level backpressure this used to claim
                 // to rely on does not exist for ws, which buffers instead of blocking.
-                if (socket.bufferedAmount > WS_MAX_BUFFERED_BYTES) return;
+                if (socket.bufferedAmount > WS_MAX_BUFFERED_BYTES) {
+                    // Dropping is right — a router quote is only useful while it is current — but
+                    // dropping SILENTLY was not: no metric, no log, and nothing on the wire, so a
+                    // client sat on a quote it believed was current while newer ones were being
+                    // discarded. All three are now answered: the counter for the operator, one
+                    // warn per socket (not per frame — a saturated socket drops continuously) for
+                    // the log, and a flag on the next frame that does get through for the client,
+                    // which is the only one of the three the client can see.
+                    streamDrops.inc();
+                    droppedFrames += 1;
+                    if (droppedFrames === 1) {
+                        request.log.warn({ event: 'stream_frames_dropping', reqId: String(request.id) },
+                            'client is not draining; frames are being dropped until it catches up');
+                    }
+                    return;
+                }
                 // A fresh id per push: each frame is its own recommendation, and an audit trail
                 // that reused one id across a long-lived stream could not distinguish them.
                 const frameId = randomUUID();
                 const pushed = computeRoute(cache, feeRegistry, req, { ...opts, requestId: frameId });
-                socket.send(JSON.stringify(pushed));
+                // The only signal the CLIENT can see. A consumer that fell behind has to be able
+                // to tell "the market did not move" from "I missed the frames where it did" — the
+                // two look identical from inside a socket, and only one of them means the quote in
+                // hand is worth acting on. Present only when frames were actually dropped, so an
+                // ordinary frame keeps its exact shape.
+                const payload = (droppedFrames > 0) ? { ...pushed, droppedFrames } : pushed;
+                droppedFrames = 0;
+                socket.send(JSON.stringify(payload));
                 // Audited on the same terms as a REST recommendation. A streamed answer is an
                 // answer the caller can act on, and it used to reach them without ever reaching
                 // the audit trail or the unroutable counter — so a dispute over a streamed route

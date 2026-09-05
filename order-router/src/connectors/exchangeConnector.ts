@@ -264,6 +264,9 @@ export class ExchangeConnector {
     private limitRejected = false;
     private lastResyncAt = 0;
     private resyncBackoffMs = RESYNC_MIN_INTERVAL_MS;
+    // Symbols currently in a crossed episode, with when it started and how many updates it has
+    // rejected. Keyed by symbol because one venue can cross on one market while the rest are fine.
+    private crossedSince = new Map<string, { at: number; updates: number }>();
     private resyncTimer: NodeJS.Timeout | undefined;
 
     // `existingExchange` lets a caller that already ran loadMarkets() (e.g. discovery, which
@@ -404,12 +407,33 @@ export class ExchangeConnector {
         // first — whereas storing this one would put a phantom price into routing immediately.
         if (isCrossedBook(bids, asks)) {
             this.cache.recordCrossed(this.exchangeId);
-            this.logger.warn(
-                { symbol, bestBid: bids[0]?.price, bestAsk: asks[0]?.price },
-                'crossed order book, rejecting update and scheduling resync',
-            );
+            // ONE line per symbol per crossed episode, not one per update. A venue that crosses is
+            // usually crossing on every update — hundreds a second on a fast symbol — while the
+            // resync that would clear it backs off to as much as 30 minutes. At the production log
+            // level that is unbounded volume from a condition already counted in
+            // order_router_exchange_crossed_books_total, and the box has been buried by exactly
+            // that kind of retry chatter before. The count is kept and reported on the way out, so
+            // nothing is lost: the summary says how long it lasted and how many updates it ate.
+            const seen = this.crossedSince.get(symbol);
+            if (seen === undefined) {
+                this.crossedSince.set(symbol, { at: Date.now(), updates: 1 });
+                this.logger.warn(
+                    { symbol, bestBid: bids[0]?.price, bestAsk: asks[0]?.price },
+                    'crossed order book, rejecting update and scheduling resync',
+                );
+            } else {
+                seen.updates += 1;
+            }
             void this.resync(`crossed book on ${symbol}`);
             return;
+        }
+        const crossed = this.crossedSince.get(symbol);
+        if (crossed !== undefined) {
+            this.crossedSince.delete(symbol);
+            this.logger.warn(
+                { symbol, updatesRejected: crossed.updates, durationMs: Date.now() - crossed.at },
+                'crossed order book cleared',
+            );
         }
         this.cache.setBook({
             exchangeId: this.exchangeId,

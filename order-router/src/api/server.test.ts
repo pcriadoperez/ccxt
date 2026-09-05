@@ -1483,3 +1483,24 @@ test('LOG_LEVEL can quiet the diagnostic log without silencing the audit trail',
         else process.env['ORDER_ROUTER_API_KEY'] = previous;
     }
 });
+
+test('a dropped stream frame is reported three ways, not silently discarded', async () => {
+    // Source-level: forcing socket.bufferedAmount past a megabyte from a test means writing to a
+    // peer that has genuinely stopped reading, which is timing-dependent and flaky. What is worth
+    // pinning is that the drop is not silent in any of the three directions it can be — the
+    // operator's counter, the log, and the client — since silence in all three is what the finding
+    // was, and each is one line that can be deleted independently.
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const src = readFileSync(fileURLToPath(new URL('./server.ts', import.meta.url)), 'utf8');
+    const drop = src.slice(src.indexOf('if (socket.bufferedAmount > WS_MAX_BUFFERED_BYTES)'));
+    const block = drop.slice(0, drop.indexOf('const frameId'));
+    assert.ok(block.indexOf('streamDrops.inc()') !== -1, 'the operator gets a metric');
+    assert.ok(/request\.log\.warn/.test(block), 'the log gets a line');
+    // Once per socket, not once per frame: a saturated socket drops continuously, and this is the
+    // production log level.
+    assert.ok(block.indexOf('droppedFrames === 1') !== -1, 'the log line is per socket, not per frame');
+    // And the client, on the next frame that does get through, can tell "the market did not move"
+    // from "I missed the frames where it did".
+    assert.ok(src.indexOf('...pushed, droppedFrames') !== -1, 'the client is told on the next frame');
+});

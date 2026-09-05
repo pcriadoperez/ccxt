@@ -98,7 +98,7 @@ paths:
     get:
       tags: [Operations]
       summary: Liveness probe
-      description: The only unauthenticated route, so orchestrator probes work before credentials are injectable. Exposes nothing but status and uptime.
+      description: One of the two unauthenticated routes, with /ready, so orchestrator probes work before credentials are injectable. Exposes nothing but status and uptime.
       security: []
       responses:
         '200':
@@ -265,7 +265,21 @@ paths:
               schema: { $ref: '#/components/schemas/RouteResult' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '404':
+          description: |
+            Same as `GET /route`: no market and no bridge path exists between `from` and `to` at
+            all. One handler serves both verbs, so every status one can answer with, the other can.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RouteResult' }
         '429': { $ref: '#/components/responses/RateLimited' }
+        '501':
+          description: |
+            Same as `GET /route`: `amountOut` was requested for a conversion that only routes over
+            a bridge. Re-ask with `amountIn`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RouteResult' }
   /stream/route:
     get:
       tags: [Routing]
