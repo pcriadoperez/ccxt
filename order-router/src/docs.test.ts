@@ -51,3 +51,52 @@ test('the CLI usage line lists every command it handles', () => {
         assert.ok(listed.has(command), `\`${command}\` is handled but missing from the usage line`);
     }
 });
+
+// The README documents the systemd unit an operator pastes onto the box. Two of its lines are not
+// decoration: without `Restart=`, the crash handlers — which log, flush and exit non-zero on the
+// stated assumption that a supervisor restarts the process — end the service on the first
+// unhandled rejection; without `ExecReload=`, the `systemctl reload order-router` the same README
+// offers as the instant key-revocation path is an error, leaving a restart (and a full book-cache
+// rebuild) as the only way to pick up a revocation early.
+function systemdUnit (): string {
+    const start = README.indexOf('# /etc/systemd/system/order-router.service');
+    assert.notEqual(start, -1, 'the README should document the unit');
+    const end = README.indexOf('```', start);
+    return README.slice(start, end);
+}
+
+test('the documented systemd unit restarts the service it says a supervisor restarts', () => {
+    assert.match(systemdUnit(), /^Restart=/m,
+        'the crash strategy depends on a supervisor restart; the unit must ask for one');
+});
+
+test('the documented unit can actually reload, and the process answers the signal it is sent', () => {
+    const unit = systemdUnit();
+    const reload = /^ExecReload=.*$/m.exec(unit)?.[0] ?? '';
+    assert.notEqual(reload, '', 'the README offers `systemctl reload` as the key-reload path');
+    // The signal the unit sends must be the one the process handles, or reload succeeds and does
+    // nothing — the worst of the three outcomes.
+    const signal = /-([A-Z]+)\s+\$MAINPID/.exec(reload)?.[1] ?? '';
+    const index = readFileSync(fileURLToPath(new URL('src/index.ts', root)), 'utf8');
+    assert.ok(index.indexOf(`process.on('SIG${signal}'`) !== -1,
+        `the unit sends SIG${signal}, which src/index.ts does not handle`);
+});
+
+test('every job in the order-router workflow bounds its own runtime', () => {
+    // Without timeout-minutes a hung step holds a runner for the six-hour default. build-and-test
+    // was the one job in the file without it.
+    const workflow = readFileSync(
+        fileURLToPath(new URL('.github/workflows/order-router.yml', new URL('../', root))), 'utf8');
+    // Scoped to the `jobs:` block — `on:` has two-space keys of its own (push, pull_request).
+    const jobsBlock = workflow.slice(workflow.indexOf('\njobs:\n'));
+    const jobs = [...jobsBlock.matchAll(/^ {2}([a-z][a-z0-9-]*):$/gm)].map((m) => m[1]!);
+    assert.ok(jobs.length >= 4, `expected the workflow's jobs, found ${jobs.join(', ')}`);
+    for (const job of jobs) {
+        // From just past this job's own header line to the start of the next job's.
+        const header = `\n  ${job}:\n`;
+        const body = jobsBlock.slice(jobsBlock.indexOf(header) + header.length);
+        const next = body.search(/^ {2}[a-z][a-z0-9-]*:$/m);
+        const block = (next === -1) ? body : body.slice(0, next);
+        assert.match(block, /^ {4}timeout-minutes:/m, `job ${job} has no timeout-minutes`);
+    }
+});

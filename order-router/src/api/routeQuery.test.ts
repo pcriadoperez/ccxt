@@ -154,3 +154,28 @@ test('the ordinary lists still parse, and the empty forms keep their meanings', 
     assert.ok(parsed.ok);
     assert.deepEqual(parsed.req.bridges, []);
 });
+
+test('a non-string body field is a 400, not a 500 with the internal error text', () => {
+    // GET /route always delivers strings; POST /route binds a JSON body straight to this parser,
+    // so `{"from": 1234}` reached .trim() and surfaced as a 500 whose body was the TypeError.
+    assert.equal(errorFor({ ...BASE, from: 1234 as never }), 'from must be a string, got number');
+    assert.equal(errorFor({ ...BASE, certified: true as never }), 'certified must be a string, got boolean');
+    assert.equal(errorFor({ ...BASE, balances: { USDT: 5 } as never }), 'balances must be a string, got object');
+
+    // Coercion would be the wrong repair: `{"requireFullFill": true}` would stringify to "true"
+    // and arm the flag, while `{"certified": 1}` would become "1" and silently NOT arm it — the
+    // same JSON idiom giving opposite answers on two safety flags.
+    assert.equal(errorFor({ ...BASE, requireFullFill: true as never }), 'requireFullFill must be a string, got boolean');
+
+    // An absent field is not a wrong-typed one: undefined stays the way a caller omits a parameter.
+    assert.ok(parse({ ...BASE, certified: undefined }).ok);
+    assert.ok(parse({ ...BASE, certified: 'true' }).ok, 'ordinary strings are untouched');
+
+    // A JSON number IS the documented shape for the numeric fields (OpenAPI declares amountIn and
+    // amountOut that way), so POST /route must keep accepting it.
+    const numeric = parse({ from: 'USDT', to: 'BTC', amountIn: 1000 as never });
+    assert.ok(numeric.ok, 'a JSON number for amountIn is legitimate');
+    assert.equal(numeric.ok && numeric.req.amountIn, 1000);
+    assert.ok(parse({ ...BASE, maxVenues: 2 as never }).ok);
+    assert.equal(errorFor({ ...BASE, amountIn: Number.NaN as never }), 'amountIn must be a finite number');
+});

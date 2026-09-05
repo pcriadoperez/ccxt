@@ -439,25 +439,6 @@ With `volume` empty, the sort at liquidity.ts:66 `return [...ca
 
 Treat a failed liquidity ranking as fatal at boot (exit non-zero and let the supervisor retry) rather than continuing with an unranked list, or retry the reference fetch with backoff before falling through. Do the same for `assignments.length === 0`. If long-lived processes are expected, add a perio
 
-### 56. The crash strategy explicitly depends on a supervisor restart, but the documented systemd unit has no `Restart=` directive
-
-**Severity:** medium &nbsp;·&nbsp; **estimated effort:** minutes
-
-**Claimed evidence**
-
-```
-order-router/src/crashHandlers.ts:51-53 states the contract:
-```
-// These handlers keep the action and fix the record: log through pino, flush, then exit non-zero
-// so the supervisor restarts. They deliberately do NOT swallow.
-```
-implemented at :65 `const timer = setTimeout(() => process.exit(1),
-```
-
-**Suggested fix** — a suggestion, not a verdict; verify before following it.
-
-Add `Restart=always` and `RestartSec=2` to the documented unit (and verify the deployed one), and drop the `unref()` on the exit timer so the non-zero exit is guaranteed.
-
 ### 57. The cursor hold-back path re-reads already-written lines, producing duplicate requests rows and double-counted usage_hour
 
 **Severity:** medium &nbsp;·&nbsp; **estimated effort:** hours
@@ -739,45 +720,6 @@ Nothing reconciles the two: order-router.yml only ever runs `npm ci` against ord
 
 Add a cheap check to `build-and-test` that compares `order-router/package.json`'s ccxt pin against the root `package.json` version and fails (or warns with an annotation) beyond a configured lag; and add a scheduled job that runs the service's offline suite against the current workspace ccxt so a br
 
-### 77. POST /route body fields are never type-checked, so a non-string value returns 500 with the internal error text
-
-**Severity:** low &nbsp;·&nbsp; **estimated effort:** minutes
-
-**Claimed evidence**
-
-```
-`src/api/server.ts:524-525` binds the JSON body straight to the shared parser with no schema:
-
-    app.post<{ Body: RouteQuery }>('/route', async (request, reply) =>
-        handleRoute(request.body ?? ({} as RouteQuery), request, reply));
-
-`src/api/routeQuery.ts:46-51` only rejects arrays (`if (Arr
-```
-
-**Suggested fix** — a suggestion, not a verdict; verify before following it.
-
-Attach a Fastify JSON schema to the POST /route body (all properties `type: string`, `additionalProperties: false`), or coerce/reject non-strings inside `parseRouteQuery` alongside the existing `rejectRepeated` check, so the answer is a 400 naming the offending field.
-
-### 78. `ORDER_ROUTER_SHARD_START_CONCURRENCY` is documented as controlling something it does not control, and raising it on that basis rebuilds the memory peak the heap ceiling exists to hold
-
-**Severity:** low &nbsp;·&nbsp; **estimated effort:** minutes
-
-**Claimed evidence**
-
-```
-README.md:526:
-```
-| `ORDER_ROUTER_SHARD_START_CONCURRENCY` | `2` | How many shards boot at once. |
-```
-The code uses it as how many *exchanges within one shard* start concurrently — order-router/src/sharding/shardWorker.ts:103-105:
-```
-    const queue = assignments.map((a, i) => ({ ...a, connector:
-```
-
-**Suggested fix** — a suggestion, not a verdict; verify before following it.
-
-Correct README.md:526 to "How many exchanges within one shard start concurrently; raising it rebuilds the startup memory peak the shard heap ceiling must hold."
-
 ### 80. formatNumber tie-rounding differs between ports, so the balances query string is not byte-identical as the file claims
 
 **Severity:** low &nbsp;·&nbsp; **estimated effort:** hours
@@ -807,45 +749,6 @@ Code agrees with `/ready` being
 **Suggested fix** — a suggestion, not a verdict; verify before following it.
 
 Change openapi/openapi.yaml:101 to name both: "/health and /ready are the only unauthenticated routes."
-
-### 84. README documents `systemctl reload order-router` for instant key reload, but the systemd unit it also documents has no ExecReload
-
-**Severity:** low &nbsp;·&nbsp; **estimated effort:** minutes
-
-**Claimed evidence**
-
-```
-order-router/README.md:390-392 — "A change is picked up within 10 seconds by an mtime poll, or instantly with `systemctl reload order-router` — creating or killing a key never costs a restart, which at discovery scale would rebuild the whole book cache and degrade `/route` for minutes."
-
-The handler
-```
-
-**Suggested fix** — a suggestion, not a verdict; verify before following it.
-
-Add `ExecReload=/bin/kill -HUP $MAINPID` to the unit at README.md:751-755, and correct the worst-case revocation latency at README.md:380/390 to account for the projection interval plus the mtime poll.
-
-### 85. build-and-test has no timeout-minutes while every other job in the file does, so a hung step holds a runner for the 6-hour default
-
-**Severity:** low &nbsp;·&nbsp; **estimated effort:** minutes
-
-**Claimed evidence**
-
-```
-.github/workflows/order-router.yml:32-38 — the job header, with `runs-on` and `services` but no timeout:
-```yaml
-  build-and-test:
-    runs-on: ubuntu-latest
-    # The key-lifecycle smoke test needs a database: Postgres is the source of truth for
-...
-    services:
-      postgres:
-```
-Every other job
-```
-
-**Suggested fix** — a suggestion, not a verdict; verify before following it.
-
-Add `timeout-minutes: 20` (or similar) to the `build-and-test` job header, consistent with the other three jobs in the file.
 
 ### 86. The README's test-coverage table is stale in a way that overstates verification — it names a test file that does not exist and undercounts the suite by 6x, while the readiness table reports CI as "Closed"
 
@@ -916,6 +819,11 @@ Kept so the same ground is not re-covered, and so a `wontfix` is not silently re
 | 63 | medium | Respawned shard processes are never added to the handle, so stop() cannot kill them | **refuted — already closed as blocker 3** (6f88bfb3). `children.push` sits inside `spawn()`, so every process it creates is tracked, and the exit handler splices the corpse out. Duplicate filing. |
 | 73 | medium | rust.yml is the one language workflow with no order-router paths-ignore, so every order-router change spins the 120-minute Rust job and can push spurious [Automated changes] commits to master | **fixed** — the same paths-ignore block the other five workflows carry, on both push and pull_request. Confirmed by the audit trail on this PR: order-router-only pushes were spinning the Rust job and failing its live-tests step. |
 | 82 | low | placeProtectedLimit spins forever with a live order resting when pollIntervalMs is 0 | **fixed in all six ports** — refused in execute(), beside the other strategy-option checks, so nothing is placed at all: the poll loop advances its clock by this value, so a zero or negative interval never reaches the timeout and spins on fetchOrder forever with a real order resting. Refusing inside placeProtectedLimit would have left the very order the loop could not clean up. Tested in TS/JS, Python, PHP, Go and Rust; the C# test is written but UNRUN — no dotnet in this environment. |
+| 56 | medium | The crash strategy explicitly depends on a supervisor restart, but the documented systemd unit has no `Restart=` directive | **fixed** — `Restart=on-failure` and `RestartSec=2` added to the documented unit. The crash handlers log, flush and exit non-zero on the stated assumption that something restarts the process; without the directive the first unhandled rejection ended the service until someone noticed. src/docs.test.ts now fails if the directive goes missing. |
+| 77 | low | POST /route body fields are never type-checked, so a non-string value returns 500 with the internal error text | **fixed** — the shared parser now rejects any non-string field with a 400 naming it, beside the repeated-parameter check. Rejected rather than coerced on purpose: `{"requireFullFill": true}` would stringify to `"true"` and arm the flag while `{"certified": 1}` would become `"1"` and silently not arm it, so the same JSON idiom would give opposite answers on two safety flags. |
+| 78 | low | `ORDER_ROUTER_SHARD_START_CONCURRENCY` is documented as controlling something it does not control, and raising it on that basis rebuilds the memory peak the heap ceiling exists to hold | **fixed** — the README row now says what the code does (exchanges started concurrently within one shard) and names `ORDER_ROUTER_SHARD_COUNT` as the knob it was being confused with. |
+| 84 | low | README documents `systemctl reload order-router` for instant key reload, but the systemd unit it also documents has no ExecReload | **fixed** — `ExecReload=/bin/kill -HUP $MAINPID` added; the process already handles SIGHUP (src/index.ts). The test checks the signal the unit sends is one index.ts handles, since a reload that succeeds and does nothing is the worst of the three outcomes. |
+| 85 | low | build-and-test has no timeout-minutes while every other job in the file does, so a hung step holds a runner for the 6-hour default | **fixed** — `timeout-minutes: 20`, and src/docs.test.ts now asserts every job in the workflow bounds itself. |
 | 14 | high | Attacker-controlled request.ip is inserted into an `inet` column inside the ingest transaction; one crafted header wedges audit ingestion permanently | **fixed** — 6f88bfb3 same fix as blocker 4 |
 | 15 | high | The published dev API key `dev-local-key-change-me` is enabled in production whenever NODE_ENV is unset, and the documented systemd unit never sets it | **fixed** — 6f88bfb3 same fix as blocker 0 |
 | 25 | high | /stream/route produces zero audit records and zero HTTP metrics — streaming usage is invisible to billing and to Prometheus | **fixed** — cc1501bf audit emission shared by GET/POST /route and every pushed frame; unroutable counter with it |

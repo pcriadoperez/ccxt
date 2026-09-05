@@ -31,6 +31,10 @@ defaults:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
+    # Every other job in this file bounds itself; this one did not, so a hung step (a Postgres
+    # service that never becomes healthy, a test that waits on a socket) held a runner for the
+    # six-hour default.
+    timeout-minutes: 20
     # The key-lifecycle smoke test needs a database: Postgres is the source of truth for
     # api_keys, and the router reads only the projected snapshot. Asserting that a minted key
     # authenticates and a revoked one stops is therefore an assertion about the projection, and

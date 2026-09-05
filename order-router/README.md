@@ -543,7 +543,7 @@ against a running router with live exchange data) during development — not jus
 | `ORDER_ROUTER_HOP_PENALTY_BPS` | `5` | Score penalty per extra hop, in bps — what stops a bridge winning on paper by a margin smaller than its own execution risk. |
 | `ORDER_ROUTER_REBALANCE_AFTER_MS` | `0` | One-shot shard rebalance this long after boot. `0` = off, which is the default because on, it stopped every shard two minutes in — including shards whose assignment had not changed — and `/route` answered `all_books_stale` until the cache rewarmed. |
 | `ORDER_ROUTER_REBALANCE_MIN_IMBALANCE` | `1.5` | Ratio between the busiest and quietest shard below which a rebalance is not worth the reconnect. |
-| `ORDER_ROUTER_SHARD_START_CONCURRENCY` | `2` | How many shards boot at once. |
+| `ORDER_ROUTER_SHARD_START_CONCURRENCY` | `2` | How many exchanges start concurrently **within one shard**. Not the number of shards, which is `ORDER_ROUTER_SHARD_COUNT`: raising this on that reading rebuilds the startup memory peak the heap ceiling exists to hold. |
 | `ORDER_ROUTER_SHARD_MAX_OLD_SPACE_MB` | `1024` | `--max-old-space-size` for each shard child process. |
 | `ORDER_ROUTER_AUDIT_LOG_FILE` | (none) | Where the per-request audit stream is written. Required for the Postgres ingester to have anything to ship. Rotate it with `create`, **not** `copytruncate` — see the ingester's warning. |
 | `DATABASE_URL` | (none) | Postgres, for usage records and the key/user tables. The ROUTER never holds this: only the ingester, the key projector and the web console connect. |
@@ -728,9 +728,9 @@ workflows gets a deploy job that silently never runs. A push to `main` builds bu
 
 The other two deploy workflows in this repo (`deploy-playground.yml`, `docs-fumadocs.yml`) build an
 image, push it to GHCR and have the box pull it. This service cannot use that flow yet: it runs as a
-**systemd unit**, not a container, and `order-router/Dockerfile` does not currently build —
-`copy-assets` reads `openapi/openapi.yaml`, which the image never `COPY`s. The box also has no
-`rsync`. `tar czf - | ssh 'tar xzf -'` needs nothing on the far end but `ssh` and `tar`.
+**systemd unit**, not a container. (The Dockerfile builds again — it was missing `COPY openapi`
+and `COPY scripts`, which `copy-assets` and `build:info` read — but the box runs the unit, not an
+image.) The box also has no `rsync`. `tar czf - | ssh 'tar xzf -'` needs nothing on the far end but `ssh` and `tar`.
 
 `node_modules` ships **with** the tarball, pruned to production deps. The runner is
 `ubuntu-24.04-arm`, the same architecture as the box, so the tree is portable — and the box (7.5 GB,
@@ -781,6 +781,15 @@ dir — anything living inside a release is silently discarded on the next deplo
 WorkingDirectory=/opt/order-router/current
 ExecStart=/usr/bin/node /opt/order-router/current/dist/index.js
 EnvironmentFile=/opt/order-router/env
+# The crash handlers log, flush and exit non-zero ON PURPOSE, on the assumption that something
+# restarts the process. Without this line that assumption is false and the first unhandled
+# rejection ends the service until someone notices.
+Restart=on-failure
+RestartSec=2
+# What makes `systemctl reload order-router` a key reload rather than an error: the process
+# reloads keys.json on SIGHUP (src/index.ts). Without it, reload fails and the only way to pick
+# up a revocation early is a restart, which rebuilds the whole book cache.
+ExecReload=/bin/kill -HUP $MAINPID
 ```
 
 ```bash

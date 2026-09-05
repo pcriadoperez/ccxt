@@ -56,9 +56,31 @@ export type ParsedRoute = { ok: true; req: RouteRequest; opts: RouteOptions }
 // a 500 that leaked the internal message on REST, and an abnormal 1006 close with no error frame on
 // the WebSocket. Rejecting is the only safe answer: silently taking one of the two would let a
 // duplicated `requireFullFill` or `certified` drop a safety flag without the caller ever knowing.
+// The fields whose grammar is numeric, and so may arrive as a JSON number on POST /route. Every
+// other field is a string, an enum or a "true"/"false" flag, where a number cannot mean anything.
+const NUMERIC_FIELDS = new Set([ 'amountIn', 'amountOut', 'maxVenues', 'minLegNotional', 'hopPenaltyBps' ]);
+
 function rejectRepeated (query: Record<string, unknown>): string | null {
     for (const [name, value] of Object.entries(query)) {
         if (Array.isArray(value)) return `${name} must not be repeated`;
+        // Every read below assumes a string, which the query string guarantees and a JSON body does
+        // not: POST /route binds its body straight to this parser, so `{"from": 1234}` reached
+        // .trim() and surfaced as a 500 whose body was the internal TypeError — a caller mistake
+        // answered with an internal error.
+        //
+        // A JSON NUMBER is legitimate for the fields whose grammar is numeric — the OpenAPI schema
+        // declares amountIn/amountOut that way and callers send them so. Everywhere else a number
+        // is refused rather than coerced, because coercion is silently wrong on exactly the fields
+        // that matter: `{"certified": 1}` would become "1", which is not "true", so the flag would
+        // read as unset while the caller believes they set it. Booleans are refused for the mirror
+        // reason: `{"requireFullFill": true}` stringifies to "true" and WOULD arm the flag, so
+        // accepting it teaches an idiom that fails silently on its neighbour.
+        if (value === undefined || value === null || typeof value === 'string') continue;
+        if (typeof value === 'number' && NUMERIC_FIELDS.has(name)) {
+            if (!Number.isFinite(value)) return `${name} must be a finite number`;
+            continue;
+        }
+        return `${name} must be a string, got ${typeof value}`;
     }
     return null;
 }
