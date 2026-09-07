@@ -80,6 +80,42 @@ public class BaseCache : SlimConcurrentList<object>
         return false;
     }
 
+    // Reads a string field off a row the way Exchange.SafeString does, without the
+    // List<object> the SafeValueN key list allocates on every call and without the
+    // ToString() it runs on the value: the row shape every cache stores (a
+    // Dictionary<string, object> holding a string) is answered directly, anything
+    // else - a non-string value, a non-dictionary row - is handed to SafeString, so
+    // the result is exactly what SafeString would have returned.
+    protected static string fieldAsString(object item, string key)
+    {
+        var dict = item as IDictionary<string, object>;
+        if (dict == null)
+        {
+            return Exchange.SafeString(item, key);
+        }
+        object value = null;
+        if (!dict.TryGetValue(key, out value) || value == null)
+        {
+            return null;
+        }
+        var str = value as string;
+        if (str != null)
+        {
+            return (str.Length > 0) ? str : null;
+        }
+        return Exchange.SafeString(item, key);
+    }
+
+    // Locates the row object a keyed cache holds in its hashmap. The list holds the
+    // very same object, so a reference compare is enough - no per-row SafeString
+    // calls - and the scan runs from the tail because the row being updated is
+    // almost always a recent one, which makes the common case O(1). Returns -1 when
+    // the object is not in the list.
+    protected int lastIndexOfReference(object reference)
+    {
+        return this.FindLastIndex(x => object.ReferenceEquals(x, reference));
+    }
+
     // TS reads `if (this.clearUpdatesBySymbol[key])`, a truthiness test: it is
     // false both when the key is absent *and* when the stored value is the
     // boolean false that append() itself writes back. Checking `!= null` on a
@@ -230,7 +266,7 @@ public class ArrayCache : BaseCache
             this.seenUpdatesAll = new Dictionary<string, HashSet<object>>();
         }
 
-        var itemSymbol = Exchange.SafeString(item, "symbol");
+        var itemSymbol = fieldAsString(item, "symbol");
         object clearUpdateBySymbol = null;
         this.clearUpdatesBySymbol.TryGetValue(itemSymbol, out clearUpdateBySymbol);
         if (isTruthyFlag(clearUpdateBySymbol))
@@ -376,15 +412,15 @@ public class ArrayCacheBySymbolById : ArrayCache
 
     private void _append(object item)
     {
-        var itemSymbol = Exchange.SafeString(item, this.keyField);
-        var itemId = Exchange.SafeString(item, "id");
+        var itemSymbol = fieldAsString(item, this.keyField);
+        var itemId = fieldAsString(item, "id");
         object byIdValue = null;
         var byId = (this.hashmap.TryGetValue(itemSymbol, out byIdValue)) ? byIdValue as Dictionary<string, object> : null;
         if (byId == null)
         {
             byId = new Dictionary<string, object>();
+            this.hashmap[itemSymbol] = byId;
         }
-        this.hashmap[itemSymbol] = byId;
         object reference = null;
         if (byId.TryGetValue(itemId, out reference))
         {
@@ -399,11 +435,17 @@ public class ArrayCacheBySymbolById : ArrayCache
             {
                 byId[itemId] = item;
             }
-            // match on both the key field (e.g. symbol) and id - different symbols can
-            // share an order id (binance uses per-symbol id sequences), and matching on
-            // id alone would remove the wrong row, see ccxt/ccxt#26092
-            var indexInt = this.FindIndex(x => (Exchange.SafeString(x, "id") == itemId) && (Exchange.SafeString(x, this.keyField) == itemSymbol));
-            // move the order to the end of the array
+            // move the order to the end of the array. The list holds the very object
+            // the hashmap pointed at, so it is located by identity (tail first, see
+            // lastIndexOfReference); only when that object is not in the list fall
+            // back to matching on both the key field (e.g. symbol) and id - different
+            // symbols can share an order id (binance uses per-symbol id sequences), and
+            // matching on id alone would remove the wrong row, see ccxt/ccxt#26092
+            var indexInt = this.lastIndexOfReference(reference);
+            if (indexInt < 0)
+            {
+                indexInt = this.FindIndex(x => (Exchange.SafeString(x, "id") == itemId) && (Exchange.SafeString(x, this.keyField) == itemSymbol));
+            }
             if (indexInt >= 0)
             {
                 this.RemoveAt(indexInt);
@@ -418,8 +460,8 @@ public class ArrayCacheBySymbolById : ArrayCache
         {
             var first = this[0];
             this.RemoveAt(0);
-            var deletedSymbol = Exchange.SafeString(first, this.keyField);
-            var deletedId = Exchange.SafeString(first, "id");
+            var deletedSymbol = fieldAsString(first, this.keyField);
+            var deletedId = fieldAsString(first, "id");
             object deletedBucketValue = null;
             if (this.hashmap.TryGetValue(deletedSymbol, out deletedBucketValue))
             {
@@ -530,15 +572,15 @@ public class ArrayCacheBySymbolBySide : ArrayCache
 
     private void _append(object item)
     {
-        var itemSymbol = Exchange.SafeString(item, "symbol");
-        var itemSide = Exchange.SafeString(item, "side");
+        var itemSymbol = fieldAsString(item, "symbol");
+        var itemSide = fieldAsString(item, "side");
         object bySideValue = null;
         var bySide = (this.hashmap.TryGetValue(itemSymbol, out bySideValue)) ? bySideValue as Dictionary<string, object> : null;
         if (bySide == null)
         {
             bySide = new Dictionary<string, object>();
+            this.hashmap[itemSymbol] = bySide;
         }
-        this.hashmap[itemSymbol] = bySide;
         object reference = null;
         if (bySide.TryGetValue(itemSide, out reference))
         {
@@ -550,8 +592,13 @@ public class ArrayCacheBySymbolBySide : ArrayCache
             {
                 bySide[itemSide] = item;
             }
-            var indexInt = this.FindIndex(x => Exchange.SafeString(x, "symbol") == itemSymbol && Exchange.SafeString(x, "side") == itemSide);
-            // move to the end
+            // move to the end: located by identity first (see lastIndexOfReference),
+            // with the (symbol, side) match as the fallback
+            var indexInt = this.lastIndexOfReference(reference);
+            if (indexInt < 0)
+            {
+                indexInt = this.FindIndex(x => Exchange.SafeString(x, "symbol") == itemSymbol && Exchange.SafeString(x, "side") == itemSide);
+            }
             if (indexInt >= 0)
             {
                 this.RemoveAt(indexInt);

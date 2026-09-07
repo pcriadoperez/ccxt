@@ -100,9 +100,14 @@ public class ArrayCache extends ArrayList<Object> {
      * Locates a stored row by identity. The stored reference is always the very object held in
      * the list, so identity is equivalent to — and safer than — TS's {@code findIndex} on
      * {@code id}+{@code keyField}: it cannot be fooled by two rows that merely compare equal.
+     *
+     * <p>Scans from the tail: the row being updated is almost always a recent one (an order
+     * that was just placed or just moved to the end by its previous update), which makes the
+     * common case O(1) instead of a full pass over the list. Each object is held at most once,
+     * so the direction cannot change which index is found.
      */
     protected int indexOfIdentity(Object reference) {
-        for (int i = 0, n = this.size(); i < n; i++) {
+        for (int i = this.size() - 1; i >= 0; i--) {
             if (this.get(i) == reference) {
                 return i;
             }

@@ -18,6 +18,15 @@ class ArrayCacheBySymbolById extends ArrayCache {
     public function append($item) {
         $key = $this->as_string($item[$this->key_field]);
         $id = $this->as_string($item['id']);
+        # match the (key_field, id) PAIR strictly - different symbols can
+        # share an order id (binance uses per-symbol id sequences), so
+        # matching on id alone would splice the wrong row, see
+        # https://github.com/ccxt/ccxt/issues/26092. The key is length
+        # prefixed rather than plainly concatenated: a bare $key . $id
+        # collides, eg ('BTC/USDT1', '2') and ('BTC/USDT', '12') both
+        # yield "BTC/USDT12", whereas "9:BTC/USDT12" and "8:BTC/USDT12"
+        # are distinct for every possible pair
+        $token = $this->index_key($key, $id);
         if (array_key_exists($key, $this->hashmap)) {
             $by_id = &$this->hashmap[$key];
         } else {
@@ -33,20 +42,32 @@ class ArrayCacheBySymbolById extends ArrayCache {
                 $prev_ref[$prop] = $value;
             }
             $item = &$prev_ref;
-            # match the (key_field, id) PAIR strictly - different symbols can
-            # share an order id (binance uses per-symbol id sequences), so
-            # matching on id alone would splice the wrong row, see
-            # https://github.com/ccxt/ccxt/issues/26092. The key is length
-            # prefixed rather than plainly concatenated: a bare $key . $id
-            # collides, eg ('BTC/USDT1', '2') and ('BTC/USDT', '12') both
-            # yield "BTC/USDT12", whereas "9:BTC/USDT12" and "8:BTC/USDT12"
-            # are distinct for every possible pair
-            $index = array_search($this->index_key($key, $id), $this->index, true);
-            # a miss must not splice - array_splice() coerces false to 0 and
-            # would silently remove the first row
+            # move the order to the end of the deque; a miss must not splice -
+            # array_splice() coerces false to 0 and would silently remove the
+            # first row
+            $count = count($this->index);
+            $stop = $count - 8;
+            if ($stop < 0) {
+                $stop = 0;
+            }
+            $index = false;
+            for ($i = $count - 1; $i >= $stop; $i--) {
+                if ($this->index[$i] === $token) {
+                    $index = $i;
+                    break;
+                }
+            }
+            if ($index === false && $stop > 0) {
+                $index = array_search($token, $this->index, true);
+            }
             if ($index !== false) {
-                array_splice($this->index, $index, 1);
-                array_splice($this->deque, $index, 1);
+                if ($index === $count - 1) {
+                    array_pop($this->deque);
+                    array_pop($this->index);
+                } else {
+                    array_splice($this->index, $index, 1);
+                    array_splice($this->deque, $index, 1);
+                }
             }
         } else {
             $by_id[$id] = &$item;
@@ -54,7 +75,8 @@ class ArrayCacheBySymbolById extends ArrayCache {
                 $delete_item = array_shift($this->deque);
                 array_shift($this->index);
                 $delete_key = $this->as_string($delete_item[$this->key_field]);
-                unset($this->hashmap[$delete_key][$this->as_string($delete_item['id'])]);
+                $delete_id = $this->as_string($delete_item['id']);
+                unset($this->hashmap[$delete_key][$delete_id]);
                 # drop the outer bucket once its last id is evicted, otherwise the
                 # hashmap grows one empty array per key for the process lifetime
                 if (!count($this->hashmap[$delete_key])) {
@@ -62,7 +84,6 @@ class ArrayCacheBySymbolById extends ArrayCache {
                 }
                 # the evicted id also leaves both seen scopes so single-scope pollers
                 # stay bounded - the counts mean distinct ids within the retained window
-                $delete_id = $this->as_string($delete_item['id']);
                 if (array_key_exists($delete_key, $this->seen_updates_by_symbol) && array_key_exists($delete_id, $this->seen_updates_by_symbol[$delete_key])) {
                     unset($this->seen_updates_by_symbol[$delete_key][$delete_id]);
                     $this->new_updates_by_symbol[$delete_key] = $this->new_updates_by_symbol[$delete_key] - 1;
@@ -81,7 +102,7 @@ class ArrayCacheBySymbolById extends ArrayCache {
         }
         # this allows us to effectively pass by reference
         $this->deque[] = &$item;
-        $this->index[] = $this->index_key($key, $id);
+        $this->index[] = $token;
         if ($this->clear_all_updates) {
             $this->clear_all_updates = false;
             # the global poll consumes only the global scope: the symbol-scoped

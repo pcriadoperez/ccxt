@@ -397,6 +397,26 @@ public class SlimConcurrentList<T> : IList<T>, ICollection<T>, IReadOnlyList<T>,
     }
 
     /// <summary>
+    /// Searches backwards from the end for an element that matches the given
+    /// predicate and returns the zero-based index of its last occurrence, or -1 if
+    /// there is no match - the mirror image of <see cref="FindIndex"/>, in a single
+    /// locked pass.
+    /// </summary>
+    /// <param name="match">The predicate that defines the element to search for.</param>
+    public int FindLastIndex(Predicate<T> match)
+    {
+        try
+        {
+            _lock.EnterReadLock();
+            return _list.FindLastIndex(match);
+        }
+        finally
+        {
+            _lock.ExitReadLock();
+        }
+    }
+
+    /// <summary>
     /// Performs a bisect-left binary search over the list, taking the read lock
     /// ONCE for the whole probe sequence instead of one acquire/release pair per
     /// <see cref="Count"/> / indexer access.

@@ -3,29 +3,13 @@ from __future__ import annotations
 import collections
 
 
-class Delegate:
-    def __init__(self, name: str, delegated: str) -> None:
-        self.name = name
-        self.delegated = delegated
-
-    def __get__(self, instance: BaseCache | None, owner: type):
-        deque = getattr(instance, self.delegated)
-        return getattr(deque, self.name)
-
-
 class BaseCache(list):
     # implicitly called magic methods don't invoke __getattribute__
     # https://docs.python.org/3/reference/datamodel.html#special-method-lookup
-    # all method lookups obey the descriptor protocol
-    # this is how the implicit api is defined in ccxt
-    __iter__ = Delegate('__iter__', '_deque')
-    __setitem__ = Delegate('__setitem__', '_deque')
-    __delitem__ = Delegate('__delitem__', '_deque')
-    __len__ = Delegate('__len__', '_deque')
-    __contains__ = Delegate('__contains__', '_deque')
-    __reversed__ = Delegate('__reversed__', '_deque')
-    pop = Delegate('pop', '_deque')
-
+    # so every operator the transpiled code relies on is forwarded explicitly to the
+    # backing container. Plain methods rather than a delegating descriptor: the
+    # descriptor cost two getattr calls plus a bound-method allocation on every
+    # len()/iteration/index, on top of the actual operation
     def __init__(self, max_size: int | None = None) -> None:
         super(BaseCache, self).__init__()
         self.max_size = max_size
@@ -34,6 +18,27 @@ class BaseCache(list):
         # from .filter() copy-construction, and deque(maxlen=0) would silently
         # discard every appended row while getLimit still reports new updates
         self._deque = collections.deque([], max_size or None)
+
+    def __iter__(self):
+        return iter(self._deque)
+
+    def __reversed__(self):
+        return reversed(self._deque)
+
+    def __len__(self) -> int:
+        return len(self._deque)
+
+    def __contains__(self, item) -> bool:
+        return item in self._deque
+
+    def __setitem__(self, index, value) -> None:
+        self._deque[index] = value
+
+    def __delitem__(self, index) -> None:
+        del self._deque[index]
+
+    def pop(self, *args):
+        return self._deque.pop(*args)
 
     def __eq__(self, other: object) -> bool:
         return list(self) == other
@@ -45,9 +50,12 @@ class BaseCache(list):
         return list(self) + other
 
     def __getitem__(self, item):
-        # deque doesn't support slicing
-        deque = super(list, self).__getattribute__('_deque')
+        deque = self._deque
         if isinstance(item, slice):
+            # the keyed caches back themselves with a list, which slices natively;
+            # collections.deque doesn't support slicing
+            if type(deque) is list:
+                return deque[item]
             start, stop, step = item.indices(len(deque))
             return [deque[i] for i in range(start, stop, step)]
         else:
@@ -123,10 +131,11 @@ class ArrayCache(BaseCache):
         # item.get('symbol') (not item['symbol']): prediction trades carry 'outcome' not 'symbol',
         # so a bare lookup raises KeyError in Python where JS just yields undefined
         symbol = item.get('symbol')
+        new_updates_by_symbol = self._new_updates_by_symbol
         if self._clear_updates_by_symbol.get(symbol):
             self._clear_updates_by_symbol[symbol] = False
-            self._new_updates_by_symbol[symbol] = 0
-        self._new_updates_by_symbol[symbol] = self._new_updates_by_symbol.get(symbol, 0) + 1
+            new_updates_by_symbol[symbol] = 0
+        new_updates_by_symbol[symbol] = new_updates_by_symbol.get(symbol, 0) + 1
         self._all_new_updates = (self._all_new_updates or 0) + 1
 
 
@@ -152,8 +161,10 @@ class ArrayCacheByTimestamp(BaseCache):
         return min(self._new_updates, limit)
 
     def append(self, item: list) -> None:
-        if item[0] in self.hashmap:
-            reference = self.hashmap[item[0]]
+        timestamp = item[0]
+        hashmap = self.hashmap
+        if timestamp in hashmap:
+            reference = hashmap[timestamp]
             # identity check, matching the `!==` in ts/src/base/ws/Cache.ts - a deep
             # value comparison would be O(k) on every update for no observable gain
             if reference is not item:
@@ -164,58 +175,87 @@ class ArrayCacheByTimestamp(BaseCache):
                 # and its position, and whatever the update does not cover is dropped
                 reference[:] = item
         else:
-            self.hashmap[item[0]] = item
-            if len(self._deque) == self._deque.maxlen:
-                delete_reference = self._deque.popleft()
-                del self.hashmap[delete_reference[0]]
-            self._deque.append(item)
+            hashmap[timestamp] = item
+            deque = self._deque
+            if len(deque) == deque.maxlen:
+                delete_reference = deque.popleft()
+                del hashmap[delete_reference[0]]
+            deque.append(item)
         if self._clear_updates:
             self._clear_updates = False
             self._size_tracker.clear()
-        self._size_tracker.add(item[0])
+        self._size_tracker.add(timestamp)
         self._new_updates = len(self._size_tracker)
 
 
 class ArrayCacheBySymbolById(ArrayCache):
+    # how many tail entries of the positional index are probed one by one before
+    # falling back to a full C-level scan (see _index_of)
+    _TAIL_PROBE = 8
+
     def __init__(self, max_size: int | None = None) -> None:
         super(ArrayCacheBySymbolById, self).__init__(max_size)
         self._nested_new_updates_by_symbol = True
         self._key_field = 'symbol'  # first nesting level (overridden by ArrayCacheByOutcomeById)
         self.hashmap = {}
-        self._index = collections.deque([], max_size or None)
+        # a list rather than the deque the base class set up: moving an updated row
+        # to the end deletes from the middle, which is a memmove on a list but a
+        # rotate-pop-rotate on a deque, an order of magnitude slower; eviction is
+        # pop(0), a memmove as well. The parallel positional index holds id() of
+        # every row (the row object itself is what the hashmap keeps, and it is
+        # unique among live objects while indexed), so locating a row is an int
+        # compare per entry instead of a (key, id) tuple compare
+        self._deque = []
+        self._index = []
 
     def clear(self) -> None:
         super(ArrayCacheBySymbolById, self).clear()
         self._index.clear()
 
+    def _index_of(self, token: int) -> int:
+        # the row being updated is almost always a recent one, so probe the tail
+        # first and only then fall back to list.index over the rest. Raises
+        # ValueError like list.index when the token is not indexed at all
+        index = self._index
+        count = len(index)
+        stop = count - self._TAIL_PROBE
+        if stop < 0:
+            stop = 0
+        i = count - 1
+        while i >= stop:
+            if index[i] == token:
+                return i
+            i -= 1
+        return index.index(token, 0, stop)
+
     def append(self, item: dict) -> None:
         key = item[self._key_field]
         item_id = item['id']
         by_id = self.hashmap.setdefault(key, {})
-        # index on the (key_field, id) pair kept as a tuple - different symbols can
-        # share an order id (binance uses per-symbol id sequences) and matching on id
-        # alone would remove the wrong row, see https://github.com/ccxt/ccxt/issues/26092.
-        # A tuple rather than a key + id string concatenation, because concatenation
-        # collides across the field boundary (('BTC/USDT1', '2') and ('BTC/USDT', '12')
-        # both yield 'BTC/USDT12') and raises TypeError on non-string ids
-        token = (key, item_id)
+        deque = self._deque
+        index = self._index
         if item_id in by_id:
             reference = by_id[item_id]
             if reference is not item:
                 reference.update(item)
             item = reference
-            index = self._index.index(token)
-            # move the order to the end of the deque
-            del self._deque[index]
-            del self._index[index]
+            # move the order to the end of the list. Matching on the row object
+            # itself (through its id()) is exact: the hashmap and the list hold the
+            # very same object, and different symbols can share an order id
+            # (binance uses per-symbol id sequences, see ccxt/ccxt#26092), so the
+            # id field alone could never have been the lookup key anyway
+            position = self._index_of(id(reference))
+            del deque[position]
+            del index[position]
         else:
             by_id[item_id] = item
-        if len(self._deque) == self._deque.maxlen:
-            delete_item = self._deque.popleft()
-            self._index.popleft()
+        if self.max_size and len(deque) == self.max_size:
+            delete_item = deque.pop(0)
+            index.pop(0)
             delete_key = delete_item[self._key_field]
+            delete_id = delete_item['id']
             delete_by_id = self.hashmap[delete_key]
-            del delete_by_id[delete_item['id']]
+            del delete_by_id[delete_id]
             if not delete_by_id:
                 # drop the outer bucket once its last id is evicted, otherwise the
                 # hashmap grows one empty dict per symbol for the process lifetime
@@ -223,40 +263,42 @@ class ArrayCacheBySymbolById(ArrayCache):
             # the evicted id also leaves both seen scopes so single-scope pollers
             # stay bounded - the counts mean distinct ids within the retained window
             symbol_seen = self._seen_updates_by_symbol.get(delete_key)
-            if symbol_seen is not None and delete_item['id'] in symbol_seen:
-                symbol_seen.discard(delete_item['id'])
+            if symbol_seen is not None and delete_id in symbol_seen:
+                symbol_seen.discard(delete_id)
                 self._new_updates_by_symbol[delete_key] = self._new_updates_by_symbol[delete_key] - 1
                 if not symbol_seen:
                     del self._seen_updates_by_symbol[delete_key]
             all_seen = self._seen_updates_all.get(delete_key)
-            if all_seen is not None and delete_item['id'] in all_seen:
-                all_seen.discard(delete_item['id'])
+            if all_seen is not None and delete_id in all_seen:
+                all_seen.discard(delete_id)
                 self._all_new_updates = self._all_new_updates - 1
                 if not all_seen:
                     del self._seen_updates_all[delete_key]
-        self._deque.append(item)
-        self._index.append(token)
+        deque.append(item)
+        index.append(id(item))
         if self._clear_all_updates:
             self._clear_all_updates = False
             # the global poll consumes only the global scope: the symbol-scoped
             # seen sets, counts and pending flags belong to the symbol consumers
             self._all_new_updates = 0
             self._seen_updates_all.clear()
-        if key not in self._seen_updates_by_symbol:
-            self._seen_updates_by_symbol[key] = set()
+        id_set = self._seen_updates_by_symbol.get(key)
+        if id_set is None:
+            id_set = set()
+            self._seen_updates_by_symbol[key] = id_set
         if self._clear_updates_by_symbol.get(key):
             self._clear_updates_by_symbol[key] = False
-            self._seen_updates_by_symbol[key].clear()
+            id_set.clear()
         # in case an exchange updates the same order id twice
-        id_set = self._seen_updates_by_symbol[key]
         id_set.add(item_id)
         self._new_updates_by_symbol[key] = len(id_set)
         # the global scope keeps its own seen sets: the symbol-scoped poll clears
         # the symbol set, and deriving the global count from that set double-counts
         # an id that updates again after a symbol poll
-        if key not in self._seen_updates_all:
-            self._seen_updates_all[key] = set()
-        all_id_set = self._seen_updates_all[key]
+        all_id_set = self._seen_updates_all.get(key)
+        if all_id_set is None:
+            all_id_set = set()
+            self._seen_updates_all[key] = all_id_set
         before_all_length = len(all_id_set)
         all_id_set.add(item_id)
         self._all_new_updates = (self._all_new_updates or 0) + (len(all_id_set) - before_all_length)
@@ -269,6 +311,8 @@ class ArrayCacheByOutcomeById(ArrayCacheBySymbolById):
 
 
 class ArrayCacheBySymbolBySide(ArrayCache):
+    _TAIL_PROBE = 8
+
     def __init__(self, max_size: int | None = None) -> None:
         # positions are unbounded - the number of (symbol, side) pairs is naturally
         # capped by the account, so max_size is accepted and ignored the way the
@@ -276,49 +320,56 @@ class ArrayCacheBySymbolBySide(ArrayCache):
         super(ArrayCacheBySymbolBySide, self).__init__()
         self._nested_new_updates_by_symbol = True
         self.hashmap = {}
-        self._index = collections.deque()
+        # list-backed with an id() positional index, see ArrayCacheBySymbolById
+        self._deque = []
+        self._index = []
 
     def clear(self) -> None:
         super(ArrayCacheBySymbolBySide, self).clear()
         self._index.clear()
 
+    _index_of = ArrayCacheBySymbolById._index_of
+
     def append(self, item: dict) -> None:
         symbol = item['symbol']
         side = item['side']
         by_side = self.hashmap.setdefault(symbol, {})
-        token = (symbol, side)
+        deque = self._deque
+        index = self._index
         if side in by_side:
             reference = by_side[side]
             if reference is not item:
                 reference.update(item)
             item = reference
-            index = self._index.index(token)
-            # move the position to the end of the deque
-            del self._deque[index]
-            del self._index[index]
+            # move the position to the end of the list, located by row identity
+            position = self._index_of(id(reference))
+            del deque[position]
+            del index[position]
         else:
             by_side[side] = item
-        self._deque.append(item)
-        self._index.append(token)
+        deque.append(item)
+        index.append(id(item))
         if self._clear_all_updates:
             self._clear_all_updates = False
             # the global poll consumes only the global scope: the symbol-scoped
             # seen sets, counts and pending flags belong to the symbol consumers
             self._all_new_updates = 0
             self._seen_updates_all.clear()
-        if symbol not in self._seen_updates_by_symbol:
-            self._seen_updates_by_symbol[symbol] = set()
+        side_set = self._seen_updates_by_symbol.get(symbol)
+        if side_set is None:
+            side_set = set()
+            self._seen_updates_by_symbol[symbol] = side_set
         if self._clear_updates_by_symbol.get(symbol):
             self._clear_updates_by_symbol[symbol] = False
-            self._seen_updates_by_symbol[symbol].clear()
+            side_set.clear()
         # in case an exchange updates the same position twice
-        side_set = self._seen_updates_by_symbol[symbol]
         side_set.add(side)
         self._new_updates_by_symbol[symbol] = len(side_set)
         # independent global-scope memory, see ArrayCacheBySymbolById.append
-        if symbol not in self._seen_updates_all:
-            self._seen_updates_all[symbol] = set()
-        all_side_set = self._seen_updates_all[symbol]
+        all_side_set = self._seen_updates_all.get(symbol)
+        if all_side_set is None:
+            all_side_set = set()
+            self._seen_updates_all[symbol] = all_side_set
         before_all_length = len(all_side_set)
         all_side_set.add(side)
         self._all_new_updates = (self._all_new_updates or 0) + (len(all_side_set) - before_all_length)
