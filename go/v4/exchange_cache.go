@@ -13,7 +13,10 @@ package ccxt
 // are required for those flows: Append() and ToArray().  Everything else can be
 // added later if/when the need arises.
 
-import "sync"
+import (
+	"reflect"
+	"sync"
+)
 
 type Appender interface{ Append(any) }
 
@@ -83,6 +86,58 @@ func (c *BaseCache) AppendInternal(item any) {
 		c.Data = c.Data[1:]
 	}
 	c.Data = append(c.Data, item)
+}
+
+// moveToEndLocked relocates the row whose keyField / subKeyField values equal
+// itemKey / itemSubKey to the end of c.Data, leaving the buffer untouched when no
+// row matches. Both passes walk the buffer from the tail, because the row being
+// updated is almost always a recent one. Caller must hold Mu.
+//
+// An update is merged into the map the hashmap already holds, and that map is the
+// very value sitting in c.Data, so the first pass compares map pointers only - no
+// field reads, no mutex. Only when that map is not in the buffer does the second
+// pass fall back to comparing the two fields, reading them straight off the row
+// under a single acquisition of the global map mutex instead of through four
+// GetValue calls (each taking that mutex) per row, which is what made every order
+// update on a full 1000-row cache cost tens of microseconds. The field comparison
+// is the same `==` on the raw values as before.
+func (c *BaseCache) moveToEndLocked(item any, keyField string, itemKey any, subKeyField string, itemSubKey any) {
+	position := -1
+	if itemMap, ok := item.(map[string]any); ok {
+		itemPointer := reflect.ValueOf(itemMap).Pointer()
+		for i := len(c.Data) - 1; i >= 0; i-- {
+			if rowMap, isMap := c.Data[i].(map[string]any); isMap && reflect.ValueOf(rowMap).Pointer() == itemPointer {
+				position = i
+				break
+			}
+		}
+	}
+	if position < 0 {
+		addElementMu.Lock()
+		for i := len(c.Data) - 1; i >= 0; i-- {
+			var rowKey, rowSubKey any
+			if rowMap, ok := c.Data[i].(map[string]any); ok {
+				rowKey = rowMap[keyField]
+				rowSubKey = rowMap[subKeyField]
+			} else {
+				// any other row shape goes through GetValue, which takes the mutex itself
+				addElementMu.Unlock()
+				rowKey = GetValue(c.Data[i], keyField)
+				rowSubKey = GetValue(c.Data[i], subKeyField)
+				addElementMu.Lock()
+			}
+			if rowSubKey == itemSubKey && rowKey == itemKey {
+				position = i
+				break
+			}
+		}
+		addElementMu.Unlock()
+	}
+	if position >= 0 {
+		// remove from current position, then append to the end
+		c.Data = append(c.Data[:position], c.Data[position+1:]...)
+		c.Data = append(c.Data, item)
+	}
 }
 
 // ArrayCache provides O(1) lookup by symbol+id (for orders / trades).
@@ -273,15 +328,7 @@ func (c *ArrayCache) Append(item any) {
 		// match on both the key field (e.g. symbol) and id - different symbols can
 		// share an order id (binance uses per-symbol id sequences), and matching on
 		// id alone would move the wrong row, see ccxt/ccxt#26092
-		for i, v := range c.Data {
-			if (GetValue(v, "id") == GetValue(item, "id")) && (GetValue(v, keyField) == GetValue(item, keyField)) {
-				// remove from current position
-				c.Data = append(c.Data[:i], c.Data[i+1:]...)
-				// append to the end
-				c.Data = append(c.Data, item)
-				break
-			}
-		}
+		c.moveToEndLocked(item, keyField, GetValue(item, keyField), "id", GetValue(item, "id"))
 	}
 
 	c.trackAppendLocked(symbol, id)
@@ -625,15 +672,7 @@ func (c *ArrayCacheBySymbolBySide) Append(item any) {
 		c.AppendInternal(item)
 	} else {
 		// move to the end of the array to reflect recent update
-		for i, v := range c.Data {
-			if GetValue(v, "side") == side && GetValue(v, "symbol") == symbol {
-				// remove from current position
-				c.Data = append(c.Data[:i], c.Data[i+1:]...)
-				// append to the end
-				c.Data = append(c.Data, item)
-				break
-			}
-		}
+		c.moveToEndLocked(item, "symbol", symbol, "side", side)
 	}
 
 	c.trackAppendLocked(symbol, side)
@@ -684,5 +723,8 @@ func (s *Set) Clear() {
 	if s == nil {
 		return
 	}
-	s.elements = make(map[string]struct{})
+	// empty the map in place and keep its buckets: the seen sets are cleared on
+	// every getLimit poll and refilled right after, so reallocating each time
+	// only churned the allocator
+	clear(s.elements)
 }

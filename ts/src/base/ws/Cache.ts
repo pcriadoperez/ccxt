@@ -36,6 +36,28 @@ class BaseCache extends Array {
         this.length = last
         return removed
     }
+
+    // Array.prototype.push is on the same generic path for a subclassed receiver (a
+    // length Get, an element Set and a length Set through the property machinery),
+    // while an indexed store at this.length is the plain JSArray grow path and
+    // about half the cost. Observable result is identical: one more element, length + 1
+    pushLast (item) {
+        this[this.length] = item
+    }
+
+    // finds the array position of the row object a keyed subclass holds in its
+    // hashmap. The row is the very object stored in the array, so a pointer compare
+    // is enough - no per-row property reads - and the scan runs from the tail because
+    // the row being updated is almost always a recent one, which makes the common
+    // case O(1) instead of a full pass. Returns -1 when the object is not in the array
+    indexOfReference (reference) {
+        for (let i = this.length - 1; i >= 0; i--) {
+            if (this[i] === reference) {
+                return i
+            }
+        }
+        return -1
+    }
 }
 
 class ArrayCache extends BaseCache implements CustomArray {
@@ -133,7 +155,7 @@ class ArrayCache extends BaseCache implements CustomArray {
         if (this.maxSize && (this.length === this.maxSize)) {
             this.removeAt (0)
         }
-        this.push (item)
+        this.pushLast (item)
         if (this.clearAllUpdates) {
             this.clearAllUpdates = false
             // the global poll consumes only the global scope: the symbol-scoped
@@ -142,11 +164,13 @@ class ArrayCache extends BaseCache implements CustomArray {
             this.allNewUpdates = 0
             this.seenUpdatesAll = {}
         }
-        if (this.clearUpdatesBySymbol[item.symbol]) {
-            this.clearUpdatesBySymbol[item.symbol] = false
-            this.newUpdatesBySymbol[item.symbol] = 0
+        const symbol = item.symbol
+        const newUpdatesBySymbol = this.newUpdatesBySymbol
+        if (this.clearUpdatesBySymbol[symbol]) {
+            this.clearUpdatesBySymbol[symbol] = false
+            newUpdatesBySymbol[symbol] = 0
         }
-        this.newUpdatesBySymbol[item.symbol] = (this.newUpdatesBySymbol[item.symbol] || 0) + 1
+        newUpdatesBySymbol[symbol] = (newUpdatesBySymbol[symbol] || 0) + 1
         this.allNewUpdates = (this.allNewUpdates || 0) + 1
     }
 }
@@ -197,32 +221,35 @@ class ArrayCacheByTimestamp extends BaseCache {
     }
 
     append (item) {
-        if (item[0] in this.hashmap) {
-            const reference = this.hashmap[item[0]]
+        const timestamp = item[0]
+        const hashmap = this.hashmap
+        if (timestamp in hashmap) {
+            const reference = hashmap[timestamp]
             if (reference !== item) {
                 // OHLCV rows are arrays, so a "for prop in item" merge only walks the
                 // indices the incoming row happens to have - a shorter update then
                 // leaves the previous row's trailing values in place, e.g.
                 // [100,1,2,3,4,5] followed by [100,9,9] used to yield [100,9,9,3,4,5].
                 // Iterate the incoming item and drop whatever it does not cover.
-                for (let i = 0; i < item.length; i++) {
+                const itemLength = item.length
+                for (let i = 0; i < itemLength; i++) {
                     reference[i] = item[i]
                 }
-                reference.length = item.length
+                reference.length = itemLength
             }
         } else {
-            this.hashmap[item[0]] = item
+            hashmap[timestamp] = item
             if (this.maxSize && (this.length === this.maxSize)) {
                 const deleteReference = this.removeAt (0)
-                delete this.hashmap[deleteReference[0]]
+                delete hashmap[deleteReference[0]]
             }
-            this.push (item)
+            this.pushLast (item)
         }
         if (this.clearUpdates) {
             this.clearUpdates = false
             this.sizeTracker.clear ()
         }
-        this.sizeTracker.add (item[0])
+        this.sizeTracker.add (timestamp)
         this.newUpdates = this.sizeTracker.size
     }
 }
@@ -239,72 +266,110 @@ class ArrayCacheBySymbolById extends ArrayCache {
             value: 'symbol',
             writable: true,
         })
+        // number of ids held by each hashmap bucket. The eviction path has to drop a
+        // bucket once its last id is gone, and Object.keys (bucket).length === 0 (or a
+        // for-in, which V8 backs with the same key collection) walks every id of the
+        // symbol on every eviction - on a full cache that single test cost more than
+        // the rest of append () combined. Tracked here, off the bucket, so the public
+        // hashmap[symbol] shape stays a plain id -> row map
+        Object.defineProperty (this, 'bucketSizes', {
+            __proto__: null, // make it invisible
+            value: {},
+            writable: true,
+        })
+    }
+
+    clear () {
+        super.clear ()
+        this.bucketSizes = {}
     }
 
     append (item) {
-        const key = item[this.keyField]
-        const byId = this.hashmap[key] = this.hashmap[key] || {}
-        if (item.id in byId) {
-            const reference = byId[item.id]
+        const keyField = this.keyField
+        const key = item[keyField]
+        const hashmap = this.hashmap
+        let byId = hashmap[key]
+        if (byId === undefined) {
+            byId = {}
+            hashmap[key] = byId
+        }
+        const itemId = item.id
+        if (itemId in byId) {
+            const reference = byId[itemId]
             if (reference !== item) {
                 for (const prop in item) {
                     reference[prop] = item[prop]
                 }
             }
             item = reference
-            // move the order to the end of the array. Match on both the key field
-            // (e.g. symbol) and id - different symbols can share an order id
+            // move the order to the end of the array. The hashmap holds the very row
+            // object that sits in the array, so it is located by identity (tail-first,
+            // see BaseCache.indexOfReference). Should the hashmap ever point at an
+            // object that is not in the array, fall back to matching on both the key
+            // field (e.g. symbol) and id - different symbols can share an order id
             // (exchanges like binance use per-symbol id sequences), and matching on
             // id alone would remove the wrong row. A hashmap entry with no matching
             // row leaves the array untouched.
-            const itemId = item.id
-            const itemKey = item[this.keyField]
-            const keyField = this.keyField
-            const arrayLength = this.length
-            for (let i = 0; i < arrayLength; i++) {
-                const existing = this[i]
-                if ((existing.id === itemId) && (existing[keyField] === itemKey)) {
-                    this.removeAt (i)
-                    break
+            let index = this.indexOfReference (reference)
+            if (index === -1) {
+                const itemKey = item[keyField]
+                const arrayLength = this.length
+                for (let i = 0; i < arrayLength; i++) {
+                    const existing = this[i]
+                    if ((existing.id === itemId) && (existing[keyField] === itemKey)) {
+                        index = i
+                        break
+                    }
                 }
             }
+            if (index !== -1) {
+                this.removeAt (index)
+            }
         } else {
-            byId[item.id] = item
+            byId[itemId] = item
+            this.bucketSizes[key] = (this.bucketSizes[key] || 0) + 1
         }
         if (this.maxSize && (this.length === this.maxSize)) {
             const deleteReference = this.removeAt (0)
-            const deleteKey = deleteReference[this.keyField]
-            delete this.hashmap[deleteKey][deleteReference.id]
+            const deleteKey = deleteReference[keyField]
+            const deleteId = deleteReference.id
+            delete hashmap[deleteKey][deleteId]
             // drop the outer bucket once its last id is gone, otherwise a stream with
             // many short-lived symbols leaks one empty object per symbol forever
-            if (Object.keys (this.hashmap[deleteKey]).length === 0) {
-                delete this.hashmap[deleteKey]
+            const remainingIds = this.bucketSizes[deleteKey] - 1
+            if (remainingIds === 0) {
+                delete hashmap[deleteKey]
+                delete this.bucketSizes[deleteKey]
+            } else {
+                this.bucketSizes[deleteKey] = remainingIds
             }
             // the evicted id also leaves both seen scopes: a single-scope poller
             // never fires the other scope's clear, so without this the seen sets
             // grow by every distinct id for the process lifetime - the counts then
             // mean distinct ids within the retained window, which is exactly what
             // a consumer can slice anyway
-            if (this.seenUpdatesBySymbol[deleteKey] !== undefined) {
-                const droppedSymbolScope = this.seenUpdatesBySymbol[deleteKey].delete (deleteReference.id)
+            const evictedSymbolSeen = this.seenUpdatesBySymbol[deleteKey]
+            if (evictedSymbolSeen !== undefined) {
+                const droppedSymbolScope = evictedSymbolSeen.delete (deleteId)
                 if (droppedSymbolScope) {
                     this.newUpdatesBySymbol[deleteKey] = this.newUpdatesBySymbol[deleteKey] - 1
                 }
-                if (this.seenUpdatesBySymbol[deleteKey].size === 0) {
+                if (evictedSymbolSeen.size === 0) {
                     delete this.seenUpdatesBySymbol[deleteKey]
                 }
             }
-            if (this.seenUpdatesAll[deleteKey] !== undefined) {
-                const droppedGlobalScope = this.seenUpdatesAll[deleteKey].delete (deleteReference.id)
+            const evictedAllSeen = this.seenUpdatesAll[deleteKey]
+            if (evictedAllSeen !== undefined) {
+                const droppedGlobalScope = evictedAllSeen.delete (deleteId)
                 if (droppedGlobalScope) {
                     this.allNewUpdates = this.allNewUpdates - 1
                 }
-                if (this.seenUpdatesAll[deleteKey].size === 0) {
+                if (evictedAllSeen.size === 0) {
                     delete this.seenUpdatesAll[deleteKey]
                 }
             }
         }
-        this.push (item)
+        this.pushLast (item)
         if (this.clearAllUpdates) {
             this.clearAllUpdates = false
             // the global poll consumes only the global scope: the symbol-scoped
@@ -313,26 +378,28 @@ class ArrayCacheBySymbolById extends ArrayCache {
             this.allNewUpdates = 0
             this.seenUpdatesAll = {}
         }
-        if (this.seenUpdatesBySymbol[key] === undefined) {
-            this.seenUpdatesBySymbol[key] = new Set ()
+        let idSet = this.seenUpdatesBySymbol[key]
+        if (idSet === undefined) {
+            idSet = new Set ()
+            this.seenUpdatesBySymbol[key] = idSet
         }
         if (this.clearUpdatesBySymbol[key]) {
             this.clearUpdatesBySymbol[key] = false
-            this.seenUpdatesBySymbol[key].clear ()
+            idSet.clear ()
         }
         // count distinct ids, in case an exchange updates the same order id twice
-        const idSet = this.seenUpdatesBySymbol[key]
-        idSet.add (item.id)
+        idSet.add (itemId)
         this.newUpdatesBySymbol[key] = idSet.size
         // the global scope keeps its own seen sets: the symbol-scoped poll clears
         // the symbol set, and deriving the global count from that set double-counts
         // an id that updates again after a symbol poll
-        if (this.seenUpdatesAll[key] === undefined) {
-            this.seenUpdatesAll[key] = new Set ()
+        let allIdSet = this.seenUpdatesAll[key]
+        if (allIdSet === undefined) {
+            allIdSet = new Set ()
+            this.seenUpdatesAll[key] = allIdSet
         }
-        const allIdSet = this.seenUpdatesAll[key]
         const beforeAllLength = allIdSet.size
-        allIdSet.add (item.id)
+        allIdSet.add (itemId)
         this.allNewUpdates = (this.allNewUpdates || 0) + (allIdSet.size - beforeAllLength)
     }
 }
@@ -358,31 +425,46 @@ class ArrayCacheBySymbolBySide extends ArrayCache {
     }
 
     append (item) {
-        const bySide = this.hashmap[item.symbol] = this.hashmap[item.symbol] || {}
-        if (item.side in bySide) {
-            const reference = bySide[item.side]
+        const symbol = item.symbol
+        const side = item.side
+        const hashmap = this.hashmap
+        let bySide = hashmap[symbol]
+        if (bySide === undefined) {
+            bySide = {}
+            hashmap[symbol] = bySide
+        }
+        if (side in bySide) {
+            const reference = bySide[side]
             if (reference !== item) {
                 for (const prop in item) {
                     reference[prop] = item[prop]
                 }
             }
             item = reference
-            // move the position to the end of the array; a stale hashmap entry
-            // with no matching row leaves the array untouched
-            const itemSymbol = item.symbol
-            const itemSide = item.side
-            const arrayLength = this.length
-            for (let i = 0; i < arrayLength; i++) {
-                const existing = this[i]
-                if ((existing.symbol === itemSymbol) && (existing.side === itemSide)) {
-                    this.removeAt (i)
-                    break
+            // move the position to the end of the array: located by identity first
+            // (see BaseCache.indexOfReference), with the (symbol, side) match as the
+            // fallback; a stale hashmap entry with no matching row leaves the array
+            // untouched
+            let index = this.indexOfReference (reference)
+            if (index === -1) {
+                const itemSymbol = item.symbol
+                const itemSide = item.side
+                const arrayLength = this.length
+                for (let i = 0; i < arrayLength; i++) {
+                    const existing = this[i]
+                    if ((existing.symbol === itemSymbol) && (existing.side === itemSide)) {
+                        index = i
+                        break
+                    }
                 }
             }
+            if (index !== -1) {
+                this.removeAt (index)
+            }
         } else {
-            bySide[item.side] = item
+            bySide[side] = item
         }
-        this.push (item)
+        this.pushLast (item)
         if (this.clearAllUpdates) {
             this.clearAllUpdates = false
             // the global poll consumes only the global scope: the symbol-scoped
@@ -391,24 +473,26 @@ class ArrayCacheBySymbolBySide extends ArrayCache {
             this.allNewUpdates = 0
             this.seenUpdatesAll = {}
         }
-        if (this.seenUpdatesBySymbol[item.symbol] === undefined) {
-            this.seenUpdatesBySymbol[item.symbol] = new Set ()
+        let sideSet = this.seenUpdatesBySymbol[symbol]
+        if (sideSet === undefined) {
+            sideSet = new Set ()
+            this.seenUpdatesBySymbol[symbol] = sideSet
         }
-        if (this.clearUpdatesBySymbol[item.symbol]) {
-            this.clearUpdatesBySymbol[item.symbol] = false
-            this.seenUpdatesBySymbol[item.symbol].clear ()
+        if (this.clearUpdatesBySymbol[symbol]) {
+            this.clearUpdatesBySymbol[symbol] = false
+            sideSet.clear ()
         }
         // count distinct sides, in case an exchange updates the same side twice
-        const sideSet = this.seenUpdatesBySymbol[item.symbol]
-        sideSet.add (item.side)
-        this.newUpdatesBySymbol[item.symbol] = sideSet.size
+        sideSet.add (side)
+        this.newUpdatesBySymbol[symbol] = sideSet.size
         // independent global-scope memory, see ArrayCacheBySymbolById.append
-        if (this.seenUpdatesAll[item.symbol] === undefined) {
-            this.seenUpdatesAll[item.symbol] = new Set ()
+        let allSideSet = this.seenUpdatesAll[symbol]
+        if (allSideSet === undefined) {
+            allSideSet = new Set ()
+            this.seenUpdatesAll[symbol] = allSideSet
         }
-        const allSideSet = this.seenUpdatesAll[item.symbol]
         const beforeAllLength = allSideSet.size
-        allSideSet.add (item.side)
+        allSideSet.add (side)
         this.allNewUpdates = (this.allNewUpdates || 0) + (allSideSet.size - beforeAllLength)
     }
 }

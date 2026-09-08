@@ -873,6 +873,23 @@ fn cache_str_field(item: &Value, key: &str) -> Option<String> {
     }
 }
 
+/// `cache_str_field(item, key).as_deref() == Some(expected)` without building the
+/// owned String: the row scan of the keyed caches asks this twice per row, and
+/// the clone per call made a full-buffer scan allocate two thousand strings.
+/// Only a numeric / bool field still formats itself to compare.
+fn cache_str_field_eq(item: &Value, key: &str, expected: &str) -> bool {
+    match item {
+        Value::Dict(d) => match d.get(key) {
+            Some(Value::Str(s)) => s == expected,
+            Some(Value::Int(n)) => n.to_string() == expected,
+            Some(Value::Float(f)) => f.to_string() == expected,
+            Some(Value::Bool(b)) => b.to_string() == expected,
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 /// Tag every symbol bucket of a cache hashmap copy with a `__cache_backref`
 /// = [cache_id, symbol] so a later `bucket[id] = order` write can be routed
 /// back into the shared CACHE_STORE (see `try_cache_hashmap_write`). Mirrors
@@ -957,28 +974,28 @@ fn cache_max_size(v: &Value) -> Option<usize> {
 
 /// `_data` is the rolling buffer Vec for every cache kind. Returns a
 /// mutable handle to the inner Vec by going through `Arc::make_mut`.
+// The field accessors below look the slot up by &str first and only allocate the
+// owned key String when the slot is missing or of the wrong shape: every append
+// goes through a dozen of these, and `entry(key.to_string())` was a dozen
+// allocations per append for slots that exist from construction onwards.
 fn cache_data_mut(m: &mut HashMap<String, Value>) -> &mut Vec<Value> {
-    let entry = m.entry("_data".to_string()).or_insert_with(|| Value::Array(Vec::new()));
-    if let Value::Arr(a) = entry {
-        return Arc::make_mut(a);
+    if !matches!(m.get("_data"), Some(Value::Arr(_))) {
+        m.insert("_data".to_string(), Value::Array(Vec::new()));
     }
-    *entry = Value::Array(Vec::new());
-    if let Value::Arr(a) = entry {
-        return Arc::make_mut(a);
+    match m.get_mut("_data") {
+        Some(Value::Arr(a)) => Arc::make_mut(a),
+        _ => unreachable!(),
     }
-    unreachable!()
 }
 
 fn cache_dict_field_mut<'a>(m: &'a mut HashMap<String, Value>, key: &str) -> &'a mut HashMap<String, Value> {
-    let entry = m.entry(key.to_string()).or_insert_with(|| Value::Map(HashMap::new()));
-    if let Value::Dict(d) = entry {
-        return Arc::make_mut(d);
+    if !matches!(m.get(key), Some(Value::Dict(_))) {
+        m.insert(key.to_string(), Value::Map(HashMap::new()));
     }
-    *entry = Value::Map(HashMap::new());
-    if let Value::Dict(d) = entry {
-        return Arc::make_mut(d);
+    match m.get_mut(key) {
+        Some(Value::Dict(d)) => Arc::make_mut(d),
+        _ => unreachable!(),
     }
-    unreachable!()
 }
 
 fn cache_int_field(m: &HashMap<String, Value>, key: &str) -> i64 {
@@ -986,7 +1003,10 @@ fn cache_int_field(m: &HashMap<String, Value>, key: &str) -> i64 {
 }
 
 fn cache_set_int(m: &mut HashMap<String, Value>, key: &str, value: i64) {
-    m.insert(key.to_string(), Value::Int(value));
+    match m.get_mut(key) {
+        Some(slot) => *slot = Value::Int(value),
+        None => { m.insert(key.to_string(), Value::Int(value)); }
+    }
 }
 
 fn cache_bool_field(m: &HashMap<String, Value>, key: &str) -> bool {
@@ -994,7 +1014,10 @@ fn cache_bool_field(m: &HashMap<String, Value>, key: &str) -> bool {
 }
 
 fn cache_set_bool(m: &mut HashMap<String, Value>, key: &str, value: bool) {
-    m.insert(key.to_string(), Value::Bool(value));
+    match m.get_mut(key) {
+        Some(slot) => *slot = Value::Bool(value),
+        None => { m.insert(key.to_string(), Value::Bool(value)); }
+    }
 }
 
 // Reset the per-kind bookkeeping that a `clear()` must drop, mirroring the TS
@@ -1037,21 +1060,27 @@ fn cache_apply_clear_all(m: &mut HashMap<String, Value>) {
 // Take (and reset) the pending symbol-scoped clear flag for `key1`.
 fn cache_take_symbol_clear(m: &mut HashMap<String, Value>, key1: &str) -> bool {
     let cs = cache_dict_field_mut(m, "_clearUpdatesBySymbol");
-    if matches!(cs.get(key1), Some(Value::Bool(true))) {
-        cs.insert(key1.to_string(), Value::Bool(false));
-        true
-    } else {
-        false
+    match cs.get_mut(key1) {
+        Some(slot @ Value::Bool(true)) => {
+            *slot = Value::Bool(false);
+            true
+        }
+        _ => false,
     }
 }
 
 // Add `key2` to the seen-set `field[key1]`; returns the resulting set size.
 fn cache_seen_add(m: &mut HashMap<String, Value>, field: &str, key1: &str, key2: &str) -> i64 {
     let outer = cache_dict_field_mut(m, field);
-    let set = outer.entry(key1.to_string()).or_insert_with(|| Value::Map(HashMap::new()));
-    if let Value::Dict(sd) = set {
+    if !outer.contains_key(key1) {
+        outer.insert(key1.to_string(), Value::Map(HashMap::new()));
+    }
+    if let Some(Value::Dict(sd)) = outer.get_mut(key1) {
         let sd = Arc::make_mut(sd);
-        sd.insert(key2.to_string(), Value::Bool(true));
+        // membership set: only a first sighting needs the owned key
+        if !sd.contains_key(key2) {
+            sd.insert(key2.to_string(), Value::Bool(true));
+        }
         sd.len() as i64
     } else {
         0
@@ -1278,21 +1307,20 @@ fn cache_append_inner(m: &mut HashMap<String, Value>, kind: &str, cap: Option<us
                     } else { false }
                 };
                 let item_to_store = if was_duplicate {
-                    let merged = {
+                    let existing = {
                         let hm = cache_dict_field_mut(m, "hashmap");
-                        let bucket = hm.get(&symbol).cloned();
-                        let existing = match bucket {
+                        match hm.get(&symbol) {
                             Some(Value::Dict(bd)) => bd.get(&key2).cloned(),
                             _ => None,
-                        };
-                        match (existing, item.clone()) {
-                            (Some(Value::Dict(old)), Value::Dict(new_)) => {
-                                let mut merged = (*old).clone();
-                                for (k, v) in new_.iter() { merged.insert(k.clone(), v.clone()); }
-                                Value::Dict(Arc::new(merged))
-                            }
-                            (_, new_) => new_,
                         }
+                    };
+                    let merged = match (existing.clone(), item.clone()) {
+                        (Some(Value::Dict(old)), Value::Dict(new_)) => {
+                            let mut merged = (*old).clone();
+                            for (k, v) in new_.iter() { merged.insert(k.clone(), v.clone()); }
+                            Value::Dict(Arc::new(merged))
+                        }
+                        (_, new_) => new_,
                     };
                     {
                         let hm = cache_dict_field_mut(m, "hashmap");
@@ -1302,13 +1330,29 @@ fn cache_append_inner(m: &mut HashMap<String, Value>, kind: &str, cap: Option<us
                             Arc::make_mut(bd).insert(key2.clone(), merged.clone());
                         }
                     }
-                    // Remove the existing slot from _data.
+                    // Remove the existing slot from _data. Each (key1, key2) pair sits in
+                    // the buffer at most once, so scanning from the tail finds the same
+                    // row as a front scan would - and the row being updated is almost
+                    // always a recent one, which makes the common case O(1).
+                    //
+                    // The bucket entry and the buffer row are clones of one Value, i.e.
+                    // the same Arc allocation, so a pointer compare against the entry
+                    // just read finds the row without touching a field. Only if no row
+                    // shares that allocation fall back to the field comparison, which
+                    // borrows instead of cloning (see cache_str_field_eq).
                     {
                         let data = cache_data_mut(m);
-                        if let Some(pos) = data.iter().position(|x| {
-                            cache_str_field(x, key2_name).as_deref() == Some(&key2)
-                                && cache_str_field(x, key1_name).as_deref() == Some(&symbol)
-                        }) { data.remove(pos); }
+                        let by_identity = match &existing {
+                            Some(Value::Dict(old)) => data.iter().rposition(|x| {
+                                matches!(x, Value::Dict(row) if Arc::ptr_eq(row, old))
+                            }),
+                            _ => None,
+                        };
+                        let pos = by_identity.or_else(|| data.iter().rposition(|x| {
+                            cache_str_field_eq(x, key2_name, &key2)
+                                && cache_str_field_eq(x, key1_name, &symbol)
+                        }));
+                        if let Some(pos) = pos { data.remove(pos); }
                     }
                     merged
                 } else {
