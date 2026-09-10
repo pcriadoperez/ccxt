@@ -201,6 +201,22 @@ public partial class BaseExchange
 
     public static bool isEqual(object a, object b)
     {
+        // boxed int/long pairs (loop counters against array lengths) take the same
+        // Convert.ToInt64 route below; compare them directly instead
+        if (a is int intA)
+        {
+            if (b is int intB)
+                return intA == intB;
+            if (b is Int64 longB)
+                return intA == longB;
+        }
+        else if (a is Int64 longA)
+        {
+            if (b is Int64 longB)
+                return longA == longB;
+            if (b is int intB)
+                return longA == intB;
+        }
 
         try
         {
@@ -287,6 +303,22 @@ public partial class BaseExchange
             return false;
         }
 
+        // same result normalizeIntIfNeeded + the Int64 branch below produce, without boxing
+        if (a is int intA)
+        {
+            if (b is int intB)
+                return intA > intB;
+            if (b is Int64 longB)
+                return intA > longB;
+        }
+        else if (a is Int64 longA)
+        {
+            if (b is Int64 longB)
+                return longA > longB;
+            if (b is int intB)
+                return longA > intB;
+        }
+
         a = normalizeIntIfNeeded(a);
         b = normalizeIntIfNeeded(b);
 
@@ -314,7 +346,22 @@ public partial class BaseExchange
 
     public static bool isLessThan(object a, object b)
     {
-
+        // !isGreaterThan && !isEqual collapses to < for integer pairs (the hot
+        // `for (object i = 0; isLessThan(i, getArrayLength(x)); ...)` loops)
+        if (a is int intA)
+        {
+            if (b is int intB)
+                return intA < intB;
+            if (b is Int64 longB)
+                return intA < longB;
+        }
+        else if (a is Int64 longA)
+        {
+            if (b is Int64 longB)
+                return longA < longB;
+            if (b is int intB)
+                return longA < intB;
+        }
         return !isGreaterThan(a, b) && !isEqual(a, b);
     }
 
@@ -694,6 +741,25 @@ public partial class BaseExchange
         if (value2 == null || key == null)
         {
             return null;
+        }
+
+        // fast paths for the two shapes parsed JSON comes in. Same results as the
+        // generic branches below (a negative list index still throws there), minus
+        // the type-test chain and the ContainsKey + indexer double lookup.
+        if (value2 is Dictionary<string, object> plainDict)
+        {
+            if (key is string stringKey)
+            {
+                object found;
+                return plainDict.TryGetValue(stringKey, out found) ? found : null;
+            }
+        }
+        else if (value2 is List<object> plainList)
+        {
+            if (key is int intKey)
+            {
+                return (intKey >= plainList.Count) ? null : plainList[intKey];
+            }
         }
 
         if (value2.GetType() == typeof(string))
