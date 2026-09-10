@@ -743,9 +743,24 @@ class BaseExchange(object):
     @staticmethod
     def safe_integer(dictionary, key, default_value=None):
         try:
+            # a missing key is the common case for this helper (optional fields, the optional
+            # count of a [price, amount] bid/ask), and raising KeyError/IndexError costs several
+            # times more than the lookup, so the two shapes parsed JSON comes in are looked up
+            # without an exception; the result is identical to the plain dictionary[key] path
+            t = type(dictionary)
+            if t is dict:
+                value = dictionary.get(key)
+            elif t is list:
+                if type(key) is int and not (-len(dictionary) <= key < len(dictionary)):
+                    return default_value
+                value = dictionary[key]
+            else:
+                value = dictionary[key]
+            if value is None:
+                return default_value
             # needed to avoid breaking on "100.0"
             # https://stackoverflow.com/questions/1094717/convert-a-string-to-integer-with-decimal-in-python#1094721
-            return int(float(dictionary[key]))
+            return int(float(value))
         except Exception:
             # catch any exception, not only (KeyError, IndexError, TypeError, ValueError):
             return default_value
