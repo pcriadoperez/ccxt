@@ -1,5 +1,6 @@
 
 import testWsOrderBook from "./test.orderBook.js";
+import testWsOrderBookNative from "./test.orderBookNative.js";
 import testWsCache from "./test.cache.js";
 import testWsCacheNative from "./test.cacheNative.js";
 import testWsSingleFlight from "./test.singleFlight.js";
@@ -8,6 +9,7 @@ import testLbankServerPingLivenessWiring from "./test.serverPingLiveness.lbank.j
 
 async function testBaseWs () {
     testWsOrderBook ();
+    testWsOrderBookNative (); // js-only: asserts the Float64Array index buffer of the sides
     testWsCache ();
     testWsCacheNative (); // js-only: removeAt () has no port equivalent
     // todo : testWsClose ();

@@ -73,17 +73,59 @@ public partial class BaseExchange
     public Int64? safeInteger(object obj, object key, object defaultValue = null) => SafeInteger(obj, key, defaultValue);
     public static Int64? SafeInteger(object obj, object key, object defaultValue = null)
     {
-        var res = SafeIntegerN(obj, new List<object> { key }, defaultValue);
-        return res == null ? null : res;
+        // single-key twin of SafeIntegerN: same steps in the same order, without the
+        // per-call List<object> { key } and the ToString() round trips
+        var result = SafeValue(obj, key, defaultValue);
+        Int64? convertedDefaultValue = (defaultValue == null) ? null : Convert.ToInt64(defaultValue);
+        if (result == null)
+            return convertedDefaultValue;
+        if (result is Int64 alreadyLong)
+            return alreadyLong;
+        if (result is string str)
+        {
+            if (str.Length == 0)
+                return convertedDefaultValue;
+            try
+            {
+                return (str.IndexOf(".") > -1) ? Convert.ToInt64(Convert.ToDouble(str, CultureInfo.InvariantCulture)) : Convert.ToInt64(str);
+            }
+            catch (Exception e)
+            {
+                return convertedDefaultValue;
+            }
+        }
+        if (IsEmptyValue(result))
+            return convertedDefaultValue;
+        try
+        {
+            return Convert.ToInt64(result);
+        }
+        catch (Exception e)
+        {
+            return convertedDefaultValue;
+        }
     }
 
     public object safeInteger2(object obj, object key1, object key2, object defaultValue = null) => safeIntegerN(obj, new List<object> { key1, key2 }, defaultValue);
 
-    public double? safeFloat(object obj, object key, object defaultValue = null) => safeFloatN(obj, new List<object> { key }, defaultValue);
+    public double? safeFloat(object obj, object key, object defaultValue = null) => SafeFloat(obj, key, defaultValue);
     public static double? SafeFloat(object obj, object key, object defaultValue = null)
     {
-        var res = SafeFloatN(obj, new List<object> { key }, defaultValue);
-        return res == null ? null : res;
+        // single-key twin of SafeFloatN (same order of operations, no List<object> allocation)
+        double? convertedDefaultValue = (defaultValue == null) ? null : Convert.ToDouble(defaultValue, CultureInfo.InvariantCulture);
+        var result = SafeValue(obj, key, defaultValue);
+        if (result == null)
+            return convertedDefaultValue;
+        if (result is double alreadyDouble)
+            return alreadyDouble; // Convert.ToDouble(double) is the identity
+        try
+        {
+            return Convert.ToDouble(result, CultureInfo.InvariantCulture);
+        }
+        catch (Exception e)
+        {
+            return convertedDefaultValue;
+        }
     }
 
     public double? safeFloat2(object obj, object key1, object key2, object defaultValue = null) => safeFloatN(obj, new List<object> { key1, key2 }, defaultValue);
@@ -127,8 +169,86 @@ public partial class BaseExchange
 
     public object safeValue2(object obj, object key1, object key2, object defaultValue = null) => safeValueN(obj, new List<object> { key1, key2 }, defaultValue);
 
-    public static object SafeValue(object obj, object key1, object defaultValue = null) => SafeValueN(obj, new List<object> { key1 }, defaultValue);
-    public object safeValue(object obj, object key1, object defaultValue = null) => safeValueN(obj, new List<object> { key1 }, defaultValue);
+    public object safeValue(object obj, object key1, object defaultValue = null) => SafeValue(obj, key1, defaultValue);
+
+    // Single-key fast path of SafeValueN. Every safeX(obj, key) call used to wrap the key in
+    // a fresh List<object> and, for list indices, stringify the boxed int only to parse it
+    // back through Int32.TryParse; for the two shapes parsed JSON comes in this does the
+    // same lookups directly. Anything else (typed lists, non-generic dictionaries, ...)
+    // keeps going through SafeValueN so those rarer branches are untouched.
+    public static object SafeValue(object obj, object key1, object defaultValue = null)
+    {
+        if (obj == null)
+            return defaultValue;
+
+        if (obj is IDictionary<string, object> dict)
+        {
+            if (key1 == null)
+                return defaultValue;
+            object returnValue;
+            if (dict.TryGetValue(key1.ToString(), out returnValue) && !IsEmptyValue(returnValue))
+            {
+                return returnValue;
+            }
+            return defaultValue;
+        }
+
+        // an object[] is an IList<object> too, which is what SafeValueN turns it into
+        if (obj is IList<object> list)
+        {
+            int keyInt;
+            if (TryGetIndex(key1, out keyInt) && keyInt >= 0 && keyInt < list.Count)
+            {
+                var returnValue = list[keyInt];
+                if (returnValue != null)
+                    return returnValue;
+            }
+            return defaultValue;
+        }
+
+        return SafeValueN(obj, new List<object> { key1 }, defaultValue);
+    }
+
+    // `value == null || value.ToString().Length == 0`, without formatting numbers into
+    // throwaway strings: the boxed primitives and the parsed containers never stringify
+    // to an empty string, so only strings and unknown types are actually inspected
+    private static bool IsEmptyValue(object value)
+    {
+        if (value == null)
+            return true;
+        if (value is string str)
+            return str.Length == 0;
+        if (value is double || value is Int64 || value is bool || value is int || value is Dictionary<string, object> || value is List<object>)
+            return false;
+        return value.ToString().Length == 0;
+    }
+
+    // Int32.TryParse(key.ToString(), out index) minus the round trip for the boxed
+    // integers the transpiled loops produce
+    private static bool TryGetIndex(object key, out int index)
+    {
+        if (key is int intKey)
+        {
+            index = intKey;
+            return true;
+        }
+        if (key is Int64 longKey)
+        {
+            if (longKey >= Int32.MinValue && longKey <= Int32.MaxValue)
+            {
+                index = (int)longKey;
+                return true;
+            }
+            index = 0;
+            return false;
+        }
+        if (key == null)
+        {
+            index = 0;
+            return false;
+        }
+        return Int32.TryParse(key.ToString(), out index);
+    }
 
 
     public string? safeStringUpper(object obj, object key, object defaultValue = null)
@@ -170,7 +290,7 @@ public partial class BaseExchange
     public Int64? safeIntegerProduct(object obj, object key, object multiplier = null, object defaultValue = null)
     {
         multiplier ??= 1;
-        var result = safeValueN(obj, new List<object> { key });
+        var result = SafeValue(obj, key);
         Int64? convertedDefaultValue = (defaultValue == null) ? null : Convert.ToInt64(defaultValue);
         if (result == null)
         {

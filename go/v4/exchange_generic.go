@@ -38,16 +38,87 @@ func numericSortValue(v any) (float64, bool) {
 	return 0, false
 }
 
-// numeric values must sort numerically: the previous fmt.Sprintf comparison ordered
-// int64 tiers as 1, 10, 2, ... which scrambled leverage tier ladders and any other
-// sortBy over a numeric field once it crossed a digit-count boundary
-func compareSortValues(a any, b any) bool {
-	aF, aOk := numericSortValue(a)
-	bF, bOk := numericSortValue(b)
-	if aOk && bOk {
-		return aF < bF
+// sortKey is a sort key resolved once per element: the comparator used to
+// re-read the key from the map, re-classify it with a type switch and, for
+// anything non-numeric, fmt.Sprintf both operands on every comparison of the
+// O(n log n) sort (two allocations plus a reflection-based format each time).
+// The text form is still only built when a comparison needs it.
+type sortKey struct {
+	value   any
+	number  float64
+	text    string
+	numeric bool
+	hasText bool
+}
+
+func newSortKey(value any) sortKey {
+	key := sortKey{value: value}
+	key.number, key.numeric = numericSortValue(value)
+	return key
+}
+
+func (key *sortKey) textValue() string {
+	if !key.hasText {
+		if str, ok := key.value.(string); ok {
+			key.text = str
+		} else {
+			key.text = fmt.Sprintf("%v", key.value)
+		}
+		key.hasText = true
 	}
-	return fmt.Sprintf("%v", a) < fmt.Sprintf("%v", b)
+	return key.text
+}
+
+// lessSortKeys orders numerically when both keys are numeric (a %v comparison
+// would order int64 tiers as 1, 10, 2, ... and scramble leverage tier ladders
+// or any other sortBy over a numeric field once it crosses a digit-count
+// boundary), otherwise by the %v text of the keys
+func lessSortKeys(a *sortKey, b *sortKey) bool {
+	if a.numeric && b.numeric {
+		return a.number < b.number
+	}
+	return a.textValue() < b.textValue()
+}
+
+type sortEntry struct {
+	item      any
+	primary   sortKey
+	secondary sortKey
+}
+
+// sortKeyValue extracts the key SortBy orders an element by: a field of a map
+// for a string key, an element of a nested list for an int key (any other
+// element type sorts by defaultValue, as before)
+func sortKeyValue(item any, value1 any, defaultValue any) any {
+	if name, ok := value1.(string); ok {
+		if dict, ok := item.(map[string]any); ok {
+			return dict[name]
+		}
+		return nil
+	}
+	index := value1.(int)
+	if arr, ok := item.([]any); ok {
+		if index >= 0 && index < len(arr) {
+			return arr[index]
+		}
+		return nil
+	}
+	return defaultValue
+}
+
+// writeSortedEntries copies the sorted items back into list (SortBy sorts in
+// place) and applies the descending reversal
+func writeSortedEntries(list []any, entries []sortEntry, desc bool) []any {
+	for i := range entries {
+		list[i] = entries[i].item
+	}
+	if desc {
+		for i := 0; i < len(list)/2; i++ {
+			opp := len(list) - 1 - i
+			list[i], list[opp] = list[opp], list[i]
+		}
+	}
+	return list
 }
 
 func (this *BaseExchange) SortBy(array any, value1 any, desc2 ...any) []any {
@@ -57,48 +128,14 @@ func (this *BaseExchange) SortBy(array any, value1 any, desc2 ...any) []any {
 		desc = desc2[0].(bool)
 	}
 	list := array.([]any)
-
-	if str, ok := value1.(string); ok {
-		sort.Slice(list, func(i, j int) bool {
-			a := list[i].(map[string]any)[str]
-			b := list[j].(map[string]any)[str]
-			return compareSortValues(a, b)
-		})
-		if desc {
-			for i := len(list)/2 - 1; i >= 0; i-- {
-				opp := len(list) - 1 - i
-				list[i], list[opp] = list[opp], list[i]
-			}
-		}
-		return list
-	} else {
-		value := value1.(int)
-		sort.Slice(list, func(i, j int) bool {
-			var a, b any
-			if reflect.TypeOf(list[i]).Kind() == reflect.Slice {
-				a = list[i].([]any)[value]
-			} else {
-				a = defaultValue
-			}
-			if reflect.TypeOf(list[j]).Kind() == reflect.Slice {
-				b = list[j].([]any)[value]
-			} else {
-				b = defaultValue
-			}
-			return compareSortValues(a, b)
-		})
-		if desc {
-			// for i := len(list)/2 - 1; i >= 0; i-- {
-			// 	opp := len(list) - 1 - i
-			// 	list[i], list[opp] = list[opp], list[i]
-			// }
-			for i := 0; i < len(list)/2; i++ {
-				opp := len(list) - 1 - i
-				list[i], list[opp] = list[opp], list[i]
-			}
-		}
-		return list
+	entries := make([]sortEntry, len(list))
+	for i, item := range list {
+		entries[i] = sortEntry{item: item, primary: newSortKey(sortKeyValue(item, value1, defaultValue))}
 	}
+	sort.Slice(entries, func(i, j int) bool {
+		return lessSortKeys(&entries[i].primary, &entries[j].primary)
+	})
+	return writeSortedEntries(list, entries, desc)
 }
 
 func (this *BaseExchange) SortBy2(array any, key1 any, key2 any, desc2 ...any) []any {
@@ -107,28 +144,28 @@ func (this *BaseExchange) SortBy2(array any, key1 any, key2 any, desc2 ...any) [
 		desc = desc2[0].(bool)
 	}
 	list := array.([]any)
-
-	if str, ok := key1.(string); ok {
-		key2Str, _ := key2.(string)
-		sort.Slice(list, func(i, j int) bool {
-			a1 := list[i].(map[string]any)[str]
-			a2 := list[i].(map[string]any)[key2Str]
-			b1 := list[j].(map[string]any)[str]
-			b2 := list[j].(map[string]any)[key2Str]
-			if !compareSortValues(a1, b1) && !compareSortValues(b1, a1) {
-				return compareSortValues(a2, b2)
-			}
-			return compareSortValues(a1, b1)
-		})
-		if desc {
-			for i := len(list)/2 - 1; i >= 0; i-- {
-				opp := len(list) - 1 - i
-				list[i], list[opp] = list[opp], list[i]
-			}
-		}
-		return list
+	str, ok := key1.(string)
+	if !ok {
+		return nil
 	}
-	return nil
+	key2Str, _ := key2.(string)
+	entries := make([]sortEntry, len(list))
+	for i, item := range list {
+		entries[i] = sortEntry{
+			item:      item,
+			primary:   newSortKey(sortKeyValue(item, str, nil)),
+			secondary: newSortKey(sortKeyValue(item, key2Str, nil)),
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		a := &entries[i]
+		b := &entries[j]
+		if !lessSortKeys(&a.primary, &b.primary) && !lessSortKeys(&b.primary, &a.primary) {
+			return lessSortKeys(&a.secondary, &b.secondary)
+		}
+		return lessSortKeys(&a.primary, &b.primary)
+	})
+	return writeSortedEntries(list, entries, desc)
 }
 
 // func (this *BaseExchange) FilterBy(aa any, key any, value any) []any {
