@@ -164,6 +164,7 @@ export default class paradex extends Exchange {
                         'jwks.json': { 'cost': 1 } as Endpoint<Dict>,
                         'onboarding': { 'cost': 1 } as Endpoint<Dict>,
                         'referrals/config': { 'cost': 1 } as Endpoint<Dict>,
+                        'staking/balance/history/global': { 'cost': 1 } as Endpoint<Dict>,
                         'staking/config': { 'cost': 1 } as Endpoint<Dict>,
                         'system/announcements': { 'cost': 1 } as Endpoint<Dict>,
                         'system/config': { 'cost': 1 } as Endpoint<Dict>,
@@ -173,6 +174,7 @@ export default class paradex extends Exchange {
                         'system/volume-tiers': { 'cost': 1 } as Endpoint<Dict>,
                         'trades': { 'cost': 1 } as Endpoint<Dict>,
                         'vaults': { 'cost': 1 } as Endpoint<Dict>,
+                        'vaults/analytics': { 'cost': 1 } as Endpoint<Dict>,
                         'vaults/balance': { 'cost': 1 } as Endpoint<Dict>,
                         'vaults/config': { 'cost': 1 } as Endpoint<Dict>,
                         'vaults/history': { 'cost': 1 } as Endpoint<Dict>,
@@ -218,6 +220,11 @@ export default class paradex extends Exchange {
                         'orders/{order_id}': { 'cost': 1 } as Endpoint<Dict>,
                         'referrals/qr-code': { 'cost': 1 } as Endpoint<Dict>,
                         'referrals/summary': { 'cost': 1 } as Endpoint<Dict>,
+                        'rfqs': { 'cost': 1 } as Endpoint<Dict>,
+                        'rfqs/drafts': { 'cost': 1 } as Endpoint<Dict>,
+                        'rfqs/markets': { 'cost': 1 } as Endpoint<Dict>,
+                        'rfqs/{rfq_id}/bbo': { 'cost': 1 } as Endpoint<Dict>,
+                        'staking/balance/history': { 'cost': 1 } as Endpoint<Dict>,
                         'staking/history': { 'cost': 1 } as Endpoint<Dict>,
                         'staking/summary': { 'cost': 1 } as Endpoint<Dict>,
                         'transfers': { 'cost': 1 } as Endpoint<Dict>,
@@ -239,6 +246,8 @@ export default class paradex extends Exchange {
                         'account/profile/username': { 'cost': 1 } as Endpoint<Dict>,
                         'account/referrer': { 'cost': 1 } as Endpoint<Dict>,
                         'account/settings/trading_value_display': { 'cost': 1 } as Endpoint<Dict>,
+                        'account/paradigm/enable': { 'cost': 1 } as Endpoint<Dict>,
+                        'account/terminal-token': { 'cost': 1 } as Endpoint<Dict>,
                         'account/keys/subkeys/activate': { 'cost': 1 } as Endpoint<Dict>,
                         'account/keys/subkeys': { 'cost': 1 } as Endpoint<Dict>,
                         'account/tokens': { 'cost': 1 } as Endpoint<Dict>,
@@ -251,6 +260,9 @@ export default class paradex extends Exchange {
                         'onboarding': { 'cost': 1 } as Endpoint<Dict>,
                         'orders': { 'cost': 1 } as Endpoint<Dict>,
                         'orders/batch': { 'cost': 1 } as Endpoint<Dict>,
+                        'rfqs': { 'cost': 1 } as Endpoint<Dict>,
+                        'rfqs/drafts': { 'cost': 1 } as Endpoint<Dict>,
+                        'rfqs/{rfq_id}/execute': { 'cost': 1 } as Endpoint<Dict>,
                         'v2/auth': { 'cost': 1 } as Endpoint<Dict>,
                         'v2/onboarding': { 'cost': 1 } as Endpoint<Dict>,
                         'vaults': { 'cost': 1 } as Endpoint<Dict>,
@@ -260,6 +272,8 @@ export default class paradex extends Exchange {
                     'put': {
                         'account/profile': { 'cost': 1 } as Endpoint<Dict>,
                         'account/keys/subkeys/{public_key}': { 'cost': 1 } as Endpoint<Dict>,
+                        'account/keys/subkeys/{public_key}/allowed-cidrs': { 'cost': 1 } as Endpoint<Dict>,
+                        'account/tokens/{lookup_id}/allowed-cidrs': { 'cost': 1 } as Endpoint<Dict>,
                         'orders/{order_id}': { 'cost': 1 } as Endpoint<Dict>,
                     },
                     'delete': {
@@ -272,6 +286,8 @@ export default class paradex extends Exchange {
                         'orders/batch': { 'cost': 1 } as Endpoint<Dict>,
                         'orders/by_client_id/{client_id}': { 'cost': 1 } as Endpoint<Dict>,
                         'orders/{order_id}': { 'cost': 1 } as Endpoint<Dict>,
+                        'rfqs/drafts/{draft_id}': { 'cost': 1 } as Endpoint<Dict>,
+                        'rfqs/{rfq_id}': { 'cost': 1 } as Endpoint<Dict>,
                     },
                 },
             },
@@ -1052,8 +1068,11 @@ export default class paradex extends Exchange {
         // the venue: a single symbol is asked for by name, which is 544 bytes
         // against 1.6 MB
         let target = 'ALL';
-        if ((symbols !== undefined) && (symbols.length === 1)) {
-            target = this.market (symbols[0])['id'] as string;
+        if (symbols !== undefined) {
+            const symbolsLength = symbols.length;
+            if (symbolsLength === 1) {
+                target = this.market (symbols[0])['id'] as string;
+            }
         }
         const request: Dict = {
             'market': target,
@@ -1110,13 +1129,16 @@ export default class paradex extends Exchange {
         // option row carries an empty funding_rate and a period of zero. left
         // without a symbol, parseFundingRates drops the row
         const rate = this.safeString (contract, 'funding_rate');
-        const funds = market['swap'] && (rate !== undefined) && (rate !== '');
+        const funds = (market['swap'] === true) && (rate !== undefined) && (rate !== '');
         // the funding period belongs to the market and is not always eight hours:
         // fetchMarkets documents one on twenty four. funding accrues each second
         // against an index, and this rate is the amount for a whole period
         const hours = this.safeString (this.safeDict (market, 'info', {}), 'funding_period_hours');
         // zero hours is not an interval, and a caller annualising a rate divides by it
-        const interval = ((hours === undefined) || !Precise.stringGt (hours, '0')) ? undefined : hours + 'h';
+        let interval = undefined;
+        if ((hours !== undefined) && Precise.stringGt (hours, '0')) {
+            interval = hours + 'h';
+        }
         return {
             'info': contract,
             'symbol': funds ? market['symbol'] : undefined,
@@ -1663,7 +1685,7 @@ export default class paradex extends Exchange {
             };
             return this.safeString (statuses, status, status);
         }
-        return status;
+        return undefined;
     }
 
     parseOrderType (type: Str) {
