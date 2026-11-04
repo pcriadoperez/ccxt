@@ -14,30 +14,83 @@ public partial class BaseExchange
         var desc = (bool)desc2;
         var list = (IList<object>)array;
 
+        // extract every sort key once, in input order (OrderBy did the same inside ToList,
+        // so a missing key / wrong row type surfaces from the same element as before)
+        var count = list.Count;
+        var keys = new object[count];
         if (value1.GetType() == typeof(string))
         {
-            var sortedList2 = list.OrderBy(x => ((dict)x)[(string)value1], sortKeyComparer).ToList();
-            if (desc)
-                sortedList2.Reverse();
-            return sortedList2;
+            var name = (string)value1;
+            for (var i = 0; i < count; i++)
+            {
+                keys[i] = ((dict)list[i])[name];
+            }
         }
         else
         {
             var value = (int)value1;
-            var sortedList = list.OrderBy(x =>
+            for (var i = 0; i < count; i++)
             {
-                if (x.GetType() == typeof(list))
-                {
-                    return ((list)x)[value];
-                }
-                return defaultValue;
-            }, sortKeyComparer).ToList();
-
-            if (desc)
-                sortedList.Reverse();
-
-            return sortedList;
+                var x = list[i];
+                keys[i] = (x.GetType() == typeof(list)) ? ((list)x)[value] : defaultValue;
+            }
         }
+
+        // perf: when every key is numeric (order-book prices, timestamps) the comparer below
+        // reduces to Convert.ToDouble(a).CompareTo(Convert.ToDouble(b)), so convert once per
+        // element and sort indices, breaking ties by input position. That is a strict total
+        // order, so the (unstable) Array.Sort yields exactly the stable OrderBy result.
+        var numericKeys = new double[count];
+        var allNumeric = true;
+        for (var i = 0; i < count; i++)
+        {
+            if (!SortKeyComparer.IsNumeric(keys[i]))
+            {
+                allNumeric = false;
+                break;
+            }
+            numericKeys[i] = Convert.ToDouble(keys[i]);
+        }
+        if (allNumeric)
+        {
+            var order = new int[count];
+            for (var i = 0; i < count; i++)
+            {
+                order[i] = i;
+            }
+            Array.Sort(order, (i, j) =>
+            {
+                var cmp = numericKeys[i].CompareTo(numericKeys[j]);
+                return (cmp != 0) ? cmp : i.CompareTo(j);
+            });
+            var sortedNumeric = new List<object>(count);
+            if (desc)
+            {
+                for (var i = count - 1; i >= 0; i--)
+                {
+                    sortedNumeric.Add(list[order[i]]);
+                }
+            }
+            else
+            {
+                for (var i = 0; i < count; i++)
+                {
+                    sortedNumeric.Add(list[order[i]]);
+                }
+            }
+            return sortedNumeric;
+        }
+
+        // mixed / string / bool / null keys: unchanged stable LINQ route with the total comparer
+        var indices = new List<int>(count);
+        for (var i = 0; i < count; i++)
+        {
+            indices.Add(i);
+        }
+        var sortedList = indices.OrderBy(i => keys[i], sortKeyComparer).Select(i => list[i]).ToList();
+        if (desc)
+            sortedList.Reverse();
+        return sortedList;
     }
 
     // a TOTAL comparator for sort keys, matching go's compareSortValues and
@@ -51,14 +104,14 @@ public partial class BaseExchange
     // prices) sit well inside the exact range
     private class SortKeyComparer : IComparer<object>
     {
-        private static bool isNumeric(object key)
+        internal static bool IsNumeric(object key)
         {
             return key is sbyte || key is byte || key is short || key is ushort || key is int || key is uint || key is long || key is ulong || key is float || key is double || key is decimal;
         }
 
         public int Compare(object a, object b)
         {
-            if (isNumeric(a) && isNumeric(b))
+            if (IsNumeric(a) && IsNumeric(b))
             {
                 return Convert.ToDouble(a).CompareTo(Convert.ToDouble(b));
             }
