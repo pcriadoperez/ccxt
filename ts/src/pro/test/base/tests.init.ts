@@ -1,5 +1,6 @@
 
 import testWsOrderBook from "./test.orderBook.js";
+import testWsOrderBookNative from "./test.orderBookNative.js";
 import testWsCache from "./test.cache.js";
 import testWsCacheNative from "./test.cacheNative.js";
 import testWsSingleFlight from "./test.singleFlight.js";
@@ -11,6 +12,7 @@ import testHyperliquidPendingUnsubscribe from "./test.pendingUnsubscribe.hyperli
 
 async function testBaseWs () {
     testWsOrderBook ();
+    testWsOrderBookNative (); // js-only: asserts the Float64Array index buffer of the sides
     testWsCache ();
     testWsCacheNative (); // js-only: removeAt () has no port equivalent
     testBingxOrderFreshness (); // js-only: native handler/cache regression test

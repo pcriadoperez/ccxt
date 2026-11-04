@@ -56,6 +56,15 @@ function shiftRowsDown (self, index) {
     self.pop ();
 }
 
+// `index` is a Float64Array parallel to the rows: [0, length) holds the
+// side-signed prices of the live rows in ascending order, [length, index.length)
+// is Number.MAX_VALUE padding, and length <= index.length - 1 because storeArray
+// doubles the buffer as soon as the live region fills it. bisectLeft searches
+// the whole buffer and relies on that padding to land in [0, length]. The
+// shifts in storeArray therefore only move the live region, [index, length):
+// the padding above it is already MAX_VALUE, and on a large book (tens of
+// thousands of levels in a buffer grown by doubling) the padding can be as
+// long as the live region itself, so shifting it too doubled the per-delta cost.
 const SIZE = 1024
 const SEED = new Float64Array (new Array (SIZE).fill (Number.MAX_VALUE))
 
@@ -95,7 +104,7 @@ class OrderBookSide extends Array implements IOrderBookSide<any> {
             if (this.index[index] === index_price) {
                 this[index][1] = size
             } else {
-                this.index.copyWithin (index + 1, index, this.index.length)
+                this.index.copyWithin (index + 1, index, this.length)
                 this.index[index] = index_price
                 shiftRowsUp (this, index)
                 this[index] = delta
@@ -108,7 +117,7 @@ class OrderBookSide extends Array implements IOrderBookSide<any> {
                 }
             }
         } else if (this.index[index] === index_price) {
-            this.index.copyWithin (index, index + 1, this.index.length)
+            this.index.copyWithin (index, index + 1, this.length)
             this.index[this.length - 1] = Number.MAX_VALUE
             shiftRowsDown (this, index)
         }
@@ -161,7 +170,7 @@ class CountedOrderBookSide extends OrderBookSide {
                 entry[1] = size
                 entry[2] = count
             } else {
-                this.index.copyWithin (index + 1, index, this.index.length)
+                this.index.copyWithin (index + 1, index, this.length)
                 this.index[index] = index_price
                 shiftRowsUp (this, index)
                 this[index] = delta
@@ -174,7 +183,7 @@ class CountedOrderBookSide extends OrderBookSide {
                 }
             }
         } else if (this.index[index] === index_price) {
-            this.index.copyWithin (index, index + 1, this.index.length)
+            this.index.copyWithin (index, index + 1, this.length)
             this.index[this.length - 1] = Number.MAX_VALUE
             shiftRowsDown (this, index)
         }
@@ -255,7 +264,7 @@ class IndexedOrderBookSide extends Array implements IOrderBookSide<any> {
                         old_index++
                     }
                     if (old_index < this.length) {
-                        this.index.copyWithin (old_index, old_index + 1, this.index.length)
+                        this.index.copyWithin (old_index, old_index + 1, this.length)
                         this.index[this.length - 1] = Number.MAX_VALUE
                         shiftRowsDown (this, old_index)
                     }
@@ -270,7 +279,7 @@ class IndexedOrderBookSide extends Array implements IOrderBookSide<any> {
                 index++
             }
             // insert new price level into index
-            this.index.copyWithin (index + 1, index, this.index.length)
+            this.index.copyWithin (index + 1, index, this.length)
             this.index[index] = index_price
             shiftRowsUp (this, index)
             this[index] = delta
@@ -288,7 +297,7 @@ class IndexedOrderBookSide extends Array implements IOrderBookSide<any> {
                 index++
             }
             if (index < this.length) {
-                this.index.copyWithin (index, index + 1, this.index.length)
+                this.index.copyWithin (index, index + 1, this.length)
                 this.index[this.length - 1] = Number.MAX_VALUE
                 shiftRowsDown (this, index)
             }
