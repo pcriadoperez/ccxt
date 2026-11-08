@@ -14,6 +14,7 @@ export interface SourceState {
     resolvedUrl?: string;           // discover: the url fetched on the last successful run
     configHash?: string;            // sourceConfigHash() of the run that stored etag/lastModified: validators are
                                     // only sent while the registry entry (and PARSER_VERSION) is unchanged
+    parserVersion?: number;         // PARSER_VERSION of the last parsed run (absent: 1)
     months?: Record<string, string[]>;     // {yyyy}/{mm} sources: "YYYY-MM" -> ids ever seen in that month's file
                                     // (only months still fetched; their ids are the ones removal tracking covers)
     health: {

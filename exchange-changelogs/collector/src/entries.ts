@@ -20,6 +20,11 @@ export interface BuildContext {
     partitions?: Map<string, string>;   // filled with entry id -> ParsedEntry.partition (month sources)
 }
 
+// Anchor -> url fragment: percent-encoded, but "/" (valid in a fragment, kept by Mintlify ids) stays.
+export function anchorFragment (anchor: string): string {
+    return encodeURIComponent (anchor).replace (/%2F/gi, '/');
+}
+
 export function sourceLink (source: SourceConfig): string {
     return source.link ?? source.url;
 }
@@ -78,39 +83,120 @@ export function baseDate (raw: ParsedEntry, title: string, body: string, source:
 }
 
 // True when a text says nothing beyond a date or version ("2026-11-05", "v1.2.0 (2026-11-05)",
-// "Release 10.11.2026").
+// "Release 10.11.2026", "Release Note 2026-03-20").
 export function dateOrVersionOnly (text: string): boolean {
-    const words = text.replace (/\b(?:20\d\d|\d{1,2}(?:st|nd|rd|th)?|jan\w*|feb\w*|mar\w*|apr\w*|may|jun\w*|jul\w*|aug\w*|sep\w*|oct\w*|nov\w*|dec\w*|v?\d+(?:\.\d+)+|release|update[sd]?|changelog|change log|changes|version)\b/gi, '')
+    const words = text.replace (/\b(?:20\d\d|\d{1,2}(?:st|nd|rd|th)?|jan\w*|feb\w*|mar\w*|apr\w*|may|jun\w*|jul\w*|aug\w*|sep\w*|oct\w*|nov\w*|dec\w*|v?\d+(?:\.\d+)+|release(?: notes?)?|update[sd]?|changelog|change log|changes|version)\b/gi, '')
         .replace (/[^\p{L}]+/gu, '');
     return words.length < 3;
 }
 
-// Headings like "2026-11-05" or "v1.2.0 (2026-11-05)" say nothing in a timeline: append a
-// summary of the body (see bodySummary), cut at a word boundary. Ids still use the raw title.
+// Section labels and product names that say nothing about the change: "Added", "Changed",
+// "Bug fixes", "REST API", "WebSocket", "Docs", "UI", "Exchange API", "Market Data Pro WebSocket API".
+const GENERIC_WORDS = new Set ([
+    'added', 'add', 'adds', 'new', 'changed', 'change', 'changes', 'modified', 'updated', 'update', 'updates', 'improved', 'improvement',
+    'improvements', 'enhancement', 'enhancements', 'fixed', 'fix', 'fixes', 'bug', 'bugs', 'bugfix', 'bugfixes', 'removed', 'remove',
+    'deprecated', 'deprecation', 'deprecations', 'breaking', 'other', 'others', 'misc', 'miscellaneous', 'general', 'note', 'notes',
+    'summary', 'overview', 'highlights', 'feature', 'features', 'docs', 'doc', 'documentation', 'rest', 'api', 'apis', 'ws', 'websocket',
+    'websockets', 'http', 'public', 'private', 'spot', 'futures', 'future', 'margin', 'option', 'options', 'perp', 'perps', 'perpetual',
+    'perpetuals', 'derivatives', 'sdk', 'sdks', 'ui', 'exchange', 'institutional', 'market', 'data', 'pro', 'feed', 'feeds', 'stream',
+    'streams', 'endpoint', 'endpoints', 'and', 'the',
+]);
+
+export function genericLabel (text: string): boolean {
+    // "Added (16)", "Changed (3)": a count does not make a label specific
+    const words = markdownToPlain (text).toLowerCase ().replace (/\(\s*\d+\s*\)/g, '').replace (/[:.]+$/, '').split (/[\s&/,+()-]+/).filter ((w) => w.length > 0);
+    return words.length > 0 && words.length <= 6 && words.every ((w) => GENERIC_WORDS.has (w));
+}
+
+// "| 2026.07.13 18:00 | /v2/x.do | Added | User adds a deposit address |" (a table row item):
+// "/v2/x.do (Added): User adds a deposit address" (date cells and "*" placeholders left out).
+export function tableRowTitle (title: string): string | null {
+    const cells = title.replace (/^\s*\|/, '').replace (/\|\s*$/, '').split ('|').map ((c) => c.trim ());
+    if (cells.length < 3) {
+        return null;
+    }
+    // date cells ("2026.07.13 18:00") go; word-only cells ("Update", "Added") stay
+    const kept = cells.filter ((c) => c && !/^[-*–—]+$/.test (c) && !(/\d/.test (c) && dateOrVersionOnly (c)));
+    if (!kept.length) {
+        return null;
+    }
+    if (kept.length === 1) {
+        return cleanTitle (kept[0]);
+    }
+    const head = (kept.length >= 3) ? `${kept[0]} (${kept[1]})` : kept[0];
+    const rest = (kept.length >= 3) ? kept.slice (2).join (' ') : kept[1];
+    return cleanTitle (`${head}: ${truncate (rest, SUMMARY_TITLE_CHARS)}`);
+}
+
+// Headings like "2026-11-05", "v1.2.0 (2026-11-05)" or a product name ("Exchange API", repeated on
+// every release) say nothing in a timeline: append a summary of the body (see bodySummary), cut at
+// a word boundary. Table-row titles drop their pipes (tableRowTitle). Ids still use the raw title.
 export function displayTitle (title: string, body: string): string {
-    if (!dateOrVersionOnly (title)) {
+    const row = tableRowTitle (title);
+    if (row) {
+        return row;
+    }
+    if (!dateOrVersionOnly (title) && !genericLabel (title)) {
         return title;
     }
     const summary = bodySummary (body);
-    if (!summary) {
+    if (!summary || summary === title) {
         return title;
     }
-    return cleanTitle (`${title}: ${truncate (summary, SUMMARY_TITLE_CHARS)}`);
+    // "2026-10-21:" / "2026-10-21 -" would otherwise read "2026-10-21:: summary"
+    const head = title.replace (/[\s:\u2013\u2014-]+$/, '');
+    return cleanTitle (`${head}: ${truncate (summary, SUMMARY_TITLE_CHARS)}`);
 }
 
 const BULLET = /^[-*+]\s+|^\d+[.)]\s+/;
+const HEADING = /^ {0,3}#{1,6}\s+(.*?)\s*#*\s*$/;
 const SKIP_LINE = /^(?:#{1,6}\s|\||```|~~~|>\s*\[!|(?:-{3,}|\*{3,}|_{3,})\s*$)/;
 // "Testnet: Jul 10th, 2026 06:00 UTC", "**Mainnet:** ...": rollout schedule lines, not the change
 const SCHEDULE_BULLET = /^(?:\*\*|__)?(?:testnet|mainnet|demo(?: trading)?|production|prod|live(?: trading)?|sandbox|staging|uat|downtime|release date|effective (?:date|time)|date|time)(?:\*\*|__)?\s*:/i;
+// "**Release Date:** October 1, 2026", "**Breaking Changes:** No": metadata, not the change (a
+// one-line paragraph of at most LABEL_VALUE_CHARS; "**Notice:** <two lines of text>" is content)
+const LABEL_VALUE = /^(?:\*\*|__)[^*_\n]{1,40}?(?::(?:\*\*|__)|(?:\*\*|__)\s*:)/;
+const LABEL_VALUE_CHARS = 100;
+// a line that is only bold text ("**Docs**", "**REST API**")
+const BOLD_ONLY = /^(?:\*\*|__)([^*_\n]+?)(?:\*\*|__)\s*:?$/;
 const HEADING_LIKE_WORDS = 16;
 const HEADING_LIKE_CHARS = 120;
+// a list item ending in a preposition continues in its first nested item ("Added 60020 error code in" / "errors.md")
+const DANGLING = /\b(?:in|to|for|on|of|at|with|from|into|under)\s*:?$/i;
 
-// First paragraph of lines (plain text), from line index `from` up to `to` (exclusive).
+function nextNonBlank (lines: string[], i: number): string | undefined {
+    for (const l of lines.slice (i + 1)) {
+        if (l.trim ()) {
+            return l;
+        }
+    }
+    return undefined;
+}
+
+// Metadata and section labels in front of the change: "**Release Date:** ...", a generic "REST API"
+// / "**Docs**" line, or a one-word "Authentication" line right above a list ("**Crypto Loan
+// (Fixed-Term)**" above a list stays: it names the change).
+function labelLine (lines: string[], i: number): boolean {
+    const t = lines[i].trim ().replace (/^>\s*/, '');
+    const next = nextNonBlank (lines, i);
+    const oneLineParagraph = !(lines[i + 1] ?? '').trim ();
+    if (LABEL_VALUE.test (t) && oneLineParagraph && t.length <= LABEL_VALUE_CHARS) {
+        return true;
+    }
+    const plain = markdownToPlain (t);
+    if (genericLabel (plain)) {
+        return true;
+    }
+    const aboveList = next !== undefined && BULLET.test (next.trim ());
+    return aboveList && !/\s/.test (plain) && !/[.!?]$/.test (plain);
+}
+
+// First paragraph of lines (plain text), from line index `from` up to `to` (exclusive), label lines left out.
 function firstParagraph (lines: string[], from: number, to: number): string {
     const parts: string[] = [];
-    for (const l of lines.slice (from, to)) {
-        const t = l.trim ().replace (/^>\s*/, '');
-        if (!t || SKIP_LINE.test (t)) {
+    for (let i = from; i < to; i++) {
+        const t = lines[i].trim ().replace (/^>\s*/, '');
+        if (!t || SKIP_LINE.test (t) || (!parts.length && labelLine (lines, i))) {
             if (parts.length) {
                 break;
             }
@@ -125,12 +211,69 @@ function firstParagraph (lines: string[], from: number, to: number): string {
 // sentence ("No removed endpoints. Two behaviour changes ..."), a label ("REST and WebSocket API:")
 // or a bare date (Gate: "2026-11-03" above the list).
 function headingLike (text: string): boolean {
-    return text.length > 0 && text.length <= HEADING_LIKE_CHARS && text.split (/\s+/).length <= HEADING_LIKE_WORDS && !/[.:;,!?]$/.test (text) && !dateOrVersionOnly (text);
+    return text.length > 0 && text.length <= HEADING_LIKE_CHARS && text.split (/\s+/).length <= HEADING_LIKE_WORDS && !/[.:;,!?]$/.test (text) && !dateOrVersionOnly (text) && !genericLabel (text);
+}
+
+// The topic sub-heading the body opens with, past metadata/label lines, notes (blockquotes) and
+// generic section headings: "### Added" then "#### nonceWindow — Optional Request Deadline", or a
+// heading followed by prose ("#### Underlying Security Type" + a paragraph). A first heading right
+// above a list is a category ("### Documentation (V1)" + "- Account GET ..."): null, like a body
+// that opens with prose or a list.
+function openingHeading (lines: string[]): string | null {
+    let afterGeneric = false;
+    for (const [ i, l ] of lines.entries ()) {
+        const t = l.trim ();
+        if (!t || /^>/.test (t) || /^(?:-{3,}|\*{3,}|_{3,})$/.test (t)) {
+            continue;
+        }
+        const h = HEADING.exec (l);
+        if (h) {
+            const text = markdownToPlain (h[1]);
+            if (!text || genericLabel (text) || dateOrVersionOnly (text)) {
+                afterGeneric = true;
+                continue;
+            }
+            const next = nextNonBlank (lines, i);
+            const aboveList = next !== undefined && BULLET.test (next.trim ());
+            return (text.length <= HEADING_LIKE_CHARS && (afterGeneric || !aboveList)) ? text : null;
+        }
+        if (labelLine (lines, i)) {
+            continue;
+        }
+        return null;
+    }
+    return null;
+}
+
+// Text of the list item at line `i` with its continuation lines (indented, not a nested item).
+function listItem (lines: string[], i: number): { text: string; end: number } {
+    const parts: string[] = [ lines[i].trim ().replace (BULLET, '') ];
+    let j = i + 1;
+    for (; j < lines.length; j++) {
+        const l = lines[j];
+        if (!l.trim () || !/^\s+\S/.test (l) || BULLET.test (l.trim ())) {
+            break;
+        }
+        parts.push (l.trim ());
+    }
+    return { text: parts.join (' '), end: j };
+}
+
+// First nested list item right below the item ending at line `end`.
+function nestedItem (lines: string[], end: number): string | null {
+    const l = lines[end];
+    if (l === undefined || !/^\s+/.test (l) || !BULLET.test (l.trim ())) {
+        return null;
+    }
+    return listItem (lines, end).text;
 }
 
 // A heading-like first paragraph before any list (Deribit RSS: "Delayed publication of ...", then
-// prose, then bullets), else the first top-level bullet that is not a rollout schedule line
-// ("Testnet: <date>", "Mainnet: <date>"), with its continuation lines, else the first paragraph.
+// prose, then bullets), else the topic sub-heading the body opens with (openingHeading), else the
+// first top-level bullet that is not a rollout schedule line ("Testnet: <date>"), with its
+// continuation lines (a bold-only label bullet "**REST**" gives way to its first nested item, a
+// dangling "... error code in" is completed by it), else the first paragraph. Metadata lines
+// ("**Release Date:** ...") and list labels ("**Docs**" above a list) are skipped throughout.
 export function bodySummary (body: string): string {
     const lines = body.split ('\n');
     const bullets = lines.map ((l, i) => (BULLET.test (l) ? i : -1)).filter ((i) => i !== -1);
@@ -139,19 +282,60 @@ export function bodySummary (body: string): string {
     if (bullets.length && headingLike (lead)) {
         return lead;
     }
-    const start = bullets.find ((i) => !SCHEDULE_BULLET.test (lines[i].replace (BULLET, '').trim ())) ?? bullets[0];
+    const heading = openingHeading (lines);
+    if (heading) {
+        return heading;
+    }
+    // not a rollout schedule line, not a bold-only label without nested items ("* **REST API**" then "* Added ...")
+    const usable = (i: number) => {
+        const item = listItem (lines, i);
+        return !SCHEDULE_BULLET.test (item.text) && !(BOLD_ONLY.test (item.text) && nestedItem (lines, item.end) === null);
+    };
+    const start = bullets.find (usable) ?? bullets[0];
     if (start === undefined) {
         return firstParagraph (lines, 0, lines.length).replace (/[:;,]\s*$/, '');
     }
-    const parts: string[] = [ lines[start].replace (BULLET, '') ];
-    for (const l of lines.slice (start + 1)) {
-        // continuation: indented, not a nested bullet, not blank
-        if (!l.trim () || !/^\s+\S/.test (l) || BULLET.test (l.trim ())) {
-            break;
-        }
-        parts.push (l.trim ());
+    const item = listItem (lines, start);
+    let text = item.text;
+    const child = nestedItem (lines, item.end);
+    if (child && BOLD_ONLY.test (text.trim ())) {
+        text = child;
+    } else if (child && DANGLING.test (markdownToPlain (text))) {
+        text = `${text.replace (/\s*:\s*$/, '')} ${child}`;
     }
-    return markdownToPlain (parts.join (' ')).replace (/[:;,]\s*$/, '');
+    return markdownToPlain (text).replace (/[:;,]\s*$/, '');
+}
+
+// SourceConfig.section: the body cut to the sections whose heading text matches `pattern` (heading
+// line included, up to the next heading of the same or a higher level); null when none matches.
+export function sectionBody (body: string, pattern: string): string | null {
+    const re = new RegExp (pattern, 'i');
+    const out: string[] = [];
+    let level = 0;      // level of the open matching section, 0 = outside
+    let fence = false;
+    for (const line of body.split ('\n')) {
+        if (/^\s*(?:```|~~~)/.test (line)) {
+            fence = !fence;
+        }
+        const h = fence ? null : /^ {0,3}(#{1,6})\s+(.*?)\s*#*\s*$/.exec (line);
+        if (h) {
+            const n = h[1].length;
+            if (level && n <= level) {
+                level = 0;
+            }
+            if (!level && re.test (markdownToPlain (h[2]))) {
+                level = n;
+                if (out.length) {
+                    out.push ('');
+                }
+            }
+        }
+        if (level) {
+            out.push (line);
+        }
+    }
+    const text = out.join ('\n').trim ();
+    return text ? text : null;
 }
 
 // Body characters that tell apart entries sharing a key (same date and title, or same undated title).
@@ -185,6 +369,11 @@ export function assignKeys (items: { base: string; body: string }[]): string[] {
     return keys;
 }
 
+// Sources whose entries are generated by the collector from a diff (always dateKind firstSeen).
+export function isSynthetic (source: SourceConfig): boolean {
+    return source.type === 'hash' || source.type === 'spec';
+}
+
 export function buildEntries (raws: ParsedEntry[], ctx: BuildContext): ChangelogEntry[] {
     const { venue, source, now } = ctx;
     const nowIso = now.toISOString ();
@@ -196,9 +385,16 @@ export function buildEntries (raws: ParsedEntry[], ctx: BuildContext): Changelog
         if (!title) {
             continue;
         }
-        const body = cleanBody (raw.body ?? '');
-        // hash sources: the body lists added page lines, any date in them is not the change date
-        const synthetic = source.type === 'hash';
+        let body = cleanBody (raw.body ?? '');
+        if (source.section) {
+            const kept = sectionBody (body, source.section);
+            if (kept === null) {
+                continue;
+            }
+            body = kept;
+        }
+        // hash/spec sources: the body lists added page lines or operations, any date in them is not the change date
+        const synthetic = isSynthetic (source);
         const date = synthetic ? null : baseDate (raw, title, body, source, now);
         const idDate = synthetic ? null : baseDate (raw, title, '', source, now);
         prepared.push ({ raw, title, body, date, base: entryKey (source.id, raw.guid, idDate, title) });
@@ -206,7 +402,7 @@ export function buildEntries (raws: ParsedEntry[], ctx: BuildContext): Changelog
     const keys = assignKeys (prepared);
     const out: ChangelogEntry[] = [];
     prepared.forEach (({ raw, title, body, date }, i) => {
-        const synthetic = source.type === 'hash';
+        const synthetic = isSynthetic (source);
         const stated = synthetic ? null : findEffectiveDate (title + '\n' + body, source.date?.order, now);
         // rss: a dated link fragment that differs from pubDate is the scheduled date (Kalshi "#november-12-2026")
         let fragment: string | null = null;
@@ -226,9 +422,9 @@ export function buildEntries (raws: ParsedEntry[], ctx: BuildContext): Changelog
         if (effectiveDate && publishedAt && effectiveDate === publishedAt) {
             effectiveDate = undefined;
         }
-        const candidateUrl = raw.link ?? (raw.anchor ? `${link.split ('#')[0]}#${encodeURIComponent (raw.anchor)}` : undefined);
+        const candidateUrl = raw.link ?? (raw.anchor ? `${link.split ('#')[0]}#${anchorFragment (raw.anchor)}` : undefined);
         const checked = checkLink (candidateUrl, venue.domains);
-        const tags = ruleTags (title, body);
+        const tags = raw.tags ? [ ...raw.tags ] : ruleTags (title, body);
         if (candidateUrl && !checked) {
             tags.push ('link-rewritten');
         }

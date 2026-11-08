@@ -53,6 +53,7 @@ export interface VenueSummary {
   healthy: number;
   latestDate: string | null;
   entryCount: number;
+  unmonitored?: string;     // reason the venue has no monitorable source (no sources, shown muted)
 }
 
 export interface LatestFeed {

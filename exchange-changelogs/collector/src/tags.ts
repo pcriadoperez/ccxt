@@ -7,6 +7,7 @@
 //   - 'breaking' and 'deprecation' are tested after NEGATIONS are blanked out, so
 //     "No removed endpoints", "no breaking changes", "non-breaking", "is not removed",
 //     "will not be deprecated" do not fire them (a later un-negated "X was removed" still does);
+//   - label lines answered "No" ("Breaking Changes: No", "Deprecations: No") are blanked out too;
 //   - 'no longer' is not a negation: "no longer supported" is breaking.
 
 export const TAG_RULES: Record<string, RegExp> = {
@@ -29,10 +30,13 @@ export const TAG_RULES: Record<string, RegExp> = {
 // FIX Market Data fields are modified or removed" is negated.
 export const NEGATIONS = /\b(?:no(?![\s-]+longer\b)|not|non|without|zero|nothing)\b[\s-]+(?:(?!(?:but|however|while|whereas|although|except|yet)\b)[\w`/'()]+(?:\.[\w`/()]+)*,?[\s-]+){0,8}?(?:breaking|removed|removals?|deprecat\w*|retired|incompatib\w*)\b/gi;
 
+// Label lines answered with "No" ("**Breaking Changes:** No", "Deprecations: None", "Breaking: N/A").
+export const NEGATED_LABELS = /\b(?:breaking(?:[\s-]+changes?)?|deprecat\w*|removals?)\s*(?:\*\*|__)?\s*:\s*(?:\*\*|__)?\s*(?:no|none|n\/a)\b/gi;
+
 const NEGATABLE = new Set ([ 'breaking', 'deprecation' ]);
 
 export function ruleTags (title: string, body: string): string[] {
     const text = title + '\n' + body;
-    const affirmative = text.replace (NEGATIONS, ' ');
+    const affirmative = text.replace (NEGATED_LABELS, ' ').replace (NEGATIONS, ' ');
     return Object.keys (TAG_RULES).filter ((tag) => TAG_RULES[tag].test (NEGATABLE.has (tag) ? affirmative : text));
 }

@@ -102,9 +102,22 @@ export function truncate (s: string, max: number): string {
     return s.slice (0, max - 1).replace (/\s+\S*$/, '') + '…';
 }
 
-// Light markdown -> plain text for excerpts (drops heading/list/emphasis markers and code fences).
+// Table rows "| a | b |" -> "a · b"; alignment rows ("| :- | --- |") dropped.
+export function tableRowsToText (s: string): string {
+    return s.split ('\n').map ((line) => {
+        if (!/^\s*\|.*\|\s*$/.test (line)) {
+            return line;
+        }
+        if (/^\s*\|[\s:|-]+\|\s*$/.test (line)) {
+            return '';
+        }
+        return line.trim ().replace (/^\|/, '').replace (/\|$/, '').split ('|').map ((c) => c.trim ()).filter ((c) => c.length > 0).join (' · ');
+    }).join ('\n');
+}
+
+// Light markdown -> plain text for excerpts (drops heading/list/emphasis markers, table pipes and code fences).
 export function markdownToPlain (s: string): string {
-    return oneLine (stripInlineMarkdown (dropSeparators (s)
+    return oneLine (stripInlineMarkdown (tableRowsToText (dropSeparators (s))
         .replace (/^\s*(?:```|~~~).*$/gm, '')
         .replace (/^\s*(?:>\s*)+/gm, '')
         .replace (/^\s{0,3}#{1,6}\s+/gm, '')
@@ -126,7 +139,10 @@ export function cleanBody (s: string): string {
 // Developer Center team.", "안녕하세요. 업비트 개발자센터입니다."): left out of excerpts only.
 export const GREETING = /^(?:(?:dear|hello|hi)\s+(?:developers|users|traders|customers|partners|api users)[,.!]?\s*(?:this is (?:the )?[^.]{1,60}\.\s*)?|안녕하세요[.!]?\s*(?:[^.\n]{1,30}입니다\.\s*)?)/i;
 
+// GitHub emoji shortcodes (":warning:", ":rotating_light:") carry no text.
+const SHORTCODE = /(?<![\w:/]):[a-z][a-z0-9_+-]*:(?![\w:/])/g;
+
 export function makeExcerpt (body: string): string {
-    const plain = markdownToPlain (body);
+    const plain = oneLine (markdownToPlain (body).replace (SHORTCODE, ''));
     return truncate (plain.replace (GREETING, '') || plain, LIMITS.excerpt);
 }

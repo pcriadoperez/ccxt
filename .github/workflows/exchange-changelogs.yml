@@ -58,10 +58,19 @@ jobs:
         working-directory: exchange-changelogs/collector
         run: npm ci
 
+      # every ccxt id (exchanges.json) needs a registry file, a subclasses entry or "unmonitored";
+      # a gap fails this step (shown as a warning annotation) but collection still runs
+      - name: Check registry coverage
+        continue-on-error: true
+        working-directory: exchange-changelogs/collector
+        run: npm run coverage -- --exchanges ../../exchanges.json
+
       - name: Collect and build feed
         working-directory: exchange-changelogs/collector
         env:
           VENUE: ${{ inputs.venue }}
+          # read-only job token: gh-commits sources call api.github.com with it (higher rate limit than anonymous)
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           if [ -n "$VENUE" ]; then
             npm run run -- --venue "$VENUE"

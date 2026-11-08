@@ -14,7 +14,7 @@ import { BYBIT, fixture, KALSHI, OKX } from './helpers.ts';
 const venues: VenueConfig[] = [
     { id: 'bybit', kind: 'exchange', name: 'Bybit', subclasses: [ 'bybiteu' ], domains: [ 'bybit.com', 'bybit-exchange.github.io' ], sources: [ BYBIT ] },
     { id: 'kalshi', kind: 'prediction', name: 'Kalshi', domains: [ 'kalshi.com' ], sources: [ KALSHI ] },
-    { id: 'okx', kind: 'exchange', name: 'OKX', subclasses: [ 'myokx' ], domains: [ 'okx.com' ], sources: [ OKX, { id: 'okx-api', type: 'hash', url: 'https://www.okx.com/docs-v5/en/' } ] },
+    { id: 'okx', kind: 'exchange', name: 'OKX', subclasses: [ 'myokx' ], domains: [ 'okx.com' ], sources: [ OKX, { id: 'okx-api', type: 'hash', url: 'https://www.okx.com/docs-v5/en/', minChange: 0 } ] },
 ];
 const registry: Registry = makeRegistry (venues);
 
@@ -165,4 +165,40 @@ test ('rss: items rolling off a fixed-size feed are not removed; deletions insid
     const venueFeed = JSON.parse (await readFile (store.feedPath ('exchange', 'x.json'), 'utf8')) as VenueFeed;
     assert.deepEqual (latest.entries.map ((e) => e.title.split (':')[0]), [ '0.9.0', '0.8.0', '0.7.0', '0.6.0', '0.4.0', '0.3.0', '0.2.0', '0.1.0' ]);
     assert.deepEqual (venueFeed.entries.map ((e) => e.title), latest.entries.map ((e) => e.title), 'venue feeds drop removed entries too');
+});
+
+test ('spec source: first run snapshot only, then firstSeen entries per change; unmonitored venues reach the feed', async () => {
+    const store = new Store (await mkdtemp (join (tmpdir (), 'changelog-spec-')));
+    const src = { id: 'ex-openapi', type: 'spec' as const, url: 'https://raw.githubusercontent.com/ex/docs/main/openapi.json', link: 'https://docs.ex.com/api', scope: 'REST' };
+    const reg = makeRegistry ([
+        { id: 'ex', kind: 'exchange', name: 'Ex', domains: [ 'ex.com' ], sources: [ src ] },
+        { id: 'quiet', kind: 'exchange', name: 'Quiet', domains: [ 'quiet.com' ], sources: [], unmonitored: 'API docs behind a login' },
+    ]);
+    const doc = (paths: Record<string, unknown>) => JSON.stringify ({ openapi: '3.0.0', info: { title: 'x', version: '1' }, paths });
+    const v1 = doc ({ '/v1/ticker': { get: { parameters: [ { name: 'symbol', in: 'query' } ] } }, '/v1/old': { get: {} } });
+    const v2 = doc ({ '/v1/ticker': { get: { parameters: [ { name: 'symbol', in: 'query' }, { name: 'window', in: 'query' } ] } }, '/v1/orders': { post: {} } });
+    let body = v1;
+    const fetcher: Fetcher = async () => ({ status: 'ok', httpStatus: 200, body, contentType: 'application/json' });
+    let rows = await collect ({ store, registry: reg, now: new Date ('2026-11-07T05:00:00Z'), venues: [], sources: [], fetcher });
+    assert.deepEqual (rows.map ((r) => [ r.source, r.status, r.added ]), [ [ 'ex-openapi', 'ok', 0 ] ], 'unmonitored venues are not collected');
+    assert.equal (await store.loadSnapshot ('ex-openapi'), 'GET /v1/old\nGET /v1/ticker (symbol)');
+    body = v2;
+    rows = await collect ({ store, registry: reg, now: new Date ('2026-11-08T05:00:00Z'), venues: [], sources: [], fetcher });
+    assert.equal (rows[0].added, 3);
+    const entries = [ ...(await store.loadEntries ('exchange', 'ex')).values () ];
+    assert.deepEqual (entries.map ((e) => [ e.title, e.dateKind, e.publishedAt, e.backfill, e.tags.join (','), e.url ]).sort (), [
+        [ 'Endpoint added: POST /v1/orders', 'firstSeen', null, false, 'new-endpoint', 'https://docs.ex.com/api' ],
+        [ 'Endpoint removed: GET /v1/old', 'firstSeen', null, false, 'breaking', 'https://docs.ex.com/api' ],
+        [ 'Parameters changed: GET /v1/ticker (+window)', 'firstSeen', null, false, 'param-change', 'https://docs.ex.com/api' ],
+    ]);
+    // the same document again: no new entries, old ones are kept (synthetic entries are never removed)
+    for (let i = 0; i < 4; i++) {
+        rows = await collect ({ store, registry: reg, now: new Date (Date.UTC (2026, 10, 9 + i, 5)), venues: [], sources: [], fetcher });
+        assert.equal (rows[0].added, 0);
+    }
+    assert.ok ([ ...(await store.loadEntries ('exchange', 'ex')).values () ].every ((e) => !e.removedAt));
+    await buildFeed (store, reg, new Date ('2026-11-12T06:00:00Z'));
+    const latest = JSON.parse (await readFile (store.feedPath ('latest.json'), 'utf8')) as LatestFeed;
+    assert.equal (latest.entries.length, 3);
+    assert.deepEqual (latest.venues.map ((v) => [ v.id, v.sources, v.unmonitored ?? null ]), [ [ 'ex', 1, null ], [ 'quiet', 0, 'API docs behind a login' ] ]);
 });

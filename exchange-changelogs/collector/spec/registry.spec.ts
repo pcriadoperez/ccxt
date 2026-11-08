@@ -67,9 +67,45 @@ test ('loadRegistry: duplicates, sharedWith, file names, selection', async () =>
     assert.match (r.errors.join ('\n'), /other.json: invalid JSON/);
     await writeFile (join (dir, 'exchange', 'other.json'), JSON.stringify ({ id: 'other', kind: 'exchange', name: 'O', domains: [ 'o.com' ], sources: [] }));
     r = await loadRegistry (dir);
+    assert.match (r.errors.join ('\n'), /other\.json: "sources" is empty: add "unmonitored"/, 'empty sources need a reason');
+    assert.ok (!r.errors.join ('\n').includes ('krakenfutures'), 'a venue fed by sharedWith may have no own sources');
+    await writeFile (join (dir, 'exchange', 'other.json'), JSON.stringify ({ id: 'other', kind: 'exchange', name: 'O', domains: [ 'o.com' ], sources: [], unmonitored: 'no public changelog' }));
+    r = await loadRegistry (dir);
     assert.deepEqual (r.errors, []);
     assert.deepEqual (selectSources (r.registry, [ 'bybit' ], []).map ((x) => x.venue.id), [ 'bybit' ]);
     assert.deepEqual (selectSources (r.registry, [], [ 'kraken-log' ]).map ((x) => x.sources[0].id), [ 'kraken-log' ]);
     assert.throws (() => selectSources (r.registry, [ 'nope' ], []), /unknown venue/);
     assert.throws (() => selectSources (r.registry, [], [ 'nope-x' ]), /unknown source/);
+});
+
+test ('new source fields: spec/specFormat, hash minChange, unmonitored venues', () => {
+    const base = { id: 'ex', kind: 'exchange', name: 'Ex', domains: [ 'ex.com', 'raw.githubusercontent.com' ] };
+    const ok = {
+        ...base,
+        sources: [
+            { id: 'ex-openapi', type: 'spec', url: 'https://raw.githubusercontent.com/ex/docs/main/openapi.yaml', specFormat: 'openapi' },
+            { id: 'ex-redoc', type: 'spec', url: 'https://ex.com/api', specFormat: 'redoc', discover: { url: 'https://ex.com/', pattern: 'href="(/api[^"]*)"' } },
+            { id: 'ex-page', type: 'hash', url: 'https://ex.com/docs', minChange: 0 },
+        ],
+    };
+    assert.deepEqual (validateVenue (ok, 'exchange/ex.json', 'exchange'), []);
+    const bad = {
+        ...base,
+        unmonitored: 'nothing to watch',
+        sources: [
+            { id: 'ex-a', type: 'spec', url: 'https://ex.com/{yyyy}/{mm}.json', specFormat: 'swagger', slice: { selector: 'main' } },
+            { id: 'ex-b', type: 'html', url: 'https://ex.com/b', specFormat: 'openapi', minChange: 10 },
+            { id: 'ex-c', type: 'hash', url: 'https://ex.com/c', minChange: -1 },
+        ],
+    };
+    const errors = validateVenue (bad, 'exchange/ex.json', 'exchange').join ('\n');
+    for (const expected of [
+        'specFormat must be one of openapi|postman|asyncapi|redoc', 'placeholders are not supported by spec sources', 'slice is only used by md, html and hash',
+        'specFormat is only used by spec sources', 'minChange is only used by hash sources', 'minChange must be an integer >= 0',
+        'an unmonitored venue must have "sources": []',
+    ]) {
+        assert.ok (errors.includes (expected), `missing error: ${expected}\n${errors}`);
+    }
+    assert.match (validateVenue ({ ...base, sources: [], unmonitored: '' }, 'exchange/ex.json', 'exchange').join (), /unmonitored must be a non-empty reason/);
+    assert.deepEqual (validateVenue ({ ...base, sources: [], unmonitored: 'API docs behind a login' }, 'exchange/ex.json', 'exchange'), []);
 });

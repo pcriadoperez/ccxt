@@ -5,14 +5,17 @@
 // `discover` sources fetch the discovery page first and send validators only for the same url.
 // Validators are only sent while the source's registry entry and PARSER_VERSION are unchanged, so
 // a url, filter or parser fix is applied on the next run instead of waiting for an upstream change.
+// gh-commits sources send `Authorization: Bearer $GITHUB_TOKEN` (when set) to api.github.com only.
 // Exit code: 0 even when sources fail (health records it); 1 on registry/validation errors.
 import { pathToFileURL } from 'node:url';
 import type { ChangelogEntry, SourceConfig, VenueConfig } from './types.ts';
 import { ADAPTERS, type ParsedEntry } from './adapters/index.ts';
 import { absoluteUrl } from './adapters/types.ts';
-import { affectsFor, buildEntries } from './entries.ts';
+import { githubHeaders } from './adapters/ghcommits.ts';
+import { affectsFor, anchorFragment, buildEntries, isSynthetic } from './entries.ts';
 import { fetchSource, type FetchError, type FetchOptions, type FetchResult } from './fetch.ts';
 import { sha256 } from './ids.ts';
+import { extractDate } from './dates.ts';
 import { mergeEntries, touchEntries } from './merge.ts';
 import { currentSource, expandMonth, hasMonthPlaceholders, loadRegistry, selectSources, sourceMonths, type Registry } from './registry.ts';
 import { emptyState, recordFailure, type SourceState } from './state.ts';
@@ -22,7 +25,8 @@ import { parseCliArgs } from './args.ts';
 export type Fetcher = (url: string, options: FetchOptions) => Promise<FetchResult>;
 
 // Bump when a parser change should re-parse every source on the next run (drops HTTP validators).
-export const PARSER_VERSION = 1;
+// A run after a bump (or after the source's registry entry changed) is a "reparse": see reparseOf.
+export const PARSER_VERSION = 5;
 
 function stableJson (v: unknown): string {
     if (Array.isArray (v)) {
@@ -35,8 +39,38 @@ function stableJson (v: unknown): string {
     return JSON.stringify (v);
 }
 
-export function sourceConfigHash (source: SourceConfig): string {
-    return sha256 (`${PARSER_VERSION}|${stableJson (source)}`);
+export function sourceConfigHash (source: SourceConfig, parserVersion: number = PARSER_VERSION): string {
+    return sha256 (`${parserVersion}|${stableJson (source)}`);
+}
+
+// What changed on our side since the source's last parsed run. Either one makes the run a reparse:
+// hash/spec sources re-baseline (the new snapshot is stored, no "Docs changed" entry, since a
+// strip/slice/parser change alters the text without the page changing), hash differences are not
+// revisions, new ids are backfill and absent ids are removed at once (mergeEntries). A registry
+// change also skips the entry-count drift check (a new filter may drop most entries on purpose).
+export function reparseOf (source: SourceConfig, state: SourceState, hasHistory: boolean): { registryChanged: boolean; parserChanged: boolean } {
+    if (!hasHistory) {
+        return { registryChanged: false, parserChanged: false };
+    }
+    const version = state.parserVersion ?? 1;
+    return {
+        registryChanged: state.configHash !== undefined && state.configHash !== sourceConfigHash (source, version),
+        parserChanged: version !== PARSER_VERSION,
+    };
+}
+
+// Sources whose entry count may legitimately drop or be zero: page/spec diffs (one-off synthetic
+// entries) and commit lists (noise commits are filtered out of a fixed-size page).
+function countIsStable (source: SourceConfig): boolean {
+    return !isSynthetic (source) && source.type !== 'gh-commits';
+}
+
+// Request headers for a source: registry headers, plus GitHub API headers for gh-commits.
+export function requestHeaders (source: SourceConfig, url: string): Record<string, string> | undefined {
+    if (source.type !== 'gh-commits') {
+        return source.headers;
+    }
+    return { ...(source.headers ?? {}), ...githubHeaders (url) };
 }
 
 export interface SourceSummary {
@@ -60,6 +94,8 @@ type Outcome =
         kind: 'parsed';
         candidates: ChangelogEntry[];
         snapshot: string;
+        reparse: boolean;
+        feedDates: string[];                    // dates of every parsed item before filters (rss removal scope)
         etag?: string;
         lastModified?: string;
         resolvedUrl?: string;                   // discover: the url that was fetched
@@ -136,7 +172,7 @@ async function fetchParts (source: SourceConfig, state: SourceState, hasHistory:
     const sameUrl = !source.discover || state.resolvedUrl === url;
     const reuse = hasHistory && sameUrl && state.configHash === sourceConfigHash (source);
     const res = await fetcher (url, {
-        headers: source.headers,
+        headers: requestHeaders (source, url),
         etag: reuse ? state.etag : undefined,
         lastModified: reuse ? state.lastModified : undefined,
     });
@@ -167,7 +203,7 @@ async function parseParts (source: SourceConfig, parts: Part[], previousSnapshot
             entries.push ({
                 ...e,
                 partition: part.month,
-                link: e.link ?? (e.anchor ? absoluteUrl ('#' + encodeURIComponent (e.anchor), part.link) : undefined),
+                link: e.link ?? (e.anchor ? absoluteUrl ('#' + anchorFragment (e.anchor), part.link) : undefined),
             });
         }
         snapshots.push (out.snapshot);
@@ -177,6 +213,8 @@ async function parseParts (source: SourceConfig, parts: Part[], previousSnapshot
 
 async function runSource (venue: VenueConfig, source: SourceConfig, state: SourceState, previousSnapshot: string | null, opts: CollectOptions): Promise<Outcome> {
     const hasHistory = state.successfulRuns > 0 && previousSnapshot !== null;
+    const { registryChanged, parserChanged } = reparseOf (source, state, hasHistory);
+    const reparse = registryChanged || parserChanged;
     let fetched: Fetched;
     try {
         fetched = await fetchParts (source, state, hasHistory, opts);
@@ -190,9 +228,11 @@ async function runSource (venue: VenueConfig, source: SourceConfig, state: Sourc
     const partitions = new Map<string, string> ();
     let candidates: ChangelogEntry[];
     let snapshot: string;
+    let feedDates: string[] = [];
     try {
-        const out = await parseParts (source, fetched.parts, previousSnapshot, opts.now);
+        const out = await parseParts (source, fetched.parts, (reparse && isSynthetic (source)) ? null : previousSnapshot, opts.now);
         snapshot = out.snapshot;
+        feedDates = out.entries.map ((e) => extractDate (e.dateText, undefined, source.date?.order, opts.now)).filter ((d): d is string => d !== null);
         candidates = buildEntries (out.entries, {
             venue,
             source: currentSource (source, opts.now),
@@ -204,7 +244,7 @@ async function runSource (venue: VenueConfig, source: SourceConfig, state: Sourc
     } catch (e) {
         return { kind: 'failed', error: `parse error: ${(e as Error).message}` };
     }
-    const minEntries = source.minEntries ?? (source.type === 'hash' ? 0 : 1);
+    const minEntries = source.minEntries ?? (countIsStable (source) ? 1 : 0);
     // months: 1 on the 1st of a month: the only fetched file is the current month's 404 (empty)
     const only404 = monthly && fetched.parts.every ((p) => !p.body.trim ());
     if (candidates.length < minEntries && !only404) {
@@ -228,7 +268,7 @@ async function runSource (venue: VenueConfig, source: SourceConfig, state: Sourc
         }
         removalScope = new Set (Object.values (months).flat ());
     }
-    if (source.type !== 'hash' && state.successfulRuns > 0 && previousCount > 0 && candidates.length < previousCount * 0.5) {
+    if (countIsStable (source) && !registryChanged && state.successfulRuns > 0 && previousCount > 0 && candidates.length < previousCount * 0.5) {
         return { kind: 'failed', error: `parser drift: entry count dropped from ${previousCount} to ${candidates.length} (>50%)` };
     }
     const part = fetched.parts[0];
@@ -236,6 +276,8 @@ async function runSource (venue: VenueConfig, source: SourceConfig, state: Sourc
         kind: 'parsed',
         candidates,
         snapshot,
+        reparse,
+        feedDates,
         ...(monthly ? {} : { etag: part.etag, lastModified: part.lastModified }),
         ...(fetched.resolvedUrl ? { resolvedUrl: fetched.resolvedUrl } : {}),
         ...(months ? { months, removalScope } : {}),
@@ -244,9 +286,11 @@ async function runSource (venue: VenueConfig, source: SourceConfig, state: Sourc
 
 // RSS feeds (and PyPI releases.xml) carry only the newest N items: an item rolling off the end is
 // not a deletion. Only stored items dated after the oldest item still in the feed can go missing.
-export function rssRemovalScope (store: Map<string, ChangelogEntry>, sourceId: string, candidates: ChangelogEntry[]): Set<string> {
+// `feedDates` (the pubDates of every item, filtered out or not) also count, so items a new
+// titleFilter drops can go missing even when no item passes the filter.
+export function rssRemovalScope (store: Map<string, ChangelogEntry>, sourceId: string, candidates: ChangelogEntry[], feedDates: string[] = []): Set<string> {
     const dateOf = (e: ChangelogEntry) => e.publishedAt ?? e.effectiveDate ?? null;
-    const dates = candidates.map (dateOf).filter ((d): d is string => d !== null).sort ();
+    const dates = [ ...candidates.map (dateOf), ...feedDates ].filter ((d): d is string => d !== null).sort ();
     const scope = new Set<string> ();
     if (!dates.length) {
         return scope;
@@ -306,8 +350,10 @@ export async function collectVenue (venue: VenueConfig, sources: SourceConfig[],
                 const merged = mergeEntries (entries, outcome.candidates, {
                     sourceId: source.id,
                     firstRun,
-                    trackRemovals: source.type !== 'hash',
-                    removalScope: outcome.removalScope ?? (source.type === 'rss' ? rssRemovalScope (entries, source.id, outcome.candidates) : undefined),
+                    trackRemovals: !isSynthetic (source),
+                    reparse: outcome.reparse,
+                    // rss feeds and commit lists are the newest N items: rolling off the end is not a removal
+                    removalScope: outcome.removalScope ?? ((source.type === 'rss' || source.type === 'gh-commits') ? rssRemovalScope (entries, source.id, outcome.candidates, outcome.feedDates) : undefined),
                     missingRuns: state.missingRuns,
                     now: nowIso,
                 });
@@ -315,6 +361,7 @@ export async function collectVenue (venue: VenueConfig, sources: SourceConfig[],
                 next = {
                     ...next,
                     configHash: sourceConfigHash (source),
+                    parserVersion: PARSER_VERSION,
                     etag: outcome.etag,
                     lastModified: outcome.lastModified,
                     contentHash,

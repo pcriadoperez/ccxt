@@ -6,6 +6,8 @@
 // Entries of venues or sources no longer in the registry are left out of every feed file.
 //   feed/health.json            HealthFeed
 //   feed/sources.json           registry summary for the UI
+// Unmonitored venues (VenueConfig.unmonitored, no sources) get a venue file with no entries and carry
+// `unmonitored` in their VenueSummary, so the docs coverage table can list them with the reason.
 import { pathToFileURL } from 'node:url';
 import { SCHEMA_VERSION } from './types.ts';
 import type { ChangelogEntry, FeedEntry, HealthFeed, LatestFeed, SourceConfig, SourceHealth, VenueConfig, VenueFeed, VenueSummary } from './types.ts';
@@ -30,6 +32,7 @@ export interface SourcesFeed {
         name: string;
         subclasses: string[];
         domains: string[];
+        unmonitored?: string;
         sources: { id: string; type: string; link: string; role: 'primary' | 'secondary'; scope?: string; sharedWith?: string[]; expectBlocked?: string }[];
     }[];
 }
@@ -129,6 +132,7 @@ function venueSummary (venue: VenueConfig, sources: SourceConfig[], entries: Cha
         healthy: sources.filter ((s) => states.get (s.id)?.health.ok).length,
         latestDate: latest,
         entryCount: entries.length,
+        ...(venue.unmonitored ? { unmonitored: venue.unmonitored } : {}),
     };
 }
 
@@ -168,6 +172,7 @@ export function buildSources (registry: Registry, now: Date): SourcesFeed {
             name: v.name,
             subclasses: v.subclasses ?? [],
             domains: v.domains,
+            ...(v.unmonitored ? { unmonitored: v.unmonitored } : {}),
             sources: v.sources.map ((x) => currentSource (x, now)).map ((s) => ({
                 id: s.id,
                 type: s.type,

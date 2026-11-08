@@ -98,6 +98,8 @@ const venueSummarySchema = z.object({
   healthy: z.number().catch(0),
   latestDate: z.string().nullable().catch(null),
   entryCount: z.number().catch(0),
+  // registry venues with no monitorable source: the reason (third-party-free registry text)
+  unmonitored: z.string().transform((s) => s.slice(0, 300)).optional().catch(undefined),
 });
 
 const sourceHealthSchema = z.object({

@@ -3,7 +3,8 @@
 // added lines. First run only stores the snapshot. Both snapshots are normalized before the
 // comparison (the stored file ends with a newline), and a change that only reorders lines
 // emits nothing. HTML is reduced to text with strip/slice.selector;
-// any other content type is hashed as text.
+// any other content type is hashed as text. A change smaller than `minChange` characters of added
+// (or removed) text, default DEFAULT_MIN_CHANGE, emits nothing; the snapshot is still updated.
 import { loadContainer } from './html.ts';
 import { nodesToText, type DomNode } from '../htmltext.ts';
 import { normalizeWhitespace } from '../normalize.ts';
@@ -12,6 +13,7 @@ import type { SourceConfig } from '../types.ts';
 import type { Adapter, ParsedEntry } from './types.ts';
 
 const MAX_LISTED_LINES = 60;
+export const DEFAULT_MIN_CHANGE = 40;
 
 // Volatile bits that change on every request and must not count as a change.
 const VOLATILE: RegExp[] = [
@@ -85,8 +87,14 @@ export const hash: Adapter = ({ source, body, contentType, previousSnapshot }) =
     const previous = previousSnapshot === null ? null : normalizeForHash (previousSnapshot);
     if (previous !== null && previous !== snapshot) {
         const added = addedLines (previous, snapshot);
-        const removedCount = addedLines (snapshot, previous).length;
+        const removed = addedLines (snapshot, previous);
+        const removedCount = removed.length;
         if (added.length === 0 && removedCount === 0) {
+            return { entries, snapshot };
+        }
+        // noise control: a few changed characters (a counter, a version string) are not a docs change
+        const chars = (lines: string[]) => lines.reduce ((n, l) => n + l.length, 0);
+        if (Math.max (chars (added), chars (removed)) < (source.minChange ?? DEFAULT_MIN_CHANGE)) {
             return { entries, snapshot };
         }
         const listed = added.slice (0, MAX_LISTED_LINES).map ((l) => '+ ' + l);

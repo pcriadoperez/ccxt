@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { ChangelogEntry, SourceConfig } from '../src/types.ts';
-import { assignKeys, buildEntries } from '../src/entries.ts';
+import { assignKeys, buildEntries, displayTitle } from '../src/entries.ts';
 import { mergeEntries } from '../src/merge.ts';
 import { NOW, parse, venueOf } from './helpers.ts';
 
@@ -51,4 +51,9 @@ test ('hash sources: dates inside the added lines are not the change date', asyn
     assert.equal (e.publishedAt, null);
     assert.equal (e.effectiveDate, undefined);
     assert.equal (e.dateKind, 'firstSeen');
+});
+
+test ('displayTitle: a date title ending in a colon does not double it', () => {
+    assert.equal (displayTitle ('2026-10-21:', 'Added UNAVAILABLE as a trading status.'), '2026-10-21: Added UNAVAILABLE as a trading status.');
+    assert.equal (displayTitle ('2026-10-21', 'Added a field.'), '2026-10-21: Added a field.');
 });

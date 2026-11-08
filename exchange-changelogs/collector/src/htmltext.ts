@@ -15,12 +15,24 @@ export interface DomNode {
 const DROP = new Set ([ 'script', 'style', 'noscript', 'template', 'svg', 'iframe', 'button', 'input', 'select', 'textarea', 'form', 'img', 'picture', 'video', 'audio', 'canvas', 'head', 'meta', 'link' ]);
 const BLOCK = new Set ([ 'p', 'div', 'section', 'article', 'main', 'header', 'footer', 'aside', 'blockquote', 'figure', 'figcaption', 'dl', 'dt', 'dd', 'details', 'summary', 'hr', 'body', 'html', 'center' ]);
 
+// Mintlify renders paragraphs as <span data-as="p">: an element whose data-as names a block
+// element is a block.
+function isBlock (node: DomNode): boolean {
+    const name = (node.name ?? '').toLowerCase ();
+    const as = (node.attribs?.['data-as'] ?? '').toLowerCase ();
+    return BLOCK.has (name) || name === 'li' || BLOCK.has (as) || as === 'li';
+}
+
 function inlineText (node: DomNode): string {
     if (node.type === 'text') {
         return decodeEntities (node.data ?? '');
     }
     if (node.type !== 'tag' || DROP.has (node.name ?? '')) {
         return '';
+    }
+    // a line break inside a table cell or heading separates words ("descriptions.<br>Additional")
+    if ((node.name ?? '').toLowerCase () === 'br') {
+        return ' ';
     }
     return (node.children ?? []).map (inlineText).join ('');
 }
@@ -107,14 +119,14 @@ function render (node: DomNode, out: string[]): void {
         out.push ('\n' + rowText (node) + '\n');
         return;
     }
-    const isBlock = BLOCK.has (name) || name === 'li';
-    if (isBlock) {
+    const block = isBlock (node);
+    if (block) {
         out.push ('\n\n');
     }
     for (const child of children) {
         render (child, out);
     }
-    if (isBlock) {
+    if (block) {
         out.push ('\n\n');
     }
 }

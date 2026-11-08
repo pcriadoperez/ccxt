@@ -16,16 +16,21 @@ export interface VenueConfig {
     name: string;               // display name, e.g. "Bybit"
     subclasses?: string[];      // ccxt ids that inherit this venue's changes (bybiteu, bybitid)
     domains: string[];          // hostnames entry links may point to; anything else is rewritten to the source link
-    sources: SourceConfig[];
+    sources: SourceConfig[];    // may be empty only with `unmonitored`, or when another venue's source is sharedWith this one
+    unmonitored?: string;       // reason the venue has no monitorable source ("no public changelog, docs behind login");
+                                // requires "sources": []; shown on docs.ccxt.com as "not monitored: <reason>"
 }
 
-export type SourceType = 'rss' | 'md' | 'html' | 'json' | 'hash';
+export type SourceType = 'rss' | 'md' | 'html' | 'json' | 'hash' | 'spec' | 'gh-commits';
+
+export type SpecFormat = 'openapi' | 'postman' | 'asyncapi' | 'redoc';
 
 export interface SourceConfig {
     id: string;                 // globally unique, "<venue>-<slug>", e.g. "bybit-v5"
     type: SourceType;
     url: string;                // what the collector fetches (raw.githubusercontent.com for GitHub files);
-                                // may contain {yyyy} and {mm} (UTC month) for month-partitioned changelogs
+                                // may contain {yyyy} and {mm} (UTC month) for month-partitioned changelogs.
+                                // gh-commits: optional in the registry file, filled from repo/ref/path on load
     link?: string;              // human-facing page for this source (defaults to url; same placeholders)
     months?: number;            // url with {yyyy}/{mm}: fetch the current month and the previous months-1 (default 2)
     discover?: {                // url changes per deploy (hashed bundle): fetch discover.url, take the first
@@ -55,10 +60,20 @@ export interface SourceConfig {
     };
     titleFilter?: string;       // regex: keep only entries whose title (or rss category) matches
     excludeFilter?: string;     // regex: drop entries whose title matches
+    section?: string;           // regex (case-insensitive) on the text of headings inside an entry body: the body is
+                                // cut to the matching sections and entries without one are dropped ("^API$")
     mapper?: string;            // json: name of a mapper in src/mappers/<name>.ts turning the response into RawEntry[]
                                 // (receives the parsed JSON, or undefined when the body is not JSON, plus the raw text)
     strip?: string[];           // html/hash: CSS selectors removed before extraction/hashing
-    minEntries?: number;        // fewer parsed entries than this = parser drift -> source failure (default 1 for non-hash)
+    minEntries?: number;        // fewer parsed entries than this = parser drift -> source failure
+                                // (default 1; 0 for hash, spec and gh-commits)
+    minChange?: number;         // hash: an entry needs at least this many characters of added (or removed) text
+                                // (default 40); smaller changes only update the snapshot
+    specFormat?: SpecFormat;    // spec: document format (default: auto-detect openapi/swagger, postman, asyncapi,
+                                // redoc HTML with __redoc_state)
+    repo?: string;              // gh-commits: "owner/name"
+    ref?: string;               // gh-commits: branch, tag or sha (default: the repository's default branch)
+    path?: string;              // gh-commits: only commits touching this file or directory
 }
 
 // What an adapter returns, before ids/dates/merging.
@@ -122,6 +137,7 @@ export interface VenueSummary {
     healthy: number;            // of those, sources whose last run succeeded
     latestDate: string | null;  // newest publishedAt/effectiveDate across its entries
     entryCount: number;         // entries in the per-venue file
+    unmonitored?: string;       // VenueConfig.unmonitored: reason nothing is watched for this venue
 }
 
 // feed/latest.json — entries whose coalesce(effectiveDate, publishedAt) is within windowDays

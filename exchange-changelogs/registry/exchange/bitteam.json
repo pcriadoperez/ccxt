@@ -1,0 +1,16 @@
+{
+  "id": "bitteam",
+  "kind": "exchange",
+  "name": "BIT.TEAM",
+  "domains": ["bit.team"],
+  "sources": [
+    {
+      "id": "bitteam-swagger",
+      "type": "spec",
+      "url": "https://bit.team/trade/api/documentation.json",
+      "link": "https://bit.team/trade/api/documentation",
+      "scope": "all REST, including the /trade/api/ccxt endpoints (Swagger 2; no changelog exists)",
+      "specFormat": "openapi"
+    }
+  ]
+}

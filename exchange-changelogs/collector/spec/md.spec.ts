@@ -58,7 +58,8 @@ test ('a dated parent heading dates its undated children', async () => {
     const source = { id: 'ex-md2', type: 'md' as const, url: 'https://example.com/c.md', split: { heading: '^###\\s' } };
     const out = await parse (source, text);
     const entries = buildEntries (out.entries, { venue: venueOf ('ex', [ 'example.com' ], [ source ]), source, affects: [ 'ex' ], now: NOW, firstRun: false });
-    assert.deepEqual (entries.map ((e) => [ e.title, e.publishedAt ]), [ [ 'REST', '2026-10-05' ], [ 'WebSocket', '2026-10-05' ], [ 'REST', '2026-10-01' ] ]);
+    // a generic section label ("REST") is displayed with a summary of its body
+    assert.deepEqual (entries.map ((e) => [ e.title, e.publishedAt ]), [ [ 'REST: a', '2026-10-05' ], [ 'WebSocket: b', '2026-10-05' ], [ 'REST: c', '2026-10-01' ] ]);
     assert.equal (new Set (entries.map ((e) => e.id)).size, 3, 'same title on different dates -> different ids');
 });
 

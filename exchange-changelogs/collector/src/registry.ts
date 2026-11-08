@@ -5,11 +5,13 @@ import { fileURLToPath } from 'node:url';
 import * as cheerio from 'cheerio';
 import type { SourceConfig, VenueConfig, VenueKind } from './types.ts';
 import { listFiles, readText } from './store.ts';
+import { commitsApiUrl, commitsPageUrl, REPO } from './adapters/ghcommits.ts';
 
 const KINDS: VenueKind[] = [ 'exchange', 'prediction' ];
-const TYPES = [ 'rss', 'md', 'html', 'json', 'hash' ];
-const VENUE_KEYS = new Set ([ 'id', 'kind', 'name', 'subclasses', 'domains', 'sources' ]);
-const SOURCE_KEYS = new Set ([ 'id', 'type', 'url', 'link', 'months', 'discover', 'role', 'scope', 'headers', 'sharedWith', 'expectBlocked', 'slice', 'split', 'date', 'titleFilter', 'excludeFilter', 'mapper', 'strip', 'minEntries' ]);
+const TYPES = [ 'rss', 'md', 'html', 'json', 'hash', 'spec', 'gh-commits' ];
+const SPEC_FORMATS = [ 'openapi', 'postman', 'asyncapi', 'redoc' ];
+const VENUE_KEYS = new Set ([ 'id', 'kind', 'name', 'subclasses', 'domains', 'sources', 'unmonitored' ]);
+const SOURCE_KEYS = new Set ([ 'id', 'type', 'url', 'link', 'months', 'discover', 'role', 'scope', 'headers', 'sharedWith', 'expectBlocked', 'slice', 'split', 'date', 'titleFilter', 'excludeFilter', 'section', 'mapper', 'strip', 'minEntries', 'minChange', 'specFormat', 'repo', 'ref', 'path' ]);
 const MAPPERS_DIR = resolve (dirname (fileURLToPath (import.meta.url)), 'mappers');
 const HOSTNAME = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/;
 
@@ -24,7 +26,20 @@ export function venueKey (venue: Pick<VenueConfig, 'kind' | 'id'>): string {
 }
 
 export function makeRegistry (venues: VenueConfig[]): Registry {
-    return { venues, byKey: new Map (venues.map ((v) => [ venueKey (v), v ])) };
+    const resolved = venues.map (withDerivedFields);
+    return { venues: resolved, byKey: new Map (resolved.map ((v) => [ venueKey (v), v ])) };
+}
+
+// gh-commits sources have no `url`/`link` in the registry file: url is the GitHub API commits
+// endpoint, link the commit history page (both from repo/ref/path).
+export function withDerivedFields (venue: VenueConfig): VenueConfig {
+    if (!venue.sources.some ((s) => s.type === 'gh-commits')) {
+        return venue;
+    }
+    return {
+        ...venue,
+        sources: venue.sources.map ((s) => (s.type === 'gh-commits' ? { ...s, url: s.url || commitsApiUrl (s), link: s.link ?? commitsPageUrl (s) } : s)),
+    };
 }
 
 const VENUE_REF = /^(?:(exchange|prediction)\/)?([a-z0-9]+)$/;
@@ -172,6 +187,27 @@ function validateSource (s: unknown, venue: Obj, where: string, errors: string[]
     if (typeof type !== 'string' || !TYPES.includes (type)) {
         errors.push (`${where}.type must be one of ${TYPES.join ('|')}`);
     }
+    if (type === 'gh-commits') {
+        validateGhCommits (s, where, errors);
+    } else {
+        for (const key of [ 'repo', 'ref', 'path' ]) {
+            if (s[key] !== undefined) {
+                errors.push (`${where}.${key} is only used by gh-commits sources`);
+            }
+        }
+    }
+    if (type !== 'spec' && s['specFormat'] !== undefined) {
+        errors.push (`${where}.specFormat is only used by spec sources`);
+    } else if (s['specFormat'] !== undefined && !SPEC_FORMATS.includes (s['specFormat'] as string)) {
+        errors.push (`${where}.specFormat must be one of ${SPEC_FORMATS.join ('|')}`);
+    }
+    if (s['minChange'] !== undefined) {
+        if (type !== 'hash') {
+            errors.push (`${where}.minChange is only used by hash sources`);
+        } else if (!(Number.isInteger (s['minChange']) && (s['minChange'] as number) >= 0)) {
+            errors.push (`${where}.minChange must be an integer >= 0 (characters)`);
+        }
+    }
     for (const key of [ 'url', 'link' ]) {
         const v = s[key];
         if (typeof v === 'string' && /\{(?!(?:yyyy|mm)\})[^}]*\}/.test (v)) {
@@ -179,9 +215,19 @@ function validateSource (s: unknown, venue: Obj, where: string, errors: string[]
         }
     }
     const filled = (v: unknown) => (typeof v === 'string' ? expandMonth (v, 2026, 1) : v);
-    checkHttps (errors, `${where}.url`, filled (s['url']));
-    const linkUrl = checkHttps (errors, `${where}.link ?? url`, filled (s['link'] ?? s['url']));
+    // gh-commits: url/link derived from repo/ref/path (validateGhCommits reports a bad repo)
+    const gh = type === 'gh-commits' && typeof s['repo'] === 'string' && REPO.test (s['repo']);
+    const ghFields = { repo: s['repo'] as string, ref: s['ref'] as string | undefined, path: s['path'] as string | undefined };
+    const url = gh ? commitsApiUrl (ghFields) : s['url'];
+    const link = s['link'] ?? (gh ? commitsPageUrl (ghFields) : s['url']);
+    const linkUrl = (type === 'gh-commits' && !gh && s['link'] === undefined) ? null : checkHttps (errors, `${where}.link ?? url`, filled (link));
+    if (type !== 'gh-commits') {
+        checkHttps (errors, `${where}.url`, filled (url));
+    }
     const monthly = typeof s['url'] === 'string' && hasMonthPlaceholders (s['url']);
+    if (monthly && (type === 'spec' || type === 'gh-commits')) {
+        errors.push (`${where}: {yyyy}/{mm} placeholders are not supported by ${type} sources`);
+    }
     if (s['months'] !== undefined) {
         if (!(Number.isInteger (s['months']) && (s['months'] as number) >= 1 && (s['months'] as number) <= 12)) {
             errors.push (`${where}.months must be an integer 1..12`);
@@ -243,7 +289,9 @@ function validateSource (s: unknown, venue: Obj, where: string, errors: string[]
         errors.push (`${where}.minEntries must be an integer >= 0`);
     }
     const slice = s['slice'];
-    if (slice !== undefined) {
+    if (slice !== undefined && (type === 'spec' || type === 'gh-commits' || type === 'json' || type === 'rss')) {
+        errors.push (`${where}.slice is only used by md, html and hash sources`);
+    } else if (slice !== undefined) {
         if (!isObj (slice)) {
             errors.push (`${where}.slice must be an object`);
         } else {
@@ -301,6 +349,10 @@ function validateSource (s: unknown, venue: Obj, where: string, errors: string[]
     }
     checkRegex (errors, `${where}.titleFilter`, s['titleFilter']);
     checkRegex (errors, `${where}.excludeFilter`, s['excludeFilter']);
+    checkRegex (errors, `${where}.section`, s['section']);
+    if (s['section'] !== undefined && (type === 'hash' || type === 'spec' || type === 'gh-commits')) {
+        errors.push (`${where}.section is not used by ${type} sources`);
+    }
     if (type === 'json') {
         if (typeof s['mapper'] !== 'string' || !/^[a-z0-9][a-z0-9_-]*$/.test (s['mapper'])) {
             errors.push (`${where}: json sources need "mapper" (file name in src/mappers/)`);
@@ -309,6 +361,21 @@ function validateSource (s: unknown, venue: Obj, where: string, errors: string[]
         }
     } else if (s['mapper'] !== undefined) {
         errors.push (`${where}.mapper is only used by json sources`);
+    }
+}
+
+function validateGhCommits (s: Obj, where: string, errors: string[]): void {
+    if (s['url'] !== undefined) {
+        errors.push (`${where}: gh-commits sources have no "url" (it is built from repo/ref/path)`);
+    }
+    if (typeof s['repo'] !== 'string' || !REPO.test (s['repo'])) {
+        errors.push (`${where}.repo must be "owner/name"`);
+    }
+    if (s['ref'] !== undefined && (typeof s['ref'] !== 'string' || !/^[\w./-]{1,200}$/.test (s['ref']) || s['ref'].includes ('..'))) {
+        errors.push (`${where}.ref must be a branch, tag or sha`);
+    }
+    if (s['path'] !== undefined && (typeof s['path'] !== 'string' || !s['path'].trim () || s['path'].includes ('..') || /[?#\s]/.test (s['path']))) {
+        errors.push (`${where}.path must be a file or directory path in the repository`);
     }
 }
 
@@ -341,6 +408,13 @@ export function validateVenue (v: unknown, file: string, kindDir: VenueKind): st
     } else {
         v['sources'].forEach ((s, i) => validateSource (s, v, `${file}: sources[${i}]`, errors));
     }
+    if (v['unmonitored'] !== undefined) {
+        if (typeof v['unmonitored'] !== 'string' || !v['unmonitored'].trim () || v['unmonitored'].length > 300) {
+            errors.push (`${file}: unmonitored must be a non-empty reason (at most 300 characters)`);
+        } else if (Array.isArray (v['sources']) && v['sources'].length) {
+            errors.push (`${file}: an unmonitored venue must have "sources": []`);
+        }
+    }
     return errors;
 }
 
@@ -360,7 +434,7 @@ export async function loadRegistry (dir: string): Promise<{ registry: Registry; 
             const errs = validateVenue (data, rel, kind);
             errors.push (...errs);
             if (errs.length === 0) {
-                venues.push (data as VenueConfig);
+                venues.push (withDerivedFields (data as VenueConfig));
             }
         }
     }
@@ -393,6 +467,13 @@ export async function loadRegistry (dir: string): Promise<{ registry: Registry; 
                     errors.push (`${venueKey (venue)}.json: source ${s.id} sharedWith its own venue "${shared}"`);
                 }
             }
+        }
+    }
+    // a venue with no sources must say why (unmonitored) or get another venue's shared source
+    const fed = new Set (venues.flatMap ((v) => v.sources.flatMap ((s) => sharedTargets (registry, v, s).map (venueKey))));
+    for (const venue of venues) {
+        if (!venue.sources.length && !venue.unmonitored && !fed.has (venueKey (venue))) {
+            errors.push (`${venueKey (venue)}.json: "sources" is empty: add "unmonitored": "<reason>", or share another venue's source with it (sharedWith)`);
         }
     }
     return { registry, errors };

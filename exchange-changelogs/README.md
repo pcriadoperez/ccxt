@@ -5,7 +5,7 @@ supports, stores them as entries, and publishes the feeds rendered at
 <https://docs.ccxt.com/docs/changelog-exchanges>.
 
 It is deterministic: plain HTTP fetches and per-source adapters (RSS, Markdown, HTML, JSON,
-page hash), no browser and no LLM. Everything fetched is untrusted text: it is reduced to
+page hash, API specs, GitHub commits), no browser and no LLM. Everything fetched is untrusted text: it is reduced to
 plain text / light markdown, links are restricted to each venue's domains, and AI-agent
 footers (GitBook "Agent Instructions") are stripped.
 
@@ -15,7 +15,7 @@ ccxt build or transpilers.
 ```
 exchange-changelogs/
   collector/            TypeScript collector (Node >= 22, run with tsx)
-    src/                collect.ts, build-feed.ts, adapters/, mappers/, types.ts (shared contract)
+    src/                collect.ts, build-feed.ts, coverage.ts, adapters/, mappers/, types.ts (shared contract)
     spec/               offline specs + fixtures saved from real pages
   registry/             one JSON per venue: exchange/<id>.json, prediction/<id>.json (see registry/README.md)
   data/                 gitignored here; lives on the "changelog-data" branch
@@ -31,8 +31,16 @@ npm run run -- --venue prediction/binance   # one venue of one kind
 npm run run                           # everything
 npm run collect -- --source okx-log   # one source, no feed
 npm run build-feed                    # rebuild data/feed/ from data/entries/
+npm run coverage -- --exchanges ../../exchanges.json   # ccxt ids without a registry file (exit 1 if any)
 npm run spec && npm run typecheck     # offline specs
 ```
+
+Source types: `rss`, `md`, `html`, `json` (with a mapper), `hash` (page diff, `minChange` noise
+threshold), `spec` (OpenAPI/Swagger, Postman, AsyncAPI or Redoc page reduced to `METHOD /path
+(params)` lines; added/removed endpoints and parameter changes become entries) and `gh-commits`
+(GitHub API commit list of a docs repository, `Authorization: Bearer $GITHUB_TOKEN` when set).
+Venues with nothing to watch carry `"unmonitored": "<reason>"` and no sources. Field reference:
+[registry/README.md](registry/README.md).
 
 Options (all commands): `--venue a,b` (`id` or `kind/id`), `--source x,y`, `--data <dir>` (default
 `exchange-changelogs/data`), `--registry <dir>` (default `exchange-changelogs/registry`).
@@ -83,6 +91,11 @@ include shared sources. Entries of sources no longer in the registry are left ou
 feeds. All shapes are in
 [`collector/src/types.ts`](collector/src/types.ts) (`SCHEMA_VERSION` 1).
 
+Synthetic entries (`hash` "Docs changed", `spec` endpoint changes) are always
+`dateKind: firstSeen`; `spec` entries carry their own tags (`new-endpoint`, `breaking`,
+`param-change`, `deprecation`, `websocket`) instead of the rule tags. `VenueSummary.unmonitored`
+(and `sources.json`) carry the reason of venues with nothing to watch.
+
 Rule tags (`collector/src/tags.ts`): `deprecation`, `breaking`, `new-endpoint`, `rate-limit`,
 `websocket`, `auth`, `maintenance`, `param-change`, `market`, plus `link-rewritten` when an
 entry link was replaced by the source link. `breaking` and `deprecation` ignore negated
@@ -100,7 +113,8 @@ renders text only (no HTML from entries; links pass a `safeHref()` check against
 `domains` from `VenueSummary`, keyed by kind + id, falling back to the source-link domain for older
 feeds except on shared hosts such as raw.githubusercontent.com; with no domain the entry links to
 its source page). Venue filters accept `id` (every kind) or `kind/id`; `?exchange=<id>&full=1`
-merges both kinds' files for an id that exists under both. After each run the workflow calls `POST https://docs.ccxt.com/api/revalidate/changelog` with the
+merges both kinds' files for an id that exists under both. The coverage table lists unmonitored venues as muted rows ("not monitored:
+<reason>") and counts them apart from the monitored ones. After each run the workflow calls `POST https://docs.ccxt.com/api/revalidate/changelog` with the
 `DOCS_REVALIDATE_SECRET` and makes one warm-up GET of the page.
 
 ## Production
@@ -109,8 +123,11 @@ merges both kinds' files for an id that exists under both. After each run the wo
 `workflow_dispatch` with `venue` / `dry_run` inputs), only on `ccxt/ccxt`:
 
 1. job `collect` (read-only token): checks out the orphan branch `changelog-data` as a worktree
-   at `exchange-changelogs/data` (created on the first run), runs `npm ci && npm run run` in
-   `collector/` and uploads `data/` as an artifact;
+   at `exchange-changelogs/data` (created on the first run), runs `npm ci`, then
+   `npm run coverage` (`continue-on-error`: a ccxt id without a registry file shows as a warning
+   but does not stop collection), then `npm run run` in `collector/` with `GITHUB_TOKEN` set to the
+   job's read-only token (used by `gh-commits` sources for api.github.com only), and uploads
+   `data/` as an artifact;
 2. job `publish` (the only job with `contents: write`; runs no npm and no repository code):
    checks out `changelog-data` into a fresh repo, replaces its tree with the artifact and commits
    it as `[Automated changes] changelog data <date>` with hooks disabled (the language CI
@@ -131,3 +148,5 @@ yearly).
    `data/snapshots/<sourceId>.txt` and `data/feed/<kind>/<id>.json`.
 3. For a new adapter behaviour, save a trimmed real page under `collector/spec/fixtures/`
    and add a spec next to the existing ones.
+4. `npm run coverage -- --exchanges ../../exchanges.json` lists the ccxt ids that still have no
+   venue file, `subclasses` entry or `unmonitored` reason.

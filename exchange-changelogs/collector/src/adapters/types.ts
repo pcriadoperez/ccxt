@@ -5,6 +5,7 @@ export interface ParsedEntry extends RawEntry {
     categories?: string[];      // rss/atom categories (titleFilter also matches these)
     context?: string;           // text of the enclosing higher-level heading (date fallback, e.g. "## 2026-11-05")
     partition?: string;         // month sources: "YYYY-MM" of the file the entry came from (set by collect)
+    tags?: string[];            // synthetic entries (spec): these tags replace the rule tags of src/tags.ts
 }
 
 export interface AdapterInput {

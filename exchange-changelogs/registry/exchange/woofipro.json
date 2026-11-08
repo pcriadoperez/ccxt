@@ -10,6 +10,7 @@
       "url": "https://orderly.network/docs/release-notes/omnichain.md",
       "link": "https://orderly.network/docs/release-notes/omnichain",
       "scope": "Orderly omnichain API (REST, websocket)",
+      "sharedWith": ["modetrade"],
       "split": { "heading": "^##\\s+" },
       "date": { "from": "title" }
     }
