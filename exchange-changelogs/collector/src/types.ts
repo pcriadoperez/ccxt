@@ -24,12 +24,19 @@ export type SourceType = 'rss' | 'md' | 'html' | 'json' | 'hash';
 export interface SourceConfig {
     id: string;                 // globally unique, "<venue>-<slug>", e.g. "bybit-v5"
     type: SourceType;
-    url: string;                // what the collector fetches (raw.githubusercontent.com for GitHub files)
-    link?: string;              // human-facing page for this source (defaults to url)
+    url: string;                // what the collector fetches (raw.githubusercontent.com for GitHub files);
+                                // may contain {yyyy} and {mm} (UTC month) for month-partitioned changelogs
+    link?: string;              // human-facing page for this source (defaults to url; same placeholders)
+    months?: number;            // url with {yyyy}/{mm}: fetch the current month and the previous months-1 (default 2)
+    discover?: {                // url changes per deploy (hashed bundle): fetch discover.url, take the first
+        url: string;            // capture group of `pattern` as the (absolute or relative) url and fetch that
+        pattern: string;        // instead of `url` (then `url` only records the last known value; not fetched)
+    };
     role?: 'primary' | 'secondary';   // default primary
     scope?: string;             // free text shown in the UI: "spot", "derivatives", "websocket", "all"
     headers?: Record<string, string>;
-    sharedWith?: string[];      // other venue ids whose changelog this also is (kraken -> krakenfutures)
+    sharedWith?: string[];      // other venues whose changelog this also is (kraken -> krakenfutures):
+                                // "id" (same kind first, then the other kind) or "kind/id"
     expectBlocked?: string;     // known reason this source cannot be fetched from a datacenter (shown as degraded, not alerted)
     // ---- extraction ----
     slice?: {
@@ -49,6 +56,7 @@ export interface SourceConfig {
     titleFilter?: string;       // regex: keep only entries whose title (or rss category) matches
     excludeFilter?: string;     // regex: drop entries whose title matches
     mapper?: string;            // json: name of a mapper in src/mappers/<name>.ts turning the response into RawEntry[]
+                                // (receives the parsed JSON, or undefined when the body is not JSON, plus the raw text)
     strip?: string[];           // html/hash: CSS selectors removed before extraction/hashing
     minEntries?: number;        // fewer parsed entries than this = parser drift -> source failure (default 1 for non-hash)
 }
@@ -71,7 +79,9 @@ export type CcxtStatus = 'new' | 'issue-open' | 'pr' | 'no-action' | 'fixed';
 
 export interface ChangelogEntry {
     schemaVersion: typeof SCHEMA_VERSION;
-    id: string;                 // sha256 hex of `${sourceId}|${guid ?? (date + '|' + normalizedTitle)}`
+    id: string;                 // sha256 hex of `${sourceId}|${guid ?? (date + '|' + normalizedTitle)}`; date is never
+                                // read from the body; keys shared within a run get `|b:<hash of body start>` except
+                                // the bottom-most one (see entries.ts assignKeys)
     kind: VenueKind;
     exchange: string;           // venue id
     affects: string[];          // exchange + subclasses + sharedWith venues (+ their subclasses)
@@ -107,8 +117,9 @@ export interface VenueSummary {
     kind: VenueKind;
     name: string;
     subclasses: string[];
-    sources: number;
-    healthy: number;            // sources whose last run succeeded
+    domains: string[];          // registry domains: hosts entry links may point to
+    sources: number;            // own sources + other venues' sources shared with this venue
+    healthy: number;            // of those, sources whose last run succeeded
     latestDate: string | null;  // newest publishedAt/effectiveDate across its entries
     entryCount: number;         // entries in the per-venue file
 }
@@ -124,7 +135,9 @@ export interface LatestFeed {
     venues: VenueSummary[];
 }
 
-// feed/<kind>/<id>.json — one venue, entries from the last 365 days, with bodies.
+// feed/<kind>/<id>.json — one venue, entries from the last 365 days (same undated rule as latest.json, no
+// removedAt entries), with bodies, oldest trimmed beyond 1.5 MB. Includes the
+// entries of other venues' sources whose sharedWith resolves to this venue (kraken -> krakenfutures).
 export interface VenueFeed {
     schemaVersion: typeof SCHEMA_VERSION;
     generatedAt: string;
