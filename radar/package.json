@@ -1,0 +1,32 @@
+{
+  "name": "ccxt-radar",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CCXT Radar - free Telegram market alerts from the major crypto exchanges, built on CCXT",
+  "type": "module",
+  "main": "./js/main.js",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning --import tsx ts/main.ts",
+    "dev": "node --disable-warning=ExperimentalWarning --watch --import tsx ts/main.ts",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "node --disable-warning=ExperimentalWarning --import tsx --test test/unit/*.test.ts test/integration/*.test.ts",
+    "smoke": "node --disable-warning=ExperimentalWarning --import tsx scripts/smoke.ts"
+  },
+  "author": "CCXT",
+  "license": "MIT",
+  "dependencies": {
+    "@grammyjs/runner": "^2.0.3",
+    "ccxt": "^4.5.84",
+    "grammy": "^1.36.0",
+    "tsx": "^4.20.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "typescript": "^5.8.0"
+  }
+}
