@@ -81,6 +81,7 @@ interface CoverageRow {
   sources: SourceHealth[];
   healthy: number;
   latestDate: string | null;
+  unmonitored?: string;     // registry reason the venue has no monitorable source
 }
 
 export default async function Page() {
@@ -110,10 +111,14 @@ export default async function Page() {
     .map((venue) => {
       const sources = byVenue.get(venue.key) ?? [];
       const dates = [summaries.get(venue.key)?.latestDate, ...sources.map((s) => s.latestDate)].filter((d): d is string => Boolean(d)).sort();
-      return { venue, sources, healthy: sources.filter((s) => s.ok).length, latestDate: dates.at(-1) ?? null };
+      const unmonitored = summaries.get(venue.key)?.unmonitored;
+      return { venue, sources, healthy: sources.filter((s) => s.ok).length, latestDate: dates.at(-1) ?? null, ...(unmonitored ? { unmonitored } : {}) };
     })
     .sort((a, b) => a.venue.name.localeCompare(b.venue.name));
   const degraded = coverage.filter((r) => r.healthy < r.sources.length).length;
+  // venues the registry lists as unmonitored (no public changelog, spec or docs page to watch)
+  const unmonitoredCount = coverage.filter((r) => r.unmonitored).length;
+  const monitoredCount = coverage.length - unmonitoredCount;
 
   const updated = latest.generatedAt || health.generatedAt;
   const toc = [
@@ -126,12 +131,13 @@ export default async function Page() {
     <DocsPage toc={toc}>
       <DocsTitle>{TITLE}</DocsTitle>
       <DocsDescription className="mb-0">
-        API changes announced by the exchanges and prediction markets CCXT supports, collected daily from their official
-        changelogs. Use it to spot deprecations and breaking changes before they reach your bot.
+        CCXT monitors the API changelog of every exchange and prediction market it supports, every day, so the library
+        stays up to date and you don&apos;t have to track them yourself. Every deprecation, breaking change and new
+        endpoint in one place.
       </DocsDescription>
 
       <dl className="not-prose grid grid-cols-2 gap-2 border-b pb-6 sm:grid-cols-4">
-        <Stat label="Venues monitored" value={String(venues.size)} />
+        <Stat label="Venues monitored" value={String(monitoredCount)} />
         <Stat
           label="Sources healthy"
           value={`${healthyCount}/${health.sources.length}`}
@@ -147,15 +153,15 @@ export default async function Page() {
 
       <DocsBody>
         <h2 id="timeline">Timeline</h2>
-        <p className="text-sm">
-          Grouped by the date a change takes effect (or was published). Titles link to the venue&apos;s own changelog;
-          excerpts are third-party text, shown verbatim as plain text.
-        </p>
         <ChangelogExplorer entries={entries} venues={[...venues.values()]} today={today} />
 
         <h2 id="coverage">Coverage</h2>
         <p className="text-sm">
-          {coverage.length} venues, {health.sources.length} changelog sources.{' '}
+          {monitoredCount} venues monitored through {health.sources.length} changelog sources
+          {unmonitoredCount
+            ? `, plus ${unmonitoredCount} ${unmonitoredCount === 1 ? 'venue' : 'venues'} with nothing public to monitor (listed with the reason)`
+            : ''}
+          .{' '}
           {degraded
             ? `${degraded} ${degraded === 1 ? 'venue has' : 'venues have'} a degraded source — those changes may arrive late or need a manual check.`
             : 'All sources fetched successfully on the last run.'}
@@ -217,9 +223,9 @@ function CoverageTable({ rows }: { rows: CoverageRow[] }) {
           </tr>
         </thead>
         <tbody>
-          {rows.map(({ venue, sources, healthy, latestDate }) => (
-            <tr key={venue.key} className="border-b align-top last:border-0">
-              <th scope="row" className="px-3 py-2 text-left font-medium">
+          {rows.map(({ venue, sources, healthy, latestDate, unmonitored }) => (
+            <tr key={venue.key} className={`border-b align-top last:border-0 ${unmonitored ? 'bg-fd-muted/20 text-fd-muted-foreground' : ''}`}>
+              <th scope="row" className={`px-3 py-2 text-left ${unmonitored ? 'font-normal' : 'font-medium'}`}>
                 {venue.docPath ? (
                   <Link href={venue.docPath} className="hover:text-fd-primary hover:underline">{venue.name}</Link>
                 ) : (
@@ -230,7 +236,7 @@ function CoverageTable({ rows }: { rows: CoverageRow[] }) {
                 </span>
                 {/* phones: status moves under the venue so the sources column keeps its width */}
                 <span className="mt-1 block font-normal sm:hidden">
-                  <StatusCell sources={sources} healthy={healthy} />
+                  <StatusCell sources={sources} healthy={healthy} unmonitored={unmonitored} />
                 </span>
               </th>
               <td className="px-3 py-2">
@@ -256,7 +262,7 @@ function CoverageTable({ rows }: { rows: CoverageRow[] }) {
                 </ul>
               </td>
               <td className="hidden px-3 py-2 sm:table-cell">
-                <StatusCell sources={sources} healthy={healthy} />
+                <StatusCell sources={sources} healthy={healthy} unmonitored={unmonitored} />
               </td>
               <td className="hidden whitespace-nowrap px-3 py-2 font-mono text-xs text-fd-muted-foreground sm:table-cell">{latestDate ?? '—'}</td>
             </tr>
@@ -272,7 +278,8 @@ function breakableHost(host: string): ReactNode[] {
   return host.split('.').flatMap((part, i) => (i === 0 ? [part] : [<wbr key={i} />, `.${part}`]));
 }
 
-function StatusCell({ sources, healthy }: { sources: SourceHealth[]; healthy: number }) {
+function StatusCell({ sources, healthy, unmonitored }: { sources: SourceHealth[]; healthy: number; unmonitored?: string }) {
+  if (unmonitored) return <span className="text-xs text-fd-muted-foreground">not monitored: {unmonitored}</span>;
   if (sources.length === 0) return <span className="text-xs text-fd-muted-foreground">not monitored</span>;
   const bad = sources.filter((s) => !s.ok);
   if (bad.length === 0) {
