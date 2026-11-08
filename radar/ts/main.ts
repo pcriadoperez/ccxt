@@ -16,6 +16,8 @@ import { Assistant } from './ai/assistant.js';
 import { Channels } from './channels.js';
 import { Scheduler } from './scheduler.js';
 import { createBot, alertKeyboard, BOT_COMMANDS, GROUP_COMMANDS } from './bot.js';
+import { run } from '@grammyjs/runner';
+import type { RunnerHandle } from '@grammyjs/runner';
 
 async function main (): Promise<void> {
     try {
@@ -36,6 +38,7 @@ async function main (): Promise<void> {
 
     let send: SendFn;
     let bot: ReturnType<typeof createBot> | undefined;
+    let runner: RunnerHandle | undefined;
     if (cfg.telegramToken) {
         // created below; the dispatcher only calls send after start
         send = async (chatId, html, markup) => bot!.api.sendMessage (chatId, html, { parse_mode: 'HTML', link_preview_options: { is_disabled: true }, reply_markup: markup as any });
@@ -52,7 +55,8 @@ async function main (): Promise<void> {
         ingestor.extraPerpBases = perpBases;
         ingestor.trackedWalletCodes = codes;
     };
-    const channels = new Channels (cfg, bus, dispatcher, state);
+    const channels = new Channels (cfg, dispatcher, state);
+    engine.onNewEvent = (ev) => channels.onEvent (ev);
     const scheduler = new Scheduler ({ cfg, store, state, news, calendar, dispatcher, bus, channels });
 
     console.log ('[radar] venues: ' + cfg.venues.join (', ') + ' · listing venues: ' + cfg.listingVenues.join (', '));
@@ -70,10 +74,11 @@ async function main (): Promise<void> {
         bot = createBot (cfg.telegramToken, { cfg, store, state, engine, assistant, news, calendar, getExchange: (id) => ingestor.exchange (id) });
         await bot.api.setMyCommands (BOT_COMMANDS).catch ((e) => console.error ('[bot] setMyCommands', e?.description || e));
         await bot.api.setMyCommands (GROUP_COMMANDS, { scope: { type: 'all_group_chats' } }).catch (() => undefined);
-        void bot.start ({
-            allowed_updates: [ 'message', 'callback_query', 'my_chat_member' ],
-            onStart: (me) => console.log ('[radar] bot @' + me.username + ' is running. Open https://t.me/' + me.username + ' and send /start'),
-        });
+        // The runner processes updates concurrently (a slow AI call or backtest never blocks other users);
+        // createBot() sequentializes updates per chat so each chat still sees its replies in order.
+        await bot.init ();
+        runner = run (bot, { runner: { fetch: { allowed_updates: [ 'message', 'callback_query', 'my_chat_member' ] } } });
+        console.log ('[radar] bot @' + bot.botInfo.username + ' is running. Open https://t.me/' + bot.botInfo.username + ' and send /start');
     } else {
         console.log ('[radar] TELEGRAM_BOT_TOKEN not set: running headless, alerts print here.');
     }
@@ -92,8 +97,8 @@ async function main (): Promise<void> {
         scheduler.stop ();
         ingestor.stop ();
         dispatcher.stop ();
-        if (bot) {
-            await bot.stop ();
+        if (runner && runner.isRunning ()) {
+            await runner.stop ();
         }
         store.close ();
         process.exit (0);

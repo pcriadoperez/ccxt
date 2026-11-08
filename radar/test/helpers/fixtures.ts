@@ -17,7 +17,7 @@ export function makeState (now: { t: number }): MarketState {
         okx: [ 'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BTC/USDT:USDT', 'ETH/USDT:USDT' ],
         kraken: [ 'BTC/USD', 'ETH/USD', 'SOL/USD', 'USDT/USD', 'USDC/USD' ],
         coinbase: [ 'BTC/USD', 'ETH/USD', 'SOL/USD', 'USDT/USD' ],
-        hyperliquid: [ 'BTC/USDC:USDC', 'ETH/USDC:USDC', 'kPEPE/USDC:USDC' ],
+        hyperliquid: [ 'BTC/USDC:USDC', 'ETH/USDC:USDC', 'KPEPE/USDC:USDC' ],
     };
     for (const [ v, syms ] of Object.entries (venues)) {
         s.setMarkets (v, syms.map ((x) => market (x)));

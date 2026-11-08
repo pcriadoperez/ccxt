@@ -36,6 +36,8 @@ export class Engine {
     lastLoad = 0;
     depegSince = new Map<string, number> ();
     onWatchChange?: (bases: Set<string>, codes: Set<string>) => void;
+    onNewEvent?: (ev: MarketEvent) => void; // called once per new (deduped) event, e.g. for channels
+    bigmove = new Map<string, { armed: boolean, until: number }> ();
     now: () => number = () => Date.now ();
 
     constructor (store: Store, state: MarketState, bus: EventBus, sink: AlertSink) {
@@ -128,10 +130,17 @@ export class Engine {
         st.lastValue = value;
         this.store.setRuleState (rule.id, key, st);
         this.sink (alert);
-        if (rule.mode === 'once') {
-            this.store.deleteRule (rule.id);
-            this.markDirty ();
+        this.removeIfOnce (rule);
+    }
+
+    private removeIfOnce (rule: Rule): boolean {
+        if (rule.mode !== 'once') {
+            return false;
         }
+        this.store.deleteRule (rule.id);
+        this.rules = this.rules.filter ((r) => r.id !== rule.id); // also stop later matches within this tick/event
+        this.markDirty ();
+        return true;
     }
 
     // Generic threshold check: fire when `cond` holds while armed (and out of cooldown); re-arm when `rearm` holds.
@@ -163,7 +172,10 @@ export class Engine {
 
     tick (): void {
         this.loadRules ();
-        for (const rule of this.rules) {
+        for (const rule of [ ...this.rules ]) {
+            if (this.rules.indexOf (rule) === -1) {
+                continue;
+            }
             try {
                 this.evaluate (rule);
             } catch (e) {
@@ -244,7 +256,7 @@ export class Engine {
             case 'funding': {
                 const venues = this.venuesFor (s.venues, this.state.funding.keys ());
                 const cond = (v: number) => (s.high !== null && v > s.high) || (s.low !== null && v < s.low);
-                const rearm = (v: number) => (s.high === null || v < s.high * 0.8) && (s.low === null || v > s.low * 0.8);
+                const rearm = (v: number) => (s.high === null || v < s.high - 0.2 * Math.abs (s.high)) && (s.low === null || v > s.low + 0.2 * Math.abs (s.low));
                 for (const venue of venues) {
                     if (this.state.isDegraded (venue, FUNDING_FRESH_MS)) {
                         continue;
@@ -312,6 +324,9 @@ export class Engine {
                         this.sink (alertFor (rule, settleHtml ({ symbol: row.symbol, venue: row.venue, f, now }),
                             row.symbol + ' funding settles soon on ' + venueName (row.venue),
                             { kind: 'funding', venue: row.venue, symbol: row.symbol, base: s.base }, now));
+                        if (this.removeIfOnce (rule)) {
+                            return;
+                        }
                     }
                 }
                 return;
@@ -394,9 +409,15 @@ export class Engine {
         // Unexplained big move: BTC/ETH median ±4% within 15 minutes.
         for (const base of [ 'BTC', 'ETH' ]) {
             const ch = this.state.change ('median|' + base, 15 * 60_000);
-            if (ch && Math.abs (ch.pct) >= 4 && now - ch.toTs < FRESH_MS) {
-                const bucket = Math.floor (now / (30 * 60_000));
-                this.bus.emit ({ key: 'bigmove:' + base + ':' + bucket, type: 'bigmove', base, data: { pct: ch.pct, windowMin: 15, from: ch.from, to: ch.to }, ts: now });
+            if (!ch || now - ch.toTs >= FRESH_MS) {
+                continue;
+            }
+            const st = this.bigmove.get (base) || { armed: true, until: 0 };
+            if (st.armed && Math.abs (ch.pct) >= 4 && now >= st.until) {
+                this.bigmove.set (base, { armed: false, until: now + 3_600_000 });
+                this.bus.emit ({ key: 'bigmove:' + base + ':' + now, type: 'bigmove', base, data: { pct: ch.pct, windowMin: 15, from: ch.from, to: ch.to }, ts: now });
+            } else if (!st.armed && Math.abs (ch.pct) < 2) {
+                this.bigmove.set (base, { ...st, armed: true });
             }
         }
     }
@@ -410,17 +431,25 @@ export class Engine {
         if (!this.store.recordEvent (ev.key, ev.type, ev)) {
             return; // already seen
         }
+        if (this.onNewEvent) {
+            try {
+                this.onNewEvent (ev);
+            } catch (e) {
+                console.error ('[engine] onNewEvent failed', e);
+            }
+        }
         this.loadRules ();
         const now = this.now ();
         const html = eventHtml (ev, now);
         const summary = eventSummary (ev);
-        for (const rule of this.rules) {
+        for (const rule of [ ...this.rules ]) {
             if (this.matches (rule, ev)) {
                 const a = alertFor (rule, html, summary, { kind: ev.type, venue: ev.venue, symbol: ev.symbol, code: ev.code, base: ev.base }, now, ev.key);
                 if (rule.spec.kind === 'breaking') {
                     a.ttlMs = KIND_DEFAULTS.breaking.ttlS * 1000;
                 }
                 this.sink (a);
+                this.removeIfOnce (rule);
             }
         }
     }

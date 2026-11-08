@@ -19,6 +19,7 @@
   "author": "CCXT",
   "license": "MIT",
   "dependencies": {
+    "@grammyjs/runner": "^2.0.3",
     "ccxt": "^4.5.84",
     "grammy": "^1.36.0",
     "tsx": "^4.20.0",

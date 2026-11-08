@@ -8,6 +8,7 @@ export interface ListingChange {
 
 interface ListingBaseline {
     confirmed: string[];
+    ever?: string[]; // every symbol ever confirmed: a market coming back is a reactivation, not a listing
     pendingAdd: Record<string, number>; // symbol -> consecutive sightings
     pendingRemove: Record<string, number>; // symbol -> consecutive absences
 }
@@ -40,10 +41,11 @@ export class ListingTracker {
         const current = new Set (active);
         const b = this.baselines.get (venue);
         if (!b) {
-            this.baselines.set (venue, { confirmed: [ ...current ].sort (), pendingAdd: {}, pendingRemove: {} });
+            this.baselines.set (venue, { confirmed: [ ...current ].sort (), ever: [ ...current ].sort (), pendingAdd: {}, pendingRemove: {} });
             return []; // the first snapshot only sets the baseline
         }
         const confirmed = new Set (b.confirmed);
+        const ever = new Set (b.ever || b.confirmed);
         if (current.size < confirmed.size * (1 - PARTIAL_DROP)) {
             return []; // looks like a partial response: ignore the whole snapshot
         }
@@ -54,7 +56,10 @@ export class ListingTracker {
                 const seen = (b.pendingAdd[s] || 0) + 1;
                 if (seen >= ADD_CONFIRMATIONS) {
                     confirmed.add (s);
-                    changes.push ({ venue, symbol: s, change: 'added' });
+                    if (!ever.has (s)) {
+                        changes.push ({ venue, symbol: s, change: 'added' });
+                    }
+                    ever.add (s);
                 } else {
                     pendingAdd[s] = seen;
                 }
@@ -72,7 +77,7 @@ export class ListingTracker {
                 }
             }
         }
-        this.baselines.set (venue, { confirmed: [ ...confirmed ].sort (), pendingAdd, pendingRemove });
+        this.baselines.set (venue, { confirmed: [ ...confirmed ].sort (), ever: [ ...ever ].sort (), pendingAdd, pendingRemove });
         return changes;
     }
 }

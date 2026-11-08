@@ -113,7 +113,11 @@ export function clusterNews (items: NewsItem[], threshold = 0.34): NewsCluster[]
             clusters.push ({ id: createHash ('sha1').update (it.link).digest ('hex').slice (0, 10), title: it.title, items: [ it ], publishers: [ it.publisher ], latest: it.published, tok });
         }
     }
-    return clusters.map (({ tok, ...c }) => c);
+    // Stable id: the oldest article's link, so a story keeps its id as more publishers cover it.
+    return clusters.map (({ tok, ...c }) => {
+        const oldest = c.items.reduce ((a, b) => (b.published < a.published ? b : a));
+        return { ...c, id: createHash ('sha1').update (oldest.link).digest ('hex').slice (0, 10) };
+    });
 }
 
 // Rank: more publishers first, then recency. Drops obvious sponsored/PR items.

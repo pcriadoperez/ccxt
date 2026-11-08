@@ -165,7 +165,7 @@ test ('AI path: plain language → proposal card with assumptions and quota foot
     const card = h.calls.filter ((c) => c.method === 'sendMessage').pop ()!;
     assert.match (card.payload.text, /ETH perp funding \(8h-equiv\.\) above \+0\.100% or below −0\.050% · OKX/);
     assert.match (card.payload.text, /Now \(8h-eq\): OKX \+0\.010%/);
-    assert.match (card.payload.text, /Assumed: "crazy"/);
+    assert.match (card.payload.text, /Assumed: &quot;crazy&quot;/);
     assert.match (card.payload.text, /AI 1\/3 today/, 'new users get 3 AI messages before their first rule');
     await h.press (h.button (/^Save$/));
     assert.equal (h.store.countRules (USER.id), 1);
@@ -257,4 +257,55 @@ test ('groups: admin-only setup and alerts, /ask and replies go to the AI, membe
     const countBefore = h.calls.length;
     await h.send ('just chatting', { chatId: -3003, type: 'supergroup', from: member });
     assert.equal (h.calls.length, countBefore, 'ordinary group messages are ignored');
+});
+
+test ('groups: members cannot pause, change settings or /forget the group', async () => {
+    const h = harness ();
+    const G = -1009;
+    const admin = { id: 555, is_bot: false, first_name: 'Admin' };
+    const member = { id: 556, is_bot: false, first_name: 'Member' };
+    await h.send ('/setup', { chatId: G, type: 'supergroup', from: admin });
+    await h.press ('gs:majors', { chatId: G, type: 'supergroup', from: admin });
+    for (const cmd of [ '/pause 8h', '/quiet 22-06', '/budget 5', '/brief off', '/forget' ]) {
+        await h.send (cmd, { chatId: G - Math.floor (Math.random () * 1000), type: 'supergroup', from: member });
+    }
+    await h.send ('/forget', { chatId: G, type: 'supergroup', from: { ...member, id: 557 } });
+    assert.match (h.lastText (), /Only group admins can change this/);
+    await h.press ('fg:yes', { chatId: G, type: 'supergroup', from: member });
+    await h.press ('pa:0', { chatId: G, type: 'supergroup', from: member });
+    assert.equal (h.store.rulesForChat (G).length, 3);
+    assert.equal (h.store.getUser (G)!.pausedUntil, 0);
+    await h.press ('pa:1', { chatId: G, type: 'supergroup', from: admin });
+    assert.ok (h.store.getUser (G)!.pausedUntil > Date.now ());
+});
+
+test ('redo setup replaces preset alerts and keeps custom quiet hours', async () => {
+    const h = harness ();
+    const run = async () => {
+        await h.press ('ob:p:moves');
+        await h.press ('ob:c:BTC');
+        await h.press ('ob:c:done');
+        await h.press ('ob:l:normal');
+        await h.press ('ob:t:0');
+        await h.press ('ob:b:off');
+    };
+    await h.send ('/start');
+    await run ();
+    await h.send ('/quiet 01-05');
+    await h.send ('eth > 5k');
+    await h.press (h.button (/^Save$/));
+    await h.send ('/start');
+    await h.press ('ob:redo');
+    await run ();
+    const rules = h.store.rulesForChat (USER.id);
+    assert.equal (rules.filter ((r) => r.source === 'preset').length, 1, 'preset alerts are replaced, not doubled');
+    assert.equal (rules.filter ((r) => r.source === 'shorthand').length, 1, 'user-created alerts are kept');
+    assert.equal (h.store.getUser (USER.id)!.quietStart, 60);
+});
+
+test ('alerts on venues that cannot serve them get an explanation instead of a card', async () => {
+    const h = harness ();
+    await h.send ('/start');
+    await h.send ('funding eth > 0.1% mexc');
+    assert.match (h.lastText (), /MEXC doesn't support funding alerts here/);
 });

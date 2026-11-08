@@ -144,8 +144,10 @@ export const MULTIPLIER_PREFIXES: Array<{ prefix: string, mult: number }> = [
     { prefix: '1000000', mult: 1_000_000 },
     { prefix: '10000', mult: 10_000 },
     { prefix: '1000', mult: 1000 },
-    { prefix: 'k', mult: 1000 },
 ];
+// Hyperliquid quotes some small-cap perps per 1000 units with a K prefix (CCXT symbol e.g. KPEPE/USDC:USDC).
+// A prefix rule would misread real coins such as KAS, so these are listed explicitly.
+export const K_TOKENS: Record<string, string> = { KPEPE: 'PEPE', KSHIB: 'SHIB', KBONK: 'BONK', KFLOKI: 'FLOKI', KLUNC: 'LUNC', KDOGS: 'DOGS', KNEIRO: 'NEIRO' };
 
 export function intervalHours (interval: string | undefined): { hours: number, assumed: boolean } {
     if (interval) {
@@ -303,9 +305,12 @@ export class MarketState {
             return undefined;
         }
         const settles = [ 'USDT', 'USDC' ];
-        const prefixes = [ { prefix: '', mult: 1 }, ...MULTIPLIER_PREFIXES ];
+        const prefixes = [ { prefix: '', mult: 1 }, ...MULTIPLIER_PREFIXES, { prefix: 'K', mult: 1000 } ];
         for (const settle of settles) {
             for (const p of prefixes) {
+                if (p.prefix === 'K' && K_TOKENS['K' + baseU] !== baseU) {
+                    continue;
+                }
                 const s = p.prefix + baseU + '/' + settle + ':' + settle;
                 const info = mk.get (s);
                 if (info && info.type === 'swap' && info.active !== false) {
@@ -318,6 +323,9 @@ export class MarketState {
 
     // Base coin with the multiplier prefix removed ("1000PEPE" -> "PEPE").
     static normalizeBase (base: string): { base: string, multiplier: number } {
+        if (K_TOKENS[base]) {
+            return { base: K_TOKENS[base], multiplier: 1000 };
+        }
         for (const p of MULTIPLIER_PREFIXES) {
             if (base.startsWith (p.prefix) && base.length > p.prefix.length && /^[A-Z]/.test (base.slice (p.prefix.length))) {
                 return { base: base.slice (p.prefix.length), multiplier: p.mult };
@@ -477,8 +485,8 @@ export class MarketState {
             return undefined;
         }
         const then = r.at (last.t - windowMs) || first; // history covers >= 90% of the window: measure from the oldest sample
-        if (!then || then.v === 0) {
-            return undefined;
+        if (!then || then.v === 0 || then.t < last.t - windowMs * 1.1) {
+            return undefined; // a data gap: the closest sample is far older than the window
         }
         return { pct: (last.v - then.v) / then.v * 100, from: then.v, to: last.v, fromTs: then.t, toTs: last.t };
     }

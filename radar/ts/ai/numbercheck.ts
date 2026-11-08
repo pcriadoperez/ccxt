@@ -1,5 +1,6 @@
 // Guardrail: every number in an AI answer must come from the data we gave it.
-// Small integers (counts, hours, list numbers) are allowed; anything else must match a data value within rounding.
+// Bare small integers (counts, hours, list numbers) are allowed. Anything with a unit that makes it a claim
+// ($, %, k/m/b, x) or a decimal must match a data value within rounding; a written sign must match too.
 
 export function collectNumbers (data: unknown, out: number[] = []): number[] {
     if (typeof data === 'number' && Number.isFinite (data)) {
@@ -23,38 +24,49 @@ export function collectNumbers (data: unknown, out: number[] = []): number[] {
     return out;
 }
 
-function matches (n: number, allowed: number[]): boolean {
-    const a = Math.abs (n);
+function close (a: number, b: number, decimals: number): boolean {
+    const step = 10 ** -decimals;
+    return Math.abs (a - b) <= Math.max (Math.abs (b) * 0.005, step / 2 + 1e-12);
+}
+
+function matches (n: number, signed: boolean, decimals: number, allowed: number[]): boolean {
     for (const v of allowed) {
-        const b = Math.abs (v);
-        if (a === b) {
-            return true;
-        }
-        // rounding tolerance: 0.5% relative, or the last shown decimal place
-        const decimals = (String (n).split ('.')[1] || '').length;
-        const step = 10 ** -decimals;
-        if (Math.abs (a - b) <= Math.max (b * 0.005, step / 2 + 1e-12)) {
+        if (signed ? close (n, v, decimals) : close (Math.abs (n), Math.abs (v), decimals)) {
             return true;
         }
     }
     return false;
 }
 
+// Numbers with an optional sign (only at a word boundary, so "2-3" is not "-3"), optional $ and a unit suffix.
+const NUM_RE = /(?<![\w.])([+\-−]?)(\$?)(\d[\d,]*(?:\.\d+)?)\s?(%|[kKmMbB](?![a-zA-Z])|x(?![a-zA-Z]))?/g;
+
 export function numberCheck (answer: string, data: unknown): { ok: boolean, offending: string[] } {
     const allowed = collectNumbers (data);
     const offending: string[] = [];
-    for (const m of answer.matchAll (/-?\d[\d,]*(?:\.\d+)?/g)) {
-        const raw = m[0];
-        const n = Number (raw.replace (/,/g, ''));
+    for (const m of answer.matchAll (NUM_RE)) {
+        const [ raw, sign, dollar, digits, unitRaw ] = m;
+        const unit = (unitRaw || '').toLowerCase ();
+        let n = Number (digits.replace (/,/g, ''));
         if (!Number.isFinite (n)) {
             continue;
         }
-        const isSmallInt = Number.isInteger (n) && Math.abs (n) <= 100 && raw.indexOf ('.') === -1;
+        const decimals = (digits.split ('.')[1] || '').length;
+        const hasClaimUnit = dollar !== '' || unit !== '';
+        const isSmallInt = Number.isInteger (n) && n <= 100 && decimals === 0 && !hasClaimUnit && sign === '';
         if (isSmallInt) {
             continue;
         }
-        if (!matches (n, allowed)) {
-            offending.push (raw);
+        const mult = unit === 'k' ? 1e3 : (unit === 'm' ? 1e6 : (unit === 'b' ? 1e9 : 1));
+        n *= mult;
+        const signed = sign !== '';
+        if (sign === '-' || sign === '−') {
+            n = -n;
+        }
+        // "99k" style rounding: allow the precision of the written number, scaled by its unit
+        const effDecimals = mult > 1 ? decimals - Math.log10 (mult) : decimals;
+        if (!matches (n, signed, effDecimals, allowed)) {
+            offending.push (raw.trim ());
         }
     }
     return { ok: offending.length === 0, offending };

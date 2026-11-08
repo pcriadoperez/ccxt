@@ -30,7 +30,7 @@ test ('resolve maps coins to markets, including multiplied perps', () => {
     assert.deepEqual (s.resolve ('binance', 'btc', 'spot'), { symbol: 'BTC/USDT', multiplier: 1 });
     assert.deepEqual (s.resolve ('kraken', 'BTC', 'spot'), { symbol: 'BTC/USD', multiplier: 1 });
     assert.deepEqual (s.resolve ('binance', 'PEPE', 'perp'), { symbol: '1000PEPE/USDT:USDT', multiplier: 1000 });
-    assert.deepEqual (s.resolve ('hyperliquid', 'PEPE', 'perp'), { symbol: 'kPEPE/USDC:USDC', multiplier: 1000 });
+    assert.deepEqual (s.resolve ('hyperliquid', 'PEPE', 'perp'), { symbol: 'KPEPE/USDC:USDC', multiplier: 1000 });
     assert.deepEqual (s.resolve ('hyperliquid', 'BTC', 'perp'), { symbol: 'BTC/USDC:USDC', multiplier: 1 });
     assert.equal (s.resolve ('kraken', 'BTC', 'perp'), undefined);
     assert.deepEqual (MarketState.normalizeBase ('1000PEPE'), { base: 'PEPE', multiplier: 1000 });

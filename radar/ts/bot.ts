@@ -1,6 +1,7 @@
 // Telegram bot (grammY): onboarding, commands, confirmation cards, alert buttons, AI chat, groups.
 
 import { Bot, InlineKeyboard } from 'grammy';
+import { sequentialize } from '@grammyjs/runner';
 import type { Context } from 'grammy';
 import type { UserFromGetMe } from 'grammy/types';
 import type { Config } from './config.js';
@@ -21,6 +22,7 @@ import { parseShorthand, venueAlias } from './parse.js';
 import { snippet, INSTALL, ruleScript } from './snippets.js';
 import type { Lang } from './snippets.js';
 import { buildBrief, fundingView, listingsView, priceView, statusView, walletView } from './views.js';
+import { venueProblem } from './capabilities.js';
 import { DISCLAIMER, esc, fmtDuration, fmtFundingRate, fmtPct, fmtPrice, venueName } from './format.js';
 import { isValidZone, localParts, minutesToHHMM, parseHHMM, zoneForOffset } from './time.js';
 
@@ -103,6 +105,7 @@ export function alertKeyboard (deliveryId: string, alert: Alert): InlineKeyboard
 export function createBot (token: string, deps: BotDeps, botInfo?: UserFromGetMe): Bot {
     const { cfg, store, state, engine, assistant, news, calendar } = deps;
     const bot = new Bot (token, botInfo ? { botInfo } : undefined);
+    bot.use (sequentialize ((ctx) => (ctx.chat ? String (ctx.chat.id) : undefined)));
     const memberCooldown = new Map<string, number> ();
 
     const ensure = (ctx: Context): UserRow => {
@@ -112,7 +115,7 @@ export function createBot (token: string, deps: BotDeps, botInfo?: UserFromGetMe
             kind: isDm ? 'dm' : 'group',
             tgUserId: ctx.from?.id ?? null,
             lang: ctx.from?.language_code ?? null,
-            dailyBudget: isDm ? cfg.limits.defaultDailyBudget : 48,
+            dailyBudget: isDm ? cfg.limits.defaultDailyBudget : 6 * 24, // groups: default cap 6 posts/hour
         });
     };
 
@@ -211,6 +214,11 @@ export function createBot (token: string, deps: BotDeps, botInfo?: UserFromGetMe
             await reply (ctx, 'You have ' + cfg.limits.maxRulesPerUser + ' alerts, the maximum. Remove some with /list first.');
             return;
         }
+        const problem = venueProblem (spec, cfg);
+        if (problem) {
+            await reply (ctx, esc (problem));
+            return;
+        }
         const pid = store.saveProposal (chatId, spec, mode, source);
         const base = proposalText (spec, mode, assumptions, footerNote);
         const msg = await reply (ctx, base + '\n<i>Checking the last 30 days…</i>', proposalKeyboard (pid, mode));
@@ -297,6 +305,11 @@ export function createBot (token: string, deps: BotDeps, botInfo?: UserFromGetMe
                 created.push (describeSpec (r.spec));
             }
         };
+        for (const r of store.rulesForChat (chatId)) {
+            if (r.source === 'preset') {
+                store.deleteRule (r.id); // redoing setup replaces the previous preset alerts instead of doubling them
+            }
+        }
         const coins: string[] = ob.coins && ob.coins.length ? ob.coins : [ 'BTC', 'ETH' ];
         if (ob.persona === 'moves') {
             const l = LOUDNESS[ob.loud || 'normal'];
@@ -310,13 +323,15 @@ export function createBot (token: string, deps: BotDeps, botInfo?: UserFromGetMe
         }
         engine.markDirty ();
         const settings = { ...user.settings, watchlist: ob.persona === 'moves' ? coins : (user.settings.watchlist.length ? user.settings.watchlist : [ 'BTC', 'ETH', 'SOL' ]), persona: ob.persona, tzConfirmed: true };
-        store.updateUser (chatId, { onboarding: null, settings, quietStart: 23 * 60, quietEnd: 7 * 60 });
+        const quiet = user.quietStart === null && user.quietEnd === null ? { quietStart: 23 * 60, quietEnd: 7 * 60 } : {};
+        store.updateUser (chatId, { onboarding: null, settings, ...quiet });
         const fresh = store.getUser (chatId)!;
         const lines = [ '<b>Done.</b>' ];
         if (created.length) {
             lines.push (...created.map ((c) => '• ' + esc (c)));
         }
-        lines.push ('Daily Brief: ' + (fresh.briefTime ? fresh.briefTime + ' (' + esc (fresh.tz) + ')' : 'off') + ' · quiet 23:00–07:00 · max ' + fresh.dailyBudget + ' alerts a day');
+        const quietText = fresh.quietStart !== null && fresh.quietEnd !== null ? minutesToHHMM (fresh.quietStart) + '–' + minutesToHHMM (fresh.quietEnd) : 'off';
+        lines.push ('Daily Brief: ' + (fresh.briefTime ? fresh.briefTime + ' (' + esc (fresh.tz) + ')' : 'off') + ' · quiet ' + quietText + ' · max ' + fresh.dailyBudget + ' alerts a day');
         const first = coins[0];
         const m = state.medianPrice (first);
         if (m) {
@@ -499,6 +514,19 @@ export function createBot (token: string, deps: BotDeps, botInfo?: UserFromGetMe
         return kb;
     };
 
+    // In groups, anything that changes settings or data is admin-only.
+    const adminOnly = async (ctx: Context): Promise<boolean> => {
+        if (!isGroup (ctx) || (await isAdmin (ctx))) {
+            return true;
+        }
+        if (ctx.callbackQuery) {
+            await ctx.answerCallbackQuery ({ text: 'Only group admins can change this.' });
+        } else {
+            await reply (ctx, 'Only group admins can change this.');
+        }
+        return false;
+    };
+
     // ------------------------------------------------------------ commands
 
     bot.command ('start', async (ctx) => {
@@ -565,6 +593,9 @@ export function createBot (token: string, deps: BotDeps, botInfo?: UserFromGetMe
     });
 
     bot.command ('pause', async (ctx) => {
+        if (!(await adminOnly (ctx))) {
+            return;
+        }
         ensure (ctx);
         const arg = (ctx.match || '').trim ().toLowerCase ();
         if (!arg) {
@@ -588,6 +619,9 @@ export function createBot (token: string, deps: BotDeps, botInfo?: UserFromGetMe
     };
 
     bot.command ('resume', async (ctx) => {
+        if (!(await adminOnly (ctx))) {
+            return;
+        }
         ensure (ctx);
         await doPause (ctx, -1);
     });
@@ -598,6 +632,9 @@ export function createBot (token: string, deps: BotDeps, botInfo?: UserFromGetMe
         if (arg === 'now' || arg === '') {
             const held = arg === 'now' ? store.takeDigestItems (user.chatId) : [];
             await reply (ctx, buildBrief ({ state, store, news, calendar }, user, Date.now (), held) + (arg === '' ? '\n\n<i>Your brief time: ' + (user.briefTime || 'off') + '. Set with /brief 08:00 or /brief off.</i>' : ''));
+            return;
+        }
+        if (!(await adminOnly (ctx))) {
             return;
         }
         if (arg === 'off') {
@@ -615,6 +652,9 @@ export function createBot (token: string, deps: BotDeps, botInfo?: UserFromGetMe
     });
 
     bot.command ('quiet', async (ctx) => {
+        if (!(await adminOnly (ctx))) {
+            return;
+        }
         const user = ensure (ctx);
         const arg = (ctx.match || '').trim ().toLowerCase ();
         if (arg === 'off') {
@@ -635,6 +675,9 @@ export function createBot (token: string, deps: BotDeps, botInfo?: UserFromGetMe
     });
 
     bot.command ('budget', async (ctx) => {
+        if (!(await adminOnly (ctx))) {
+            return;
+        }
         const user = ensure (ctx);
         const n = Number ((ctx.match || '').trim ());
         if (!Number.isFinite (n) || n < 5 || n > cfg.limits.maxDailyBudget) {
@@ -646,6 +689,9 @@ export function createBot (token: string, deps: BotDeps, botInfo?: UserFromGetMe
     });
 
     bot.command ('tz', async (ctx) => {
+        if (!(await adminOnly (ctx))) {
+            return;
+        }
         const user = ensure (ctx);
         const arg = (ctx.match || '').trim ();
         if (!arg) {
@@ -662,6 +708,9 @@ export function createBot (token: string, deps: BotDeps, botInfo?: UserFromGetMe
     });
 
     bot.command ('watch', async (ctx) => {
+        if (!(await adminOnly (ctx))) {
+            return;
+        }
         const user = ensure (ctx);
         const [ action, coin ] = (ctx.match || '').trim ().split (/\s+/);
         const list = [ ...user.settings.watchlist ];
@@ -676,6 +725,9 @@ export function createBot (token: string, deps: BotDeps, botInfo?: UserFromGetMe
     });
 
     bot.command ('breaking', async (ctx) => {
+        if (!(await adminOnly (ctx))) {
+            return;
+        }
         ensure (ctx);
         await reply (ctx, '<b>Breaking events</b> (opt-in, each one confirmed by an official source or 2+ publishers):', breakingKeyboard (ctx.chat.id));
     });
@@ -755,6 +807,9 @@ export function createBot (token: string, deps: BotDeps, botInfo?: UserFromGetMe
     });
 
     bot.command ('forget', async (ctx) => {
+        if (!(await adminOnly (ctx))) {
+            return;
+        }
         ensure (ctx);
         await reply (ctx, 'Delete all your alerts, settings and history? This cannot be undone.', new InlineKeyboard ().text ('Yes, delete everything', 'fg:yes').text ('Cancel', 'fg:no'));
     });
@@ -889,6 +944,9 @@ export function createBot (token: string, deps: BotDeps, botInfo?: UserFromGetMe
         try {
             switch (parts[0]) {
                 case 'ob':
+                    if (!(await adminOnly (ctx))) {
+                        return;
+                    }
                     if (parts[1] === 'redo') {
                         await ctx.answerCallbackQuery ();
                         await startOnboarding (ctx);
@@ -992,6 +1050,9 @@ export function createBot (token: string, deps: BotDeps, botInfo?: UserFromGetMe
                 }
                 case 'al': {
                     if (parts[1] === 'mu') {
+                        if (!(await adminOnly (ctx))) {
+                            return;
+                        }
                         engine.mute (parts[2], Number (parts[3]) * 3_600_000);
                         await ctx.answerCallbackQuery ({ text: 'Muted for ' + parts[3] + 'h' });
                         return;
@@ -1036,6 +1097,9 @@ export function createBot (token: string, deps: BotDeps, botInfo?: UserFromGetMe
                     return;
                 }
                 case 'br': {
+                    if (!(await adminOnly (ctx))) {
+                        return;
+                    }
                     const type = parts[1] as BreakingType;
                     const existing = breakingRule (chatId);
                     const current = existing && existing.spec.kind === 'breaking' ? existing.spec.types : [];
@@ -1055,10 +1119,16 @@ export function createBot (token: string, deps: BotDeps, botInfo?: UserFromGetMe
                     return;
                 }
                 case 'pa':
+                    if (!(await adminOnly (ctx))) {
+                        return;
+                    }
                     await ctx.answerCallbackQuery ();
                     await doPause (ctx, Number (parts[1]));
                     return;
                 case 'fg':
+                    if (!(await adminOnly (ctx))) {
+                        return;
+                    }
                     await ctx.answerCallbackQuery ();
                     if (parts[1] === 'yes') {
                         store.forgetUser (chatId);

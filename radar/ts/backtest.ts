@@ -90,7 +90,7 @@ export async function backtest (spec: RuleSpec, state: MarketState, getEx: Excha
             }
             const values = rows.map ((x) => x[1] * 8 / intervalH);
             const cond = (v: number) => (spec.high !== null && v > spec.high) || (spec.low !== null && v < spec.low);
-            const rearm = (v: number) => (spec.high === null || v < spec.high * 0.8) && (spec.low === null || v > spec.low * 0.8);
+            const rearm = (v: number) => (spec.high === null || v < spec.high - 0.2 * Math.abs (spec.high)) && (spec.low === null || v > spec.low + 0.2 * Math.abs (spec.low));
             const days = Math.max (1, Math.round ((rows[rows.length - 1][0] - rows[0][0]) / 86_400_000));
             return { count: countCrossings (values, cond, rearm), days, venue };
         }

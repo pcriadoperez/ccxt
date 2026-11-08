@@ -183,7 +183,8 @@ export class Ingestor {
                         ask: num (t.ask),
                         mark: num (t.markPrice),
                         pct24: num (t.percentage),
-                        quoteVolume: num (t.quoteVolume),
+                        // OKX swaps report no quoteVolume and count baseVolume in contracts: convert with contractSize
+                        quoteVolume: num (t.quoteVolume) ?? ((num (t.baseVolume) !== undefined && num (t.last) !== undefined) ? num (t.baseVolume)! * (info.type === 'swap' ? (info.contractSize ?? 1) : 1) * num (t.last)! : undefined),
                         ts: now,
                     });
                 }

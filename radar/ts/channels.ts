@@ -3,7 +3,7 @@
 
 import type { Config } from './config.js';
 import { MAJORS, STABLECOINS } from './config.js';
-import type { EventBus, MarketEvent } from './events.js';
+import type { MarketEvent } from './events.js';
 import type { Dispatcher } from './delivery.js';
 import type { MarketState } from './market/state.js';
 import { to8h } from './market/state.js';
@@ -19,11 +19,11 @@ export class Channels {
     lastFundingPost = new Map<string, number> ();
     lastBoard = 0;
 
-    constructor (cfg: Config, bus: EventBus, dispatcher: Dispatcher, state: MarketState) {
+    // Wire onEvent to Engine.onNewEvent (not the raw bus) so each real-world event is posted once.
+    constructor (cfg: Config, dispatcher: Dispatcher, state: MarketState) {
         this.cfg = cfg;
         this.dispatcher = dispatcher;
         this.state = state;
-        bus.on ((ev) => this.onEvent (ev));
     }
 
     private post (target: string | undefined, html: string, priority = 2): void {

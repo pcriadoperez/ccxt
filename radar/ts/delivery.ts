@@ -225,8 +225,21 @@ export class Dispatcher {
             return;
         }
         q.sort ((a, b) => a.alert.priority - b.alert.priority || a.alert.createdAt - b.alert.createdAt);
-        const batch = q.splice (0, q.length);
-        this.queues.delete (chatId);
+        // Standalone messages (the Daily Brief) go out alone; alerts are merged with each other.
+        const standalone = q.findIndex ((x) => x.alert.buttons === 'none');
+        const batch = standalone !== -1 && q[0].alert.buttons === 'none' ? q.splice (0, 1) : q.splice (0, q.length).filter ((x) => {
+            if (x.alert.buttons === 'none') {
+                q.push (x);
+                return false;
+            }
+            return true;
+        });
+        if (q.length === 0) {
+            this.queues.delete (chatId);
+        }
+        if (batch.length === 0) {
+            return;
+        }
         const first = batch[0];
         let html = first.alert.html;
         if (batch.length > 1) {

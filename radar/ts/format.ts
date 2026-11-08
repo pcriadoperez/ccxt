@@ -12,7 +12,7 @@ export function venueName (id: string): string {
 }
 
 export function esc (s: unknown): string {
-    return String (s).replace (/&/g, '&amp;').replace (/</g, '&lt;').replace (/>/g, '&gt;');
+    return String (s).replace (/&/g, '&amp;').replace (/</g, '&lt;').replace (/>/g, '&gt;').replace (/"/g, '&quot;');
 }
 
 // Prices: keep ~5-6 significant digits, thousands separators for large numbers.
@@ -82,7 +82,10 @@ export function fmtDuration (ms: number): string {
     const totalMin = Math.max (0, Math.round (ms / 60_000));
     const h = Math.floor (totalMin / 60);
     const m = totalMin % 60;
-    return h > 0 ? h + 'h ' + m + 'm' : m + 'm';
+    if (h > 0) {
+        return m === 0 ? h + 'h' : h + 'h ' + m + 'm';
+    }
+    return m + 'm';
 }
 
 export function arrow (n: number): string {
