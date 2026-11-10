@@ -43,7 +43,7 @@ npm run collect -- --venue bybit --data /tmp/changelog-scratch   # validates the
 | `scope` | all | Free text shown in the UI: `spot`, `derivatives`, `websocket`, `all` ... |
 | `headers` | all | Extra request headers, e.g. `{ "Accept-Language": "en-US" }`. |
 | `sharedWith` | all | Other venues this changelog also covers (`kraken` source with `["krakenfutures"]`): `"id"` (resolved in the source's own kind first, then the other kind) or `"kind/id"` (`"exchange/hyperliquid"`). They and their subclasses go into `affects`, the entries also appear in their per-venue feed files, and the source counts in their `sources`/`healthy` summary. Must exist in the registry and not be the venue itself. |
-| `expectBlocked` | all | Known reason the source cannot be fetched from a datacenter (Cloudflare, geo-block). Still attempted; shown as degraded, not alerted. |
+| `expectBlocked` | all | Known reason the source cannot be fetched from a datacenter (Cloudflare, geo-block). Still attempted once (no retries); shown as degraded, not alerted. |
 | `slice.from` / `slice.to` | md | Regexes matched against whole lines: content starts at the first `from` line (inclusive) and ends before the first `to` line after it. `from` not found = parse failure. |
 | `slice` | md, html, hash | Not allowed on `rss`, `json`, `spec` and `gh-commits` sources. |
 | `slice.selector` | html, hash | CSS selector of the container holding the changelog (first match). Not found = parse failure. Default: `body`. |
@@ -73,17 +73,35 @@ named inside a sentence never counts). Years
 outside 2015..next year are ignored. A date after today becomes `effectiveDate` (scheduled
 change). Phrases followed closely by a date set `effectiveDate` too: "Effective date:",
 "Effective Time:", "Effective <date>", "effective from", "will take effect on",
-"Release <date>", "To Be Released: <date>", "go live on", "will be (fully) deprecated/removed/retired on",
+"Release <date>", "To Be Released: <date>", "go live on", "will be (fully) deprecated/removed/retired/
+discontinued/disabled/shut down on", "discontinued on", "discontinuation on", "sunset on", "expected to
+launch ... on", "stop(s) accepting ... on",
 Korean "적용 예정일" / "적용 일시" / "시행" before the date and "적용될 예정" / "지원 종료" after a
-Korean date (`2026년 11월 13일 오전 11시 이후 적용될 예정`), Chinese "生效时间" / "生效日期". For rss sources, a
+Korean date (`2026년 11월 13일 오전 11시 이후 적용될 예정`), Chinese "生效时间" / "生效日期". When the date after a
+phrase is labelled demo/testnet/sandbox and the same line names a live/production/mainnet date, the
+live date wins (Bitget "Effective date: demo trading on November 4, 2026; live trading expected on
+November 17, 2026" -> 2026-11-17); a demo date followed by a production mention without a day
+("... in the production environment in early December 2026", in the same sentence) sets no
+`effectiveDate`; "...; production is not affected" keeps the demo/testnet date. Without any
+phrase, rollout lines give the earliest live date (`- Public internet: October 31, 2026`,
+`* **Mainnet:** Jun 2nd, 2026`, `- Production, from <date>`; testnet/demo/Colo lines are ignored). For rss sources, a
 dated link fragment that differs from pubDate (Kalshi `#november-12-2026`) is the
 `effectiveDate`; the fragment is also the entry anchor.
 
 Titles are plain text: HTML, markdown emphasis (`**`, `*`, `__`, backticks), blockquote/alert
 markers (`> [!WARNING]`) and zero-width characters are removed. Titles that are only a date or
 a version (`## 2026-11-05`, `Release Note 2026-03-20`), or only a section label or product name
-(`REST API`, `Exchange API`, `Docs`), are displayed as `2026-11-05: <summary>`, cut at a word
-boundary around 140 characters; the id still uses the raw heading. The summary is a short
+(`REST API`, `Exchange API`, `Docs`, `Derivatives REST v1`), are displayed with a summary of the body
+cut at the last sentence end within 140 characters (else at a word boundary with "…", never on
+"the/in/of"; a short unclosed "(" group is dropped, a long one is closed after the "…"). A leading date that repeats the entry's date is dropped
+(`2026-10-30: X`, `September 1, 2026 — X`, `[November 4, 2026] X` -> `X`; the timeline already shows
+the day; numeric dates are read in the source's `date.order`), a different date stays (`Release
+11.08.2026: ...` on an entry published later), a leading date with a clock time stays whole
+(`2026-11-05 10:00 UTC: System maintenance`), and a leading version is dropped except for SDK
+sources (id says sdk/pypi/npm, scope names one SDK and not generated SDK artifacts, PyPI/npm feeds,
+GitHub `releases.atom`: `1.6.1: Modified response ...`, `2025-06-11(1.3.0): X` -> `1.3.0: X`). Imperative labels read as past
+tense (HTX `Add: /path` -> `Added: /path`, KuCoin `[Modify] X` -> `Modified: X`). The id and the
+content hash still use the raw heading, so these display rules never re-key or revise an entry. The summary is a short
 heading-like first paragraph before any list (Deribit: "Delayed publication of large Block RFQ
 trades"; not a sentence, a `Label:` line, a bare date or a generic label), else the sub-heading the
 body opens with (Coinbase International `#### Underlying Security Type`, Aster `### Added` then
@@ -95,8 +113,21 @@ short `Authentication` line right above a list) are skipped. Table-row items (`s
 are displayed without pipes and date cells: `| 2026.07.13 | /v2/x.do | Added | User adds ... |`
 becomes `/v2/x.do (Added): User adds ...`. Excerpts drop letter openings ("Dear developers, this is
 the ... team.", "안녕하세요. ...입니다."), table pipes (`a · b`) and GitHub emoji shortcodes
-(`:warning:`). `---` separator lines are dropped from bodies and excerpts. Tags: `Breaking
-Changes: No` / `Deprecations: No` label lines do not fire `breaking` / `deprecation`. Display
+(`:warning:`). `---` separator lines are dropped from bodies and excerpts. Tags (`collector/src/tags.ts`,
+checked against 40 judged entries in `collector/spec/tags-golden.spec.ts`): `Breaking Changes: No` /
+`Deprecations: No` label lines and negations ("no breaking changes", "is not removed") do not fire
+`breaking` / `deprecation`; `breaking` needs "breaking", a removal that names an API object (field,
+endpoint, channel, parameter, enum value, `` `name` ``, a `### Removed` section; not when the
+sentence names a requirement, restriction or limit being removed: "the rate limit on X has been
+removed" relaxes), "incompatible", or "no longer" + supported/accepted/returned/available/works/...
+("no longer required" relaxes and does not count); the weaker signals ("no longer ...", "will be
+changed", "now fail", "will be rejected", "will result in an error") yield to an entry-wide "No
+action required" / "will not affect your existing" / `Breaking Changes: No`, and to a "backward
+compatible" or "No action needed to ..." in the same sentence only. `auth` ignores negated mentions
+within three words ("without an API key", "does not require authentication", "non-authenticated";
+not "non-tradable assets requires ... API Key") and "(authenticated)" markers; `market` needs a listing change ("listed" alone does
+not count). Korean/Japanese/Chinese keywords: deprecation 지원 종료 (not 거래지원 종료 / 거래 지원 종료), 서비스/API 종료, 폐지, 廃止,
+提供終了, 下线, 停止支持/服务, 废弃, 弃用; maintenance 정기/서버/시스템 점검, メンテナンス, 系统维护. Display
 fields (title, excerpt, tags, dates) are refreshed from every parse, so a rule fix reaches stored
 entries without a revision.
 

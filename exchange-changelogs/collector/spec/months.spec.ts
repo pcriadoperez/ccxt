@@ -49,9 +49,9 @@ test ('months: current and previous months, per-month links, rollover is not rem
     assert.equal (rows[0].entries, 5);
     let entries = [ ...(await store.loadEntries ('exchange', 'bitget')).values () ];
     const byTitle = Object.fromEntries (entries.map ((e) => [ e.title, e ]));
-    assert.equal (byTitle['[Nov 5, 2026] New A'].url, 'https://www.bitget.com/docs/uta/changelog/2026-11#nov-5-2026-new-a');
-    assert.equal (byTitle['[Oct 20, 2026] Old A'].url, 'https://www.bitget.com/docs/uta/changelog/2026-10#oct-20-2026-old-a');
-    assert.equal (byTitle['[Oct 20, 2026] Old A'].sourceLink, 'https://www.bitget.com/docs/uta/changelog/2026-11', 'sourceLink is the current month');
+    assert.equal (byTitle['New A'].url, 'https://www.bitget.com/docs/uta/changelog/2026-11#nov-5-2026-new-a');
+    assert.equal (byTitle['Old A'].url, 'https://www.bitget.com/docs/uta/changelog/2026-10#oct-20-2026-old-a');
+    assert.equal (byTitle['Old A'].sourceLink, 'https://www.bitget.com/docs/uta/changelog/2026-11', 'sourceLink is the current month');
     // December: the new file is not there yet (404 = empty), October rolled out of the window
     for (const day of [ '01', '02', '03', '04' ]) {
         rows = await collect ({ store, registry, now: new Date (`2026-12-${day}T05:00:00Z`), venues: [], sources: [], fetcher: fetcherFor ({ '2026-11': NOV }) });
@@ -69,7 +69,7 @@ test ('months: current and previous months, per-month links, rollover is not rem
         rows = await collect ({ store, registry, now: new Date (`2026-12-${day}T05:00:00Z`), venues: [], sources: [], fetcher: fetcherFor ({ '2026-11': NOV2, '2026-12': file ([ 'Dec 4, 2026', 'Dec A' ]) }) });
     }
     entries = [ ...(await store.loadEntries ('exchange', 'bitget')).values () ];
-    assert.deepEqual (entries.filter ((e) => e.removedAt).map ((e) => e.title), [ '[Nov 3, 2026] New B' ]);
+    assert.deepEqual (entries.filter ((e) => e.removedAt).map ((e) => e.title), [ 'New B' ]);
     // a missing previous month is a failure
     rows = await collect ({ store, registry, now: new Date ('2026-12-08T05:00:00Z'), venues: [], sources: [], fetcher: fetcherFor ({ '2026-12': file ([ 'Dec 4, 2026', 'Dec A' ]) }) });
     assert.equal (rows[0].ok, false);

@@ -66,7 +66,7 @@ test ('a dated parent heading dates its undated children', async () => {
 test ('date-only headings get a summary title; the id still uses the raw heading', async () => {
     const out = await parse (BYBIT, fixture ('bybit-v5.mdx'));
     const entries = buildEntries (out.entries, { venue: bybitVenue, source: BYBIT, affects: [ 'bybit' ], now: NOW, firstRun: true });
-    assert.equal (entries[1].title, '2026-11-05: Get Strategy List [UPDATE]', 'the first bullet only');
+    assert.equal (entries[1].title, 'Get Strategy List [UPDATE]', 'the first bullet only, without the date of the day heading');
     const again = buildEntries (out.entries.map ((e, i) => (i === 1 ? { ...e, body: e.body + '\n- Another [NEW]' } : e)), { venue: bybitVenue, source: BYBIT, affects: [ 'bybit' ], now: NOW, firstRun: false });
     assert.equal (again[1].id, entries[1].id);
     assert.notEqual (again[1].hash, entries[1].hash);
@@ -151,7 +151,7 @@ test ('display titles: plain text, first full bullet, cut at a word boundary; no
     const source = { id: 'ex-titles', type: 'md' as const, url: 'https://example.com/c.md' };
     const out = await parse (source, text);
     const entries = buildEntries (out.entries, { venue: venueOf ('ex', [ 'example.com' ], [ source ]), source, affects: [ 'ex' ], now: NOW, firstRun: false });
-    assert.equal (entries[0].title, '2026-10-28: Prediction Markets - the GET /v1/markets response now includes the settlement source for every market in the list.');
+    assert.equal (entries[0].title, 'Prediction Markets - the GET /v1/markets response now includes the settlement source for every market in the list.');
     assert.ok (!entries[0].body!.includes ('---'), 'separator lines are dropped from bodies');
     assert.ok (!/---|\[!WARNING\]|\*\*|`/.test (entries[0].excerpt), entries[0].excerpt);
     assert.ok (entries[1].title.length <= 'Updated'.length + 12 + 140 && entries[1].title.endsWith ('words…'), entries[1].title);

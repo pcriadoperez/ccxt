@@ -4,11 +4,11 @@ import type { ChangelogEntry, SourceConfig, VenueConfig } from './types.ts';
 import type { ParsedEntry } from './adapters/types.ts';
 import { extractDate, findDate, findEffectiveDate, isoDay, type DateOrder } from './dates.ts';
 import { entryHash, entryId, entryKey, sha256 } from './ids.ts';
-import { cleanBody, cleanTitle, makeExcerpt, markdownToPlain, oneLine, truncate } from './normalize.ts';
+import { cleanBody, cleanTitle, cutSummary, makeExcerpt, markdownToPlain, oneLine } from './normalize.ts';
 import { sharedTargets, type Registry } from './registry.ts';
 import { ruleTags } from './tags.ts';
 
-// Display titles built from a body summary are cut at a word boundary around this length.
+// Display titles built from a body summary are cut at a sentence end (else a word boundary) within this length.
 export const SUMMARY_TITLE_CHARS = 140;
 
 export interface BuildContext {
@@ -125,17 +125,134 @@ export function tableRowTitle (title: string): string | null {
     }
     const head = (kept.length >= 3) ? `${kept[0]} (${kept[1]})` : kept[0];
     const rest = (kept.length >= 3) ? kept.slice (2).join (' ') : kept[1];
-    return cleanTitle (`${head}: ${truncate (rest, SUMMARY_TITLE_CHARS)}`);
+    return cleanTitle (`${head}: ${cutSummary (rest, SUMMARY_TITLE_CHARS)}`);
+}
+
+export interface TitleContext {
+    date?: string | null;   // the date the entry is filed under (baseDate): a leading copy of it is dropped
+    keepVersion?: boolean;  // SDK/release sources keep a leading version (keepsVersion)
+    order?: DateOrder;      // the source's date order (SourceConfig.date.order), for "8/11/2022: ..."
+}
+
+// SDK and package release sources (id or scope names one SDK, PyPI/npm feeds, GitHub releases):
+// the version names the release, so display titles keep it. "SDKs" in a scope ("REST, WebSocket,
+// SDKs, platform"), "release" ("announced before release", "release notes") and generated SDK
+// artifacts ("generated Python SDK types", "SDK spec") do not make a source an SDK.
+const SDK_ID = /\bsdk\b|\bpypi\b|\bnpm\b/i;
+const SDK_SCOPE = /\bsdk\b/i;
+const SDK_ARTIFACT = /\bgenerated\b|\bspec\b|\bartifacts?\b/i;
+
+export function keepsVersion (source: SourceConfig): boolean {
+    const scope = source.scope ?? '';
+    return (SDK_SCOPE.test (scope) && !SDK_ARTIFACT.test (scope)) || SDK_ID.test (source.id.replace (/-/g, ' ')) || /\/\/(?:pypi\.org|registry\.npmjs\.org|www\.npmjs\.com)\/|\/releases\.atom(?:$|[?#])/.test (source.url);
+}
+
+// "Add: /api/v6/x" (HTX), "Update: Public market data APIs" (BingX): imperative labels read as
+// past tense in a timeline.
+const VERB_LABELS: Record<string, string> = {
+    add: 'Added', update: 'Updated', delete: 'Removed', remove: 'Removed', modify: 'Modified', optimize: 'Optimized',
+    optimise: 'Optimised', fix: 'Fixed', change: 'Changed', deprecate: 'Deprecated', adjust: 'Adjusted', offline: 'Removed',
+};
+
+// "[Add] UTA WebSocket ..." (KuCoin) reads "Added: UTA WebSocket ...".
+export function readableLabel (title: string): string {
+    return title.replace (/^(?:(add|update|delete|remove|modify|optimi[sz]e|fix|change|deprecate|adjust|offline)\s*:|\[(add|update|delete|remove|modify|optimi[sz]e|fix|change|deprecate|adjust|offline)\])\s*/i, (_m, a: string | undefined, b: string | undefined) => `${VERB_LABELS[(a ?? b ?? '').toLowerCase ()]}: `);
+}
+
+// A leading "2026-10-30: ", "September 1, 2026 — ", "[November 4, 2026] ", "v4.106.179: ",
+// "1.6.1 - 2026-10-09: " segment (date/version text only, then a separator), or the whole title.
+// A ":" followed by a digit is part of a time ("2026-11-05 10:00 UTC: X"), not a separator.
+const LEADING_SEGMENT = /^\s*(?:\[([^\]\n]{1,40})\]\s*|(.{1,40}?)\s*(?::(?!\d)|\s[-\u2013\u2014|]\s|$)\s*)/;
+const VERSION_TOKEN = /\bv?\d+(?:\.\d+)+(?:[-+.][\w.]+)?\b/i;
+// a clock time in a leading segment ("10:00 UTC", "08:00 (UTC+8)"): the segment says when, keep it
+const TIME_TOKEN = /\b\d{1,2}:\d{2}\b/;
+// numeric dates, removed before looking for a version next to them ("2025-06-11(1.3.0)")
+const NUMERIC_DATE = /\b20\d\d[-./]\d{1,2}[-./]\d{1,2}\b|\b\d{1,2}[-./]\d{1,2}[-./]20\d\d\b|\b20\d\d\d{4}\b/g;
+
+// The version written next to a date in one segment: "2025-06-11(1.3.0)" -> "1.3.0",
+// "2025-01-02(GO 1.2.1)" -> "GO 1.2.1", "1.6.1 (2026-10-09)" -> "1.6.1".
+function versionBesideDate (seg: string): string | null {
+    const rest = seg.replace (NUMERIC_DATE, ' ').replace (/[()[\]]/g, ' ').replace (/\s+/g, ' ').trim ();
+    const v = VERSION_TOKEN.exec (rest);
+    if (!v) {
+        return null;
+    }
+    return (rest.length <= 20) ? rest : v[0];
+}
+
+// Title words that only name a product or section ("Derivatives REST v1", "Prediction Markets - REST").
+const SECTION_WORDS = /\b(?:v\d+|prediction|markets|account|accounts|services|wallet|trading|copy|unified|classic|broker|earn|fix|sbe|grpc)\b/gi;
+
+function labelOnly (text: string): boolean {
+    const rest = text.replace (SECTION_WORDS, ' ').replace (/\s+/g, ' ').trim ();
+    return !rest || genericLabel (rest);
+}
+
+// Drops leading date/version segments that repeat what the timeline already shows: a date equal
+// to ctx.date (the day heading), or a version (kept as "1.6.1" for SDK/release sources, see
+// keepsVersion). Returns
+// the remaining title and the version to keep, or null when a segment carries a different date
+// (it says something: "Release 11.08.2026" on an entry published 2026-08-21).
+function stripLeading (title: string, ctx: TitleContext): { rest: string; version: string | null } | null {
+    let rest = title;
+    let version: string | null = null;
+    for (let i = 0; i < 4 && rest; i++) {
+        const m = LEADING_SEGMENT.exec (rest);
+        const seg = m ? (m[1] ?? m[2] ?? '').trim () : '';
+        if (!m || !seg || !/\d/.test (seg) || TIME_TOKEN.test (seg) || !dateOrVersionOnly (seg)) {
+            break;
+        }
+        const date = findDate (seg, ctx.order);
+        if (date) {
+            if (date !== ctx.date) {
+                return null;
+            }
+            version = version ?? versionBesideDate (seg);
+        } else {
+            const v = VERSION_TOKEN.exec (seg);
+            if (!v) {
+                break;
+            }
+            version = version ?? v[0];
+        }
+        rest = rest.slice (m[0].length).trim ();
+    }
+    return { rest, version: (version && ctx.keepVersion) ? version : null };
 }
 
 // Headings like "2026-11-05", "v1.2.0 (2026-11-05)" or a product name ("Exchange API", repeated on
-// every release) say nothing in a timeline: append a summary of the body (see bodySummary), cut at
-// a word boundary. Table-row titles drop their pipes (tableRowTitle). Ids still use the raw title.
-export function displayTitle (title: string, body: string): string {
+// every release) say nothing in a timeline: they get a summary of the body (see bodySummary), cut at
+// a sentence end (cutSummary). With a TitleContext, a leading date that repeats the entry date and a
+// leading version (outside SDK/release sources) are dropped ("2026-10-30: Added X" -> "Added X",
+// "v4.106.138: Add Y" -> "Add Y", SDK "1.6.1 - 2026-10-09: Z" -> "1.6.1: Z"), and "Add:" labels read
+// "Added:". Table-row titles drop their pipes (tableRowTitle). Ids still use the raw title.
+export function displayTitle (title: string, body: string, ctx?: TitleContext): string {
     const row = tableRowTitle (title);
     if (row) {
         return row;
     }
+    if (!ctx) {
+        return withSummary (title, body);
+    }
+    const stripped = stripLeading (title, ctx);
+    if (!stripped) {
+        return readableLabel (withSummary (title, body));
+    }
+    const { rest, version } = stripped;
+    const summary = bodySummary (body);
+    if (!rest || dateOrVersionOnly (rest) || labelOnly (rest)) {
+        if (!summary || summary === rest) {
+            return rest ? readableLabel ([ version, rest ].filter (Boolean).join (': ')) : title;
+        }
+        const label = dateOrVersionOnly (rest) ? '' : rest.replace (/[\s:\u2013\u2014-]+$/, '');
+        const head = [ version, label ].filter (Boolean).join (': ');
+        return readableLabel (cleanTitle (head ? `${head}: ${cutSummary (summary, SUMMARY_TITLE_CHARS)}` : cutSummary (summary, SUMMARY_TITLE_CHARS)));
+    }
+    return readableLabel (version ? `${version}: ${rest}` : rest);
+}
+
+// The title, or "title: summary" when the title is only a date/version or a generic label.
+function withSummary (title: string, body: string): string {
     if (!dateOrVersionOnly (title) && !genericLabel (title)) {
         return title;
     }
@@ -145,7 +262,7 @@ export function displayTitle (title: string, body: string): string {
     }
     // "2026-10-21:" / "2026-10-21 -" would otherwise read "2026-10-21:: summary"
     const head = title.replace (/[\s:\u2013\u2014-]+$/, '');
-    return cleanTitle (`${head}: ${truncate (summary, SUMMARY_TITLE_CHARS)}`);
+    return cleanTitle (`${head}: ${cutSummary (summary, SUMMARY_TITLE_CHARS)}`);
 }
 
 const BULLET = /^[-*+]\s+|^\d+[.)]\s+/;
@@ -442,7 +559,7 @@ export function buildEntries (raws: ParsedEntry[], ctx: BuildContext): Changelog
             sourceType: source.type,
             sourceLink: link,
             ...(source.scope ? { scope: source.scope } : {}),
-            title: displayTitle (title, body),
+            title: displayTitle (title, body, { date, keepVersion: keepsVersion (source), order: source.date?.order }),
             excerpt: makeExcerpt (body) || title,
             body,
             url: checked ?? link,

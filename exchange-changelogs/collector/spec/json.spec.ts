@@ -11,7 +11,7 @@ test ('json adapter loads src/mappers/<name>.ts by name', async () => {
     assert.equal (out.entries[0].title, 'Add: /v1/settings/common/chains (Spot)');
     const entries = buildEntries (out.entries, { venue: venueOf ('htx', [ 'htx.com' ], [ HTX ]), source: HTX, affects: [ 'htx' ], now: NOW, firstRun: false });
     assert.equal (entries[0].publishedAt, '2026-11-06');
-    assert.equal (entries[1].title, 'Add: /api/v6/tradingBot/grid/order (General)', '"通用" is shown as General');
+    assert.equal (entries[1].title, 'Added: /api/v6/tradingBot/grid/order (General)', '"通用" is shown as General, "Add:" as "Added:"');
 });
 
 test ('htx/bingx: an edited summary is a revision of the same entry, not a new id', async () => {

@@ -124,10 +124,16 @@ export function extractDate (text: string | undefined | null, pattern: string | 
 // Phrases announcing when a change takes effect; the date must follow within 25 characters.
 //   English: "Effective date:", "Effective Time:", "effective from/on/as of", "Effective Apr 30, 2026",
 //            "will take effect", "release date", "Release 10.11.2026", "go(es) live (on)",
-//            "will be released/removed/deprecated/retired/... (on)", "launch/sunset/deprecation date"
+//            "will be released/removed/deprecated/retired/shut down/... (on)", "launch/sunset/deprecation date",
+//            "discontinued/discontinuation on", "sunset on", "expected to launch ... on",
+//            "stop(s) accepting ... on"
 //   Korean:  "적용 예정일", "적용 일시", "적용일", "시행일", "시행 예정" (before the date), and
 //            "적용될 예정", "지원 종료" ... after a Korean date (TRAILING_KO)
 //   Chinese: "生效时间", "生效日期", "上线时间"
+// When the date after a phrase is a demo/testnet one and the same line also names a live one
+// ("Effective date: demo trading on November 4, 2026; live trading expected on November 17, 2026"),
+// the live date wins. Without a phrase, rollout lines ("- Public internet: October 31, 2026",
+// "**Mainnet:** Jul 17th, 2026") give the earliest live/production date (ROLLOUT_LINE).
 const EFFECTIVE_PHRASES = new RegExp ([
     `effective\\s+(?:date|time|from|on|as\\s+of|starting)`,
     `effective\\s*:`,
@@ -137,13 +143,17 @@ const EFFECTIVE_PHRASES = new RegExp ([
     `release\\s+date`,
     `scheduled\\s+release`,
     `\\brelease\\b`,
-    `will\\s+be\\s+(?:fully\\s+|completely\\s+|permanently\\s+|officially\\s+)?(?:released|launched|deployed|removed|decommissioned|discontinued|retired|deprecated)(?:\\s+on)?`,
+    `will\\s+be\\s+(?:fully\\s+|completely\\s+|permanently\\s+|officially\\s+)?(?:released|launched|deployed|removed|decommissioned|discontinued|retired|deprecated|shut\\s*down|sunset(?:ted)?|disabled|taken\\s+offline)(?:\\s+(?:on|from|after))?`,
     `to\\s+be\\s+released`,
     `go(?:es)?\\s+live(?:\\s+on)?`,
     `going\\s+live`,
     `launch\\s+date`,
     `sunset\\s+date`,
     `deprecation\\s+date`,
+    `\\bdiscontinu(?:ation|ed|es?)\\s+(?:on|from|after|date\\s*:?)`,
+    `\\bsunset(?:s|ting)?\\s+(?:on|from)`,
+    `expected\\s+to\\s+(?:launch|go\\s+live|be\\s+(?:launched|released|live|available))\\b(?:[^.\\n]{0,60}?\\s(?:on|from))?`,
+    `stops?\\s+accepting\\b(?:[^.\\n]{0,60}?\\s(?:on|from|after))?`,
     `적용\\s*(?:예정\\s*)?(?:일시|일자|일)`,
     `시행\\s*(?:예정\\s*)?(?:일시|일자|일)?`,
     `生效(?:时间|日期)`,
@@ -154,8 +164,52 @@ const EFFECTIVE_PHRASES = new RegExp ([
 // "2026년 11월 13일 Private WebSocket v1 지원 종료". Up to 40 characters may sit in between.
 const TRAILING_KO = /(20\d\d)\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일[^.\n]{0,40}?(?:(?:적용|시행|종료|중단|변경)(?:될|할)?\s*예정|지원\s*종료|적용됩니다|시행됩니다|종료됩니다)/g;
 
+// Environment labels in front of a date (within the same clause).
+const DEMO_LABEL = /\b(?:demo(?:\s+trading)?|testnet|test\s*net|sandbox|uat|staging|paper\s+trading|simulated\s+trading)\b[^.;\n]{0,30}$/i;
+const LIVE_LABEL = /\b(?:live(?:\s+trading)?|production|prod|mainnet|main\s*net|public\s+internet|real\s+trading)\b[^.;\n]{0,30}$/i;
+
+// A live/production rollout announced without a day ("in the production environment in early
+// December 2026", "mainnet later in Q1"): an environment word with a time word after it. "production
+// is not affected" and "Mainnet users are unaffected" are not rollouts.
+const LIVE_SCHEDULED = /\b(?:live(?:\s+trading)?|production|mainnet|main\s*net|public\s+internet|real\s+trading)\b[^.;\n]{0,30}?\b(?:in|on|from|by|early|late|mid|during|around|expected|scheduled|planned|Q[1-4]|H[12]|later|soon|after|20\d\d)\b/i;
+
+type Env = 'demo' | 'live' | null;
+
+// The environment the text right before `index` labels a date with ("demo trading on ", "Mainnet: ").
+function envBefore (text: string, index: number): Env {
+    const lineStart = text.lastIndexOf ('\n', index - 1) + 1;
+    // the clause the date sits in: back to the previous ";" or sentence end on the same line
+    const before = text.slice (Math.max (lineStart, index - 40), index).split (/[;]|\.\s/).pop () ?? '';
+    if (LIVE_LABEL.test (before)) {
+        return 'live';
+    }
+    if (DEMO_LABEL.test (before)) {
+        return 'demo';
+    }
+    return null;
+}
+
+// Rollout schedule lines: "- Public internet: October 31, 2026", "**Mainnet:** Jul 17th, 2026 06:00 UTC",
+// "- Production, from October 31, 2026".
+const ROLLOUT_LINE = /^[ \t]*(?:[-*+][ \t]+|\d+[.)][ \t]+)?(?:\*\*|__)?(live(?:\s+trading)?|production|prod|mainnet|main\s*net|public\s+internet|real\s+trading)(?:\s+environment)?(?:\s*\([^)\n]{1,20}\))?(?:\*\*|__)?\s*(?:[:：]|,)\s*(?:\*\*|__)?\s*(?:from\s+|on\s+|starting\s+)?/gim;
+
+// Earliest date on a live/production rollout line, else null.
+export function rolloutLiveDate (text: string, order?: DateOrder, now: Date = new Date ()): string | null {
+    let best: string | null = null;
+    ROLLOUT_LINE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = ROLLOUT_LINE.exec (text)) !== null) {
+        const start = m.index + m[0].length;
+        const all = candidates (text.slice (start, start + 60).split ('\n')[0], order, now);
+        if (all.length && all[0].index <= 5 && (best === null || all[0].value < best)) {
+            best = all[0].value;
+        }
+    }
+    return best;
+}
+
 // "Effective date: 2026-11-20", "will take effect on Nov 20, 2026", "Release 10.11.2026",
-// "To Be Released: 2026-Oct-13", "2026년 11월 13일 ... 적용될 예정".
+// "To Be Released: 2026-Oct-13", "2026년 11월 13일 ... 적용될 예정", "- Mainnet: 2026-11-20".
 export function findEffectiveDate (text: string | undefined | null, order?: DateOrder, now: Date = new Date ()): string | null {
     if (!text) {
         return null;
@@ -163,10 +217,26 @@ export function findEffectiveDate (text: string | undefined | null, order?: Date
     EFFECTIVE_PHRASES.lastIndex = 0;
     let m: RegExpExecArray | null;
     while ((m = EFFECTIVE_PHRASES.exec (text)) !== null) {
-        const window = text.slice (m.index + m[0].length, m.index + m[0].length + 60);
+        const start = m.index + m[0].length;
+        const window = text.slice (start, start + 60);
         const all = candidates (window, order, now);
         // the date must follow the phrase closely (after "on", ":", "at" ...)
         if (all.length && all[0].index <= 25) {
+            if (envBefore (text, start + all[0].index) === 'demo') {
+                // "demo trading on <date>; live trading expected on <date>": the live date on the same line
+                const line = text.slice (start).split ('\n')[0].slice (0, 240);
+                const live = candidates (line, order, now).find ((c) => envBefore (text, start + c.index) === 'live');
+                if (live) {
+                    return live.value;
+                }
+                // "demo trading environment on November 11, 2026 and in the production environment in
+                // early December 2026": the live date is not a day, so no effective date from this phrase
+                // (the same sentence only: "...; production is not affected" says nothing)
+                const sentence = line.slice (all[0].index).split (/[.;]\s/)[0];
+                if (LIVE_SCHEDULED.test (sentence)) {
+                    continue;
+                }
+            }
             return all[0].value;
         }
     }
@@ -177,5 +247,5 @@ export function findEffectiveDate (text: string | undefined | null, order?: Date
             return value;
         }
     }
-    return null;
+    return rolloutLiveDate (text, order, now);
 }

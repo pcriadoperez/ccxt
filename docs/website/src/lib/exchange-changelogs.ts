@@ -11,17 +11,22 @@
 //                                      cached for 1h and tagged 'exchange-changelogs' so
 //                                      POST /api/revalidate/changelog can refresh it.
 //
-// Never throws: a missing/invalid file yields the last good copy this process saw, or an
-// empty valid feed. Unknown fields are tolerated (zod strips them); a malformed entry is
-// dropped instead of failing the whole feed.
+// Fallbacks when a file can't be fetched or parsed, in order:
+//   1. the last good copy this process saw (memory; empty after a deploy/restart)
+//   2. the build-time snapshot in src/data/changelog-snapshot/ (written by the prebuild step,
+//      scripts/fetch-changelog-snapshot.mjs; EXCHANGE_CHANGELOGS_SNAPSHOT_DIR overrides the dir)
+//   3. nothing: getChangelogData() throws ChangelogUnavailableError. The page lets it propagate
+//      (Next keeps serving the previous ISR render and retries on the next request); the feed
+//      routes answer 503 + no-store. An empty page or feed is never cached.
+// Unknown fields are tolerated (zod strips them); a malformed entry is dropped instead of
+// failing the whole feed.
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { z } from 'zod';
 import { basePath, siteUrl } from './shared';
 import {
   EMPTY_HEALTH,
-  EMPTY_LATEST,
   isIsoDate,
   isVenueId,
   utcDay,
@@ -135,19 +140,22 @@ function each<T>(schema: z.ZodType<T>, items: unknown): T[] {
 function parseLatest(raw: unknown): LatestFeed | null {
   const env = envelope.extend({ windowDays: z.number().catch(0), entries: z.unknown(), venues: z.unknown() }).safeParse(raw);
   if (!env.success) return null;
-  return {
+  const feed: LatestFeed = {
     schemaVersion: env.data.schemaVersion,
     generatedAt: env.data.generatedAt,
     windowDays: env.data.windowDays,
     entries: each<FeedEntry>(feedEntrySchema, env.data.entries),
     venues: each<VenueSummary>(venueSummarySchema, env.data.venues),
   };
+  // a feed listing no venue is a broken publish, not "no news": fall back instead of caching it
+  return feed.venues.length || feed.entries.length ? feed : null;
 }
 
 function parseHealth(raw: unknown): HealthFeed | null {
   const env = envelope.extend({ sources: z.unknown() }).safeParse(raw);
   if (!env.success) return null;
-  return { schemaVersion: env.data.schemaVersion, generatedAt: env.data.generatedAt, sources: each<SourceHealth>(sourceHealthSchema, env.data.sources) };
+  const sources = each<SourceHealth>(sourceHealthSchema, env.data.sources);
+  return sources.length ? { schemaVersion: env.data.schemaVersion, generatedAt: env.data.generatedAt, sources } : null;
 }
 
 function parseVenue(raw: unknown): VenueFeed | null {
@@ -165,14 +173,34 @@ function parseVenue(raw: unknown): VenueFeed | null {
 // transport
 // ---------------------------------------------------------------------------
 
+// Thrown when a feed file is unavailable from every source (live, memory, snapshot).
+export class ChangelogUnavailableError extends Error {
+  constructor(file: string) {
+    super(`exchange-changelogs: ${file} is unavailable (fetch failed and no last-good copy)`);
+    this.name = 'ChangelogUnavailableError';
+  }
+}
+
+export function isChangelogUnavailable(err: unknown): err is ChangelogUnavailableError {
+  return err instanceof ChangelogUnavailableError;
+}
+
 // Last successfully parsed copy per file, so a transient fetch failure during an ISR
 // regeneration doesn't replace a good page with an empty one for an hour.
 const lastGood = new Map<string, unknown>();
+// Parsed build-time snapshot files (null = not in the snapshot), read at most once per process.
+const snapshotCache = new Map<string, unknown>();
+
+function snapshotDir(): string {
+  const dir = process.env.EXCHANGE_CHANGELOGS_SNAPSHOT_DIR;
+  if (dir) return isAbsolute(dir) ? dir : join(/* turbopackIgnore: true */ process.cwd(), dir);
+  return join(/* turbopackIgnore: true */ process.cwd(), 'src', 'data', 'changelog-snapshot');
+}
 
 async function readJson(rel: string): Promise<unknown> {
   const dir = process.env.EXCHANGE_CHANGELOGS_DIR;
   if (dir) {
-    return JSON.parse(await readFile(join(dir, rel), 'utf8'));
+    return JSON.parse(await readFile(/* turbopackIgnore: true */ join(dir, rel), 'utf8'));
   }
   const base = (process.env.EXCHANGE_CHANGELOGS_URL ?? DEFAULT_URL).replace(/\/$/, '');
   const res = await fetch(`${base}/${rel}`, {
@@ -181,6 +209,19 @@ async function readJson(rel: string): Promise<unknown> {
   });
   if (!res.ok) throw new Error(`HTTP ${res.status} for ${rel}`);
   return res.json();
+}
+
+async function readSnapshot<T>(rel: string, parse: (raw: unknown) => T | null): Promise<T | null> {
+  if (!snapshotCache.has(rel)) {
+    let parsed: T | null = null;
+    try {
+      parsed = parse(JSON.parse(await readFile(/* turbopackIgnore: true */ join(snapshotDir(), rel), 'utf8')));
+    } catch {
+      // no snapshot (prebuild fetch failed or skipped): nothing to fall back to
+    }
+    snapshotCache.set(rel, parsed);
+  }
+  return snapshotCache.get(rel) as T | null;
 }
 
 async function load<T>(rel: string, parse: (raw: unknown) => T | null): Promise<T | null> {
@@ -194,52 +235,63 @@ async function load<T>(rel: string, parse: (raw: unknown) => T | null): Promise<
   } catch (err) {
     console.warn(`[exchange-changelogs] ${rel}: ${err instanceof Error ? err.message : String(err)}`);
   }
-  return (lastGood.get(rel) as T | undefined) ?? null;
+  const fallback = (lastGood.get(rel) as T | undefined) ?? (await readSnapshot(rel, parse));
+  if (fallback) console.warn(`[exchange-changelogs] ${rel}: serving the ${lastGood.has(rel) ? 'last good copy' : 'build-time snapshot'}`);
+  return fallback ?? null;
 }
 
+// latest.json; throws ChangelogUnavailableError when no copy is available at all.
 export async function getLatestFeed(): Promise<LatestFeed> {
-  return (await load('latest.json', parseLatest)) ?? EMPTY_LATEST;
+  const feed = await load('latest.json', parseLatest);
+  if (!feed) throw new ChangelogUnavailableError('latest.json');
+  return feed;
 }
 
+// health.json; throws ChangelogUnavailableError when no copy is available at all.
 export async function getHealthFeed(): Promise<HealthFeed> {
-  return (await load('health.json', parseHealth)) ?? EMPTY_HEALTH;
+  const feed = await load('health.json', parseHealth);
+  if (!feed) throw new ChangelogUnavailableError('health.json');
+  return feed;
 }
 
-// One venue with bodies (last 365 days). Without `kind`, every kind latest.json lists for the id
-// (exchange/binance + prediction/binance) is loaded and their entries merged. Only venues listed
-// in latest.json are fetched, so unknown ids cost no origin request (unless latest.json itself is
-// unavailable, then both kinds are tried).
-export async function getVenueFeed(id: string, venueKind?: VenueKind): Promise<VenueFeed | null> {
+// One venue with bodies (last 365 days), by its canonical kind + id (see resolveVenueToken).
+// Returns null for a venue latest.json does not list (no origin request); throws
+// ChangelogUnavailableError when the venue is listed but its file can't be loaded.
+export async function getVenueFeed(id: string, venueKind: VenueKind): Promise<VenueFeed | null> {
   if (!isVenueId(id)) return null;
   const latest = await getLatestFeed();
-  let kinds: VenueKind[];
-  if (latest.venues.length) {
-    kinds = latest.venues.filter((v) => v.id === id && (!venueKind || v.kind === venueKind)).map((v) => v.kind);
-  } else {
-    kinds = venueKind ? [venueKind] : ['exchange', 'prediction'];
-  }
-  const feeds: VenueFeed[] = [];
-  for (const k of kinds) {
-    const feed = await load(`${k}/${id}.json`, parseVenue);
-    if (feed) feeds.push(feed);
-  }
-  if (feeds.length <= 1) return feeds[0] ?? null;
-  const seen = new Set<string>();
-  const entries = feeds.flatMap((f) => f.entries).filter((e) => !seen.has(e.id) && Boolean(seen.add(e.id)));
-  return { ...feeds[0], entries };
+  if (!latest.venues.some((v) => v.id === id && v.kind === venueKind)) return null;
+  const rel = `${venueKind}/${id}.json`;
+  const feed = await load(rel, parseVenue);
+  if (!feed) throw new ChangelogUnavailableError(rel);
+  return feed;
 }
 
-// latest + health, plus per-venue display info (name, kind, docs path, link domains)
-// for every venue that appears in either file, keyed by venueKey(kind, id).
-export async function getChangelogData(): Promise<{ latest: LatestFeed; health: HealthFeed; venues: Map<string, VenueInfo> }> {
-  const [latest, health] = await Promise.all([getLatestFeed(), getHealthFeed()]);
+export interface ChangelogData {
+  latest: LatestFeed;
+  health: HealthFeed;
+  venues: Map<string, VenueInfo>;
+}
+
+// latest + health, plus per-venue display info (name, kind, docs path, link domains,
+// subclasses) for every venue that appears in either file, keyed by venueKey(kind, id).
+// Throws ChangelogUnavailableError when latest.json is unavailable, and when health.json is
+// unavailable unless `optionalHealth` (the feeds only use health for link-domain fallbacks).
+export async function getChangelogData(opts: { optionalHealth?: boolean } = {}): Promise<ChangelogData> {
+  const [latest, health] = await Promise.all([
+    getLatestFeed(),
+    getHealthFeed().catch((err: unknown) => {
+      if (opts.optionalHealth && isChangelogUnavailable(err)) return EMPTY_HEALTH;
+      throw err;
+    }),
+  ]);
   const domains = venueDomainsFrom(latest.entries, health, latest.venues);
   const venues = new Map<string, VenueInfo>();
-  const add = (id: string, name: string, k: VenueKind) => {
+  const add = (id: string, name: string, k: VenueKind, subclasses: string[] = []) => {
     const key = venueKey(k, id);
-    if (!venues.has(key) && isVenueId(id)) venues.set(key, { key, id, name: name || id, kind: k, docPath: venueDocPath(k, id), domains: domains.get(key) ?? [] });
+    if (!venues.has(key) && isVenueId(id)) venues.set(key, { key, id, name: name || id, kind: k, docPath: venueDocPath(k, id), domains: domains.get(key) ?? [], subclasses });
   };
-  for (const v of latest.venues) add(v.id, v.name, v.kind);
+  for (const v of latest.venues) add(v.id, v.name, v.kind, v.subclasses.filter(isVenueId));
   for (const e of latest.entries) add(e.exchange, e.exchange, e.kind);
   for (const s of health.sources) add(s.venue, s.venue, s.kind);
   return { latest, health, venues };
@@ -252,6 +304,20 @@ export async function getChangelogData(): Promise<{ latest: LatestFeed; health: 
 export const FEED_CACHE_CONTROL = 'public, s-maxage=3600, stale-while-revalidate=86400';
 // error responses (bad query, venue file missing or failing to load) must not be cached
 export const ERROR_CACHE_CONTROL = 'no-store';
+
+// 503 for a feed route when the data is unavailable (never cached, so the next poll retries).
+export function unavailableResponse(err: ChangelogUnavailableError): Response {
+  return new Response(JSON.stringify({ error: 'changelog data is temporarily unavailable, retry later', detail: err.message }), {
+    status: 503,
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Cache-Control': ERROR_CACHE_CONTROL,
+      'Retry-After': '300',
+      'Access-Control-Allow-Origin': '*',
+      'X-Content-Type-Options': 'nosniff',
+    },
+  });
+}
 
 // Weak ETag over the data version + the request shape. A `days=` window moves at UTC midnight,
 // so `relativeDays` adds the current day (else pollers would get 304 with yesterday's window).

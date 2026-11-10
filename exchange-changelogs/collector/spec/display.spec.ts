@@ -108,7 +108,7 @@ test ('section: the body is cut to the matching sections; entries without one ar
     const out = await parse (source, '## November 6, 2026\n\n' + body.replace (/^## /gm, '### ') + '\n\n## November 3, 2026\n\n### v1.170.3\n\n#### UI\n\n- Only UI.');
     const entries = buildEntries (out.entries, { venue: venueOf ('x', [ 'example.com' ], [ source ]), source, affects: [ 'x' ], now: NOW, firstRun: false });
     assert.equal (entries.length, 1);
-    assert.equal (entries[0].title, 'November 6, 2026: Pro maker fees rise to 0.5 bps.');
+    assert.equal (entries[0].title, 'Pro maker fees rise to 0.5 bps.');
     assert.ok (!entries[0].body!.includes ('modal'));
 });
 

@@ -95,14 +95,16 @@ test ('end to end: first run, 304 run, page change, failure, feed', async () => 
     assert.ok (latest.entries.every ((e) => !('body' in e)));
     const sortKey = (e: LatestFeed['entries'][number]) => e.effectiveDate ?? e.publishedAt ?? e.firstSeen.slice (0, 10);
     assert.deepEqual (latest.entries.map (sortKey), [ ...latest.entries.map (sortKey) ].sort ().reverse ());
-    assert.ok (!latest.entries.some ((e) => e.source === 'okx-log' && e.publishedAt === null), 'undated backfill entries stay out of latest.json');
+    assert.ok (!latest.entries.some ((e) => e.source === 'okx-log' && e.publishedAt === null && !e.effectiveDate), 'undated backfill entries stay out of latest.json');
+    assert.ok (latest.entries.some ((e) => e.source === 'okx-log' && e.effectiveDate === '2026-10-31'), 'a scheduled change ("- Public internet: October 31, 2026") is dated by its effective date');
     assert.ok (latest.entries.some ((e) => e.title === 'Docs changed: /docs-v5/en/'));
     assert.deepEqual (latest.venues.map ((v) => [ v.id, v.sources, v.healthy ]), [ [ 'bybit', 1, 1 ], [ 'kalshi', 1, 0 ], [ 'okx', 2, 1 ] ]);
     assert.deepEqual (latest.venues[2].domains, [ 'okx.com' ]);
     const okxFeed = JSON.parse (await readFile (store.feedPath ('exchange', 'okx.json'), 'utf8')) as VenueFeed;
-    // 10 stored: the 3 undated backfill entries (fixture "Upcoming Changes" without a date) stay out
-    // of the venue feed as they do of latest.json (the docs page would file them under "today")
-    assert.equal (okxFeed.entries.length, 7);
+    // 10 stored: 2 of the 3 "Upcoming Changes" entries stay undated and out of the venue feed as they
+    // do of latest.json (the docs page would file them under "today"); the port 8443 one has an
+    // effective date from its rollout lines
+    assert.equal (okxFeed.entries.length, 8);
     assert.ok (okxFeed.entries.every ((e) => !(e.backfill && !e.publishedAt && !e.effectiveDate)));
     assert.ok (okxFeed.entries.every ((e) => typeof e.body === 'string'));
     assert.deepEqual (okxFeed.entries[0].affects, [ 'okx', 'myokx' ]);
@@ -201,4 +203,17 @@ test ('spec source: first run snapshot only, then firstSeen entries per change; 
     const latest = JSON.parse (await readFile (store.feedPath ('latest.json'), 'utf8')) as LatestFeed;
     assert.equal (latest.entries.length, 3);
     assert.deepEqual (latest.venues.map ((v) => [ v.id, v.sources, v.unmonitored ?? null ]), [ [ 'ex', 1, null ], [ 'quiet', 0, 'API docs behind a login' ] ]);
+});
+
+test ('expectBlocked sources are fetched without retries', async () => {
+    const dir = await mkdtemp (join (tmpdir (), 'changelog-data-'));
+    const blocked = { ...KALSHI, id: 'kalshi-blocked', expectBlocked: 'Cloudflare challenge from datacenter IPs' };
+    const reg = makeRegistry ([ { id: 'kalshi', kind: 'prediction', name: 'Kalshi', domains: [ 'kalshi.com' ], sources: [ KALSHI, blocked ] } ]);
+    const seen: Record<string, number | undefined> = {};
+    const fetcher: Fetcher = async (url, opts) => {
+        seen[(opts.retries === 0) ? 'blocked' : 'normal'] = opts.retries;
+        return ok (bodies[KALSHI.url]);
+    };
+    await collect ({ store: new Store (dir), registry: reg, now: new Date ('2026-11-08T05:23:00Z'), venues: [], sources: [], fetcher });
+    assert.deepEqual (seen, { blocked: 0, normal: undefined });
 });

@@ -20,7 +20,11 @@ test ('okx Slate changelog fixture', async () => {
     assert.ok (!out.snapshot.includes ('toc-link'), 'nav is stripped');
     const entries = buildEntries (out.entries, { venue: okxVenue, source: OKX, affects: [ 'okx', 'myokx' ], now: NOW, firstRun: true });
     assert.equal (entries[0].publishedAt, null, 'upcoming change: no date in the anchor');
-    assert.equal (entries[0].dateKind, 'firstSeen');
+    // "will stop accepting WebSocket connections on port 8443 ...: - Public internet: October 31, 2026 - Colo: November 16, 2026"
+    assert.equal (entries[0].effectiveDate, '2026-10-31', 'the earliest live rollout line');
+    assert.equal (entries[0].dateKind, 'effective');
+    // "expected to launch in the demo trading environment on November 11, 2026 and in the production environment in early December 2026"
+    assert.equal (entries[1].effectiveDate, undefined, 'a demo date is not the effective date when production follows');
     assert.equal (entries[3].publishedAt, '2026-10-27');
     assert.equal (entries[3].url, 'https://www.okx.com/docs-v5/log_en/#2026-10-27-new-bbo-rpi-tbt-order-book-channel-for-rpi-best-bid-and-ask');
     assert.deepEqual (entries[3].affects, [ 'okx', 'myokx' ]);
@@ -67,7 +71,7 @@ test ('split.item: a leading title element and its separator are left out of the
         [ '2026.11.06', '- [Add] UTA WebSocket Private Channel FundingFeeSettle' ],
     ]);
     const entries = buildEntries (out.entries, { venue: venueOf ('ex', [ 'example.com' ], [ source ]), source, affects: [ 'ex' ], now: NOW, firstRun: false });
-    assert.deepEqual (entries.map ((e) => e.title), [ '2025-11-13: Update 35=D, added tag20100 ReceiveWindow', '2026-05-21: public/get-instruments response updated', '2026.11.06: [Add] UTA WebSocket Private Channel FundingFeeSettle' ]);
+    assert.deepEqual (entries.map ((e) => e.title), [ 'Update 35=D, added tag20100 ReceiveWindow', 'public/get-instruments response updated', 'Added: UTA WebSocket Private Channel FundingFeeSettle' ], 'the date repeats the day heading; "[Add]" reads "Added:"');
     assert.equal (entries[0].excerpt, 'Update 35=D, added tag20100 ReceiveWindow');
     assert.equal (entries[2].url, 'https://example.com/log#20261106');
 });

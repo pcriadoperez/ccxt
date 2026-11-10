@@ -102,6 +102,46 @@ export function truncate (s: string, max: number): string {
     return s.slice (0, max - 1).replace (/\s+\S*$/, '') + '…';
 }
 
+// Words a cut summary may not end on ("... to the", "... changes in").
+const DANGLING_WORDS = /(?:\s+(?:the|a|an|in|of|to|for|and|or|with|on|at|by|from|into|as|is|are|was|were|its|their|your|this|that|via|per))+$/i;
+
+// One-line summary of at most `max` characters for a title: the text up to the last sentence end
+// that fits (when that keeps at least a third of `max`), else cut at a word boundary with "…",
+// without a dangling article/preposition or separator before the ellipsis.
+export function cutSummary (s: string, max: number): string {
+    const text = oneLine (s);
+    if (text.length <= max) {
+        return text;
+    }
+    const head = text.slice (0, max);
+    // a sentence end: ".", "!" or "?" followed by a space and a capital, digit, quote or backtick
+    // (not "e.g. x", "v1.2", "1.5 USDT")
+    let end = -1;
+    const re = /[.!?](?=\s+["'`(\p{Lu}\d])/gu;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec (head)) !== null) {
+        if (!/\b(?:e\.g|i\.e|etc|vs|approx|incl|no)\.$/i.test (head.slice (0, m.index + 1))) {
+            end = m.index;
+        }
+    }
+    if (end >= Math.floor (max / 3)) {
+        return head.slice (0, end + 1);
+    }
+    let words = text.slice (0, max - 1).replace (/\s+\S*$/, '');
+    // an opening "(" or "[" whose group the cut leaves unclosed goes when short
+    // ("... the current bound (for"); a longer one is closed after the ellipsis ("... (applies to all…)")
+    words = words.replace (/\s*[([][^)\]]*$/, (m) => (m.length <= 20 ? '' : m));
+    words = words.replace (DANGLING_WORDS, '').replace (/[\s,;:\u2013\u2014-]+$/, '').replace (DANGLING_WORDS, '');
+    const open = /([([])[^)\]]*$/.exec (words);
+    if (!open) {
+        return words + '…';
+    }
+    if (words.length > max - 2) {
+        words = words.replace (/\s+\S*$/, '').replace (DANGLING_WORDS, '');
+    }
+    return words + '…' + ((open[1] === '(') ? ')' : ']');
+}
+
 // Table rows "| a | b |" -> "a · b"; alignment rows ("| :- | --- |") dropped.
 export function tableRowsToText (s: string): string {
     return s.split ('\n').map ((line) => {

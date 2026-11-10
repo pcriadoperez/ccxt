@@ -12,6 +12,7 @@
         "build-feed": "node --import tsx src/build-feed.ts",
         "run": "node --import tsx src/run.ts",
         "coverage": "node --import tsx src/coverage.ts",
+        "report": "node --import tsx src/report.ts",
         "spec": "node --import tsx --test spec/*.spec.ts",
         "typecheck": "tsc --noEmit"
     },

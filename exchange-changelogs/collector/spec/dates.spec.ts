@@ -89,3 +89,43 @@ test ('effective-date phrases (English, Korean, Chinese)', () => {
         assert.equal (findEffectiveDate (text, undefined, now), expected, text);
     }
 });
+
+test ('effective dates: discontinuation, shutdown, "expected to launch", "stop accepting", sunset', () => {
+    const cases: [string, string | null][] = [
+        [ 'The v1 channel will be discontinued on 2026-12-01.', '2026-12-01' ],
+        [ 'Discontinuation on: Dec 1, 2026', '2026-12-01' ],
+        [ 'The endpoint is discontinued on 1 December 2026', '2026-12-01' ],
+        [ 'The legacy host will be shut down on 2026-12-15.', '2026-12-15' ],
+        [ 'v1 sunset on December 1, 2026', '2026-12-01' ],
+        [ 'The new API is expected to launch on mainnet on November 20, 2026.', '2026-11-20' ],
+        [ 'We will stop accepting orders on port 8443 on Nov 30, 2026.', '2026-11-30' ],
+        [ 'Last update: October 22, 2026. Port 443 already works.', null ],
+    ];
+    for (const [ text, expected ] of cases) {
+        assert.equal (findEffectiveDate (text, undefined, now), expected, text);
+    }
+});
+
+test ('effective dates: the live date wins over a demo/testnet date', () => {
+    // Bitget (bitget-classic and bitget-uta-preview carry the same line)
+    assert.equal (findEffectiveDate ('**Effective date:** demo trading on November 4, 2026; live trading expected on November 17, 2026\n\nInterface:', undefined, now), '2026-11-17');
+    assert.equal (findEffectiveDate ('Effective date: testnet 2026-11-10, mainnet 2026-11-20', undefined, now), '2026-11-20');
+    // only a demo date and a production month: no effective day
+    assert.equal (findEffectiveDate ('The services are expected to launch in the demo trading environment on November 11, 2026 and in the production environment in early December 2026.', undefined, now), null);
+    // a testnet-only notice keeps its date
+    assert.equal (findEffectiveDate ('Effective date: testnet on 2026-11-10', undefined, now), '2026-11-10');
+});
+
+test ('effective dates: rollout lines give the earliest live/production date', () => {
+    // OKX "WebSocket port 8443 discontinuation"
+    const okx = 'To support a network infrastructure upgrade, OKX will stop accepting WebSocket connections on port 8443, including Colo connections:\n\n- Public internet: October 31, 2026\n- Colo: November 16, 2026\n\nPort 443 already works on all affected domains.';
+    assert.equal (findEffectiveDate (okx, undefined, now), '2026-10-31');
+    assert.equal (findEffectiveDate ('* Testnet: May 29th, 2026 06:00 UTC\n* **Mainnet:** Jun 2nd, 2026 06:00 UTC', undefined, now), '2026-06-02');
+    assert.equal (findEffectiveDate ('- Production, from November 20, 2026\n- Production (Colo), from November 12, 2026', undefined, now), '2026-11-12');
+    assert.equal (findEffectiveDate ('- Testnet: May 29th, 2026 06:00 UTC', undefined, now), null, 'a testnet line alone is not the effective date');
+});
+
+test ('effective dates: an unaffected live environment does not cancel a testnet date', () => {
+    assert.equal (findEffectiveDate ('The legacy testnet will be decommissioned on December 1, 2026; production is not affected.', undefined, now), '2026-12-01');
+    assert.equal (findEffectiveDate ('Testnet will be shut down on 2026-12-01. Mainnet users are unaffected.', undefined, now), '2026-12-01');
+});

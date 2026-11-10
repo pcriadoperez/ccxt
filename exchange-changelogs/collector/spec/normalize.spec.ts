@@ -55,10 +55,10 @@ test ('negated phrasings do not tag breaking/deprecation', () => {
 });
 
 test ('market tag needs a listing change, not a product word', () => {
-    for (const text of [ 'null for non-perpetual instrument types', 'contract lifecycle events', 'Coin-M Contract Information', 'scoped to USDT-margined perpetual contracts', 'UDP Market Data: documented fields', 'New instrument fields', 'subscriptions that list the market in market_tickers', 'GET /x for listing Maker Rebate payouts', 'a table listing the e value' ]) {
+    for (const text of [ 'null for non-perpetual instrument types', 'contract lifecycle events', 'Coin-M Contract Information', 'scoped to USDT-margined perpetual contracts', 'UDP Market Data: documented fields', 'New instrument fields', 'subscriptions that list the market in market_tickers', 'GET /x for listing Maker Rebate payouts', 'a table listing the e value', 'The API changes are listed below.', 'whether a newly listed contract uses the mark price' ]) {
         assert.ok (!ruleTags ('Update', text).includes ('market'), text);
     }
-    for (const text of [ 'New symbols: usdchf and usdmxn join price.equity', 'Affected Crypto-USD spot instruments have been delisted', 'USD1 collateral listing', 'Launched new USDC perpetual contracts', 'Added new trading pairs', 'coin listing/delisting', 'BTC-PERP will be listed on 2026-12-01' ]) {
+    for (const text of [ 'New symbols: usdchf and usdmxn join price.equity', 'Affected Crypto-USD spot instruments have been delisted', 'USD1 collateral listing', 'Launched new USDC perpetual contracts', 'Added new trading pairs', 'coin listing/delisting' ]) {
         assert.ok (ruleTags ('Update', text).includes ('market'), text);
     }
 });

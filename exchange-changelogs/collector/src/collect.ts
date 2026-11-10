@@ -24,9 +24,15 @@ import { parseCliArgs } from './args.ts';
 
 export type Fetcher = (url: string, options: FetchOptions) => Promise<FetchResult>;
 
+// Sources the registry marks expectBlocked (datacenter IPs get a 403 or a challenge page) are tried
+// once: retrying only adds load on a host that has already said no.
+function noRetry (source: SourceConfig): Pick<FetchOptions, 'retries'> {
+    return source.expectBlocked ? { retries: 0 } : {};
+}
+
 // Bump when a parser change should re-parse every source on the next run (drops HTTP validators).
 // A run after a bump (or after the source's registry entry changed) is a "reparse": see reparseOf.
-export const PARSER_VERSION = 5;
+export const PARSER_VERSION = 8;
 
 function stableJson (v: unknown): string {
     if (Array.isArray (v)) {
@@ -125,7 +131,7 @@ type Fetched = { kind: 'unchanged' } | { kind: 'fetched'; parts: Part[]; resolve
 // discover: fetch the index page and take the first capture group of the pattern as the url.
 export async function discoverUrl (source: SourceConfig, fetcher: Fetcher): Promise<string> {
     const d = source.discover!;
-    const res = await fetcher (d.url, { headers: source.headers });
+    const res = await fetcher (d.url, { headers: source.headers, ...noRetry (source) });
     if (res.status !== 'ok') {
         throw new Error (`discover: unexpected HTTP 304 from ${d.url}`);
     }
@@ -149,7 +155,7 @@ async function fetchParts (source: SourceConfig, state: SourceState, hasHistory:
             const url = expandMonth (source.url, m.year, m.month);
             const link = expandMonth (source.link ?? source.url, m.year, m.month);
             try {
-                const res = await fetcher (url, { headers: source.headers });
+                const res = await fetcher (url, { headers: source.headers, ...noRetry (source) });
                 if (res.status === 'ok') {
                     parts.push ({ url, link, month: m.key, body: res.body, contentType: res.contentType });
                 }
@@ -175,6 +181,7 @@ async function fetchParts (source: SourceConfig, state: SourceState, hasHistory:
         headers: requestHeaders (source, url),
         etag: reuse ? state.etag : undefined,
         lastModified: reuse ? state.lastModified : undefined,
+        ...noRetry (source),
     });
     if (res.status === 'unchanged') {
         return { kind: 'unchanged' };
