@@ -18,7 +18,10 @@ ENV NEXT_SERVER_ACTIONS_ENCRYPTION_KEY=$NEXT_SERVER_ACTIONS_ENCRYPTION_KEY
 ENV NEXT_PUBLIC_SITE_URL=https://docs.ccxt.com \
     NEXT_PUBLIC_AI_ENABLED=true \
     NODE_OPTIONS=--max-old-space-size=4096
-RUN npm run build
+# `npm run build` first runs the prebuild step (scripts/fetch-changelog-snapshot.mjs): it bakes the
+# exchange-changelogs feed into src/data/changelog-snapshot/ as the page's last-good fallback, and
+# never fails the build (the dir is created empty when the download failed, so the COPY below works).
+RUN npm run build && mkdir -p src/data/changelog-snapshot
 
 FROM node:20-slim AS runner
 WORKDIR /app
@@ -33,5 +36,7 @@ COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
 # public/ holds the CCXT logo assets used by the homepage hero
 COPY --from=builder /app/public ./public
+# build-time changelog snapshot, read with fs at runtime (not traced into standalone)
+COPY --from=builder /app/src/data/changelog-snapshot ./src/data/changelog-snapshot
 EXPOSE 3005
 CMD ["node", "server.js"]
