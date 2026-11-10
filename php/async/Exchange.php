@@ -58,6 +58,10 @@ class BaseExchange extends \ccxt\BaseExchange {
     public $tokenBucket;
     public Throttler $throttler;
     public $default_connector = null;
+    // one Browser per connector, keyed by spl_object_id, each entry array($connector, $browser)
+    private $browsers = array();
+    // the keep-alive connection managers behind those browsers, closed in close()
+    private $connection_managers = array();
 
     public $streaming = array(
         'keepAlive' => 30000,
@@ -77,7 +81,49 @@ class BaseExchange extends \ccxt\BaseExchange {
     }
 
     public function set_request_browser($connector) {
-        $this->browser = (new React\Http\Browser($connector, Loop::get()))
+        $this->browser = $this->get_browser($connector);
+    }
+
+    /**
+     * Returns the Browser for a connector, creating it on first use and keeping it for the
+     * lifetime of the exchange. Every Browser owns its own connection manager, so a Browser
+     * created per request (as this class used to do) could never reuse a connection.
+     */
+    public function get_browser($connector) {
+        if ($connector === null) {
+            if ($this->default_connector === null) {
+                $this->default_connector = $this->create_connector();
+            }
+            $connector = $this->default_connector;
+        }
+        $id = spl_object_id($connector);
+        if (!array_key_exists($id, $this->browsers)) {
+            $this->browsers[$id] = array($connector, $this->create_browser($connector));
+        }
+        return $this->browsers[$id][1];
+    }
+
+    /**
+     * Creates a Browser whose HTTP client keeps idle connections open between requests
+     * (see KeepAliveConnectionManager). The stock react/http Browser closes an idle
+     * connection 1 ms after each response, so every request paid a TCP + TLS handshake.
+     */
+    public function create_browser($connector) {
+        $loop = Loop::get();
+        $browser = new React\Http\Browser($connector, $loop);
+        try {
+            $manager = new KeepAliveConnectionManager($connector, $loop);
+            $sender = new React\Http\Io\Sender(new React\Http\Client\Client($manager));
+            $transaction = new React\Http\Io\Transaction($sender, $loop);
+            // Browser builds its own Transaction and exposes no way to swap the connection
+            // manager; the react/http version is pinned in composer.json
+            $property = new \ReflectionProperty(React\Http\Browser::class, 'transaction');
+            $property->setValue($browser, $transaction);
+            $this->connection_managers[] = $manager;
+        } catch (\Throwable $e) {
+            // react/http internals changed: fall back to the stock Browser, one connection per request
+        }
+        return $browser
             ->withRejectErrorResponse(false)
             ->withResponseBuffer($this->response_buffer_max_size);
     }
@@ -105,6 +151,12 @@ class BaseExchange extends \ccxt\BaseExchange {
             $this->clean_ws_data();
         }
         // [REST]
+        foreach ($this->connection_managers as $manager) {
+            $manager->closeIdleConnections();
+        }
+        $this->connection_managers = array();
+        $this->browsers = array();
+        $this->proxyConnectors = array();
         if ($this->browser) {
             $this->browser = null;
         }
@@ -118,6 +170,8 @@ class BaseExchange extends \ccxt\BaseExchange {
     }
 
     private $proxyDictionaries = [];
+    // one connector per proxy url, so its Browser and pooled connections are reused as well
+    private $proxyConnectors = [];
 
     public function setProxyAgents($httpProxy, $httpsProxy, $socksProxy) {
         $connection_options_for_proxy = null;
@@ -145,8 +199,11 @@ class BaseExchange extends \ccxt\BaseExchange {
             $connection_options_for_proxy = $this->proxyDictionaries[$socksProxy];
         }
         if ($connection_options_for_proxy) {
-            $connector = $this->create_connector($connection_options_for_proxy);
-            return $connector;
+            $proxyUrl = $httpProxy ? $httpProxy : ($httpsProxy ? $httpsProxy : $socksProxy);
+            if (!array_key_exists($proxyUrl, $this->proxyConnectors)) {
+                $this->proxyConnectors[$proxyUrl] = $this->create_connector($connection_options_for_proxy);
+            }
+            return $this->proxyConnectors[$proxyUrl];
         }
         return null;
     }
