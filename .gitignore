@@ -63,6 +63,11 @@ go/cli/cli
 .claude/settings.local.json
 **/.claude/settings.local.json
 
+# --- radar (Telegram bot) sub-package ---
+radar/js/
+radar/data/
+radar/.env
+
 # --- mcp sub-package build output ---
 mcp/js/
 mcp/*.mcpb
