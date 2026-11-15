@@ -1,6 +1,8 @@
 // CCXT Radar entry point: wires ingestion, engine, delivery, news, AI and the Telegram bot.
 // Without TELEGRAM_BOT_TOKEN it runs headless and prints alerts to the console (useful for testing data).
 
+import { writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { loadConfig } from './config.js';
 import { Store } from './db.js';
 import { EventBus } from './events.js';
@@ -83,8 +85,22 @@ async function main (): Promise<void> {
         console.log ('[radar] TELEGRAM_BOT_TOKEN not set: running headless, alerts print here.');
     }
 
-    const statusTimer = setInterval (() => {
+    // Heartbeat file next to the database: the Docker healthcheck fails if it is older than 3 minutes.
+    const heartbeatPath = cfg.dbPath === ':memory:' ? undefined : join (dirname (cfg.dbPath), 'heartbeat.json');
+    const heartbeat = () => {
         const ok = cfg.venues.filter ((v) => !state.isDegraded (v));
+        if (heartbeatPath) {
+            try {
+                writeFileSync (heartbeatPath, JSON.stringify ({ at: new Date ().toISOString (), venuesOk: ok, venues: cfg.venues, queue: dispatcher.pending (), stats: dispatcher.stats, bot: bot ? 'telegram' : 'headless' }));
+            } catch (e) {
+                console.error ('[radar] heartbeat write failed', e);
+            }
+        }
+        return ok;
+    };
+    heartbeat ();
+    const statusTimer = setInterval (() => {
+        const ok = heartbeat ();
         console.log ('[radar] venues ok ' + ok.length + '/' + cfg.venues.length + ' (' + ok.join (',') + ') · queue ' + dispatcher.pending () + ' · sent ' + dispatcher.stats.sent + ' · news ' + news.clusters.length);
     }, 60_000);
 

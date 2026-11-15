@@ -30,15 +30,43 @@ npm start
 
 Host it in the EU or Asia: **Binance and Bybit block US IP addresses**. The bot keeps working on the other venues if some are unreachable and reports them on `/status`.
 
-With Docker:
+## Deploy to a server (one command)
+
+On a fresh Ubuntu 22.04+ or Debian 12+ server in the EU (for example a Hetzner CX22 in Germany or Finland), as root:
 
 ```bash
-docker build -t ccxt-radar radar
+curl -fsSL https://raw.githubusercontent.com/pcriadoperez/ccxt/claude/inspiring-wozniak-ydnboe/radar/scripts/setup-server.sh -o setup-server.sh
 ```
 
 ```bash
-docker run -d --name radar --env-file radar/.env -v radar-data:/data ccxt-radar
+bash setup-server.sh
 ```
+
+The script:
+- installs Docker if needed
+- downloads only the `radar/` folder to `/opt/ccxt-radar`
+- asks for your bot token and checks it with Telegram, filling in the bot's username for you
+- optionally asks for an OpenRouter key and checks it
+- checks that Binance, Bybit and OKX are reachable from the server
+- starts the bot with Docker Compose
+
+Later, `bash /opt/ccxt-radar/radar/scripts/setup-server.sh update` pulls the latest code and restarts. Non-interactive installs work too: `TELEGRAM_BOT_TOKEN=... OPENROUTER_API_KEY= bash setup-server.sh`.
+
+Run one copy per bot token: two copies on the same token make Telegram return 409 Conflict errors.
+
+### Docker Compose by hand
+
+From `radar/`, with a filled-in `.env`:
+
+```bash
+docker compose up -d --build
+```
+
+```bash
+docker compose logs -f
+```
+
+Data (users, alerts, history) lives in the `radar-data` volume and survives restarts and rebuilds. The container reports `healthy` while the bot writes its heartbeat file every minute (`/data/heartbeat.json`, which also lists the venues currently OK). Logs rotate at 3 × 10 MB.
 
 ## What to try
 
