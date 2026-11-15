@@ -156,6 +156,7 @@ Every list result is capped and paginated to fit host context limits (with in-ba
 - **AUTH_FAILED on a sandbox account** — testnet keys come from the exchange's testnet portal, not your live account (and vice versa).
 - **HTTP 451 / geo-blocks** — some exchanges block cloud/VPN/US IPs; set a proxy via account `options` if needed.
 - **Slow first call on a big exchange** — the initial `loadMarkets()` can take seconds; it is cached on disk for 24h afterwards.
+- **Tools listed without descriptions or bounds** — only when `ccxt-mcp` is installed as a dependency of your own project and that project resolves an older `zod` (below 4.6.6): npm then gives `@modelcontextprotocol/sdk` a different zod copy than `ccxt-mcp`'s, and the SDK can't read its schemas' metadata. Upgrade the project's `zod` to ≥ 4.6.6, or run the server with `npx -y ccxt-mcp`.
 - `npx @modelcontextprotocol/inspector npx -y ccxt-mcp` opens an interactive tool console.
 
 ## Development (inside the ccxt monorepo)
