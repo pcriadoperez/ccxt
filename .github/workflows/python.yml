@@ -48,7 +48,7 @@ jobs:
       with:
         python-version: '3.12'
         cache: 'pip'
-        pip-version: '26.2.2'
+        pip-version: '26.3'
     - name: Install python dependencies
       run: |
         python -m pip --version
@@ -217,7 +217,7 @@ jobs:
         with:
           python-version: '3.12'
           cache: 'pip'
-          pip-version: '26.2.2'
+          pip-version: '26.3'
       - name: Install python dependencies
         run: |
           python -m pip --version
@@ -258,7 +258,7 @@ jobs:
         with:
           python-version: '3.12'
           cache: 'pip'
-          pip-version: '26.2.2'
+          pip-version: '26.3'
       - name: Install python dependencies
         run: |
           python -m pip --version

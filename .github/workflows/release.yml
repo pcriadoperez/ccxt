@@ -51,7 +51,7 @@ jobs:
         with:
           python-version: '3.12'
           cache: 'pip'
-          pip-version: '26.2.2'
+          pip-version: '26.3'
       - name: create usr/share/dotnet folder
         run: |
           sudo mkdir -p /usr/share/dotnet
