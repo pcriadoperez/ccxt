@@ -50,6 +50,7 @@ jobs:
         with:
           python-version: '3.12'
           cache: 'pip'
+          pip-version: '26.2.2'
       - name: create usr/share/dotnet folder
         run: |
           sudo mkdir -p /usr/share/dotnet
@@ -68,7 +69,9 @@ jobs:
       - name: Composer install
         run: composer install
       - name: Install python dependencies
-        run: pip install -r build/ci-requirements.txt
+        run: |
+          python -m pip --version
+          pip install -r build/ci-requirements.txt
       - name: Install Python build tools
         run: pip install build twine
       # - name: export exchanges (remove later)
